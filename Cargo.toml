@@ -1,22 +1,28 @@
 [package]
-name = "eframe_template"
-version = "0.1.0"
-authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
+name = "telescope"
+version = "0.0.1"
+authors = ["Rafael Amador <rafaga@duck.com>"]
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.67.1"
 
 
 [dependencies]
-egui = "0.21.0"
-eframe = { version = "0.21.0", default-features = false, features = [
+egui = { version = "0.21", default-features = false, features = ["bytemuck", "cint", "serde", "persistence", "deadlock_detection", "color-hex", "tracing"] }
+eframe = { version = "0.21", default-features = false, features = [
     "accesskit",     # Make egui comptaible with screen readers. NOTE: adds a lot of dependencies.
     "default_fonts", # Embed the default egui fonts.
-    "glow",          # Use the glow rendering backend. Alternative: "wgpu".
+    "wgpu",          # Use the glow rendering backend. Alternative: "wgpu".
     "persistence",   # Enable restoring app state when restarting the app.
 ] }
 
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
+sde = "0.0"
+futures = { version = "0.3.26", features = ["thread-pool"] }
+async-std = "1.12.0"
+kdtree = { version = "0.7.0", features = ["serde", "serde_derive", "serialize"] }
+rand = "0.8.5"
+
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -35,7 +41,6 @@ opt-level = 2 # fast and small wasm
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
 opt-level = 2
-
 
 [patch.crates-io]
 

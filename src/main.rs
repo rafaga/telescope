@@ -3,16 +3,16 @@
 
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result<()> {
+fn main() {
     // Log to stdout (if you run with `RUST_LOG=debug`).
     tracing_subscriber::fmt::init();
 
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "eframe template",
+    let _result = eframe::run_native(
+        "Telescope",
         native_options,
-        Box::new(|cc| Box::new(eframe_template::TemplateApp::new(cc))),
-    )
+        Box::new(|cc| Box::new(telescope::TemplateApp::new(cc))),
+    );
 }
 
 // when compiling to web using trunk.
@@ -28,9 +28,9 @@ fn main() {
 
     wasm_bindgen_futures::spawn_local(async {
         eframe::start_web(
-            "the_canvas_id", // hardcode it
+            "T3l3SC0P3", // hardcode it
             web_options,
-            Box::new(|cc| Box::new(eframe_template::TemplateApp::new(cc))),
+            Box::new(|cc| Box::new(telescope::TemplateApp::new(cc))),
         )
         .await
         .expect("failed to start eframe");

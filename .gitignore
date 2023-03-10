@@ -1,2 +1,6 @@
 /target
 /dist
+/.vscode
+*.code-workspace
+*.db
+.DS_Store
