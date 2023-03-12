@@ -1,7 +1,7 @@
 use egui::FontData;
 use egui::FontDefinitions;
 use egui::FontFamily;
-use sde::objects::{Universe,SystemPoint};
+use sde::objects::SystemPoint;
 use crate::app::map::Map;
 use sde::SdeManager;
 use std::path::Path;
@@ -23,10 +23,6 @@ pub struct TemplateApp {
     #[serde(skip)]
     initialized: bool,
 
-    // this how you opt-out of serialization of a member
-    #[serde(skip)]
-    universe: Universe,
-
     // 2d point to paint map
     #[serde(skip)]
     points: Vec<SystemPoint>,
@@ -40,9 +36,6 @@ pub struct TemplateApp {
     #[serde(skip)]
     rx: Receiver<Message>,
 
-    /*#[serde(skip)]
-    async_handles: Vec<JoinHandles()>,*/
-
 }
 
 impl Default for TemplateApp {
@@ -51,7 +44,6 @@ impl Default for TemplateApp {
         Self {
             // Example stuff:
             label: "Hello World!".to_owned(),
-            universe: Universe::new(),
             initialized: false,
             points: Vec::new(),
             map: Map::new(),
@@ -73,24 +65,23 @@ impl eframe::App for TemplateApp {
         self.event_manager();
         let Self {
             label,
-            universe:_,
             initialized: _,
-            points,
-            map,
-            tx,
-            rx,
+            points: _points,
+            map: _map,
+            tx: _tx,
+            rx: _rx,
         } = self;
 
         if self.initialized == false {
             let txs = self.tx.clone();
+            let factor = 10000000000000;
             thread::spawn(move ||{
                 let path = Path::new("assets/sde-isometric.db");
-                let manager = SdeManager::new(path); 
+                let manager = SdeManager::new(path, factor); 
                 if let Ok(points) = manager.get_systempoints(2) {
                     let mut obj_vec = Vec::new();
                     for point in points{
-                        let factor:f64 = 10000000000000.0;
-                        let vec_cords = vec![point.coords[0]/factor, point.coords[1]/factor];
+                        let vec_cords = vec![point.coords[0], point.coords[1]];
                         let object = SystemPoint::new(point.id,vec_cords);
                         obj_vec.push(object);
                     }
@@ -183,14 +174,13 @@ impl eframe::App for TemplateApp {
 
 impl TemplateApp {
     fn initialize_application(&mut self) -> () {
-        
     }
 
-    fn event_rcv_generic_update(&self, message: String) -> () {
+    fn event_rcv_generic_update(&self, _message: String) -> () {
 
     }
 
-    fn event_rcv_error(&self, message: String) -> () {
+    fn event_rcv_error(&self, _message: String) -> () {
 
     }
 

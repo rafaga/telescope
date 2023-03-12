@@ -1,9 +1,8 @@
 
 use egui::{containers::*, widgets::*, *};
 use sde::objects::SystemPoint;
-use kdtree::{KdTree,ErrorKind};
+use kdtree::KdTree;
 use kdtree::distance::squared_euclidean;
-use egui::util::cache::{ComputerMut, FrameCache};
 use std::collections::HashMap;
 use std::sync::{Arc,Mutex};
 use rand::thread_rng;
@@ -22,6 +21,7 @@ pub struct Map {
     visible_points: Vec<usize>,
     pub min: Pos2,
     pub max: Pos2,
+    visible_rect: Option<Rect>,
     recalculate: bool,
     initialized: bool,
 }
@@ -59,8 +59,28 @@ impl Widget for &mut Map {
             self.max = state.max;
             self.min = state.min;
             self.pos = state.pos;
-            self.inner_rect = Some(state.get_inner_rect());
+            let rect = state.get_inner_rect();
+            self.inner_rect = Some(rect);
+            let vrect = state.get_visible_rect();
+            self.visible_rect = Some(vrect);
+            self.visible_points = state.visible_points;
         }
+
+        let mem = ui_obj.memory_mut( |mem| {
+            let tree_id = id_map.with("-tree");
+            let mut ktree = None;
+            if let Some(tree) = mem.data.get_temp(tree_id) {
+                ktree = Some(tree);
+            }
+            let points_id = id_map.with("-points");
+            let mut points = None;
+            if let Some(points) = mem.data.get_temp(points_id) {
+                points = Some(points);
+            }
+            return (ktree, points);
+        });
+
+        
 
         //self.inner_rect = Some(state.get_inner_rect().clone());
         let style = egui::style::Style::default();
@@ -75,31 +95,17 @@ impl Widget for &mut Map {
                 .always_show_scroll(false);
             
             let scroll_area = scroll.show(ui_obj, |ui_obj| { 
+                
                 let (resp,paint) = ui_obj.allocate_painter(ui_obj.max_rect().size(),egui::Sense::click_and_drag());
                 //self.inner_rect = Some(ui_obj.clip_rect());
                 //ui_obj.scroll_to_cursor(Some(Align::Center));
-                ui_obj.memory_mut( |mem| {
-                    let tree_id = id_map.with("-tree");
-                    if let Some(tree) = mem.data.get_temp(tree_id) {
-                        self.tree = tree;
-                    }
-                    let points_id = id_map.with("-points");
-                    if let Some(points) = mem.data.get_temp(points_id) {
-                        self.points = points;
-                    }
-                    let vispos_id = id_map.with("-vispos");
-                    if let Some(vis_points) = mem.data.get_temp(vispos_id){
-                        self.visible_points = vis_points;
-                    }
-                });
-
                 let system_stroke = egui::Stroke{ width: 2f32, color: Color32::DARK_RED};
                 let system_color = Color32::YELLOW;
                 let radius = 4f32;
 
-                while let Some(idx) = self.visible_points.pop() {
-                    if let Some(hashm) = self.points.as_mut(){
-                        if let Some(system) = hashm.get(&idx){
+                for point in &self.visible_points {
+                    if let Some(hashm) = self.points.as_mut() {
+                        if let Some(system) = hashm.get(&point) {
                             let center = Pos2::new(system.coords[0] as f32, system.coords[1] as f32);
                             paint.circle(center, radius, system_color, system_stroke);
                             for line in &system.lines {
@@ -107,18 +113,8 @@ impl Widget for &mut Map {
                             }
                         }
                     }
+                    ui_obj.scroll_to_rect(self.visible_rect.unwrap(), Some(Align::Center));
                 }
-                //if !self.painted {
-                /*for point in &self.vec_points {
-                    paint.circle(*point, radius, system_color, system_stroke);
-                }*/
-                    //self.painted = true;
-                //}
-                
-                /*for point in &self.vec_points{
-                    paint.circle(*point, radius, system_color, system_stroke);
-                }*/
-                //let respz = resp.interact(egui::Sense::click_and_drag());
                 if cfg!(debug_assertions) {
                     let mut init_pos = Pos2::new(180.0, 50.0);
                     let mut msg = String::from("MIN:".to_string() + self.min.x.to_string().as_str() + "," + self.min.y.to_string().as_str());
@@ -135,6 +131,11 @@ impl Widget for &mut Map {
                     if let Some(rect) = self.inner_rect{
                         init_pos.y += 15.0;
                         msg = "REC:(".to_string() + rect.left_top().x.to_string().as_str() + "," + rect.left_top().y.to_string().as_str() + "),(" + rect.right_bottom().x.to_string().as_str() + "," + rect.right_bottom().y.to_string().as_str() + ")";
+                        paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                    }
+                    if let Some(rect) = self.visible_rect{
+                        init_pos.y += 15.0;
+                        msg = "VRC:(".to_string() + rect.left_top().x.to_string().as_str() + "," + rect.left_top().y.to_string().as_str() + "),(" + rect.right_bottom().x.to_string().as_str() + "," + rect.right_bottom().y.to_string().as_str() + ")";
                         paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
                     }
                     if let Some(pointer_pos) = resp.hover_pos() {
@@ -160,6 +161,14 @@ impl Widget for &mut Map {
         state.min = self.min;
         state.pos = self.pos;
         state.zoom = self.zoom;
+        if self.recalculate == true {
+            self.calculate_visible_points();
+            self.recalculate = false;
+        }
+        state.visible_points = self.visible_points.clone();
+        if let Some(vrect) = self.visible_rect {
+            state.set_visible_rect(vrect);
+        }
         state.set_inner_rect(self.inner_rect.unwrap());
         state.store(ui_obj.ctx(), id_map);
 
@@ -170,12 +179,6 @@ impl Widget for &mut Map {
             mem.data.insert_temp(tree_id, Arc::new(Mutex::new(self.tree.clone())));
             let points_id = id_map.with("-points");
             mem.data.insert_temp(points_id, Arc::new(Mutex::new(self.points.clone())));
-            if self.recalculate == true {
-                self.calculate_visible_points();
-                self.recalculate = false;
-            }
-            let vispos_id = id_map.with("-vispos");
-            mem.data.insert_temp(vispos_id, Arc::new(Mutex::new(self.visible_points.clone())));
         });
         
         inner_response.response
@@ -193,6 +196,7 @@ impl Map {
             tree: None,
             points: None,
             inner_rect: None,
+            visible_rect: None,
             visible_points: Vec::new(),
             recalculate: false,
             initialized: false,
@@ -202,8 +206,14 @@ impl Map {
     fn calculate_visible_points(&mut self) -> () {
         if let Some(visual_rect) = self.inner_rect {
             let dist = (((visual_rect.right_bottom().x - visual_rect.left_top().x)/2.0) as f64,((visual_rect.right_bottom().y - visual_rect.left_top().y)/2.0) as f64);
-            let hipotenuse = dist.0.powi(2) + dist.1.powi(2);
+            let hipotenuse = (dist.0.powi(2) + dist.1.powi(2)).sqrt();
+
             let mut center = [self.pos[0] as f64,self.pos[1] as f64];
+
+            let dist_x = (self.inner_rect.unwrap().right_bottom().x - self.inner_rect.unwrap().left_top().x)/2.0;
+            let dist_y = (self.inner_rect.unwrap().right_bottom().y - self.inner_rect.unwrap().left_top().y)/2.0;
+            self.visible_rect = Some(egui::Rect::from_center_size(Pos2::new(self.pos[0],self.pos[1]), Vec2::new(dist_x+2.0, dist_y*2.0)));
+
             if let Some(tree) = &self.tree{
                 let vis_pos = tree.within(center.as_mut(), hipotenuse, &squared_euclidean);
                 self.visible_points.clear();
@@ -266,15 +276,18 @@ impl Map {
     
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct MapState{
     pub zoom: f32,
     pub pos: Pos2,
     pub min: Pos2,
     pub max: Pos2,
-    pub rect_a: Pos2,
-    pub rect_b: Pos2,
+    pub visible_points: Vec<usize>,
+    i_rect_a: Pos2,
+    i_rect_b: Pos2,
+    v_rect_a: Pos2,
+    v_rect_b: Pos2,
 }
 
 impl MapState {
@@ -287,13 +300,22 @@ impl MapState {
         ctx.data_mut(|d| d.insert_persisted(id, self));
     }
 
-    pub fn get_inner_rect(self) -> Rect {
-        egui::Rect::from_two_pos(self.rect_a,self.rect_b)
+    pub fn get_inner_rect(&mut self) -> Rect {
+        egui::Rect::from_two_pos(self.i_rect_a,self.i_rect_b)
     }
 
     pub fn set_inner_rect(&mut self, rect:Rect) -> () {
-        self.rect_a = rect.left_top();
-        self.rect_b = rect.right_bottom();
+        self.i_rect_a = rect.left_top();
+        self.i_rect_b = rect.right_bottom();
+    }
+
+    pub fn get_visible_rect(&mut self) -> Rect {
+        egui::Rect::from_two_pos(self.v_rect_a,self.v_rect_b)
+    }
+
+    pub fn set_visible_rect(&mut self, rect:Rect) -> () {
+        self.v_rect_a = rect.left_top();
+        self.v_rect_b = rect.right_bottom();
     }
 
 }
