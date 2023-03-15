@@ -74,18 +74,12 @@ impl eframe::App for TemplateApp {
 
         if self.initialized == false {
             let txs = self.tx.clone();
-            let factor = 10000000000000;
+            let factor = 100000000000000;
             thread::spawn(move ||{
                 let path = Path::new("assets/sde-isometric.db");
                 let manager = SdeManager::new(path, factor); 
                 if let Ok(points) = manager.get_systempoints(2) {
-                    let mut obj_vec = Vec::new();
-                    for point in points{
-                        let vec_cords = vec![point.coords[0], point.coords[1]];
-                        let object = SystemPoint::new(point.id,vec_cords);
-                        obj_vec.push(object);
-                    }
-                    let _result = txs.send(Message::Processed2dMatrix(obj_vec));
+                    let _result = txs.send(Message::Processed2dMatrix(points));
                 }
             });
             self.initialized = true;
