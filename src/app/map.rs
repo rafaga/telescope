@@ -1,5 +1,5 @@
 
-use egui::{containers::*, widgets::*, *};
+use egui::{widgets::*, *};
 use sde::objects::SystemPoint;
 use kdtree::KdTree;
 use kdtree::distance::squared_euclidean;
@@ -7,22 +7,47 @@ use std::collections::HashMap;
 use rand::thread_rng;
 use rand::distributions::{Alphanumeric,Distribution};
 
+#[derive(Clone)]
+struct MapBounds{
+    pub min: Pos2,
+    pub max: Pos2,
+    pub pos: Pos2,
+    pub center: Pos2,
+    pub dist: f64,
+}
+
+impl MapBounds{
+    pub fn new() -> Self {
+        MapBounds{
+            min: Pos2::new(0.0,0.0),
+            max: Pos2::new(0.0,0.0),
+            pos: Pos2::new(0.0,0.0),
+            center: Pos2::new(0.0,0.0),
+            dist: 0.0,
+        }
+    }
+}
+
+impl Default for MapBounds {
+    fn default() -> Self {
+        MapBounds::new()
+    }
+}
 
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 
 pub struct Map {
     pub zoom: f32,
-    pub pos: Pos2,
+    previous_zoom: f32,
     points: Option<HashMap<usize,SystemPoint>>,
     tree: Option<KdTree<f64,usize,[f64;2]>>,
     visible_points: Option<Vec<usize>>,
-    pub min: Pos2,
-    pub max: Pos2,
-    pub dist: f64,
     map_area: Option<Rect>,
     recalculate: bool,
     initialized: bool,
+    reference: MapBounds,
+    current: MapBounds,
 }
 
 impl Default for Map {
@@ -42,113 +67,133 @@ impl Widget for &mut Map {
                 .collect();
             let idx = egui::Id::new(component_id);
             ui_obj.make_persistent_id(idx);
+            self.map_area = Some(ui_obj.available_rect_before_wrap());
+            let dist_x = (self.map_area.unwrap().right_bottom().x as f64 - self.map_area.unwrap().left_top().x as f64)/2.0;
+            let dist_y = (self.map_area.unwrap().right_bottom().y as f64 - self.map_area.unwrap().left_top().y as f64)/2.0;
+            self.reference.dist = ((dist_x.powi(2) + dist_y.powi(2)/2.0).sqrt()) / self.zoom as f64;
+            self.current.dist = self.reference.dist;
+        }
+        if self.zoom != self.previous_zoom {
+            self.previous_zoom = self.zoom;
         }
 
         let style = egui::style::Style::default();
         let canvas = egui::Frame::canvas(&style)
             .stroke(egui::Stroke{width:2.0f32, color:Color32::DARK_GRAY});
+        
         let inner_response = canvas.show(ui_obj, |ui_obj| {
-            let scroll = ScrollArea::new([true;2])
-                .drag_to_scroll(true)
-                .auto_shrink([false;2])
-                .max_height(f32::INFINITY)
-                .max_width(f32::INFINITY);
             
-            let scroll_area = scroll.show(ui_obj, |ui_obj| { 
-                let area = egui::Rect::from_min_max(self.min,self.max);
-                let (map_area_id,rect) = ui_obj.allocate_space(area.size());
-                let resp = ui_obj.interact(rect, map_area_id, egui::Sense::click_and_drag());
-
-                let vec = resp.drag_delta();
-                if vec.length() != 0.0 {
-                    let coords = (vec.to_pos2().x + self.pos.x, vec.to_pos2().y + self.pos.y);
-                    self.set_pos(coords.0, coords.1);
-                }
-                let gate_stroke = egui::Stroke{ width: 2f32, color: Color32::DARK_RED};
-                let debug_stroke = egui::Stroke{ width: 2f32, color: Color32::GOLD};
-                let system_color = Color32::YELLOW;
-                let system_stroke = egui::Stroke{ width: 2f32, color: system_color};
-                let radius = 4f32;
-                
-                for temp_vec_point in &self.visible_points {
-                    if let Some(hashm) = self.points.as_mut() {
-                        if cfg!(debug_assertions) {
-                            ui_obj.painter().circle(self.pos, self.dist as f32, Color32::TRANSPARENT, debug_stroke);
-                        }
+            //let area = egui::Rect::from_min_max(self.min,self.max);
+            let (resp,paint) = ui_obj.allocate_painter(self.map_area.unwrap().size(), egui::Sense::click_and_drag());
+            let vec = resp.drag_delta();
+            if vec.length() != 0.0 {
+                let coords = (self.current.pos.x - vec.to_pos2().x, self.current.pos.y - vec.to_pos2().y);
+                self.set_pos(coords.0, coords.1);
+            }
+            let gate_stroke = egui::Stroke{ width: 2f32 * self.zoom, color: Color32::DARK_RED};
+            let system_color = Color32::YELLOW;
+            let system_stroke = egui::Stroke{ width: 2f32 -self.zoom, color: system_color};
+            //let debug_stroke = egui::Stroke{ width: 2f32, color: Color32::GOLD};
+            
+            for temp_vec_point in &self.visible_points {
+                if let Some(hashm) = self.points.as_mut() {
+                    let factor = (self.map_area.unwrap().center().x  + self.map_area.unwrap().min.x,self.map_area.unwrap().center().y  + self.map_area.unwrap().min.y);
+                    //let factor = (self.map_area.unwrap().center().x  + (self.map_area.unwrap().min.x/2.0),self.map_area.unwrap().center().y  + (self.map_area.unwrap().min.y/2.0));
+                    let min_point = Pos2::new(self.current.pos.x-factor.0, self.current.pos.y-factor.1);
+                    let max_point = Pos2::new(self.current.pos.x+factor.0, self.current.pos.y+factor.1);
+                    let rect = Rect::from_min_max(min_point, max_point);
+                    if self.zoom > 0.2 {
                         for temp_point in temp_vec_point{
                             if let Some(system) = hashm.get(&temp_point) {
-                                let center = Pos2::new(system.coords[0] as f32, system.coords[1] as f32);
+                                let center = Pos2::new(system.coords[0] as f32 * self.zoom,system.coords[1] as f32 * self.zoom);
+                                let a_point = Pos2::new(center.x-min_point.x,center.y-min_point.y);
                                 for line in &system.lines {
-                                    ui_obj.painter().line_segment([center,Pos2::new(line[0] as f32,line[1] as f32)], gate_stroke);
+                                    let b_point = Pos2::new((line[0] as f32 * self.zoom)-min_point.x,(line[1] as f32 * self.zoom)-min_point.y);
+                                    paint.line_segment([a_point, b_point], gate_stroke);
                                 }
-                                if cfg!(debug_assertions) {
-                                    let text_pos = egui::Pos2::new(center.x + 3.0,center.y - 3.0);
-                                    //let system_name = self.points.unwrap().get(&system.id).unwrap().name;
-                                    ui_obj.painter().debug_text(text_pos,Align2::LEFT_BOTTOM, Color32::LIGHT_GREEN, system.id.to_string());
-                                }
-                                ui_obj.painter().circle(center, radius, system_color, system_stroke);
-                                
                             }
                         } 
                     }
-                    
+                    for temp_point in temp_vec_point{
+                        if let Some(system) = hashm.get(&temp_point) { 
+                            let center = Pos2::new(system.coords[0] as f32 * self.zoom,system.coords[1] as f32 * self.zoom);
+                            if rect.contains(center) {
+                                let viewport_point = Pos2::new(center.x-min_point.x,center.y-min_point.y);
+                                let mut viewport_text = viewport_point.clone();
+                                viewport_text.x += 3.0;
+                                viewport_text.y -= 3.0;
+                                if self.zoom > 0.58 {
+                                    paint.text(viewport_text,Align2::LEFT_BOTTOM,system.name.to_string(),FontId::new(12.00 * self.zoom,FontFamily::Proportional),Color32::LIGHT_GREEN);
+                                }
+                                paint.circle(viewport_point, 4.00 * self.zoom, system_color, system_stroke);
+                            }
+                        }
+                    }
                 }
-                if self.recalculate == true{
-                    ui_obj.scroll_to_rect(rect, Some(Align::Center));
-                }
-                if cfg!(debug_assertions) {
-                    let mut init_pos = Pos2::new(180.0, 50.0);
-                    let mut msg = String::from("MIN:".to_string() + self.min.x.to_string().as_str() + "," + self.min.y.to_string().as_str());
-                    ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    init_pos.y += 15.0;
-                    msg = "MAX:".to_string() + self.max.x.to_string().as_str() + "," + self.max.y.to_string().as_str();
-                    ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    init_pos.y += 15.0;
-                    msg = "CNT:".to_string() + self.pos.x.to_string().as_str() + "," + self.pos.y.to_string().as_str();
-                    ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    init_pos.y += 15.0;
-                    msg = "DST:".to_string() + self.dist.to_string().as_str();
-                    ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    init_pos.y += 15.0;
-                    msg = "REC:(".to_string() + rect.left_top().x.to_string().as_str() + "," + rect.left_top().y.to_string().as_str() + "),(" + rect.right_bottom().x.to_string().as_str() + "," + rect.right_bottom().y.to_string().as_str() + ")";
-                    ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    let vec = resp.drag_delta();
-                    if vec.length() != 0.0 {
-                        init_pos.y += 15.0;
-                        msg = "DRG:".to_string() + vec.to_pos2().x.to_string().as_str() + "," + vec.to_pos2().y.to_string().as_str();
-                        ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-    
-                    }
-                    if let Some(tree) = &self.tree {
-                        init_pos.y += 15.0;
-                        msg = "TSZ:".to_string() + tree.size().to_string().as_str();
-                        ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    }
-                    if let Some(points) = &self.points {
-                        init_pos.y += 15.0;
-                        msg = "NUM:".to_string() + points.len().to_string().as_str();
-                        ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    }
-                    if let Some(vec_k) = self.visible_points.as_ref(){
-                        init_pos.y += 15.0;
-                        msg = "VIS:".to_string() + vec_k.len().to_string().as_str();
-                        ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    }
-                    if let Some(pointer_pos) = resp.hover_pos() {
-                        init_pos.y += 15.0;
-                        msg = "HVR:".to_string() + pointer_pos.x.to_string().as_str() + "," + pointer_pos.y.to_string().as_str();
-                        ui_obj.painter().debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
-                    }
-                    
-                }
-            });
-            if self.recalculate == true{
-                self.map_area=Some(scroll_area.inner_rect);
             }
-            self.calculate_bounds(&scroll_area.inner_rect);
-            
+            if let Some(rect) = self.map_area{
+                let zoom_slider = egui::Slider::new(&mut self.zoom, 0.1..=2.0)
+                    .show_value(false)
+                    //.step_by(0.1)
+                    .orientation(SliderOrientation::Vertical);
+                let mut pos1 = rect.right_top();
+                let mut pos2 = rect.right_top();
+                pos1.x -= 80.0;
+                pos1.y += 120.0;
+                pos2.x -= 50.0;
+                pos2.y += 240.0;
+                let sub_rect = egui::Rect::from_two_pos(pos1, pos2);
+                ui_obj.allocate_ui_at_rect(sub_rect,|ui_obj|{
+                    ui_obj.add(zoom_slider);
+                });
+                //ui_obj.label(zoom_slider);
+            }
+            //ui_obj.add(zoom_slider);
+            if cfg!(debug_assertions) {
+                let mut init_pos = Pos2::new(180.0, 50.0);
+                let mut msg = String::from("MIN:".to_string() + self.current.min.x.to_string().as_str() + "," + self.current.min.y.to_string().as_str());
+                paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                init_pos.y += 15.0;
+                msg = "MAX:".to_string() + self.current.max.x.to_string().as_str() + "," + self.current.max.y.to_string().as_str();
+                paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                init_pos.y += 15.0;
+                msg = "CUR:(".to_string() + self.reference.pos.x.to_string().as_str() + "," + self.reference.pos.y.to_string().as_str() + ") (" + self.current.pos.x.to_string().as_str() + "," + self.current.pos.y.to_string().as_str() +")";
+                paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                init_pos.y += 15.0;
+                msg = "DST:".to_string() + self.current.dist.to_string().as_str();
+                paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                init_pos.y += 15.0;
+                msg = "ZOM:".to_string() + self.zoom.to_string().as_str();
+                paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::GREEN, msg);
+                if let Some(rectz) = self.map_area {
+                    init_pos.y += 15.0;
+                    msg = "REC:(".to_string() + rectz.left_top().x.to_string().as_str() + "," + rectz.left_top().y.to_string().as_str() + "),(" + rectz.right_bottom().x.to_string().as_str() + "," + rectz.right_bottom().y.to_string().as_str() + ")";
+                    paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                }
+                if let Some(points) = &self.points {
+                    init_pos.y += 15.0;
+                    msg = "NUM:".to_string() + points.len().to_string().as_str();
+                    paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                }
+                if let Some(vec_k) = self.visible_points.as_ref(){
+                    init_pos.y += 15.0;
+                    msg = "VIS:".to_string() + vec_k.len().to_string().as_str();
+                    paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
+                }
+                if let Some(pointer_pos) = resp.hover_pos() {
+                    init_pos.y += 15.0;
+                    msg = "HVR:".to_string() + pointer_pos.x.to_string().as_str() + "," + pointer_pos.y.to_string().as_str();
+                    paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_BLUE, msg);
+                }
+                let vec = resp.drag_delta();
+                if vec.length() != 0.0 {
+                    init_pos.y += 15.0;
+                    msg = "DRG:".to_string() + vec.to_pos2().x.to_string().as_str() + "," + vec.to_pos2().y.to_string().as_str();
+                    paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::GOLD, msg);
+                }
+            }
         });
-        if self.recalculate == true{
+        if self.recalculate == true {
             self.calculate_visible_points();
             self.recalculate = false;
         }   
@@ -161,24 +206,23 @@ impl Map {
     pub fn new() -> Self {
         Map {
             zoom: 1.0,
-            pos: Pos2 {x:0.0f32, y:0.0f32},
-            min: Pos2 {x:0.0f32, y:0.0f32},
-            max: Pos2 {x:0.0f32, y:0.0f32},
+            previous_zoom: 1.0,
             map_area: None,
             tree: None,
             points: None,
             visible_points: None,
-            dist: 0.0,
             recalculate: false,
             initialized: false,
+            current: MapBounds::default(),
+            reference: MapBounds::default(),
         }
     }
 
     fn calculate_visible_points(&mut self) -> () {
-        if self.dist > 0.0 {
+        if self.current.dist > 0.0 {
             if let Some(tree) = &self.tree{
-                let center = [self.pos[0] as f64,self.pos[1] as f64];
-                let radius = self.dist.powi(2);
+                let center = [self.current.pos[0] as f64,self.current.pos[1] as f64];
+                let radius = self.current.dist.powi(2); //TODO
                 let vis_pos = tree.within(&center, radius, &squared_euclidean).unwrap();
                 let mut visible_points = vec![];
                 for point in vis_pos {
@@ -189,18 +233,14 @@ impl Map {
         }
     }
 
-    fn calculate_bounds(&mut self, inner_rect:&Rect) -> () {
-        let dist_x = (inner_rect.right_bottom().x as f64 - inner_rect.left_top().x as f64)/2.0;
-        let dist_y = (inner_rect.right_bottom().y as f64 - inner_rect.left_top().y as f64)/2.0;
-        self.dist = (dist_x.powi(2) + dist_y.powi(2)/2.0).sqrt();
-    }
-
     pub fn add_points(&mut self, points: Vec<SystemPoint>) -> (){
         let mut hmap = HashMap::new();
         let mut min = (f64::INFINITY,f64::INFINITY);
         let mut max = (f64::NEG_INFINITY,f64::NEG_INFINITY);
         let mut tree = KdTree::<f64,usize,[f64;2]>::new(2);
-        for point in points{
+        for mut point in points{
+            point.coords[0] *= -1.0;
+            point.coords[1] *= -1.0;
             if point.coords[0] < min.0 {
                 min.0 = point.coords[0];
             }
@@ -214,38 +254,43 @@ impl Map {
                 max.1 = point.coords[1];
             }
             let _result = tree.add([point.coords[0],point.coords[1]],point.id);
+            for line in &mut point.lines {
+                line[0] *= -1.0;
+                line[1] *= -1.0;
+                line[2] *= -1.0;
+            }
             hmap.entry(point.id).or_insert(point);
         }
-        self.min = Pos2::new(min.0 as f32,min.1 as f32);
-        self.max = Pos2::new(max.0 as f32,max.1 as f32);
+        self.reference.min = Pos2::new(min.0 as f32,min.1 as f32);
+        self.reference.max = Pos2::new(max.0 as f32,max.1 as f32);
         self.points = Some(hmap);
         self.tree = Some(tree);
-        /*let new_x;
+        let new_x;
         let new_y;
-        if self.min.x < 0.0 {
-            new_x = (self.max.x + (self.min.x * -1.0))/2.0 + self.min.x;
+        if self.reference.min.x < 0.0 {
+            new_x = (self.reference.max.x + (self.reference.min.x * -1.0))/2.0 + self.reference.min.x;
         }
         else {
-            new_x = (self.max.x + self.min.x)/2.0 + self.min.x;
+            new_x = (self.reference.max.x + self.reference.min.x)/2.0 + self.reference.min.x;
         }
-        if self.min.y < 0.0 {
-            new_y = (self.max.y + (self.min.y * -1.0))/2.0 + self.min.y;
+        if self.reference.min.y < 0.0 {
+            new_y = (self.reference.max.y + (self.reference.min.y * -1.0))/2.0 + self.reference.min.y;
         }
         else {
-            new_y = (self.max.y + self.min.y)/2.0 + self.min.y;
+            new_y = (self.reference.max.y + self.reference.min.y)/2.0 + self.reference.min.y;
         }
-        self.pos = Pos2::new(new_x.to_owned(), new_y.to_owned());*/
-        	
+        self.reference.center = Pos2::new(new_x.to_owned(), new_y.to_owned());
         let cx = 95415018110898720.00 / 100000000000000.00;	
         let cy = 62620060063386120.00 / 100000000000000.00;
-        self.pos = Pos2::new(cx.to_owned(), cy.to_owned());
-
+        self.reference.pos = Pos2::new(cx.to_owned(), cy.to_owned());
+        self.current = self.reference.clone();
         self.recalculate=true;
     } 
 
     pub fn set_pos(&mut self, x: f32, y:f32) -> () {
-        if x <= self.max.x && x >= self.min.x && y <= self.max.y && y >= self.min.y{
-            self.pos = Pos2::new(x,y);
+        if x <= self.current.max.x && x >= self.current.min.x && y <= self.current.max.y && y >= self.current.min.y{
+            self.current.pos = Pos2::new(x ,y);
+            self.reference.pos = Pos2::new(x/self.zoom,y/self.zoom);
             self.recalculate=true;
         }
     }

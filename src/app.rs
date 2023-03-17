@@ -74,7 +74,7 @@ impl eframe::App for TemplateApp {
 
         if self.initialized == false {
             let txs = self.tx.clone();
-            let factor = 100000000000000;
+            let factor = 50000000000000;
             thread::spawn(move ||{
                 let path = Path::new("assets/sde-isometric.db");
                 let manager = SdeManager::new(path, factor); 
