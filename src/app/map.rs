@@ -44,7 +44,6 @@ pub struct Map {
     tree: Option<KdTree<f64,usize,[f64;2]>>,
     visible_points: Option<Vec<usize>>,
     map_area: Option<Rect>,
-    recalculate: bool,
     initialized: bool,
     reference: MapBounds,
     current: MapBounds,
@@ -74,6 +73,10 @@ impl Widget for &mut Map {
             self.current.dist = self.reference.dist;
         }
         if self.zoom != self.previous_zoom {
+            self.adjust_bounds();
+            //let coords = (self.current.pos.x - vec.to_pos2().x, self.current.pos.y - vec.to_pos2().y);
+            //self.set_pos(coords.0, coords.1);
+            self.calculate_visible_points();
             self.previous_zoom = self.zoom;
         }
 
@@ -89,6 +92,7 @@ impl Widget for &mut Map {
             if vec.length() != 0.0 {
                 let coords = (self.current.pos.x - vec.to_pos2().x, self.current.pos.y - vec.to_pos2().y);
                 self.set_pos(coords.0, coords.1);
+                self.calculate_visible_points();
             }
             let gate_stroke = egui::Stroke{ width: 2f32 * self.zoom, color: Color32::DARK_RED};
             let system_color = Color32::YELLOW;
@@ -192,11 +196,7 @@ impl Widget for &mut Map {
                     paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::GOLD, msg);
                 }
             }
-        });
-        if self.recalculate == true {
-            self.calculate_visible_points();
-            self.recalculate = false;
-        }   
+        }); 
         inner_response.response
     }
 
@@ -211,7 +211,6 @@ impl Map {
             tree: None,
             points: None,
             visible_points: None,
-            recalculate: false,
             initialized: false,
             current: MapBounds::default(),
             reference: MapBounds::default(),
@@ -284,15 +283,25 @@ impl Map {
         let cy = 62620060063386120.00 / 100000000000000.00;
         self.reference.pos = Pos2::new(cx.to_owned(), cy.to_owned());
         self.current = self.reference.clone();
-        self.recalculate=true;
+        self.calculate_visible_points();
     } 
 
     pub fn set_pos(&mut self, x: f32, y:f32) -> () {
         if x <= self.current.max.x && x >= self.current.min.x && y <= self.current.max.y && y >= self.current.min.y{
             self.current.pos = Pos2::new(x ,y);
             self.reference.pos = Pos2::new(x/self.zoom,y/self.zoom);
-            self.recalculate=true;
         }
+    }
+
+    fn adjust_bounds(&mut self) -> () {
+        self.current.max.x = self.reference.max.x * self.zoom;
+        self.current.max.y = self.reference.max.y * self.zoom;
+        self.current.min.x = self.reference.min.x * self.zoom;
+        self.current.min.y = self.reference.min.y * self.zoom;
+        self.current.center.x = self.reference.center.x * self.zoom;
+        self.current.center.y = self.reference.center.y * self.zoom;
+        self.current.dist = self.reference.dist * self.zoom as f64;
+        self.set_pos(self.reference.pos.x * self.zoom, self.reference.pos.y * self.zoom);
     }
     
 }
