@@ -12,7 +12,6 @@ struct MapBounds{
     pub min: Pos2,
     pub max: Pos2,
     pub pos: Pos2,
-    pub center: Pos2,
     pub dist: f64,
 }
 
@@ -22,7 +21,6 @@ impl MapBounds{
             min: Pos2::new(0.0,0.0),
             max: Pos2::new(0.0,0.0),
             pos: Pos2::new(0.0,0.0),
-            center: Pos2::new(0.0,0.0),
             dist: 0.0,
         }
     }
@@ -70,8 +68,6 @@ impl Widget for &mut Map {
         }
         if self.zoom != self.previous_zoom {
             self.adjust_bounds();
-            //let coords = (self.current.pos.x - vec.to_pos2().x, self.current.pos.y - vec.to_pos2().y);
-            //self.set_pos(coords.0, coords.1);
             self.calculate_visible_points();
             self.previous_zoom = self.zoom;
         }
@@ -81,13 +77,11 @@ impl Widget for &mut Map {
             .stroke(egui::Stroke{width:2.0f32, color:Color32::DARK_GRAY});
         
         let inner_response = canvas.show(ui_obj, |ui_obj| {
-            
-            //let area = egui::Rect::from_min_max(self.min,self.max);
             let (resp,paint) = ui_obj.allocate_painter(self.map_area.unwrap().size(), egui::Sense::click_and_drag());
             let vec = resp.drag_delta();
             if vec.length() != 0.0 {
-                let coords = (self.current.pos.x - vec.to_pos2().x, self.current.pos.y - vec.to_pos2().y);
-                self.set_pos(coords.0, coords.1);
+                let coords = (vec.to_pos2().x,  vec.to_pos2().y);
+                self.set_pos(self.current.pos.x - coords.0, self.current.pos.y -coords.1);
                 self.calculate_visible_points();
             }
             let gate_stroke = egui::Stroke{ width: 2f32 * self.zoom, color: Color32::DARK_RED};
@@ -97,11 +91,15 @@ impl Widget for &mut Map {
             
             for temp_vec_point in &self.visible_points {
                 if let Some(hashm) = self.points.as_mut() {
-                    let factor = (self.map_area.unwrap().center().x  + self.map_area.unwrap().min.x,self.map_area.unwrap().center().y  + self.map_area.unwrap().min.y);
-                    //let factor = (self.map_area.unwrap().center().x  + (self.map_area.unwrap().min.x/2.0),self.map_area.unwrap().center().y  + (self.map_area.unwrap().min.y/2.0));
+                    let factor;
+                    /*if self.zoom >= 1.00 {
+                        factor = (self.map_area.unwrap().center().x  + self.map_area.unwrap().min.x,self.map_area.unwrap().center().y  + self.map_area.unwrap().min.y);
+                        factor = ((self.map_area.unwrap().center().x  + self.map_area.unwrap().min.x) / self.zoom,(self.map_area.unwrap().center().y  + self.map_area.unwrap().min.y) / self.zoom);
+                    }
+                    else {*/
+                        factor = (self.map_area.unwrap().center().x  + self.map_area.unwrap().min.x,self.map_area.unwrap().center().y  + self.map_area.unwrap().min.y);
+                    //}
                     let min_point = Pos2::new(self.current.pos.x-factor.0, self.current.pos.y-factor.1);
-                    let max_point = Pos2::new(self.current.pos.x+factor.0, self.current.pos.y+factor.1);
-                    let rect = Rect::from_min_max(min_point, max_point);
                     if self.zoom > 0.2 {
                         for temp_point in temp_vec_point{
                             if let Some(system) = hashm.get(&temp_point) {
@@ -117,16 +115,14 @@ impl Widget for &mut Map {
                     for temp_point in temp_vec_point{
                         if let Some(system) = hashm.get(&temp_point) { 
                             let center = Pos2::new(system.coords[0] as f32 * self.zoom,system.coords[1] as f32 * self.zoom);
-                            if rect.contains(center) {
-                                let viewport_point = Pos2::new(center.x-min_point.x,center.y-min_point.y);
-                                let mut viewport_text = viewport_point.clone();
-                                viewport_text.x += 3.0;
-                                viewport_text.y -= 3.0;
-                                if self.zoom > 0.58 {
-                                    paint.text(viewport_text,Align2::LEFT_BOTTOM,system.name.to_string(),FontId::new(12.00 * self.zoom,FontFamily::Proportional),Color32::LIGHT_GREEN);
-                                }
-                                paint.circle(viewport_point, 4.00 * self.zoom, system_color, system_stroke);
+                            let viewport_point = Pos2::new(center.x-min_point.x,center.y-min_point.y);
+                            let mut viewport_text = viewport_point.clone();
+                            viewport_text.x += 3.0;
+                            viewport_text.y -= 3.0;
+                            if self.zoom > 0.58 {
+                                paint.text(viewport_text,Align2::LEFT_BOTTOM,system.name.to_string(),FontId::new(12.00 * self.zoom,FontFamily::Proportional),Color32::LIGHT_GREEN);
                             }
+                            paint.circle(viewport_point, 4.00 * self.zoom, system_color, system_stroke);
                         }
                     }
                 }
@@ -146,9 +142,7 @@ impl Widget for &mut Map {
                 ui_obj.allocate_ui_at_rect(sub_rect,|ui_obj|{
                     ui_obj.add(zoom_slider);
                 });
-                //ui_obj.label(zoom_slider);
             }
-            //ui_obj.add(zoom_slider);
             if cfg!(debug_assertions) {
                 let mut init_pos = Pos2::new(180.0, 50.0);
                 let mut msg = String::from("MIN:".to_string() + self.current.min.x.to_string().as_str() + "," + self.current.min.y.to_string().as_str());
@@ -157,7 +151,7 @@ impl Widget for &mut Map {
                 msg = "MAX:".to_string() + self.current.max.x.to_string().as_str() + "," + self.current.max.y.to_string().as_str();
                 paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
                 init_pos.y += 15.0;
-                msg = "CUR:(".to_string() + self.reference.pos.x.to_string().as_str() + "," + self.reference.pos.y.to_string().as_str() + ") (" + self.current.pos.x.to_string().as_str() + "," + self.current.pos.y.to_string().as_str() +")";
+                msg = "CUR:(".to_string() + self.current.pos.x.to_string().as_str() + "," + self.current.pos.y.to_string().as_str() +")";
                 paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
                 init_pos.y += 15.0;
                 msg = "DST:".to_string() + self.current.dist.to_string().as_str();
@@ -217,7 +211,7 @@ impl Map {
         if self.current.dist > 0.0 {
             if let Some(tree) = &self.tree{
                 let center = [self.current.pos[0] as f64,self.current.pos[1] as f64];
-                let radius = self.current.dist.powi(2); //TODO
+                let radius = self.current.dist.powi(2); 
                 let vis_pos = tree.within(&center, radius, &squared_euclidean).unwrap();
                 let mut visible_points = vec![];
                 for point in vis_pos {
@@ -260,24 +254,8 @@ impl Map {
         self.reference.max = Pos2::new(max.0 as f32,max.1 as f32);
         self.points = Some(hmap);
         self.tree = Some(tree);
-        let new_x;
-        let new_y;
-        if self.reference.min.x < 0.0 {
-            new_x = (self.reference.max.x + (self.reference.min.x * -1.0))/2.0 + self.reference.min.x;
-        }
-        else {
-            new_x = (self.reference.max.x + self.reference.min.x)/2.0 + self.reference.min.x;
-        }
-        if self.reference.min.y < 0.0 {
-            new_y = (self.reference.max.y + (self.reference.min.y * -1.0))/2.0 + self.reference.min.y;
-        }
-        else {
-            new_y = (self.reference.max.y + self.reference.min.y)/2.0 + self.reference.min.y;
-        }
-        self.reference.center = Pos2::new(new_x.to_owned(), new_y.to_owned());
-        let cx = 95415018110898720.00 / 100000000000000.00;	
-        let cy = 62620060063386120.00 / 100000000000000.00;
-        self.reference.pos = Pos2::new(cx.to_owned(), cy.to_owned());
+        let rect = Rect::from_min_max(self.reference.min, self.reference.max);
+        self.reference.pos = rect.center();
         let dist_x = (self.map_area.unwrap().right_bottom().x as f64 - self.map_area.unwrap().left_top().x as f64)/2.0;
         let dist_y = (self.map_area.unwrap().right_bottom().y as f64 - self.map_area.unwrap().left_top().y as f64)/2.0;
         self.reference.dist = (dist_x.powi(2) + dist_y.powi(2)/2.0).sqrt() as f64;
@@ -297,8 +275,6 @@ impl Map {
         self.current.max.y = self.reference.max.y * self.zoom;
         self.current.min.x = self.reference.min.x * self.zoom;
         self.current.min.y = self.reference.min.y * self.zoom;
-        self.current.center.x = self.reference.center.x * self.zoom;
-        self.current.center.y = self.reference.center.y * self.zoom;
         self.current.dist = self.reference.dist / self.zoom as f64;
         self.set_pos(self.reference.pos.x * self.zoom, self.reference.pos.y * self.zoom);
     }
