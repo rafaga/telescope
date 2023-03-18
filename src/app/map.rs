@@ -67,10 +67,6 @@ impl Widget for &mut Map {
             let idx = egui::Id::new(component_id);
             ui_obj.make_persistent_id(idx);
             self.map_area = Some(ui_obj.available_rect_before_wrap());
-            let dist_x = (self.map_area.unwrap().right_bottom().x as f64 - self.map_area.unwrap().left_top().x as f64)/2.0;
-            let dist_y = (self.map_area.unwrap().right_bottom().y as f64 - self.map_area.unwrap().left_top().y as f64)/2.0;
-            self.reference.dist = ((dist_x.powi(2) + dist_y.powi(2)/2.0).sqrt()) / self.zoom as f64;
-            self.current.dist = self.reference.dist;
         }
         if self.zoom != self.previous_zoom {
             self.adjust_bounds();
@@ -282,6 +278,9 @@ impl Map {
         let cx = 95415018110898720.00 / 100000000000000.00;	
         let cy = 62620060063386120.00 / 100000000000000.00;
         self.reference.pos = Pos2::new(cx.to_owned(), cy.to_owned());
+        let dist_x = (self.map_area.unwrap().right_bottom().x as f64 - self.map_area.unwrap().left_top().x as f64)/2.0;
+        let dist_y = (self.map_area.unwrap().right_bottom().y as f64 - self.map_area.unwrap().left_top().y as f64)/2.0;
+        self.reference.dist = (dist_x.powi(2) + dist_y.powi(2)/2.0).sqrt() as f64;
         self.current = self.reference.clone();
         self.calculate_visible_points();
     } 
@@ -300,7 +299,7 @@ impl Map {
         self.current.min.y = self.reference.min.y * self.zoom;
         self.current.center.x = self.reference.center.x * self.zoom;
         self.current.center.y = self.reference.center.y * self.zoom;
-        self.current.dist = self.reference.dist * self.zoom as f64;
+        self.current.dist = self.reference.dist / self.zoom as f64;
         self.set_pos(self.reference.pos.x * self.zoom, self.reference.pos.y * self.zoom);
     }
     
