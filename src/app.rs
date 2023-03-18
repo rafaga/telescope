@@ -119,7 +119,7 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        egui::SidePanel::left("side_panel")
+        /*egui::SidePanel::left("side_panel")
         .resizable(true)
         .show(ctx, |ui| {
             ui.heading("Side Panel");
@@ -133,7 +133,7 @@ impl eframe::App for TemplateApp {
             if ui.button("Increment").clicked() {
                 *value += 1.0;
             }*/
-        });
+        });*/
 
         egui::CentralPanel::default()
         .show(ctx, |ui| {

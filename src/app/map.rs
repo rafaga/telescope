@@ -65,6 +65,8 @@ impl Widget for &mut Map {
             let idx = egui::Id::new(component_id);
             ui_obj.make_persistent_id(idx);
             self.map_area = Some(ui_obj.available_rect_before_wrap());
+        } else {
+            self.map_area = Some(ui_obj.ctx().used_rect());
         }
         if self.zoom != self.previous_zoom {
             self.adjust_bounds();
@@ -144,7 +146,7 @@ impl Widget for &mut Map {
                 });
             }
             if cfg!(debug_assertions) {
-                let mut init_pos = Pos2::new(180.0, 50.0);
+                let mut init_pos = Pos2::new(self.map_area.unwrap().left_top().x + 10.00, self.map_area.unwrap().left_top().y + 10.00);
                 let mut msg = String::from("MIN:".to_string() + self.current.min.x.to_string().as_str() + "," + self.current.min.y.to_string().as_str());
                 paint.debug_text(init_pos, Align2::LEFT_TOP, Color32::LIGHT_GREEN, msg);
                 init_pos.y += 15.0;
@@ -210,8 +212,8 @@ impl Map {
     fn calculate_visible_points(&mut self) -> () {
         if self.current.dist > 0.0 {
             if let Some(tree) = &self.tree{
-                let center = [self.current.pos[0] as f64,self.current.pos[1] as f64];
-                let radius = self.current.dist.powi(2); 
+                let center = [(self.current.pos.x / self.zoom) as f64,(self.current.pos.y / self.zoom) as f64];
+                let radius = self.current.dist.powi(2);
                 let vis_pos = tree.within(&center, radius, &squared_euclidean).unwrap();
                 let mut visible_points = vec![];
                 for point in vis_pos {
