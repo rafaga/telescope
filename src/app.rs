@@ -170,21 +170,10 @@ impl TemplateApp {
     fn initialize_application(&mut self) -> () {
     }
 
-    fn event_rcv_generic_update(&self, _message: String) -> () {
-
-    }
-
-    fn event_rcv_error(&self, _message: String) -> () {
-
-    }
-
-
     fn event_manager(&mut self) -> () {
         let received_data = self.rx.try_recv(); 
         if let Ok(msg) = received_data{
             match msg{
-                Message::GenericUpdate(msg) => self.event_rcv_error(msg),
-                Message::Error(msg) => self.event_rcv_generic_update(msg),
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
             };
         }
