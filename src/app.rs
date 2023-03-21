@@ -1,31 +1,28 @@
 use egui::FontData;
 use egui::FontDefinitions;
 use egui::FontFamily;
-use sde::objects::SystemPoint;
-use crate::app::map::Map;
 use sde::SdeManager;
 use std::path::Path;
 use std::sync::mpsc::{self,Sender,Receiver};
 use std::thread;
+use egui_map::map::Map;
+use egui_map::map::objects::*;
 use crate::app::messages::Message;
-
 pub mod messages;
-pub mod map;
+
 
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    // Example stuff:
-    label: String,
 
     #[serde(skip)]
     initialized: bool,
 
     // 2d point to paint map
     #[serde(skip)]
-    points: Vec<SystemPoint>,
+    points: Vec<MapPoint>,
 
     #[serde(skip)]
     map: Map,
@@ -36,6 +33,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     rx: Receiver<Message>,
 
+    open: [bool;2],
+
 }
 
 impl Default for TemplateApp {
@@ -43,12 +42,12 @@ impl Default for TemplateApp {
         let (tx, rx) = mpsc::channel::<messages::Message>();
         Self {
             // Example stuff:
-            label: "Hello World!".to_owned(),
             initialized: false,
             points: Vec::new(),
             map: Map::new(),
             tx,
             rx,
+            open: [false;2],
         }
     }
 }
@@ -64,15 +63,15 @@ impl eframe::App for TemplateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.event_manager();
         let Self {
-            label,
             initialized: _,
             points: _points,
             map: _map,
             tx: _tx,
             rx: _rx,
+            open: _,
         } = self;
 
-        if self.initialized == false {
+        if !self.initialized {
             let txs = self.tx.clone();
             let factor = 50000000000000;
             thread::spawn(move ||{
@@ -96,12 +95,19 @@ impl eframe::App for TemplateApp {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("Read SDE").clicked() {
-
-                    }
+                    ui.menu_button("Options", |ui| {
+                        if ui.button("Characters").clicked() {
+                            self.open[1] = true;
+                        }
+                    });
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         _frame.close();
+                    }
+                });
+                ui.menu_button("Help", |ui| {
+                    if ui.button("About Telescope").clicked() {
+                        self.open[0] = true;
                     }
                 });
             });
@@ -134,6 +140,13 @@ impl eframe::App for TemplateApp {
                 *value += 1.0;
             }*/
         });*/
+        if self.open[0] {
+            self.open_about_window(ctx);
+        }
+
+        if self.open[1] {
+            self.open_character_window(ctx);
+        }
 
         egui::CentralPanel::default()
         .show(ctx, |ui| {
@@ -167,16 +180,62 @@ impl eframe::App for TemplateApp {
 }
 
 impl TemplateApp {
-    fn initialize_application(&mut self) -> () {
+    fn initialize_application(&mut self) {
     }
 
-    fn event_manager(&mut self) -> () {
+    fn event_manager(&mut self)  {
         let received_data = self.rx.try_recv(); 
         if let Ok(msg) = received_data{
             match msg{
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
             };
         }
+    }
+
+    fn open_character_window(&mut self, ctx: &egui::Context) {     
+        egui::Window::new("Characters")
+        .open(&mut self.open[1])
+        .show(ctx, |ui| {
+            ui.horizontal(|ui|{
+                egui::Grid::new("some_unique_id")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.checkbox(&mut false, "");
+                    ui.label("Image");
+                    ui.label("Name");
+                    ui.label("Location");
+                    ui.end_row();
+                });
+                ui.separator();
+                ui.vertical(|ui|{
+                    if ui.button("Add").clicked() {
+
+                    }
+                    if ui.button("Edit").clicked() {
+
+                    }
+                    if ui.button("Remove").clicked() {
+
+                    }
+                })
+            });
+        }); 
+    }
+
+    fn open_about_window(&mut self, ctx: &egui::Context) {
+        egui::Window::new("About Telescope")
+        .open(&mut self.open[0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("Telescope");
+                ui.label("Developed by Rafael Amador Galván");
+                ui.label("©2023");
+                if ui.link("https://github.com/rafaga/telescope").clicked() {
+                    
+                }
+                ui.label(" ");
+            });
+        });
     }
 
     /// Called once before the first frame.
