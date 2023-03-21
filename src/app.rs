@@ -8,6 +8,10 @@ use std::thread;
 use egui_map::map::Map;
 use egui_map::map::objects::*;
 use crate::app::messages::Message;
+use crate::app::esi::EsiData;
+use rfesi::prelude::*;
+
+pub mod esi;
 pub mod messages;
 
 
@@ -33,7 +37,14 @@ pub struct TemplateApp {
     #[serde(skip)]
     rx: Receiver<Message>,
 
+    // these are the flags to open the windows
+    // 0 - About Window
+    // 1 - Character Window
     open: [bool;2],
+
+    // the Esi Object
+    #[serde(skip)]
+    esi: Option<Esi>,
 
 }
 
@@ -48,6 +59,7 @@ impl Default for TemplateApp {
             tx,
             rx,
             open: [false;2],
+            esi: None
         }
     }
 }
@@ -69,6 +81,7 @@ impl eframe::App for TemplateApp {
             tx: _tx,
             rx: _rx,
             open: _,
+            esi,
         } = self;
 
         if !self.initialized {
@@ -81,6 +94,7 @@ impl eframe::App for TemplateApp {
                     let _result = txs.send(Message::Processed2dMatrix(points));
                 }
             });
+            let esi_data = EsiData::new();
             self.initialized = true;
         }
 
@@ -209,7 +223,11 @@ impl TemplateApp {
                 ui.separator();
                 ui.vertical(|ui|{
                     if ui.button("Add").clicked() {
-
+                        /*let res = esi::create_esi();
+                        match res {
+                            Ok(obj_esi) => open::that(obj_esi.),
+                            Err(_) => (),
+                        }*/
                     }
                     if ui.button("Edit").clicked() {
 
