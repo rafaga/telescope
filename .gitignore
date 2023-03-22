@@ -4,4 +4,4 @@
 *.code-workspace
 *.db
 .DS_Store
-/src/app/esi.rs
+src/app/esi.rs
