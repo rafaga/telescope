@@ -1,20 +1,12 @@
-use egui::FontData;
-use egui::FontDefinitions;
-use egui::FontFamily;
+use egui::{FontData,FontDefinitions,FontFamily,Vec2};
 use sde::SdeManager;
 use std::path::Path;
 use std::sync::mpsc::{self,Sender,Receiver};
 use std::thread;
-use egui_map::map::Map;
-use egui_map::map::objects::*;
+use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
-use crate::app::esi::EsiData;
-use rfesi::prelude::*;
 
-pub mod esi;
 pub mod messages;
-
-
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -41,11 +33,6 @@ pub struct TemplateApp {
     // 0 - About Window
     // 1 - Character Window
     open: [bool;2],
-
-    // the Esi Object
-    #[serde(skip)]
-    esi: Option<Esi>,
-
 }
 
 impl Default for TemplateApp {
@@ -59,7 +46,6 @@ impl Default for TemplateApp {
             tx,
             rx,
             open: [false;2],
-            esi: None
         }
     }
 }
@@ -81,7 +67,6 @@ impl eframe::App for TemplateApp {
             tx: _tx,
             rx: _rx,
             open: _,
-            esi,
         } = self;
 
         if !self.initialized {
@@ -94,7 +79,6 @@ impl eframe::App for TemplateApp {
                     let _result = txs.send(Message::Processed2dMatrix(points));
                 }
             });
-            let esi_data = EsiData::new();
             self.initialized = true;
         }
 
@@ -202,42 +186,73 @@ impl TemplateApp {
         if let Ok(msg) = received_data{
             match msg{
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
+                Message::EsiAuthSuccess(codes) => (),
             };
         }
     }
 
     fn open_character_window(&mut self, ctx: &egui::Context) {     
-        egui::Window::new("Characters")
+        egui::Window::new("Linked Characters")
         .open(&mut self.open[1])
+        .resizable(false)
+        .collapsible(false)
         .show(ctx, |ui| {
             ui.horizontal(|ui|{
-                egui::Grid::new("some_unique_id")
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.checkbox(&mut false, "");
-                    ui.label("Image");
-                    ui.label("Name");
-                    ui.label("Location");
-                    ui.end_row();
+                ui.allocate_ui(Vec2::new(500.00,150.00), |ui|{
+                    egui::ScrollArea::new([false,true])
+                    //.auto_shrink([true,false])
+                    .show(ui,|ui|{
+                        ui.vertical(|ui|{
+                            if false {
+                                for _x in  0..5 {
+                                    ui.allocate_ui(Vec2::new(300.00,50.00), |ui|{
+                                        ui.group(|ui|{                   
+                                            ui.horizontal_centered(|ui|{
+                                                ui.checkbox(&mut false, "");
+                                                ui.vertical(|ui|{
+                                                    ui.horizontal(|ui|{
+                                                        ui.label("Name:");
+                                                        ui.label("Leeroy Jenkins");
+                                                    });
+                                                    ui.horizontal(|ui|{
+                                                        ui.label("Aliance:");
+                                                        ui.label("Burritos Inc.");
+                                                    });
+                                                    ui.horizontal(|ui|{
+                                                        ui.label("Corporation:");
+                                                        ui.label("Everyone its naked.");
+                                                    });
+                                                    ui.horizontal(|ui|{
+                                                        ui.label("Last Logon:");
+                                                        ui.label("29/02/2020");
+                                                    });
+                                                });
+                                            });
+                                        });
+                                    });
+                                }                                        
+                            } else {
+                                ui.allocate_ui(Vec2::new(300.00,50.00), |ui|{
+                                    ui.group(|ui|{
+                                        ui.vertical_centered(|ui|{
+                                            ui.label("No character has been linked, please");
+                                            ui.label("link a new Character to proceed.");
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                    });
                 });
                 ui.separator();
                 ui.vertical(|ui|{
-                    if ui.button("Add").clicked() {
-                        /*let res = esi::create_esi();
-                        match res {
-                            Ok(obj_esi) => open::that(obj_esi.),
-                            Err(_) => (),
-                        }*/
+                    if ui.button("Link new").clicked() {
                     }
-                    if ui.button("Edit").clicked() {
-
+                    if ui.button("Unlink").clicked() {
                     }
-                    if ui.button("Remove").clicked() {
-
-                    }
-                })
+                });
             });
-        }); 
+        });
     }
 
     fn open_about_window(&mut self, ctx: &egui::Context) {
@@ -249,9 +264,8 @@ impl TemplateApp {
                 ui.label("Developed by Rafael Amador Galván");
                 ui.label("©2023");
                 if ui.link("https://github.com/rafaga/telescope").clicked() {
-                    
+                    let _a = open::that("https://github.com/rafaga/telescope");
                 }
-                ui.label(" ");
             });
         });
     }
