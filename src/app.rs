@@ -247,8 +247,10 @@ impl TemplateApp {
                 ui.separator();
                 ui.vertical(|ui|{
                     if ui.button("Link new").clicked() {
+                        
                     }
                     if ui.button("Unlink").clicked() {
+
                     }
                 });
             });
