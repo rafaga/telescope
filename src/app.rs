@@ -1,5 +1,6 @@
 use egui::{FontData,FontDefinitions,FontFamily,Vec2};
 use sde::SdeManager;
+use webb::objects::Character;
 use std::path::Path;
 use std::sync::mpsc::{self,Sender,Receiver};
 use std::thread;
@@ -11,7 +12,7 @@ pub mod messages;
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp {
+pub struct TemplateApp<'a> {
 
     #[serde(skip)]
     initialized: bool,
@@ -33,11 +34,19 @@ pub struct TemplateApp {
     // 0 - About Window
     // 1 - Character Window
     open: [bool;2],
+
+    // the ESI Manager
+    #[serde(skip)]
+    esi: webb::esi::EsiManager<'a>,
 }
 
-impl Default for TemplateApp {
+impl<'a> Default for TemplateApp<'a> {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel::<messages::Message>();
+        let app_data = vec!["","","",""];
+        let scope = vec![""];
+
+        let esi = webb::esi::EsiManager::new(app_data[0],app_data[1],app_data[2],app_data[3], scope,Some("telescope.db")); 
         Self {
             // Example stuff:
             initialized: false,
@@ -46,11 +55,12 @@ impl Default for TemplateApp {
             tx,
             rx,
             open: [false;2],
+            esi,
         }
     }
 }
 
-impl eframe::App for TemplateApp {
+impl<'a> eframe::App for TemplateApp<'a> {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
@@ -67,13 +77,14 @@ impl eframe::App for TemplateApp {
             tx: _tx,
             rx: _rx,
             open: _,
+            esi,
         } = self;
 
         if !self.initialized {
             let txs = self.tx.clone();
             let factor = 50000000000000;
             thread::spawn(move ||{
-                let path = Path::new("assets/sde-isometric.db");
+                let path = Path::new("assets/sde.db");
                 let manager = SdeManager::new(path, factor); 
                 if let Ok(points) = manager.get_systempoints(2) {
                     let _result = txs.send(Message::Processed2dMatrix(points));
@@ -177,7 +188,7 @@ impl eframe::App for TemplateApp {
     }
 }
 
-impl TemplateApp {
+impl<'a> TemplateApp<'a> {
     fn initialize_application(&mut self) {
     }
 
@@ -186,7 +197,7 @@ impl TemplateApp {
         if let Ok(msg) = received_data{
             match msg{
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
-                Message::EsiAuthSuccess(codes) => (),
+                Message::EsiAuthSuccess(character) => self.update_character_into_database(character),
             };
         }
     }
@@ -203,8 +214,8 @@ impl TemplateApp {
                     //.auto_shrink([true,false])
                     .show(ui,|ui|{
                         ui.vertical(|ui|{
-                            if false {
-                                for _x in  0..5 {
+                            if &self.esi.characters.len() > &0 {
+                                for char in  &self.esi.characters {
                                     ui.allocate_ui(Vec2::new(300.00,50.00), |ui|{
                                         ui.group(|ui|{                   
                                             ui.horizontal_centered(|ui|{
@@ -212,19 +223,29 @@ impl TemplateApp {
                                                 ui.vertical(|ui|{
                                                     ui.horizontal(|ui|{
                                                         ui.label("Name:");
-                                                        ui.label("Leeroy Jenkins");
+                                                        ui.label(&char.name);
                                                     });
                                                     ui.horizontal(|ui|{
                                                         ui.label("Aliance:");
-                                                        ui.label("Burritos Inc.");
+                                                        if let Some(alliance) = char.alliance.as_ref() {
+                                                            ui.label(&alliance.name);
+                                                        }
+                                                        else{
+                                                            ui.label("No alliance");
+                                                        }
                                                     });
                                                     ui.horizontal(|ui|{
                                                         ui.label("Corporation:");
-                                                        ui.label("Everyone its naked.");
+                                                        if let Some(corp) = char.corp.as_ref() {
+                                                            ui.label(&corp.name);
+                                                        }
+                                                        else{
+                                                            ui.label("No corporation");
+                                                        }
                                                     });
                                                     ui.horizontal(|ui|{
                                                         ui.label("Last Logon:");
-                                                        ui.label("29/02/2020");
+                                                        ui.label(char.last_logon.to_string());
                                                     });
                                                 });
                                             });
@@ -245,13 +266,23 @@ impl TemplateApp {
                     });
                 });
                 ui.separator();
-                ui.vertical(|ui|{
-                    if ui.button("Link new").clicked() {
-                        
-                    }
-                    if ui.button("Unlink").clicked() {
+                ui.allocate_ui(Vec2::new(500.00,150.00), |ui|{
+                    ui.vertical(|ui|{
+                        if ui.button("Link new").clicked() {
+                            let (url,_rand) = self.esi.esi.get_authorize_url().unwrap();
+                            match open::that(&url){
+                                Ok(()) => {
+                                    if let Ok(Some(char)) = self.esi.auth_user(56123){
+                                        let _e = self.tx.send(Message::EsiAuthSuccess(char));
+                                    }
+                                },
+                                Err(err) => panic!("An error occurred when opening '{}': {}", url, err),
+                            }
+                        } 
+                        if ui.button("Unlink").clicked() {
 
-                    }
+                        }
+                    });
                 });
             });
         });
@@ -272,6 +303,17 @@ impl TemplateApp {
         });
     }
 
+    fn update_character_into_database(&mut self, player:Character) {
+        
+        self.esi.characters.push(player);
+        /*if let Some(pj) = self.esi.characters.get(self.esi.characters.len()-1){
+            let mut pj_vec = Vec::new();
+            pj_vec.push(pj.clone());
+            self.esi.add_characters(pj_vec);
+        }*/
+        //self.database.add_character(char);
+    }
+
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
@@ -290,7 +332,7 @@ impl TemplateApp {
         if let Some(storage) = cc.storage {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
-        let mut app:TemplateApp = Default::default();
+        let mut app:TemplateApp<'_> = Default::default();
         app.initialize_application();
         app
     }

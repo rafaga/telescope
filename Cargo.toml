@@ -17,12 +17,14 @@ eframe = { version = "0.21", default-features = false, features = [
 
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["derive"] }
-sde = { git = "https://github.com/rafaga/sde.git", branch = "test" }
+sde = "0.0"
 kdtree = { version = "0.7.0", features = ["serde", "serde_derive", "serialize"] }
-egui-map = { git = "https://github.com/rafaga/egui-map.git", branch = "test" }
+egui-map = "0.0"
 open = "4.0.1"
 webb = { git = "http://github.com/rafaga/webb.git", branch = "master" }
 chrono = "0.4.24"
+futures = "0.3.28"
+tokio = "1.27.0"
 
 
 # native:
