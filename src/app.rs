@@ -6,8 +6,10 @@ use std::sync::mpsc::{self,Sender,Receiver};
 use std::thread;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
+use data::AppData;
 
 pub mod messages;
+pub mod data;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -43,10 +45,9 @@ pub struct TemplateApp<'a> {
 impl<'a> Default for TemplateApp<'a> {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel::<messages::Message>();
-        let app_data = vec!["","","",""];
-        let scope = vec![""];
+        let app_data = AppData::new();
 
-        let esi = webb::esi::EsiManager::new(app_data[0],app_data[1],app_data[2],app_data[3], scope,Some("telescope.db")); 
+        let esi = webb::esi::EsiManager::new(app_data.user_agent.as_str(),app_data.client_id.as_str(),app_data.secret_key.as_str(),app_data.url.as_str(), app_data.scope,Some("telescope.db")); 
         Self {
             // Example stuff:
             initialized: false,
