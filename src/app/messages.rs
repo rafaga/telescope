@@ -4,9 +4,5 @@ use webb::objects::Character;
 pub enum Message{
     Processed2dMatrix(Vec<MapPoint>),
     EsiAuthSuccess(Character),
-}
-
-pub enum TelescopeError{
-    EsiAuthError,
-    DatabaseNotFound,
+    EsiAuthError(String),
 }

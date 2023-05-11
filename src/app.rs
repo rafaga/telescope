@@ -78,7 +78,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
             tx: _tx,
             rx: _rx,
             open: _,
-            esi,
+            esi: _,
         } = self;
 
         if !self.initialized {
@@ -199,6 +199,7 @@ impl<'a> TemplateApp<'a> {
             match msg{
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
                 Message::EsiAuthSuccess(character) => self.update_character_into_database(character),
+                Message::EsiAuthError(message) => self.update_status_with_error(message),
             };
         }
     }
@@ -273,9 +274,11 @@ impl<'a> TemplateApp<'a> {
                             let (url,_rand) = self.esi.esi.get_authorize_url().unwrap();
                             match open::that(&url){
                                 Ok(()) => {
-                                    if let Ok(Some(char)) = self.esi.auth_user(56123){
-                                        let _e = self.tx.send(Message::EsiAuthSuccess(char));
-                                    }
+                                    let _result = match self.esi.auth_user(56123) {
+                                        Ok(Some(char)) => self.tx.send(Message::EsiAuthSuccess(char)),
+                                        Ok(None) => self.tx.send(Message::EsiAuthError("Error de autenticacion".to_string())),
+                                        Err(error_z) => panic!("ESI Error: '{}'", error_z),
+                                    };
                                 },
                                 Err(err) => panic!("An error occurred when opening '{}': {}", url, err),
                             }
@@ -305,14 +308,11 @@ impl<'a> TemplateApp<'a> {
     }
 
     fn update_character_into_database(&mut self, player:Character) {
-        
         self.esi.characters.push(player);
-        /*if let Some(pj) = self.esi.characters.get(self.esi.characters.len()-1){
-            let mut pj_vec = Vec::new();
-            pj_vec.push(pj.clone());
-            self.esi.add_characters(pj_vec);
-        }*/
-        //self.database.add_character(char);
+    }
+
+    fn update_status_with_error(&mut self, message: String) {
+        let _message_x = message;
     }
 
     /// Called once before the first frame.
