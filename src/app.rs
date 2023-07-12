@@ -47,7 +47,7 @@ impl<'a> Default for TemplateApp<'a> {
         let (tx, rx) = mpsc::channel::<messages::Message>();
         let app_data = AppData::new();
 
-        let esi = webb::esi::EsiManager::new(app_data.user_agent.as_str(),app_data.client_id.as_str(),app_data.secret_key.as_str(),app_data.url.as_str(), app_data.scope,Some("telescope.db")); 
+        let esi = webb::esi::EsiManager::new(app_data.user_agent.as_str(),app_data.client_id.as_str(),app_data.secret_key.as_str(),app_data.url.as_str(), app_data.scope,Some("telescope.db"));
         Self {
             // Example stuff:
             initialized: false,
@@ -150,6 +150,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
                 *value += 1.0;
             }*/
         });*/
+        
         if self.open[0] {
             self.open_about_window(ctx);
         }
@@ -224,6 +225,7 @@ impl<'a> TemplateApp<'a> {
                                                 ui.checkbox(&mut false, "");
                                                 ui.vertical(|ui|{
                                                     ui.horizontal(|ui|{
+                                                        //ui.image(char_photo, Vec2::new(16.0,16.0));
                                                         ui.label("Name:");
                                                         ui.label(&char.name);
                                                     });
@@ -298,7 +300,7 @@ impl<'a> TemplateApp<'a> {
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("Telescope");
-                ui.label("Developed by Rafael Amador Galván");
+                ui.label("Author: Rafael Amador Galván");
                 ui.label("©2023");
                 if ui.link("https://github.com/rafaga/telescope").clicked() {
                     let _a = open::that("https://github.com/rafaga/telescope");
