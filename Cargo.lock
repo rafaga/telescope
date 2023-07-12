@@ -2820,7 +2820,6 @@ dependencies = [
  "futures",
  "kdtree",
  "open",
- "rfesi",
  "sde",
  "serde",
  "tokio",
