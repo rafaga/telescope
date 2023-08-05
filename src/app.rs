@@ -1,4 +1,5 @@
 use egui::{FontData,FontDefinitions,FontFamily,Vec2};
+use egui_extras::RetainedImage;
 use sde::SdeManager;
 use webb::objects::Character;
 use std::path::Path;
@@ -7,6 +8,7 @@ use std::thread;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
 use data::AppData;
+use std::collections::HashMap;
 
 pub mod messages;
 pub mod data;
@@ -40,6 +42,9 @@ pub struct TemplateApp<'a> {
     // the ESI Manager
     #[serde(skip)]
     esi: webb::esi::EsiManager<'a>,
+
+    #[serde(skip)]
+    portraits: HashMap<u64,RetainedImage>,
 }
 
 impl<'a> Default for TemplateApp<'a> {
@@ -57,6 +62,7 @@ impl<'a> Default for TemplateApp<'a> {
             rx,
             open: [false;2],
             esi,
+            portraits: HashMap::new(),
         }
     }
 }
@@ -79,6 +85,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
             rx: _rx,
             open: _,
             esi: _,
+            portraits: _,
         } = self;
 
         if !self.initialized {
@@ -223,6 +230,10 @@ impl<'a> TemplateApp<'a> {
                                         ui.group(|ui|{                   
                                             ui.horizontal_centered(|ui|{
                                                 ui.checkbox(&mut false, "");
+                                                let player_portrait = self.portraits.get(&char.id);
+                                                if let Some(image) = player_portrait {
+                                                    ui.image(image.texture_id(ctx),Vec2::new(64.0,64.0));
+                                                }
                                                 ui.vertical(|ui|{
                                                     ui.horizontal(|ui|{
                                                         //ui.image(char_photo, Vec2::new(16.0,16.0));
@@ -310,7 +321,12 @@ impl<'a> TemplateApp<'a> {
     }
 
     fn update_character_into_database(&mut self, player:Character) {
-        self.esi.characters.push(player);
+        if let Some(data) = player.photo{
+            let resulting_image = RetainedImage::from_image_bytes(player.id.to_string(), data.as_slice());
+            if let Ok(image) = resulting_image{
+                self.portraits.entry(player.id).or_insert(image);
+            }
+        }
     }
 
     fn update_status_with_error(&mut self, message: String) {
