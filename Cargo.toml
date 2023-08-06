@@ -5,7 +5,6 @@ authors = ["Rafael Amador <rafaga@duck.com>"]
 edition = "2021"
 rust-version = "1.67.1"
 
-
 [dependencies]
 egui = { version = "0.22", default-features = false, features = ["bytemuck", "cint", "serde", "deadlock_detection", "color-hex", "ron"] }
 eframe = { version = "0.22", default-features = false, features = [
@@ -21,11 +20,13 @@ sde = "0.0"
 kdtree = { version = "0.7", features = ["serde", "serde_derive", "serialize"] }
 egui-map = "0.0.8"
 open = "4.0"
-webb = { git = "http://github.com/rafaga/webb.git", branch = "master" }
+webb = { git = "http://github.com/rafaga/webb.git", branch = "test", default-features = false }
 chrono = "0.4"
 futures = "0.3"
 tokio = "1"
 egui_extras = { version = "0.22.0", features = ["image"] }
+image = { version = "0", features = ["jpeg"] }
+wgpu = "0.17.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -232,7 +232,7 @@ impl<'a> TemplateApp<'a> {
                                                 ui.checkbox(&mut false, "");
                                                 let player_portrait = self.portraits.get(&char.id);
                                                 if let Some(image) = player_portrait {
-                                                    ui.image(image.texture_id(ctx),Vec2::new(64.0,64.0));
+                                                    ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
                                                 }
                                                 ui.vertical(|ui|{
                                                     ui.horizontal(|ui|{
@@ -321,12 +321,13 @@ impl<'a> TemplateApp<'a> {
     }
 
     fn update_character_into_database(&mut self, player:Character) {
-        if let Some(data) = player.photo{
+        if let Some(data) = player.photo.clone(){
             let resulting_image = RetainedImage::from_image_bytes(player.id.to_string(), data.as_slice());
             if let Ok(image) = resulting_image{
                 self.portraits.entry(player.id).or_insert(image);
             }
         }
+        self.esi.characters.push(player);
     }
 
     fn update_status_with_error(&mut self, message: String) {
