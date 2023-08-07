@@ -98,6 +98,10 @@ impl<'a> eframe::App for TemplateApp<'a> {
                     let _result = txs.send(Message::Processed2dMatrix(points));
                 }
             });
+            match self.esi.read_characters(None) {
+                Ok(chars) =>  self.esi.characters=chars,
+                Err(t_err) => self.tx.send(Message::DatabaseError(t_err.to_string())).unwrap(),
+            }
             self.initialized = true;
         }
 
@@ -208,6 +212,7 @@ impl<'a> TemplateApp<'a> {
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
                 Message::EsiAuthSuccess(character) => self.update_character_into_database(character),
                 Message::EsiAuthError(message) => self.update_status_with_error(message),
+                Message::DatabaseError(message) => self.update_status_with_error(message),
             };
         }
     }
@@ -319,6 +324,11 @@ impl<'a> TemplateApp<'a> {
             });
         });
     }
+
+    fn load_portrait(&mut self, player:Vec<Character>) -> Option<u8> {
+        return None;
+    }
+
 
     fn update_character_into_database(&mut self, player:Character) {
         if let Some(data) = player.photo.clone(){
