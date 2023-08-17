@@ -15,14 +15,14 @@ eframe = { version = "0.22", default-features = false, features = [
 ] }
 
 # You only need serde if you want app persistence:
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["serde_derive"] }
 sde = "0.0"
 kdtree = { version = "0.7", features = ["serde", "serde_derive", "serialize"] }
 egui-map = "0.0.8"
 open = "4.0"
 webb = { git = "http://github.com/rafaga/webb.git", branch = "test", default-features = false }
 chrono = "0.4"
-futures = { version = "0.3", features = ["thread-pool"] }
+futures = { version = "0.3", features = ["thread-pool", "futures-executor"] }
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.22.0", features = ["image"] }
 image = { version = "0", features = ["jpeg"] }
