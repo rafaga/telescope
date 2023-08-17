@@ -5,4 +5,6 @@ pub enum Message{
     Processed2dMatrix(Vec<MapPoint>),
     EsiAuthSuccess(Character),
     EsiAuthError(String),
+    GenericError(String),
+    GenericWarning(String),
 }

@@ -9,6 +9,7 @@ use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
 use data::AppData;
 use std::collections::HashMap;
+use futures::executor::ThreadPool;
 
 pub mod messages;
 pub mod data;
@@ -45,6 +46,9 @@ pub struct TemplateApp<'a> {
 
     #[serde(skip)]
     portraits: HashMap<u64,RetainedImage>,
+
+    #[serde(skip)]
+    tpool: ThreadPool,
 }
 
 impl<'a> Default for TemplateApp<'a> {
@@ -53,6 +57,11 @@ impl<'a> Default for TemplateApp<'a> {
         let app_data = AppData::new();
 
         let esi = webb::esi::EsiManager::new(app_data.user_agent.as_str(),app_data.client_id.as_str(),app_data.secret_key.as_str(),app_data.url.as_str(), app_data.scope,Some("telescope.db"));
+        
+        let mut tp_builder = ThreadPool::builder();
+        tp_builder.name_prefix("telescope-tp-");
+        let tpool = tp_builder.create().unwrap();
+       
         Self {
             // Example stuff:
             initialized: false,
@@ -63,6 +72,7 @@ impl<'a> Default for TemplateApp<'a> {
             open: [false;2],
             esi,
             portraits: HashMap::new(),
+            tpool,
         }
     }
 }
@@ -86,6 +96,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
             open: _,
             esi: _,
             portraits: _,
+            tpool: _,
         } = self;
 
         if !self.initialized {
@@ -100,13 +111,13 @@ impl<'a> eframe::App for TemplateApp<'a> {
             });
             let vec_chars = self.esi.characters.clone();
             for charz in vec_chars.into_iter() {
-                if let Some(image) = charz.photo {
-                    let resulting_image = RetainedImage::from_image_bytes(charz.id.to_string(), image.as_slice());
-                    if let Ok(image) = resulting_image{
-                        self.portraits.entry(charz.id).or_insert(image);
-                    }
+                if let Some(image) = self.get_photo(charz.id, charz.photo.unwrap()) {
+                    self.portraits.entry(charz.id).or_insert(image);
+                } else {
+                    let _ = self.tx.send(Message::GenericError("Error retrieving player Image - Invalid format or file not found".to_string()));
                 }
-            } 
+            }
+            
             self.initialized = true;
         }
 
@@ -217,6 +228,8 @@ impl<'a> TemplateApp<'a> {
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
                 Message::EsiAuthSuccess(character) => self.update_character_into_database(character),
                 Message::EsiAuthError(message) => self.update_status_with_error(message),
+                Message::GenericError(message) => self.update_status_with_error(message),
+                Message::GenericWarning(message) => self.update_status_with_error(message),
             };
         }
     }
@@ -330,11 +343,10 @@ impl<'a> TemplateApp<'a> {
     }
 
     fn update_character_into_database(&mut self, player:Character) {
-        if let Some(data) = player.photo.clone(){
-            let resulting_image = RetainedImage::from_image_bytes(player.id.to_string(), data.as_slice());
-            if let Ok(image) = resulting_image{
-                self.portraits.entry(player.id).or_insert(image);
-            }
+        if let Some(photo) = self.get_photo(player.id, player.photo.clone().unwrap()){
+            self.portraits.insert(player.id,photo);
+        }else {
+            let _ = self.tx.send(Message::GenericError("Error retrieving player Image - Invalid format or file not found".to_string()));
         }
         self.esi.characters.push(player);
     }
@@ -365,4 +377,30 @@ impl<'a> TemplateApp<'a> {
         app.initialize_application();
         app
     }
+
+    #[tokio::main]
+    async fn get_photo(&mut self,player_id: u64, url: String) -> Option<RetainedImage> {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let future = async move {
+            if let Ok(Some(image)) = webb::esi::EsiManager::get_player_photo(url.as_str()).await {
+                let _a = tx.send(image);
+            };
+        };
+        self.tpool.spawn_ok(future);
+        match rx.recv() {
+            Ok(img) => {
+                let resulting_image = RetainedImage::from_image_bytes(player_id.to_string(), img.as_slice());
+                if let Err(t_error) = resulting_image {
+                    let _rm = self.tx.send(Message::GenericError(t_error.to_string()));
+                    return None;
+                }
+                return Some(resulting_image.unwrap());
+            },
+            Err(t_error) => {
+                let _rm = self.tx.send(Message::GenericError(t_error.to_string()));
+                return None;
+            }
+        }
+    }
+
 }
