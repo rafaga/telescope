@@ -1,3 +1,4 @@
+use egui_extras::RetainedImage;
 use egui_map::map::objects::MapPoint;
 use webb::objects::Character;
 
@@ -7,4 +8,6 @@ pub enum Message{
     EsiAuthError(String),
     GenericError(String),
     GenericWarning(String),
+    LoadCharacterPhoto(Vec<(u64,String)>),
+    SaveCharacterPhoto(Vec<RetainedImage>),
 }
