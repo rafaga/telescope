@@ -309,13 +309,25 @@ impl<'a> TemplateApp<'a> {
                             let (url,_rand) = self.esi.esi.get_authorize_url().unwrap();
                             match open::that(&url){
                                 Ok(()) => {
-                                    let _result = match self.esi.auth_user(56123) {
+                                    let future = async move {
+                                        let res_auth = self.esi.launch_auth_server(56123).await;
+                                        match res_auth {
+                                            Ok(Some(claim)) => self.tx.send(Message::EsiAuthSuccess(claim)),
+                                            Ok(None) => self.tx.send(Message::GenericWarning("???".to_string())),
+                                            Err(t_error) => self.tx.send(Message::GenericError(t_error.to_string())),
+                                        };
+                                    };
+                                    
+                                    self.tpool.spawn_ok(future);
+
+                                    //change this code to the event function
+                                    let _result = match self.esi.auth_user(claim) {
                                         Ok(Some(char)) => self.tx.send(Message::EsiAuthSuccess(char)),
                                         Ok(None) => self.tx.send(Message::EsiAuthError("Error de autenticacion".to_string())),
                                         Err(error_z) => panic!("ESI Error: '{}'", error_z),
                                     };
                                 },
-                                Err(err) => panic!("An error occurred when opening '{}': {}", url, err),
+                                Err(err) => self.tx.send(Message::GenericError(err.to_string())),
                             }
                         } 
                         if ui.button("Unlink").clicked() {
