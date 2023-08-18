@@ -3,13 +3,14 @@ use egui_extras::RetainedImage;
 use sde::SdeManager;
 use webb::objects::Character;
 use std::path::Path;
-use std::sync::mpsc::{self,Sender,Receiver};
-use std::thread;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
 use data::AppData;
 use std::collections::HashMap;
 use futures::executor::ThreadPool;
+use tokio::sync::mpsc::{Receiver,Sender,channel};
+use tokio::task::LocalSet;
+use std::sync::Arc;
 
 pub mod messages;
 pub mod data;
@@ -30,7 +31,7 @@ pub struct TemplateApp<'a> {
     map: Map,
 
     #[serde(skip)]
-    tx: Sender<Message>,
+    tx: Arc<Box<Sender<Message>>>,
 
     #[serde(skip)]
     rx: Receiver<Message>,
@@ -49,12 +50,17 @@ pub struct TemplateApp<'a> {
 
     #[serde(skip)]
     tpool: ThreadPool,
+
+    #[serde(skip)]
+    lset: LocalSet,
 }
 
 impl<'a> Default for TemplateApp<'a> {
     fn default() -> Self {
-        let (tx, rx) = mpsc::channel::<messages::Message>();
+        let (ntx, rx) = channel::<messages::Message>(10);
         let app_data = AppData::new();
+
+        let tx = Arc::new(Box::new(ntx));
 
         let esi = webb::esi::EsiManager::new(app_data.user_agent.as_str(),app_data.client_id.as_str(),app_data.secret_key.as_str(),app_data.url.as_str(), app_data.scope,Some("telescope.db"));
         
@@ -62,6 +68,8 @@ impl<'a> Default for TemplateApp<'a> {
         tp_builder.name_prefix("telescope-tp-");
         let tpool = tp_builder.create().unwrap();
        
+        let lset = LocalSet::new();
+
         Self {
             // Example stuff:
             initialized: false,
@@ -73,6 +81,7 @@ impl<'a> Default for TemplateApp<'a> {
             esi,
             portraits: HashMap::new(),
             tpool,
+            lset,
         }
     }
 }
@@ -85,8 +94,9 @@ impl<'a> eframe::App for TemplateApp<'a> {
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.event_manager();
+    #[tokio::main]
+    async fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.event_manager().await;
         let Self {
             initialized: _,
             points: _points,
@@ -97,27 +107,30 @@ impl<'a> eframe::App for TemplateApp<'a> {
             esi: _,
             portraits: _,
             tpool: _,
+            lset: _,
         } = self;
 
         if !self.initialized {
             let txs = self.tx.clone();
-            let factor = 50000000000000;
-            thread::spawn(move ||{
+            let future = async move {
+                let factor = 50000000000000;
                 let path = Path::new("assets/sde.db");
                 let manager = SdeManager::new(path, factor); 
                 if let Ok(points) = manager.get_systempoints(2) {
-                    let _result = txs.send(Message::Processed2dMatrix(points));
+                    let _result = txs.send(Message::Processed2dMatrix(points)).await;
                 }
-            });
-            let vec_chars = self.esi.characters.clone();
-            for charz in vec_chars.into_iter() {
-                if let Some(image) = self.get_photo(charz.id, charz.photo.unwrap()) {
-                    self.portraits.entry(charz.id).or_insert(image);
-                } else {
-                    let _ = self.tx.send(Message::GenericError("Error retrieving player Image - Invalid format or file not found".to_string()));
+            };
+            self.tpool.spawn_ok(future);
+
+            let mut vec_chars = Vec::new();
+            for pchar in self.esi.characters.iter() {
+                vec_chars.push((pchar.id,pchar.photo.as_ref().unwrap().clone()));
+            }
+            if vec_chars.len() > 0 {
+                if let Err(t_err) =  self.tx.send(Message::LoadCharacterPhoto(vec_chars)).await {
+                    let _res = self.tx.send(Message::GenericError(t_err.to_string())).await;
                 }
             }
-            
             self.initialized = true;
         }
 
@@ -221,15 +234,17 @@ impl<'a> TemplateApp<'a> {
     fn initialize_application(&mut self) {
     }
 
-    fn event_manager(&mut self)  {
+    async fn event_manager(&mut self)  {
         let received_data = self.rx.try_recv(); 
         if let Ok(msg) = received_data{
-            match msg{
+            let _result = match msg{
                 Message::Processed2dMatrix(points) => self.map.add_points(points),
-                Message::EsiAuthSuccess(character) => self.update_character_into_database(character),
+                Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
                 Message::EsiAuthError(message) => self.update_status_with_error(message),
                 Message::GenericError(message) => self.update_status_with_error(message),
                 Message::GenericWarning(message) => self.update_status_with_error(message),
+                Message::LoadCharacterPhoto(character_data) => self.load_photos(character_data).await,
+                Message::SaveCharacterPhoto(vec_photo) => self.save_photos(vec_photo).await,
             };
         }
     }
@@ -309,7 +324,8 @@ impl<'a> TemplateApp<'a> {
                             let (url,_rand) = self.esi.esi.get_authorize_url().unwrap();
                             match open::that(&url){
                                 Ok(()) => {
-                                    let _result = match self.esi.auth_user(56123) {
+                                    let claim = self.esi.launch_auth_server(56123);
+                                    let _result = match self.esi.auth_user(claim).await {
                                         Ok(Some(char)) => self.tx.send(Message::EsiAuthSuccess(char)),
                                         Ok(None) => self.tx.send(Message::EsiAuthError("Error de autenticacion".to_string())),
                                         Err(error_z) => panic!("ESI Error: '{}'", error_z),
@@ -342,18 +358,46 @@ impl<'a> TemplateApp<'a> {
         });
     }
 
-    fn update_character_into_database(&mut self, player:Character) {
-        if let Some(photo) = self.get_photo(player.id, player.photo.clone().unwrap()){
-            self.portraits.insert(player.id,photo);
-        }else {
-            let _ = self.tx.send(Message::GenericError("Error retrieving player Image - Invalid format or file not found".to_string()));
-        }
+    async fn update_character_into_database(&mut self, player:Character) {
+        let data = vec![(player.id, player.photo.clone().unwrap())];
+        let ztx = Arc::clone(&self.tx);
+        let future = async move{
+            let _x = ztx.send(Message::LoadCharacterPhoto(data)).await;
+        };
+
+        let _res = self.lset.spawn_local(future).await;
+
         self.esi.characters.push(player);
     }
 
     fn update_status_with_error(&mut self, message: String) {
         let _message_x = message;
     }
+
+    async fn save_photos(&mut self, vec_photos: Vec<RetainedImage>) {
+        for photo in vec_photos {
+            self.portraits.entry(photo.debug_name().as_ptr() as u64).or_insert(photo);
+        }
+    }
+
+    async fn load_photos(&mut self, character_data: Vec<(u64, String)>) {
+        let tx_bis = self.tx.clone();
+        let future = async move {
+            let mut photos = Vec::new();
+            for (id,url) in character_data {
+                if let Ok(Some(image)) = webb::esi::EsiManager::get_player_photo(url.as_str()).await {
+                    if let Ok(resulting_image) = RetainedImage::from_image_bytes(id.to_string(), image.as_slice()){
+                        photos.push(resulting_image);
+                    }
+                }
+            }
+            if !photos.is_empty() {
+                let _res = tx_bis.send(Message::SaveCharacterPhoto(photos)).await;
+            }
+        };
+        self.tpool.spawn_ok(future);
+    }
+
 
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -378,28 +422,4 @@ impl<'a> TemplateApp<'a> {
         app
     }
 
-    #[tokio::main]
-    async fn get_photo(&mut self,player_id: u64, url: String) -> Option<RetainedImage> {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let future = async move {
-            if let Ok(Some(image)) = webb::esi::EsiManager::get_player_photo(url.as_str()).await {
-                let _a = tx.send(image);
-            };
-        };
-        self.tpool.spawn_ok(future);
-        match rx.recv() {
-            Ok(img) => {
-                let resulting_image = RetainedImage::from_image_bytes(player_id.to_string(), img.as_slice());
-                if let Err(t_error) = resulting_image {
-                    let _rm = self.tx.send(Message::GenericError(t_error.to_string()));
-                    return None;
-                }
-                return Some(resulting_image.unwrap());
-            },
-            Err(t_error) => {
-                let _rm = self.tx.send(Message::GenericError(t_error.to_string()));
-                return None;
-            }
-        }
-    }
 }
