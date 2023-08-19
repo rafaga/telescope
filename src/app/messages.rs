@@ -1,10 +1,10 @@
 use egui_extras::RetainedImage;
 use egui_map::map::objects::MapPoint;
-use webb::objects::Character;
+use webb::objects::EsiAuthData;
 
 pub enum Message{
     Processed2dMatrix(Vec<MapPoint>),
-    EsiAuthSuccess(Character),
+    EsiAuthSuccess(EsiAuthData),
     EsiAuthError(String),
     GenericError(String),
     GenericWarning(String),

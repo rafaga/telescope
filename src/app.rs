@@ -1,7 +1,7 @@
 use egui::{FontData,FontDefinitions,FontFamily,Vec2};
 use egui_extras::RetainedImage;
 use sde::SdeManager;
-use webb::objects::Character;
+use webb::objects::EsiAuthData;
 use std::path::Path;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
@@ -336,13 +336,16 @@ impl<'a> TemplateApp<'a> {
                                     self.tpool.spawn_ok(future);
 
                                     //change this code to the event function
+                                    /*
                                     let _result = match self.esi.auth_user(claim) {
                                         Ok(Some(char)) => self.tx.send(Message::EsiAuthSuccess(char)),
                                         Ok(None) => self.tx.send(Message::EsiAuthError("Error de autenticacion".to_string())),
                                         Err(error_z) => panic!("ESI Error: '{}'", error_z),
-                                    };
+                                    };*/
                                 },
-                                Err(err) => self.tx.send(Message::GenericError(err.to_string())),
+                                Err(err) => {
+                                    self.tx.send(Message::GenericError(err.to_string()));
+                                },
                             }
                         } 
                         if ui.button("Unlink").clicked() {
@@ -369,7 +372,7 @@ impl<'a> TemplateApp<'a> {
         });
     }
 
-    async fn update_character_into_database(&mut self, player:Character) {
+    async fn update_character_into_database(&mut self, auth_data:EsiAuthData) {
         let data = vec![(player.id, player.photo.clone().unwrap())];
         let ztx = Arc::clone(&self.tx);
         let future = async move{
