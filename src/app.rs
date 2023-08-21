@@ -1,7 +1,6 @@
 use egui::{FontData,FontDefinitions,FontFamily,Vec2};
 use egui_extras::RetainedImage;
 use sde::SdeManager;
-use webb::objects::EsiAuthData;
 use std::path::Path;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
@@ -9,7 +8,6 @@ use data::AppData;
 use std::collections::HashMap;
 use futures::executor::ThreadPool;
 use tokio::sync::mpsc::{Receiver,Sender,channel};
-use tokio::task::LocalSet;
 use std::sync::Arc;
 
 pub mod messages;
@@ -51,8 +49,8 @@ pub struct TemplateApp<'a> {
     #[serde(skip)]
     tpool: ThreadPool,
 
-    #[serde(skip)]
-    lset: LocalSet,
+    //#[serde(skip)]
+    last_message: String,
 }
 
 impl<'a> Default for TemplateApp<'a> {
@@ -67,8 +65,6 @@ impl<'a> Default for TemplateApp<'a> {
         let mut tp_builder = ThreadPool::builder();
         tp_builder.name_prefix("telescope-tp-");
         let tpool = tp_builder.create().unwrap();
-       
-        let lset = LocalSet::new();
 
         Self {
             // Example stuff:
@@ -81,7 +77,7 @@ impl<'a> Default for TemplateApp<'a> {
             esi,
             portraits: HashMap::new(),
             tpool,
-            lset,
+            last_message: String::from("Starting..."),
         }
     }
 }
@@ -107,7 +103,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
             esi: _,
             portraits: _,
             tpool: _,
-            lset: _,
+            last_message: _,
         } = self;
 
         if !self.initialized {
@@ -169,7 +165,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.spinner();
-                ui.label("Initializing ... ");
+                ui.label(&self.last_message);
                 ui.separator();
                 egui::warn_if_debug_build(ui);
             });
@@ -242,7 +238,7 @@ impl<'a> TemplateApp<'a> {
                 Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
                 Message::EsiAuthError(message) => self.update_status_with_error(message),
                 Message::GenericError(message) => self.update_status_with_error(message),
-                Message::GenericWarning(message) => self.update_status_with_error(message),
+                Message::GenericWarning(message) => self.update_status_with_warning(message),
                 Message::LoadCharacterPhoto(character_data) => self.load_photos(character_data).await,
                 Message::SaveCharacterPhoto(vec_photo) => self.save_photos(vec_photo).await,
             };
@@ -324,27 +320,21 @@ impl<'a> TemplateApp<'a> {
                             let (url,_rand) = self.esi.esi.get_authorize_url().unwrap();
                             match open::that(&url){
                                 Ok(()) => {
+                                    let tx = Arc::clone(&self.tx);
                                     let future = async move {
-                                        let res_auth = self.esi.launch_auth_server(56123).await;
-                                        match res_auth {
-                                            Ok(Some(claim)) => self.tx.send(Message::EsiAuthSuccess(claim)),
-                                            Ok(None) => self.tx.send(Message::GenericWarning("???".to_string())),
-                                            Err(t_error) => self.tx.send(Message::GenericError(t_error.to_string())),
+                                        match webb::esi::EsiManager::launch_auth_server(56123) {
+                                            Ok(data) => {
+                                                let _ = tx.send(Message::EsiAuthSuccess(data)).await;
+                                            },
+                                            Err(t_error) => {
+                                                let _ = tx.send(Message::GenericError(t_error.to_string())).await;
+                                            }
                                         };
                                     };
-                                    
                                     self.tpool.spawn_ok(future);
-
-                                    //change this code to the event function
-                                    /*
-                                    let _result = match self.esi.auth_user(claim) {
-                                        Ok(Some(char)) => self.tx.send(Message::EsiAuthSuccess(char)),
-                                        Ok(None) => self.tx.send(Message::EsiAuthError("Error de autenticacion".to_string())),
-                                        Err(error_z) => panic!("ESI Error: '{}'", error_z),
-                                    };*/
                                 },
                                 Err(err) => {
-                                    self.tx.send(Message::GenericError(err.to_string()));
+                                    let _ = self.tx.send(Message::GenericError(err.to_string()));
                                 },
                             }
                         } 
@@ -372,20 +362,31 @@ impl<'a> TemplateApp<'a> {
         });
     }
 
-    async fn update_character_into_database(&mut self, auth_data:EsiAuthData) {
-        let data = vec![(player.id, player.photo.clone().unwrap())];
-        let ztx = Arc::clone(&self.tx);
-        let future = async move{
-            let _x = ztx.send(Message::LoadCharacterPhoto(data)).await;
+    async fn update_character_into_database(&mut self, response_data:(String, String)) {
+
+        let tx = Arc::clone(&self.tx);
+        match self.esi.auth_user(response_data).await {
+            Ok(Some(player)) => {
+                let data = vec![(player.id, player.photo.clone().unwrap())];
+                let _x = tx.send(Message::LoadCharacterPhoto(data)).await;
+                self.esi.characters.push(player);
+            },
+            Ok(None) => {
+                let _ = tx.send(Message::EsiAuthError("Error de autenticacion".to_string())).await;
+            },
+            Err(t_error) => {
+                let _ = tx.send(Message::GenericError(t_error.to_string())).await;
+            },
         };
-
-        let _res = self.lset.spawn_local(future).await;
-
-        self.esi.characters.push(player);
+        
     }
 
     fn update_status_with_error(&mut self, message: String) {
-        let _message_x = message;
+        self.last_message = "Error: ".to_string() + &message;
+    }
+
+    fn update_status_with_warning(&mut self, message: String) {
+        self.last_message = "Warning: ".to_string() + &message;
     }
 
     async fn save_photos(&mut self, vec_photos: Vec<RetainedImage>) {
@@ -395,18 +396,26 @@ impl<'a> TemplateApp<'a> {
     }
 
     async fn load_photos(&mut self, character_data: Vec<(u64, String)>) {
-        let tx_bis = self.tx.clone();
+        let tx = Arc::clone(&self.tx);
         let future = async move {
             let mut photos = Vec::new();
             for (id,url) in character_data {
-                if let Ok(Some(image)) = webb::esi::EsiManager::get_player_photo(url.as_str()).await {
-                    if let Ok(resulting_image) = RetainedImage::from_image_bytes(id.to_string(), image.as_slice()){
-                        photos.push(resulting_image);
-                    }
+                match webb::esi::EsiManager::get_player_photo(url.as_str()) {
+                    Ok(Some(image)) => {
+                        if let Ok(resulting_image) = RetainedImage::from_image_bytes(id.to_string(), image.as_slice()){
+                            photos.push(resulting_image);
+                        }
+                    },
+                    Ok(None) => {
+                        let _x = tx.send(Message::GenericWarning("Photo not loaded".to_string())).await;
+                    },
+                    Err(t_error) => {
+                        let _x = tx.send(Message::GenericError(t_error.to_string())).await;
+                    },
                 }
             }
             if !photos.is_empty() {
-                let _res = tx_bis.send(Message::SaveCharacterPhoto(photos)).await;
+                let _res = tx.send(Message::SaveCharacterPhoto(photos)).await;
             }
         };
         self.tpool.spawn_ok(future);
