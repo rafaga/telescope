@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use futures::executor::ThreadPool;
 use tokio::sync::mpsc::{Receiver,Sender,channel};
 use std::sync::Arc;
+use std::collections::hash_map::Entry;
 
 pub mod messages;
 pub mod data;
@@ -120,7 +121,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
 
             let mut vec_chars = Vec::new();
             for pchar in self.esi.characters.iter() {
-                vec_chars.push((pchar.id,pchar.photo.as_ref().unwrap().clone()));
+                vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
             }
             if vec_chars.len() > 0 {
                 if let Err(t_err) =  self.tx.send(Message::LoadCharacterPhoto(vec_chars)).await {
@@ -165,9 +166,8 @@ impl<'a> eframe::App for TemplateApp<'a> {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.spinner();
-                ui.label(&self.last_message);
                 ui.separator();
-                egui::warn_if_debug_build(ui);
+                ui.label(&self.last_message);
             });
         });
 
@@ -263,8 +263,8 @@ impl<'a> TemplateApp<'a> {
                                         ui.group(|ui|{                   
                                             ui.horizontal_centered(|ui|{
                                                 ui.checkbox(&mut false, "");
-                                                let player_portrait = self.portraits.get(&char.id);
-                                                if let Some(image) = player_portrait {
+                                                if let Entry::Occupied(entry) = self.portraits.entry(char.id) {
+                                                    let image = entry.get();
                                                     ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
                                                 }
                                                 ui.vertical(|ui|{
@@ -358,6 +358,7 @@ impl<'a> TemplateApp<'a> {
                 if ui.link("https://github.com/rafaga/telescope").clicked() {
                     let _a = open::that("https://github.com/rafaga/telescope");
                 }
+                egui::warn_if_debug_build(ui);
             });
         });
     }
@@ -372,7 +373,7 @@ impl<'a> TemplateApp<'a> {
                 self.esi.characters.push(player);
             },
             Ok(None) => {
-                let _ = tx.send(Message::EsiAuthError("Error de autenticacion".to_string())).await;
+                let _ = tx.send(Message::EsiAuthError("Authentication".to_string())).await;
             },
             Err(t_error) => {
                 let _ = tx.send(Message::GenericError(t_error.to_string())).await;
@@ -407,10 +408,10 @@ impl<'a> TemplateApp<'a> {
                         }
                     },
                     Ok(None) => {
-                        let _x = tx.send(Message::GenericWarning("Photo not loaded".to_string())).await;
+                        let _x = tx.send(Message::GenericWarning("This is not supossed to happen".to_string())).await;
                     },
                     Err(t_error) => {
-                        let _x = tx.send(Message::GenericError(t_error.to_string())).await;
+                        let _x = tx.send(Message::GenericError("Player Photo - ".to_string() + t_error.to_string().as_str())).await;
                     },
                 }
             }
