@@ -131,9 +131,9 @@ dependencies = [
 
 [[package]]
 name = "aho-corasick"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6748e8def348ed4d14996fa801f4122cd763fff530258cdc03f64b25f89d3a5a"
+checksum = "0c378d78423fdad8089616f827526ee33c19f2fddbd5de1629152c9593ba4783"
 dependencies = [
  "memchr",
 ]
@@ -595,9 +595,9 @@ checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "chrono"
-version = "0.4.27"
+version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f56b4c72906975ca04becb8a30e102dfecddd0c06181e3e95ddc444be28881f8"
+checksum = "95ed24df0632f708f5f6d8082675bef2596f7084dee3dd55f632290bf35bfe0f"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
@@ -1971,9 +1971,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.6.1"
+version = "2.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f478948fd84d9f8e86967bf432640e46adfb5a4bd4f14ef7e864ab38220534ae"
+checksum = "5486aed0026218e61b8a01d5fbd5a0a134649abb71a0e53b7bc088529dced86e"
 
 [[package]]
 name = "memmap2"
@@ -2631,9 +2631,9 @@ dependencies = [
 
 [[package]]
 name = "profiling"
-version = "1.0.9"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46b2164ebdb1dfeec5e337be164292351e11daf63a05174c6776b2f47460f0c9"
+checksum = "45f10e75d83c7aec79a6aa46f897075890e156b105eebe51cfa0abce51af025f"
 
 [[package]]
 name = "qoi"

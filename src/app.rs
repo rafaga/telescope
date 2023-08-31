@@ -45,7 +45,7 @@ pub struct TemplateApp<'a> {
     esi: webb::esi::EsiManager<'a>,
 
     #[serde(skip)]
-    portraits: HashMap<u64,RetainedImage>,
+    photos: HashMap<String,RetainedImage>,
 
     #[serde(skip)]
     tpool: ThreadPool,
@@ -76,7 +76,7 @@ impl<'a> Default for TemplateApp<'a> {
             rx,
             open: [false;2],
             esi,
-            portraits: HashMap::new(),
+            photos: HashMap::new(),
             tpool,
             last_message: String::from("Starting..."),
         }
@@ -102,7 +102,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
             rx: _rx,
             open: _,
             esi: _,
-            portraits: _,
+            photos: _,
             tpool: _,
             last_message: _,
         } = self;
@@ -263,7 +263,7 @@ impl<'a> TemplateApp<'a> {
                                         ui.group(|ui|{                   
                                             ui.horizontal_centered(|ui|{
                                                 ui.checkbox(&mut false, "");
-                                                if let Entry::Occupied(entry) = self.portraits.entry(char.id) {
+                                                if let Entry::Occupied(entry) = self.photos.entry(char.id.to_string()) {
                                                     let image = entry.get();
                                                     ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
                                                 }
@@ -294,10 +294,6 @@ impl<'a> TemplateApp<'a> {
                                                     ui.horizontal(|ui|{
                                                         ui.label("Last Logon:");
                                                         ui.label(char.last_logon.to_string());
-                                                    });
-                                                    ui.horizontal(|ui|{
-                                                        ui.label("Photo found:");
-                                                        ui.label(self.portraits.contains_key(&char.id).to_string());
                                                     });
                                                 });
                                             });
@@ -396,7 +392,7 @@ impl<'a> TemplateApp<'a> {
 
     async fn save_photos(&mut self, vec_photos: Vec<RetainedImage>) {
         for photo in vec_photos {
-            self.portraits.entry(photo.debug_name().as_ptr() as u64).or_insert(photo);
+            self.photos.entry(photo.debug_name().to_string()).or_insert(photo);
         }
     }
 
