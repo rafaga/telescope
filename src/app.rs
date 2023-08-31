@@ -295,6 +295,10 @@ impl<'a> TemplateApp<'a> {
                                                         ui.label("Last Logon:");
                                                         ui.label(char.last_logon.to_string());
                                                     });
+                                                    ui.horizontal(|ui|{
+                                                        ui.label("Photo found:");
+                                                        ui.label(self.portraits.contains_key(&char.id).to_string());
+                                                    });
                                                 });
                                             });
                                         });
