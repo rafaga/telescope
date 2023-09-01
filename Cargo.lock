@@ -1029,6 +1029,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_tiles"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c20ca5fad551ebef116a3b4df36b633ebee3000bbca21e69cde4e78318f3af3e"
+dependencies = [
+ "ahash 0.8.3",
+ "egui",
+ "itertools",
+ "log",
+ "serde",
+]
+
+[[package]]
 name = "either"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1803,6 +1816,15 @@ checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
 dependencies = [
  "is-docker",
  "once_cell",
+]
+
+[[package]]
+name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
+dependencies = [
+ "either",
 ]
 
 [[package]]
@@ -3224,6 +3246,7 @@ dependencies = [
  "egui",
  "egui-map",
  "egui_extras",
+ "egui_tiles",
  "futures",
  "image",
  "kdtree",

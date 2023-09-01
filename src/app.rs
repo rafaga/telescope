@@ -262,7 +262,7 @@ impl<'a> TemplateApp<'a> {
                                     ui.allocate_ui(Vec2::new(300.00,50.00), |ui|{
                                         ui.group(|ui|{                   
                                             ui.horizontal_centered(|ui|{
-                                                ui.checkbox(&mut false, "");
+                                                ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
                                                 if let Entry::Occupied(entry) = self.photos.entry(char.id.to_string()) {
                                                     let image = entry.get();
                                                     ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
@@ -339,7 +339,20 @@ impl<'a> TemplateApp<'a> {
                             }
                         } 
                         if ui.button("Unlink").clicked() {
-
+                            let mut index = 0;
+                            let mut vec_id = vec![];
+                            for char in &self.esi.characters {
+                                if self.esi.active_character.unwrap() == char.id {
+                                    vec_id.push(char.id);
+                                    break;
+                                } 
+                                index+=1;
+                            }
+                            self.esi.characters.remove(index);
+                            self.esi.active_character = None;
+                            if let Err(t_error) = self.esi.remove_characters(Some(vec_id)){
+                                let _ = self.tx.send(Message::GenericError(t_error.to_string()));
+                            }
                         }
                     });
                 });
