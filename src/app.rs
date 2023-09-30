@@ -1,6 +1,7 @@
-use egui::{FontData,FontDefinitions,FontFamily,Vec2};
+use egui::{FontData,FontDefinitions,FontFamily,Vec2, Color32};
 use egui_extras::RetainedImage;
 use sde::SdeManager;
+use sde::objects::EveRegionArea;
 use std::path::Path;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
@@ -52,6 +53,7 @@ pub struct TemplateApp<'a> {
 
     //#[serde(skip)]
     last_message: String,
+
 }
 
 impl<'a> Default for TemplateApp<'a> {
@@ -114,7 +116,10 @@ impl<'a> eframe::App for TemplateApp<'a> {
                 let path = Path::new("assets/sde.db");
                 let manager = SdeManager::new(path, factor); 
                 if let Ok(points) = manager.get_systempoints(2) {
-                    let _result = txs.send(Message::Processed2dMatrix(points)).await;
+                    let _result = txs.send(Message::Processed2dMatrix(points.clone())).await;
+                }
+                if let Ok(region_areas) = manager.get_region_coordinates() {
+                    let _result = txs.send(Message::RegionAreasLabels(region_areas)).await;
                 }
             };
             self.tpool.spawn_ok(future);
@@ -241,6 +246,7 @@ impl<'a> TemplateApp<'a> {
                 Message::GenericWarning(message) => self.update_status_with_warning(message),
                 Message::LoadCharacterPhoto(character_data) => self.load_photos(character_data).await,
                 Message::SaveCharacterPhoto(vec_photo) => self.save_photos(vec_photo).await,
+                Message::RegionAreasLabels(region_areas) => self.paint_map_region_labels(region_areas).await,
             };
         }
     }
@@ -260,43 +266,56 @@ impl<'a> TemplateApp<'a> {
                             if &self.esi.characters.len() > &0 {
                                 for char in  &self.esi.characters {
                                     ui.allocate_ui(Vec2::new(300.00,50.00), |ui|{
-                                        ui.group(|ui|{                   
-                                            ui.horizontal_centered(|ui|{
-                                                ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
-                                                if let Entry::Occupied(entry) = self.photos.entry(char.id.to_string()) {
-                                                    let image = entry.get();
-                                                    ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
-                                                }
-                                                ui.vertical(|ui|{
-                                                    ui.horizontal(|ui|{
-                                                        //ui.image(char_photo, Vec2::new(16.0,16.0));
-                                                        ui.label("Name:");
-                                                        ui.label(&char.name);
-                                                    });
-                                                    ui.horizontal(|ui|{
-                                                        ui.label("Aliance:");
-                                                        if let Some(alliance) = char.alliance.as_ref() {
-                                                            ui.label(&alliance.name);
+                                        ui.group(|ui|{
+                                            ui.push_id(char.id, |ui| {
+                                                let inner = ui.horizontal_centered(|ui|{
+                                                    //ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
+                                                    if let Some(idc) = self.esi.active_character {
+                                                        if char.id == idc {
+                                                            ui.style_mut().visuals.override_text_color = Some(Color32::YELLOW);
+                                                            //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
+                                                            //ui.style_mut().visuals.fade_out_to_color();
                                                         }
-                                                        else{
-                                                            ui.label("No alliance");
-                                                        }
-                                                    });
-                                                    ui.horizontal(|ui|{
-                                                        ui.label("Corporation:");
-                                                        if let Some(corp) = char.corp.as_ref() {
-                                                            ui.label(&corp.name);
-                                                        }
-                                                        else{
-                                                            ui.label("No corporation");
-                                                        }
-                                                    });
-                                                    ui.horizontal(|ui|{
-                                                        ui.label("Last Logon:");
-                                                        ui.label(char.last_logon.to_string());
+                                                    }
+                                                    if let Entry::Occupied(entry) = self.photos.entry(char.id.to_string()) {
+                                                        let image = entry.get();
+                                                        ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
+                                                    }
+                                                    ui.vertical(|ui|{
+                                                        ui.horizontal(|ui|{
+                                                            //ui.image(char_photo, Vec2::new(16.0,16.0));
+                                                            ui.label("Name:");
+                                                            ui.label(&char.name);
+                                                        });
+                                                        ui.horizontal(|ui|{
+                                                            ui.label("Aliance:");
+                                                            if let Some(alliance) = char.alliance.as_ref() {
+                                                                ui.label(&alliance.name);
+                                                            }
+                                                            else{
+                                                                ui.label("No alliance");
+                                                            }
+                                                        });
+                                                        ui.horizontal(|ui|{
+                                                            ui.label("Corporation:");
+                                                            if let Some(corp) = char.corp.as_ref() {
+                                                                ui.label(&corp.name);
+                                                            }
+                                                            else{
+                                                                ui.label("No corporation");
+                                                            }
+                                                        });
+                                                        ui.horizontal(|ui|{
+                                                            ui.label("Last Logon:");
+                                                            ui.label(char.last_logon.to_string());
+                                                        });
                                                     });
                                                 });
-                                            });
+                                                let response = inner.response.interact(egui::Sense::click());
+                                                if response.clicked() {
+                                                    self.esi.active_character=Some(char.id);
+                                                }
+                                            });          
                                         });
                                     });
                                 }                                        
@@ -386,7 +405,7 @@ impl<'a> TemplateApp<'a> {
                 self.esi.characters.push(player);
             },
             Ok(None) => {
-                let _ = tx.send(Message::EsiAuthError("Authentication".to_string())).await;
+                let _ = tx.send(Message::GenericWarning("There was some error authenticating the player.".to_string())).await;
             },
             Err(t_error) => {
                 let _ = tx.send(Message::GenericError(t_error.to_string())).await;
@@ -409,6 +428,16 @@ impl<'a> TemplateApp<'a> {
         }
     }
 
+    async fn paint_map_region_labels(&mut self, region_areas:Vec<EveRegionArea>) {
+        let labels = Vec::new();
+        for region in region_areas {
+            let mut label = MapLabel::new();
+            label.text = region.name;
+            label.center = egui::Pos2::new((region.min.x / 50000000000000) as f32,(region.min.y / 50000000000000) as f32);
+        }
+        self.map.add_labels(labels)
+    }
+
     async fn load_photos(&mut self, character_data: Vec<(u64, String)>) {
         let tx = Arc::clone(&self.tx);
         let future = async move {
@@ -424,7 +453,7 @@ impl<'a> TemplateApp<'a> {
                         let _x = tx.send(Message::GenericWarning("This is not supossed to happen".to_string())).await;
                     },
                     Err(t_error) => {
-                        let _x = tx.send(Message::GenericError("Player Photo - ".to_string() + t_error.to_string().as_str())).await;
+                        let _x = tx.send(Message::EsiAuthError("Player Photo - ".to_string() + t_error.to_string().as_str())).await;
                     },
                 }
             }
