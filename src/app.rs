@@ -1,16 +1,13 @@
-use egui::{FontData,FontDefinitions,FontFamily,Vec2, Color32};
-use egui_extras::RetainedImage;
+use egui::{FontData,FontDefinitions,FontFamily,Vec2, Color32, Image};
 use sde::SdeManager;
 use sde::objects::EveRegionArea;
 use std::path::Path;
 use egui_map::map::{Map,objects::*};
 use crate::app::messages::Message;
 use data::AppData;
-use std::collections::HashMap;
 use futures::executor::ThreadPool;
 use tokio::sync::mpsc::{Receiver,Sender,channel};
 use std::sync::Arc;
-use std::collections::hash_map::Entry;
 
 pub mod messages;
 pub mod data;
@@ -46,9 +43,6 @@ pub struct TemplateApp<'a> {
     esi: webb::esi::EsiManager<'a>,
 
     #[serde(skip)]
-    photos: HashMap<String,RetainedImage>,
-
-    #[serde(skip)]
     tpool: ThreadPool,
 
     //#[serde(skip)]
@@ -78,7 +72,6 @@ impl<'a> Default for TemplateApp<'a> {
             rx,
             open: [false;2],
             esi,
-            photos: HashMap::new(),
             tpool,
             last_message: String::from("Starting..."),
         }
@@ -104,12 +97,12 @@ impl<'a> eframe::App for TemplateApp<'a> {
             rx: _rx,
             open: _,
             esi: _,
-            photos: _,
             tpool: _,
             last_message: _,
         } = self;
 
         if !self.initialized {
+            egui_extras::install_image_loaders(ctx);
             let txs = self.tx.clone();
             let future = async move {
                 let factor = 50000000000000;
@@ -127,11 +120,6 @@ impl<'a> eframe::App for TemplateApp<'a> {
             let mut vec_chars = Vec::new();
             for pchar in self.esi.characters.iter() {
                 vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
-            }
-            if vec_chars.len() > 0 {
-                if let Err(t_err) =  self.tx.send(Message::LoadCharacterPhoto(vec_chars)).await {
-                    let _res = self.tx.send(Message::GenericError(t_err.to_string())).await;
-                }
             }
             self.initialized = true;
         }
@@ -244,8 +232,6 @@ impl<'a> TemplateApp<'a> {
                 Message::EsiAuthError(message) => self.update_status_with_error(message),
                 Message::GenericError(message) => self.update_status_with_error(message),
                 Message::GenericWarning(message) => self.update_status_with_warning(message),
-                Message::LoadCharacterPhoto(character_data) => self.load_photos(character_data).await,
-                Message::SaveCharacterPhoto(vec_photo) => self.save_photos(vec_photo).await,
                 Message::RegionAreasLabels(region_areas) => self.paint_map_region_labels(region_areas).await,
             };
         }
@@ -277,9 +263,8 @@ impl<'a> TemplateApp<'a> {
                                                             //ui.style_mut().visuals.fade_out_to_color();
                                                         }
                                                     }
-                                                    if let Entry::Occupied(entry) = self.photos.entry(char.id.to_string()) {
-                                                        let image = entry.get();
-                                                        ui.image(image.texture_id(ctx),Vec2::new(75.0,75.0));
+                                                    if let Some(player_photo) = &char.photo {
+                                                        ui.add(Image::new(player_photo.as_str()).fit_to_exact_size(Vec2::new(80.0,80.0)));
                                                     }
                                                     ui.vertical(|ui|{
                                                         ui.horizontal(|ui|{
@@ -400,8 +385,6 @@ impl<'a> TemplateApp<'a> {
         let tx = Arc::clone(&self.tx);
         match self.esi.auth_user(response_data).await {
             Ok(Some(player)) => {
-                let data = vec![(player.id, player.photo.clone().unwrap())];
-                let _x = tx.send(Message::LoadCharacterPhoto(data)).await;
                 self.esi.characters.push(player);
             },
             Ok(None) => {
@@ -422,12 +405,6 @@ impl<'a> TemplateApp<'a> {
         self.last_message = "Warning: ".to_string() + &message;
     }
 
-    async fn save_photos(&mut self, vec_photos: Vec<RetainedImage>) {
-        for photo in vec_photos {
-            self.photos.entry(photo.debug_name().to_string()).or_insert(photo);
-        }
-    }
-
     async fn paint_map_region_labels(&mut self, region_areas:Vec<EveRegionArea>) {
         let labels = Vec::new();
         for region in region_areas {
@@ -437,33 +414,6 @@ impl<'a> TemplateApp<'a> {
         }
         self.map.add_labels(labels)
     }
-
-    async fn load_photos(&mut self, character_data: Vec<(u64, String)>) {
-        let tx = Arc::clone(&self.tx);
-        let future = async move {
-            let mut photos = Vec::new();
-            for (id,url) in character_data {
-                match webb::esi::EsiManager::get_player_photo(url.as_str()) {
-                    Ok(Some(image)) => {
-                        if let Ok(resulting_image) = RetainedImage::from_image_bytes(id.to_string(), image.as_slice()){
-                            photos.push(resulting_image);
-                        }
-                    },
-                    Ok(None) => {
-                        let _x = tx.send(Message::GenericWarning("This is not supossed to happen".to_string())).await;
-                    },
-                    Err(t_error) => {
-                        let _x = tx.send(Message::EsiAuthError("Player Photo - ".to_string() + t_error.to_string().as_str())).await;
-                    },
-                }
-            }
-            if !photos.is_empty() {
-                let _res = tx.send(Message::SaveCharacterPhoto(photos)).await;
-            }
-        };
-        self.tpool.spawn_ok(future);
-    }
-
 
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
