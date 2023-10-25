@@ -5,24 +5,33 @@ authors = ["Rafael Amador <rafaga@duck.com>"]
 edition = "2021"
 rust-version = "1.67.1"
 
+[features]
+default = []
+puffin = ["dep:puffin", "dep:puffin_http", "dep:env_logger", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin"]
+
 [dependencies]
 egui = { version = "0.23", default-features = false, features = ["bytemuck", "cint", "serde", "deadlock_detection", "color-hex", "ron"] }
 eframe = { version = "0.23", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence"] }
 
 # You only need serde if you want app persistence:
 serde = { version = "1", features = ["serde_derive"] }
+
+# additional dependencies
 sde = { git = "http://github.com/rafaga/sde.git", branch = "test"}
 kdtree = { version = "0.7", features = ["serde", "serde_derive", "serialize"] }
 egui-map = { git = "http://github.com/rafaga/egui-map.git", branch = "test"}
 open = "4.0"
-webb = { git = "http://github.com/rafaga/webb.git", branch = "test", default-features = false }
+webb = { git = "http://github.com/rafaga/webb.git", branch = "test"}
 chrono = "0.4"
 futures = { version = "0.3", features = ["thread-pool", "futures-executor"] }
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.23", features = ["all_loaders"] }
 image = { version = "0", features = ["jpeg"] }
 wgpu = "0.17"
-egui_tiles = "0.2.0"
+egui_tiles = "0.3.1"
+env_logger = {version = "0.10", optional = true, default-features = false}
+puffin = {version = "0.16", optional = true, default-features = false}
+puffin_http = {version = "0.13", optional = true, default-features = false}
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -40,7 +49,7 @@ opt-level = 2 # fast and small wasm
 
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
-opt-level = 2
+opt-level = 0
 
 [patch.crates-io]
 
