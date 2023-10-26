@@ -107,6 +107,9 @@ impl<'a> eframe::App for TemplateApp<'a> {
         } = self;
 
         if !self.initialized {
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("telescope_init");
+
             egui_extras::install_image_loaders(ctx);
             let txs = self.tx.clone();
             let future = async move {

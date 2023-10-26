@@ -985,7 +985,7 @@ dependencies = [
 [[package]]
 name = "egui-map"
 version = "0.0.9"
-source = "git+http://github.com/rafaga/egui-map.git?branch=test#fb9a0b256f0f242768875e8a37e68ca899068b7d"
+source = "git+http://github.com/rafaga/egui-map.git?branch=test#96d5456fcd9002d5b49b4f2f19a989c22dcfcc0a"
 dependencies = [
  "egui",
  "kdtree",
