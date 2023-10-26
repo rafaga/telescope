@@ -9,11 +9,11 @@ fn start_puffin_server() {
         Ok(puffin_server) => {
             eprintln!("Run:  cargo install puffin_viewer && puffin_viewer --url 127.0.0.1:8585");
 
-            std::process::Command::new("puffin_viewer")
+            /*std::process::Command::new("puffin_viewer")
                 .arg("--url")
                 .arg("127.0.0.1:8585")
                 .spawn()
-                .ok();
+                .ok();*/
 
             // We can store the server if we want, but in this case we just want
             // it to keep running. Dropping it closes the server, so let's not drop it!
