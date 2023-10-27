@@ -7,7 +7,7 @@ rust-version = "1.67.1"
 
 [features]
 default = []
-puffin = ["dep:puffin", "dep:puffin_http", "dep:env_logger", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin"]
+puffin = ["dep:puffin", "dep:puffin_http", "dep:env_logger", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
 egui = { version = "0.23", default-features = false, features = ["bytemuck", "cint", "serde", "deadlock_detection", "color-hex", "ron"] }

@@ -197,6 +197,8 @@ impl<'a> eframe::App for TemplateApp<'a> {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            #[cfg(feature = "puffin")]
+            puffin::profile_scope!("inserting map");
             // The central panel the region left after adding TopPanel's and SidePanel's
             /*
             ui.heading("eframe template");
@@ -259,6 +261,10 @@ impl<'a> TemplateApp<'a> {
                                 ui.vertical(|ui| {
                                     if !self.esi.characters.is_empty() {
                                         for char in &self.esi.characters {
+
+                                            #[cfg(feature = "puffin")]
+                                            puffin::profile_scope!("displaying character");
+
                                             ui.allocate_ui(Vec2::new(300.00, 50.00), |ui| {
                                                 ui.group(|ui| {
                                                     ui.push_id(char.id, |ui| {
@@ -446,6 +452,10 @@ impl<'a> TemplateApp<'a> {
     }
 
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
+        
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("painting region");
+
         let labels = Vec::new();
         for region in region_areas {
             let mut label = MapLabel::new();
