@@ -355,6 +355,10 @@ impl<'a> TemplateApp<'a> {
                     });
                     ui.separator();
                     ui.allocate_ui(Vec2::new(500.00, 150.00), |ui| {
+
+                        #[cfg(feature = "puffin")]
+                        puffin::profile_scope!("displaying character link buttons");
+
                         ui.vertical(|ui| {
                             if ui.button("Link new").clicked() {
                                 let (url, _rand) = self.esi.esi.get_authorize_url().unwrap();
@@ -409,6 +413,10 @@ impl<'a> TemplateApp<'a> {
     }
 
     fn open_about_window(&mut self, ctx: &egui::Context) {
+
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("open_about_window");
+
         egui::Window::new("About Telescope")
             .open(&mut self.open[0])
             .show(ctx, |ui| {
@@ -425,6 +433,9 @@ impl<'a> TemplateApp<'a> {
     }
 
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("update_character_into_database");
+
         let tx = Arc::clone(&self.tx);
         match self.esi.auth_user(response_data).await {
             Ok(Some(player)) => {
@@ -454,7 +465,7 @@ impl<'a> TemplateApp<'a> {
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
         
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("painting region");
+        puffin::profile_scope!("paint_map_region_labels");
 
         let labels = Vec::new();
         for region in region_areas {
