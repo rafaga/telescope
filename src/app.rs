@@ -117,7 +117,9 @@ impl<'a> eframe::App for TemplateApp<'a> {
                 let path = Path::new("assets/sde.db");
                 let manager = SdeManager::new(path, factor);
                 if let Ok(points) = manager.get_systempoints(2) {
-                    let _result = txs.send(Message::Processed2dMatrix(points.clone())).await;
+                    if let Ok(hash_map) = manager.get_connections(points, 2){
+                        let _result = txs.send(Message::ProcessedMapCoordinates(hash_map)).await;
+                    }
                 }
                 if let Ok(region_areas) = manager.get_region_coordinates() {
                     let _result = txs.send(Message::RegionAreasLabels(region_areas)).await;
@@ -233,7 +235,7 @@ impl<'a> TemplateApp<'a> {
         let received_data = self.rx.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                Message::Processed2dMatrix(points) => self.map.add_points(points),
+                Message::ProcessedMapCoordinates(points) => self.map.add_hashmap_points(points),
                 Message::EsiAuthSuccess(character) => {
                     self.update_character_into_database(character).await
                 }
