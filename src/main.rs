@@ -10,10 +10,10 @@ fn start_puffin_server() {
             eprintln!("Run:  cargo install puffin_viewer && puffin_viewer --url 127.0.0.1:8585");
 
             /*std::process::Command::new("puffin_viewer")
-                .arg("--url")
-                .arg("127.0.0.1:8585")
-                .spawn()
-                .ok();*/
+            .arg("--url")
+            .arg("127.0.0.1:8585")
+            .spawn()
+            .ok();*/
 
             // We can store the server if we want, but in this case we just want
             // it to keep running. Dropping it closes the server, so let's not drop it!
@@ -26,7 +26,6 @@ fn start_puffin_server() {
     };
 }
 
-
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
@@ -37,7 +36,7 @@ fn main() {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     #[cfg(feature = "puffin")]
     start_puffin_server(); // NOTE: you may only want to call this if the users specifies some flag or clicks a button!
-    
+
     let native_options = eframe::NativeOptions::default();
     let _result = eframe::run_native(
         "Telescope",

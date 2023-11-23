@@ -117,7 +117,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
                 let path = Path::new("assets/sde.db");
                 let manager = SdeManager::new(path, factor);
                 if let Ok(points) = manager.get_systempoints(2) {
-                    if let Ok(hash_map) = manager.get_connections(points, 2){
+                    if let Ok(hash_map) = manager.get_connections(points, 2) {
                         let _result = txs.send(Message::ProcessedMapCoordinates(hash_map)).await;
                     }
                 }
@@ -263,7 +263,6 @@ impl<'a> TemplateApp<'a> {
                                 ui.vertical(|ui| {
                                     if !self.esi.characters.is_empty() {
                                         for char in &self.esi.characters {
-
                                             #[cfg(feature = "puffin")]
                                             puffin::profile_scope!("displaying character");
 
@@ -357,14 +356,13 @@ impl<'a> TemplateApp<'a> {
                     });
                     ui.separator();
                     ui.allocate_ui(Vec2::new(500.00, 150.00), |ui| {
-
                         #[cfg(feature = "puffin")]
                         puffin::profile_scope!("displaying character link buttons");
 
                         ui.vertical(|ui| {
                             if ui.button("Link new").clicked() {
-                                let (url, _rand) = self.esi.esi.get_authorize_url().unwrap();
-                                match open::that(&url) {
+                                let auth_info = self.esi.esi.get_authorize_url().unwrap();
+                                match open::that(auth_info.authorization_url) {
                                     Ok(()) => {
                                         let tx = Arc::clone(&self.tx);
                                         let future = async move {
@@ -415,7 +413,6 @@ impl<'a> TemplateApp<'a> {
     }
 
     fn open_about_window(&mut self, ctx: &egui::Context) {
-
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_about_window");
 
@@ -439,7 +436,7 @@ impl<'a> TemplateApp<'a> {
         puffin::profile_scope!("update_character_into_database");
 
         let tx = Arc::clone(&self.tx);
-        match self.esi.auth_user(response_data).await {
+        match self.esi.auth_user(self.esi.auth_info).await {
             Ok(Some(player)) => {
                 self.esi.characters.push(player);
             }
@@ -465,7 +462,6 @@ impl<'a> TemplateApp<'a> {
     }
 
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
-        
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("paint_map_region_labels");
 

@@ -5,3 +5,4 @@
 *.db
 .DS_Store
 src/app/data.rs
+/Cargo.lock

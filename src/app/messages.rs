@@ -3,7 +3,7 @@ use sde::objects::EveRegionArea;
 use std::collections::HashMap;
 
 pub enum Message {
-    ProcessedMapCoordinates(HashMap<usize,MapPoint>),
+    ProcessedMapCoordinates(HashMap<usize, MapPoint>),
     RegionAreasLabels(Vec<EveRegionArea>),
     EsiAuthSuccess((String, String)),
     EsiAuthError(String),
