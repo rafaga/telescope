@@ -362,7 +362,7 @@ impl<'a> TemplateApp<'a> {
                         ui.vertical(|ui| {
                             if ui.button("Link new").clicked() {
                                 let auth_info = self.esi.esi.get_authorize_url().unwrap();
-                                match open::that(auth_info.authorization_url) {
+                                match open::that(&auth_info.authorization_url) {
                                     Ok(()) => {
                                         let tx = Arc::clone(&self.tx);
                                         let future = async move {
