@@ -436,7 +436,8 @@ impl<'a> TemplateApp<'a> {
         puffin::profile_scope!("update_character_into_database");
 
         let tx = Arc::clone(&self.tx);
-        match self.esi.auth_user(self.esi.auth_info).await {
+        let auth_info = self.esi.esi.get_authorize_url().unwrap();
+        match self.esi.auth_user(auth_info,response_data).await {
             Ok(Some(player)) => {
                 self.esi.characters.push(player);
             }
