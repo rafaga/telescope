@@ -120,6 +120,10 @@ impl<'a> eframe::App for TemplateApp<'a> {
                     if let Ok(hash_map) = manager.get_connections(points, 2) {
                         let _result = txs.send(Message::ProcessedMapCoordinates(hash_map)).await;
                     }
+                    //we add persistent connections
+                    if let Ok(vec_lines) = manager.get_regional_connections(){
+                        let _result = txs.send(Message::ProcessedRegionalConnections(vec_lines)).await;
+                    }
                 }
                 if let Ok(region_areas) = manager.get_region_coordinates() {
                     let _result = txs.send(Message::RegionAreasLabels(region_areas)).await;
@@ -132,6 +136,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
                 vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
             }
             self.map.settings = MapSettings::default();
+            self.map.settings.node_text_visibility = VisibilitySetting::Hover;
             self.initialized = true;
         }
 
@@ -236,6 +241,7 @@ impl<'a> TemplateApp<'a> {
         if let Ok(msg) = received_data {
             match msg {
                 Message::ProcessedMapCoordinates(points) => self.map.add_hashmap_points(points),
+                Message::ProcessedRegionalConnections(vec_lines) => self.map.add_lines(vec_lines),
                 Message::EsiAuthSuccess(character) => {
                     self.update_character_into_database(character).await
                 }
