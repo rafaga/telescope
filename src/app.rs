@@ -110,7 +110,6 @@ impl<'a> eframe::App for TemplateApp<'a> {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("telescope_init");
 
-            egui_extras::install_image_loaders(ctx);
             let txs = self.tx.clone();
             let future = async move {
                 let factor = 50000000000000;
@@ -500,6 +499,7 @@ impl<'a> TemplateApp<'a> {
             .unwrap()
             .insert(0, "Noto Sans Regular".to_owned());
         cc.egui_ctx.set_fonts(fonts);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
         if let Some(storage) = cc.storage {
