@@ -157,7 +157,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
                     });
                     ui.separator();
                     if ui.button("Quit").clicked() {
-                        _frame.close();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Help", |ui| {
