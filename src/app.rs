@@ -15,7 +15,7 @@ pub mod messages;
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
-pub struct TemplateApp<'a> {
+pub struct TelescopeApp<'a> {
     #[serde(skip)]
     initialized: bool,
 
@@ -48,7 +48,7 @@ pub struct TemplateApp<'a> {
     last_message: String,
 }
 
-impl<'a> Default for TemplateApp<'a> {
+impl<'a> Default for TelescopeApp<'a> {
     fn default() -> Self {
         let (ntx, rx) = channel::<messages::Message>(10);
         let app_data = AppData::new();
@@ -83,7 +83,7 @@ impl<'a> Default for TemplateApp<'a> {
     }
 }
 
-impl<'a> eframe::App for TemplateApp<'a> {
+impl<'a> eframe::App for TelescopeApp<'a> {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
@@ -232,7 +232,7 @@ impl<'a> eframe::App for TemplateApp<'a> {
     }
 }
 
-impl<'a> TemplateApp<'a> {
+impl<'a> TelescopeApp<'a> {
     fn initialize_application(&mut self) {}
 
     async fn event_manager(&mut self) {
@@ -505,7 +505,7 @@ impl<'a> TemplateApp<'a> {
         if let Some(storage) = cc.storage {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
-        let mut app: TemplateApp<'_> = Default::default();
+        let mut app: TelescopeApp<'_> = Default::default();
         app.initialize_application();
         app
     }

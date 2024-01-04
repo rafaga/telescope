@@ -28,21 +28,25 @@ fn start_puffin_server() {
 
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
-fn main() {
+fn main()  -> eframe::Result<()> {
     // Log to stdout (if you run with `RUST_LOG=debug`).
     //tracing_subscriber::fmt::init();
-
-    #[cfg(feature = "puffin")]
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     #[cfg(feature = "puffin")]
     start_puffin_server(); // NOTE: you may only want to call this if the users specifies some flag or clicks a button!
 
-    let native_options = eframe::NativeOptions::default();
-    let _result = eframe::run_native(
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([800.0, 600.0])
+            .with_min_inner_size([400.0, 300.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
         "Telescope",
         native_options,
-        Box::new(|cc| Box::new(telescope::TemplateApp::new(cc))),
-    );
+        Box::new(|cc| Box::new(telescope::TelescopeApp::new(cc))),
+    )
 }
 
 // when compiling to web using trunk.
@@ -60,7 +64,7 @@ fn main() {
         eframe::start_web(
             "T3l3SC0P3", // hardcode it
             web_options,
-            Box::new(|cc| Box::new(telescope::TemplateApp::new(cc))),
+            Box::new(|cc| Box::new(telescope::TelescopeApp::new(cc))),
         )
         .await
         .expect("failed to start eframe");

@@ -7,7 +7,7 @@ rust-version = "1.67.1"
 
 [features]
 default = []
-puffin = ["dep:puffin", "dep:puffin_http", "dep:env_logger", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
+puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
 egui = { version = "0.24", default-features = false, features = ["bytemuck", "cint", "serde", "deadlock_detection", "color-hex", "ron"] }
@@ -28,19 +28,17 @@ tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "m
 egui_extras = { version = "0.24", features = ["all_loaders"] }
 image = { version = "0", features = ["jpeg"] }
 wgpu = "0.17"
-egui_tiles = "0.3.1"
-env_logger = {version = "0.10", optional = true, default-features = false}
-puffin = {version = "0.16", optional = true, default-features = false}
-puffin_http = {version = "0.13", optional = true, default-features = false}
+egui_tiles = "0.5"
+puffin = {version = "0.18.1", optional = true, default-features = false}
+puffin_http = {version = "0.15", optional = true, default-features = false}
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-subscriber = "0.3"
+env_logger = { version = "0.10", features = ["auto-color", "humantime"] }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1.6"
-tracing-wasm = "0.2"
 wasm-bindgen-futures = "0.4"
 
 
