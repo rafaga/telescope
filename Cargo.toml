@@ -10,7 +10,6 @@ default = []
 puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
-egui = { version = "0.24", default-features = false, features = ["bytemuck", "cint", "serde", "deadlock_detection", "color-hex", "ron"] }
 eframe = { version = "0.24", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence"] }
 
 # You only need serde if you want app persistence:

@@ -1,6 +1,6 @@
 use crate::app::messages::Message;
 use data::AppData;
-use egui::{Color32, FontData, FontDefinitions, FontFamily, Image, Vec2};
+use eframe::egui;
 use egui_map::map::{objects::*, Map};
 use futures::executor::ThreadPool;
 use sde::objects::EveRegionArea;
@@ -220,20 +220,10 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             }*/
             //ui.label("鑑於對人類家庭所有成員的固有尊嚴及其平等的和不移的權利的承認，乃是世界自由、正義與和平的基礎");
         });
-
-        if false {
-            egui::Window::new("Window").show(ctx, |ui| {
-                ui.label("Windows can be moved by dragging them.");
-                ui.label("They are automatically sized based on contents.");
-                ui.label("You can turn on resizing and scrolling if you like.");
-                ui.label("You would normally choose either panels OR windows.");
-            });
-        }
     }
 }
 
 impl<'a> TelescopeApp<'a> {
-    fn initialize_application(&mut self) {}
 
     async fn event_manager(&mut self) {
         let received_data = self.rx.try_recv();
@@ -261,8 +251,8 @@ impl<'a> TelescopeApp<'a> {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.allocate_ui(Vec2::new(500.00, 150.00), |ui| {
-                        egui::ScrollArea::new([false, true])
+                    ui.allocate_ui(eframe::egui::Vec2::new(500.00, 150.00), |ui| {
+                        eframe::egui::ScrollArea::new([false, true])
                             //.auto_shrink([true,false])
                             .show(ui, |ui| {
                                 ui.vertical(|ui| {
@@ -271,7 +261,7 @@ impl<'a> TelescopeApp<'a> {
                                             #[cfg(feature = "puffin")]
                                             puffin::profile_scope!("displaying character");
 
-                                            ui.allocate_ui(Vec2::new(300.00, 50.00), |ui| {
+                                            ui.allocate_ui(eframe::egui::Vec2::new(300.00, 50.00), |ui| {
                                                 ui.group(|ui| {
                                                     ui.push_id(char.id, |ui| {
                                                         let inner = ui.horizontal_centered(|ui| {
@@ -283,7 +273,7 @@ impl<'a> TelescopeApp<'a> {
                                                                     ui.style_mut()
                                                                         .visuals
                                                                         .override_text_color =
-                                                                        Some(Color32::YELLOW);
+                                                                        Some(eframe::egui::Color32::YELLOW);
                                                                     //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
                                                                     //ui.style_mut().visuals.fade_out_to_color();
                                                                 }
@@ -291,10 +281,10 @@ impl<'a> TelescopeApp<'a> {
                                                             if let Some(player_photo) = &char.photo
                                                             {
                                                                 ui.add(
-                                                                    Image::new(
+                                                                    eframe::egui::Image::new(
                                                                         player_photo.as_str(),
                                                                     )
-                                                                    .fit_to_exact_size(Vec2::new(
+                                                                    .fit_to_exact_size(eframe::egui::Vec2::new(
                                                                         80.0, 80.0,
                                                                     )),
                                                                 );
@@ -345,7 +335,7 @@ impl<'a> TelescopeApp<'a> {
                                             });
                                         }
                                     } else {
-                                        ui.allocate_ui(Vec2::new(300.00, 50.00), |ui| {
+                                        ui.allocate_ui(eframe::egui::Vec2::new(300.00, 50.00), |ui| {
                                             ui.group(|ui| {
                                                 ui.vertical_centered(|ui| {
                                                     ui.label(
@@ -360,7 +350,7 @@ impl<'a> TelescopeApp<'a> {
                             });
                     });
                     ui.separator();
-                    ui.allocate_ui(Vec2::new(500.00, 150.00), |ui| {
+                    ui.allocate_ui(eframe::egui::Vec2::new(500.00, 150.00), |ui| {
                         #[cfg(feature = "puffin")]
                         puffin::profile_scope!("displaying character link buttons");
 
@@ -488,25 +478,26 @@ impl<'a> TelescopeApp<'a> {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
-        let mut fonts = FontDefinitions::default();
+        let mut fonts = eframe::egui::FontDefinitions::default();
         fonts.font_data.insert(
             "Noto Sans Regular".to_owned(),
-            FontData::from_static(include_bytes!("../assets/NotoSansTC-Regular.otf")),
+            eframe::egui::FontData::from_static(include_bytes!("../assets/NotoSansTC-Regular.otf")),
         );
         fonts
             .families
-            .get_mut(&FontFamily::Proportional)
+            .get_mut(&eframe::egui::FontFamily::Proportional)
             .unwrap()
             .insert(0, "Noto Sans Regular".to_owned());
-        cc.egui_ctx.set_fonts(fonts);
-        egui_extras::install_image_loaders(&cc.egui_ctx);
+
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
         if let Some(storage) = cc.storage {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
-        let mut app: TelescopeApp<'_> = Default::default();
-        app.initialize_application();
+        cc.egui_ctx.set_fonts(fonts);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+        
+        let app: TelescopeApp<'_> = Default::default();
         app
     }
 }

@@ -36,9 +36,10 @@ fn main()  -> eframe::Result<()> {
     start_puffin_server(); // NOTE: you may only want to call this if the users specifies some flag or clicks a button!
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
             .with_min_inner_size([400.0, 300.0]),
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 
