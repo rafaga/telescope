@@ -128,7 +128,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
             let txs = Arc::clone(&self.tx);
             let str_path = self.path.clone();
-            let factor_k = self.factor.clone() as i64;
+            let factor_k = self.factor as i64;
             let future = async move {
                 let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
                 if let Ok(points) = t_sde.get_systempoints(2) {
@@ -209,12 +209,13 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 let system_name: String = self.search_text.clone();
                 let center_on_target: bool = self.center_target;
                 let str_path = self.path.clone();
-                let factor_k = self.factor.clone() as i64;
+                let factor_k = self.factor as i64;
                 let future = async move {
                     let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
                     if !system_name.is_empty()  {
                         if let Ok(system_id) = t_sde.get_system_id(system_name.to_lowercase()){
-                            let _result = txs.send(Message::SystemNotification((system_id,center_on_target)));
+                            let _result = 
+                                txs.send(Message::SystemNotification((system_id,center_on_target))).await;
                         }                        
                     }
                 };
@@ -264,15 +265,11 @@ impl<'a> TelescopeApp<'a> {
             match msg {
                 Message::ProcessedMapCoordinates(points) => self.map.add_hashmap_points(points),
                 Message::ProcessedRegionalConnections(vec_lines) => self.map.add_lines(vec_lines),
-                Message::EsiAuthSuccess(character) => {
-                    self.update_character_into_database(character).await
-                }
+                Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
                 Message::EsiAuthError(message) => self.update_status_with_error(message),
                 Message::GenericError(message) => self.update_status_with_error(message),
                 Message::GenericWarning(message) => self.update_status_with_warning(message),
-                Message::RegionAreasLabels(region_areas) => {
-                    self.paint_map_region_labels(region_areas).await
-                }
+                Message::RegionAreasLabels(region_areas) => self.paint_map_region_labels(region_areas).await,
                 Message::SystemNotification(message) => self.search_target_and_notify(message).await,
             };
         }
@@ -391,7 +388,7 @@ impl<'a> TelescopeApp<'a> {
                         ui.vertical(|ui| {
                             if ui.button("Link new").clicked() {
                                 let auth_info = self.esi.esi.get_authorize_url().unwrap();
-                                match open::that(&auth_info.authorization_url) {
+                                match open::that(auth_info.authorization_url) {
                                     Ok(()) => {
                                         let tx = Arc::clone(&self.tx);
                                         let future = async move {
@@ -413,8 +410,12 @@ impl<'a> TelescopeApp<'a> {
                                         self.tpool.spawn_ok(future);
                                     }
                                     Err(err) => {
-                                        let _ =
-                                            self.tx.send(Message::GenericError(err.to_string()));
+                                        let tx = Arc::clone(&self.tx);
+                                        let future = async move {
+                                            let _ =
+                                                tx.send(Message::GenericError(err.to_string())).await;
+                                        };
+                                        self.tpool.spawn_ok(future);
                                     }
                                 }
                             }
@@ -431,8 +432,12 @@ impl<'a> TelescopeApp<'a> {
                                 self.esi.characters.remove(index);
                                 self.esi.active_character = None;
                                 if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
-                                    let _ =
-                                        self.tx.send(Message::GenericError(t_error.to_string()));
+                                    let tx = Arc::clone(&self.tx);
+                                    let future = async move {
+                                        let _ =
+                                            tx.send(Message::GenericError(t_error.to_string())).await;
+                                    };
+                                    self.tpool.spawn_ok(future);
                                 }
                             }
                         });
