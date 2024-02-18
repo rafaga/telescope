@@ -46,6 +46,14 @@ pub struct TelescopeApp<'a> {
 
     //#[serde(skip)]
     last_message: String,
+
+    search_text: String,
+    center_target: bool,
+
+    factor: u64,
+
+    #[serde(skip)]
+    path: String,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -79,6 +87,10 @@ impl<'a> Default for TelescopeApp<'a> {
             esi,
             tpool,
             last_message: String::from("Starting..."),
+            search_text: String::new(),
+            center_target: false,
+            factor: 50000000000000,
+            path: String::from("assets/sde.db"),
         }
     }
 }
@@ -104,27 +116,31 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             esi: _,
             tpool: _,
             last_message: _,
+            search_text: _,
+            center_target: _,
+            factor: _,
+            path: _,
         } = self;
 
         if !self.initialized {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("telescope_init");
 
-            let txs = self.tx.clone();
+            let txs = Arc::clone(&self.tx);
+            let str_path = self.path.clone();
+            let factor_k = self.factor.clone() as i64;
             let future = async move {
-                let factor = 50000000000000;
-                let path = Path::new("assets/sde.db");
-                let manager = SdeManager::new(path, factor);
-                if let Ok(points) = manager.get_systempoints(2) {
-                    if let Ok(hash_map) = manager.get_connections(points, 2) {
+                let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
+                if let Ok(points) = t_sde.get_systempoints(2) {
+                    if let Ok(hash_map) = t_sde.get_connections(points, 2) {
                         let _result = txs.send(Message::ProcessedMapCoordinates(hash_map)).await;
                     }
                     //we add persistent connections
-                    if let Ok(vec_lines) = manager.get_regional_connections(){
+                    if let Ok(vec_lines) = t_sde.get_regional_connections(){
                         let _result = txs.send(Message::ProcessedRegionalConnections(vec_lines)).await;
                     }
                 }
-                if let Ok(region_areas) = manager.get_region_coordinates() {
+                if let Ok(region_areas) = t_sde.get_region_coordinates() {
                     let _result = txs.send(Message::RegionAreasLabels(region_areas)).await;
                 }
             };
@@ -178,21 +194,38 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             });
         });
 
-        /*egui::SidePanel::left("side_panel")
+        egui::SidePanel::left("side_panel")
         .resizable(true)
         .show(ctx, |ui| {
             ui.heading("Side Panel");
 
             ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(label);
+                ui.label("System name: ");
+                ui.text_edit_singleline(&mut self.search_text);
             });
+            ui.checkbox(&mut self.center_target, "Center on System");
+            if ui.button("Generate Notification").clicked() {
+                let txs = Arc::clone(&self.tx);
+                let system_name: String = self.search_text.clone();
+                let center_on_target: bool = self.center_target;
+                let str_path = self.path.clone();
+                let factor_k = self.factor.clone() as i64;
+                let future = async move {
+                    let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
+                    if !system_name.is_empty()  {
+                        if let Ok(system_id) = t_sde.get_system_id(system_name.to_lowercase()){
+                            let _result = txs.send(Message::SystemNotification((system_id,center_on_target)));
+                        }                        
+                    }
+                };
+                self.tpool.spawn_ok(future);
+            }
 
             /*ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
             if ui.button("Increment").clicked() {
                 *value += 1.0;
             }*/
-        });*/
+        });
 
         if self.open[0] {
             self.open_about_window(ctx);
@@ -240,6 +273,7 @@ impl<'a> TelescopeApp<'a> {
                 Message::RegionAreasLabels(region_areas) => {
                     self.paint_map_region_labels(region_areas).await
                 }
+                Message::SystemNotification(message) => self.search_target_and_notify(message).await,
             };
         }
     }
@@ -455,6 +489,10 @@ impl<'a> TelescopeApp<'a> {
 
     fn update_status_with_warning(&mut self, message: String) {
         self.last_message = "Warning: ".to_string() + &message;
+    }
+
+    async fn search_target_and_notify(&mut self, message: (usize, bool)){
+       let _result = self.map.notify(message.0,message.1);
     }
 
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
