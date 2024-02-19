@@ -49,6 +49,9 @@ pub struct TelescopeApp<'a> {
 
     search_text: String,
     center_target: bool,
+    
+    #[serde(skip)]
+    search_results: Vec<(usize,String,String)>,
 
     factor: u64,
 
@@ -91,6 +94,7 @@ impl<'a> Default for TelescopeApp<'a> {
             center_target: false,
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
+            search_results: Vec::new(),
         }
     }
 }
@@ -120,6 +124,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             center_target: _,
             factor: _,
             path: _,
+            search_results: _,
         } = self;
 
         if !self.initialized {
@@ -213,15 +218,36 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 let future = async move {
                     let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
                     if !system_name.is_empty()  {
-                        if let Ok(system_id) = t_sde.get_system_id(system_name.to_lowercase()){
-                            let _result = 
-                                txs.send(Message::SystemNotification((system_id,center_on_target))).await;
+                        if let Ok(system_results) = t_sde.get_system_id(system_name.to_lowercase()){
+                            self.search_results = system_results;
+                            //let _result = 
+                                //txs.send(Message::SystemNotification((system_id,center_on_target))).await;
                         }                        
                     }
                 };
                 self.tpool.spawn_ok(future);
             }
 
+            /*
+            let body_text_size = TextStyle::Body.resolve(ui.style()).size;
+        use egui_extras::{Size, StripBuilder};
+        StripBuilder::new(ui)
+            .size(Size::remainder().at_least(100.0)) // for the table
+            .size(Size::exact(body_text_size)) // for the source code link
+            .vertical(|mut strip| {
+                strip.cell(|ui| {
+                    egui::ScrollArea::horizontal().show(ui, |ui| {
+                        self.table_ui(ui);
+                    });
+                });
+                strip.cell(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add(crate::egui_github_link_file!());
+                    });
+                });
+            });
+            https://github.com/emilk/egui/blob/master/crates/egui_demo_lib/src/demo/table_demo.rs
+             */
             /*ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
             if ui.button("Increment").clicked() {
                 *value += 1.0;
