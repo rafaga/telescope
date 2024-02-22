@@ -210,22 +210,23 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             });
             ui.checkbox(&mut self.center_target, "Center on System");
             if ui.button("Generate Notification").clicked() {
-                let txs = Arc::clone(&self.tx);
+                /*let txs = Arc::clone(&self.tx);
                 let system_name: String = self.search_text.clone();
                 let center_on_target: bool = self.center_target;
                 let str_path = self.path.clone();
                 let factor_k = self.factor as i64;
-                let future = async move {
-                    let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
-                    if !system_name.is_empty()  {
-                        if let Ok(system_results) = t_sde.get_system_id(system_name.to_lowercase()){
-                            self.search_results = system_results;
-                            //let _result = 
-                                //txs.send(Message::SystemNotification((system_id,center_on_target))).await;
-                        }                        
-                    }
-                };
-                self.tpool.spawn_ok(future);
+                let future = async move {*/                            
+                    //let _result = 
+                        //txs.send(Message::SystemNotification((system_id,center_on_target))).await;
+                //};
+                //self.tpool.spawn_ok(future);
+                let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
+                if self.search_text.is_empty()  {
+                    if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
+                        self.search_results = system_results;
+                    }                        
+                }
+                
             }
 
             /*

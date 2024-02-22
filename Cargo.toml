@@ -3,7 +3,8 @@ name = "telescope"
 version = "0.0.1"
 authors = ["Rafael Amador <rafaga@duck.com>"]
 edition = "2021"
-rust-version = "1.67.1"
+description = "Application to gather intel and alert players in Eve Online"
+rust-version = "1.75"
 
 [features]
 default = []
@@ -27,7 +28,7 @@ tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "m
 egui_extras = { version = "0.26", features = ["all_loaders"] }
 image = { version = "0", features = ["jpeg"] }
 wgpu = "0.17"
-egui_tiles = "0.5"
+egui_tiles = "0.7"
 puffin = {version = "0.18.1", optional = true, default-features = false}
 puffin_http = {version = "0.15", optional = true, default-features = false}
 
