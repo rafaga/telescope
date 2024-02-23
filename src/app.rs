@@ -194,7 +194,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             // The top panel is often a good place for a menu bar:
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
-                ui.spinner();
                 ui.separator();
                 ui.label(&self.last_message);
             });
@@ -270,7 +269,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                 ui.label("No result(s)");
                             });
                             row.col(|_ui| {
-                            });  
+                            });
                         });
                     }
                 });
