@@ -8,6 +8,7 @@ use sde::SdeManager;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use egui_extras::{Column, TableBuilder};
 
 pub mod data;
 pub mod messages;
@@ -199,60 +200,82 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             });
         });
 
-        egui::SidePanel::left("side_panel")
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.heading("Side Panel");
+        egui::SidePanel::left("side_panel").resizable(true).show(ctx, |ui| {
+            ui.heading("Stellar System Search");
 
             ui.horizontal(|ui| {
-                ui.label("System name: ");
+                ui.label("Name: ");
                 ui.text_edit_singleline(&mut self.search_text);
-            });
-            ui.checkbox(&mut self.center_target, "Center on System");
-            if ui.button("Generate Notification").clicked() {
-                /*let txs = Arc::clone(&self.tx);
-                let system_name: String = self.search_text.clone();
-                let center_on_target: bool = self.center_target;
-                let str_path = self.path.clone();
-                let factor_k = self.factor as i64;
-                let future = async move {*/                            
-                    //let _result = 
-                        //txs.send(Message::SystemNotification((system_id,center_on_target))).await;
-                //};
-                //self.tpool.spawn_ok(future);
-                let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
-                if self.search_text.is_empty()  {
-                    if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
-                        self.search_results = system_results;
-                    }                        
+                if ui.button("Search").clicked() {
+                    let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
+                    if self.search_text.is_empty()  {
+                        if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
+                            self.search_results = system_results;
+                        }                        
+                    }
                 }
-                
-            }
-
-            /*
-            let body_text_size = TextStyle::Body.resolve(ui.style()).size;
-        use egui_extras::{Size, StripBuilder};
-        StripBuilder::new(ui)
-            .size(Size::remainder().at_least(100.0)) // for the table
-            .size(Size::exact(body_text_size)) // for the source code link
-            .vertical(|mut strip| {
-                strip.cell(|ui| {
-                    egui::ScrollArea::horizontal().show(ui, |ui| {
-                        self.table_ui(ui);
-                    });
-                });
-                strip.cell(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add(crate::egui_github_link_file!());
-                    });
-                });
             });
-            https://github.com/emilk/egui/blob/master/crates/egui_demo_lib/src/demo/table_demo.rs
-             */
-            /*ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                *value += 1.0;
-            }*/
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.center_target, "Notify");
+                if ui.button("Advanced >>>").clicked() {
+                    let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
+                    if self.search_text.is_empty()  {
+                        if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
+                            self.search_results = system_results.clone();
+                        }                        
+                    }
+                }
+            });
+            ui.push_id("search_table", |ui| {
+                let mut table = TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::auto())
+                    .column(Column::auto())
+                    .min_scrolled_height(0.0);
+
+                table = table.sense(egui::Sense::click());
+                table.header(20.0, |mut header| {
+                    header.col(|ui| {
+                        ui.strong("System");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Region");
+                    });
+                }).body(|mut body| {
+                    for row_index in 0..self.search_results.len() {
+                        body.row(18.00, |mut row| {
+                            //row.set_selected(self.selection.contains(&row_index));
+                            row.col(|ui| {
+                                if ui.selectable_label(false,&self.search_results[row_index].1).clicked() {
+                                    let txs = Arc::clone(&self.tx);
+                                    let system_id = self.search_results[row_index].0;
+                                    //let center_on_target: bool = self.center_target;
+                                    let future = async move {                          
+                                        let _result = 
+                                            txs.send(Message::SystemNotification((system_id,true))).await;
+                                    };
+                                    self.tpool.spawn_ok(future);
+                                }
+                            });
+                            row.col(|ui| {
+                                ui.label(&self.search_results[row_index].2);
+                            });
+                        });
+                    }
+                    if self.search_results.len() == 0 {
+                        body.row(18.00, |mut row| {
+                            row.col(|ui| {
+                                ui.label("No result(s)");
+                            });
+                            row.col(|_ui| {
+                            });  
+                        });
+                    }
+                });
+                //self.toggle_row_selection(row_index, &row.response());
+            });
         });
 
         if self.open[0] {
