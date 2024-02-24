@@ -200,14 +200,14 @@ impl<'a> eframe::App for TelescopeApp<'a> {
         });
 
         egui::SidePanel::left("side_panel").resizable(true).show(ctx, |ui| {
-            ui.heading("Stellar System Search");
+            ui.heading("Search");
 
             ui.horizontal(|ui| {
                 ui.label("Name: ");
-                ui.text_edit_singleline(&mut self.search_text);
-                if ui.button("Search").clicked() {
-                    let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
-                    if self.search_text.is_empty()  {
+                let response = ui.text_edit_singleline(&mut self.search_text);
+                if response.changed() {
+                    if self.search_text.len() >= 3  {
+                        let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
                         if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
                             self.search_results = system_results;
                         }                        
@@ -217,12 +217,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.center_target, "Notify");
                 if ui.button("Advanced >>>").clicked() {
-                    let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
-                    if self.search_text.is_empty()  {
-                        if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
-                            self.search_results = system_results.clone();
-                        }                        
-                    }
                 }
             });
             ui.push_id("search_table", |ui| {
@@ -231,7 +225,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                     .resizable(true)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                     .column(Column::auto())
-                    .column(Column::auto())
+                    .column(Column::remainder())
                     .min_scrolled_height(0.0);
 
                 table = table.sense(egui::Sense::click());
@@ -250,10 +244,9 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                 if ui.selectable_label(false,&self.search_results[row_index].1).clicked() {
                                     let txs = Arc::clone(&self.tx);
                                     let system_id = self.search_results[row_index].0;
-                                    //let center_on_target: bool = self.center_target;
                                     let future = async move {                          
                                         let _result = 
-                                            txs.send(Message::SystemNotification((system_id,true))).await;
+                                            txs.send(Message::SystemNotification(system_id)).await;
                                     };
                                     self.tpool.spawn_ok(future);
                                 }
@@ -319,7 +312,9 @@ impl<'a> TelescopeApp<'a> {
                 Message::GenericError(message) => self.update_status_with_error(message),
                 Message::GenericWarning(message) => self.update_status_with_warning(message),
                 Message::RegionAreasLabels(region_areas) => self.paint_map_region_labels(region_areas).await,
-                Message::SystemNotification(message) => self.search_target_and_notify(message).await,
+                Message::SystemNotification(message) => self.notification_on_map(message).await,
+                Message::CenterOnSystem(message) => (),
+                Message::CenterOnRegion(message) => (),
             };
         }
     }
@@ -545,8 +540,8 @@ impl<'a> TelescopeApp<'a> {
         self.last_message = "Warning: ".to_string() + &message;
     }
 
-    async fn search_target_and_notify(&mut self, message: (usize, bool)){
-       let _result = self.map.notify(message.0,message.1);
+    async fn notification_on_map(&mut self, message: usize){
+       let _result = self.map.notify(message);
     }
 
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
@@ -558,8 +553,8 @@ impl<'a> TelescopeApp<'a> {
             let mut label = MapLabel::new();
             label.text = region.name;
             label.center = egui::Pos2::new(
-                (region.min.x / 50000000000000) as f32,
-                (region.min.y / 50000000000000) as f32,
+                (region.min.x / self.factor) as f32,
+                (region.min.y / self.factor) as f32,
             );
         }
         self.map.add_labels(labels)

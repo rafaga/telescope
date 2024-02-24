@@ -10,5 +10,7 @@ pub enum Message {
     EsiAuthError(String),
     GenericError(String),
     GenericWarning(String),
-    SystemNotification((usize, bool)),
+    CenterOnSystem(usize),
+    CenterOnRegion(usize),
+    SystemNotification(usize),
 }

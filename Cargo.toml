@@ -12,11 +12,7 @@ puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot
 
 [dependencies]
 eframe = { version = "0.26", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence"] }
-
-# You only need serde if you want app persistence:
 serde = { version = "1", features = ["serde_derive"] }
-
-# additional dependencies
 sde = { git = "http://github.com/rafaga/sde.git", branch = "test"}
 kdtree = { version = "0.7", features = ["serde", "serde_derive", "serialize"] }
 egui-map = { git = "http://github.com/rafaga/egui-map.git", branch = "test"}
