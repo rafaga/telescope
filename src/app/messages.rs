@@ -7,10 +7,18 @@ pub enum Message {
     RegionAreasLabels(Vec<EveRegionArea>),
     EsiAuthSuccess((String, String)),
     ProcessedRegionalConnections(Vec<MapLine>),
-    EsiAuthError(String),
-    GenericError(String),
-    GenericWarning(String),
+    GenericMessage((MessageType,String,String,String)),
     CenterOnSystem(usize),
-    CenterOnRegion(usize),
     SystemNotification(usize),
+}
+
+pub enum MessageType {
+    Info,
+    Error,
+    Warning,
+}
+
+
+pub enum TargetType{
+    System,
 }

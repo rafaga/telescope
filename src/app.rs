@@ -1,4 +1,4 @@
-use crate::app::messages::Message;
+use crate::app::messages::{Message,TargetType,MessageType};
 use data::AppData;
 use eframe::egui;
 use egui_map::map::{objects::*, Map};
@@ -49,10 +49,10 @@ pub struct TelescopeApp<'a> {
     last_message: String,
 
     search_text: String,
-    center_target: bool,
+    emit_notification: bool,
     
     #[serde(skip)]
-    search_results: Vec<(usize,String,String)>,
+    search_results: Vec<(usize,String,usize,String)>,
 
     factor: u64,
 
@@ -92,7 +92,7 @@ impl<'a> Default for TelescopeApp<'a> {
             tpool,
             last_message: String::from("Starting..."),
             search_text: String::new(),
-            center_target: false,
+            emit_notification: false,
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
@@ -122,7 +122,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             tpool: _,
             last_message: _,
             search_text: _,
-            center_target: _,
+            emit_notification: _,
             factor: _,
             path: _,
             search_results: _,
@@ -208,14 +208,24 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 if response.changed() {
                     if self.search_text.len() >= 3  {
                         let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
-                        if let Ok(system_results) = sde.get_system_id(self.search_text.clone().to_lowercase()){
-                            self.search_results = system_results;
-                        }                        
+                        match sde.get_system_id(self.search_text.clone().to_lowercase()) {
+                            Ok(system_results) => self.search_results = system_results,
+                            Err(t_error) => {
+                                let txs = Arc::clone(&self.tx);
+                                let future = async move {                          
+                                    let _ = txs.send(Message::GenericMessage((MessageType::Error,String::from("sde"),String::from("get_system_id"),t_error.to_string()))).await;
+                                };
+                                self.tpool.spawn_ok(future);
+                            }
+                        }             
+                    }
+                    if self.search_text.len() == 0 {
+                        self.search_results.clear();
                     }
                 }
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut self.center_target, "Notify");
+                ui.checkbox(&mut self.emit_notification, "Notify");
                 if ui.button("Advanced >>>").clicked() {
                 }
             });
@@ -244,15 +254,19 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                 if ui.selectable_label(false,&self.search_results[row_index].1).clicked() {
                                     let txs = Arc::clone(&self.tx);
                                     let system_id = self.search_results[row_index].0;
+                                    let emit_notification = self.emit_notification;
                                     let future = async move {                          
                                         let _result = 
-                                            txs.send(Message::SystemNotification(system_id)).await;
+                                            txs.send(Message::CenterOnSystem(system_id)).await;
+                                        if emit_notification {
+                                            let _ = txs.send(Message::SystemNotification(system_id)).await;
+                                        }
                                     };
                                     self.tpool.spawn_ok(future);
                                 }
                             });
                             row.col(|ui| {
-                                ui.label(&self.search_results[row_index].2);
+                                ui.label(&self.search_results[row_index].3);
                             });
                         });
                     }
@@ -308,13 +322,10 @@ impl<'a> TelescopeApp<'a> {
                 Message::ProcessedMapCoordinates(points) => self.map.add_hashmap_points(points),
                 Message::ProcessedRegionalConnections(vec_lines) => self.map.add_lines(vec_lines),
                 Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
-                Message::EsiAuthError(message) => self.update_status_with_error(message),
-                Message::GenericError(message) => self.update_status_with_error(message),
-                Message::GenericWarning(message) => self.update_status_with_warning(message),
+                Message::GenericMessage(message) => self.update_status_with_error(message),
                 Message::RegionAreasLabels(region_areas) => self.paint_map_region_labels(region_areas).await,
                 Message::SystemNotification(message) => self.notification_on_map(message).await,
-                Message::CenterOnSystem(message) => (),
-                Message::CenterOnRegion(message) => (),
+                Message::CenterOnSystem(message) => self.center_on_target(message, TargetType::System).await,
             };
         }
     }
@@ -444,8 +455,11 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                                 Err(t_error) => {
                                                     let _ = tx
-                                                        .send(Message::GenericError(
-                                                            t_error.to_string(),
+                                                        .send(Message::GenericMessage(
+                                                            (MessageType::Error,
+                                                            String::from("EsiManager"),
+                                                            String::from("launch_auth_server"),
+                                                            t_error.to_string())
                                                         ))
                                                         .await;
                                                 }
@@ -457,7 +471,7 @@ impl<'a> TelescopeApp<'a> {
                                         let tx = Arc::clone(&self.tx);
                                         let future = async move {
                                             let _ =
-                                                tx.send(Message::GenericError(err.to_string())).await;
+                                                tx.send(Message::GenericMessage((MessageType::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
                                         };
                                         self.tpool.spawn_ok(future);
                                     }
@@ -479,7 +493,7 @@ impl<'a> TelescopeApp<'a> {
                                     let tx = Arc::clone(&self.tx);
                                     let future = async move {
                                         let _ =
-                                            tx.send(Message::GenericError(t_error.to_string())).await;
+                                            tx.send(Message::GenericMessage((MessageType::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
                                     };
                                     self.tpool.spawn_ok(future);
                                 }
@@ -509,6 +523,23 @@ impl<'a> TelescopeApp<'a> {
             });
     }
 
+    async fn center_on_target(&mut self, node_id:usize, target:TargetType) {
+        match target {
+            TargetType::System => {
+                if let Some(system) = self.points.get(node_id){
+                    self.map.set_pos(system.coords[0] as f32, system.coords[1] as f32);
+                } else {
+                    let stx = Arc::clone(&self.tx);
+                    let mut msg = String::from("System with Id ");
+                    msg += (node_id.to_string() + "could not be located").as_str();
+                    let _ = stx.send(Message::GenericMessage((MessageType::Warning,String::from("self.points Hashmap"),String::from("get"),msg))).await;
+                }
+                
+            }
+        }
+    }
+
+
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("update_character_into_database");
@@ -521,23 +552,17 @@ impl<'a> TelescopeApp<'a> {
             }
             Ok(None) => {
                 let _ = tx
-                    .send(Message::GenericWarning(
-                        "There was some error authenticating the player.".to_string(),
-                    ))
+                    .send(Message::GenericMessage((MessageType::Info,String::from("EsiManager"),String::from("auth_user"),String::from("Apparently thre was some kind of trouble authenticating the player."))))
                     .await;
             }
             Err(t_error) => {
-                let _ = tx.send(Message::GenericError(t_error.to_string())).await;
+                let _ = tx.send(Message::GenericMessage((MessageType::Error,String::from("EsiManager"),String::from("auth_user"),t_error.to_string()))).await;
             }
         };
     }
 
-    fn update_status_with_error(&mut self, message: String) {
-        self.last_message = "Error: ".to_string() + &message;
-    }
-
-    fn update_status_with_warning(&mut self, message: String) {
-        self.last_message = "Warning: ".to_string() + &message;
+    fn update_status_with_error(&mut self, message: (MessageType,String,String,String)) {
+        self.last_message = "Error: ".to_string() + &message.3;
     }
 
     async fn notification_on_map(&mut self, message: usize){
@@ -553,8 +578,8 @@ impl<'a> TelescopeApp<'a> {
             let mut label = MapLabel::new();
             label.text = region.name;
             label.center = egui::Pos2::new(
-                (region.min.x / self.factor) as f32,
-                (region.min.y / self.factor) as f32,
+                (region.min.x / self.factor as i64) as f32,
+                (region.min.y / self.factor as i64) as f32,
             );
         }
         self.map.add_labels(labels)
