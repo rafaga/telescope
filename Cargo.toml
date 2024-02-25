@@ -22,7 +22,7 @@ chrono = "0.4"
 futures = { version = "0.3", features = ["thread-pool", "futures-executor"] }
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.26", features = ["all_loaders"] }
-image = { version = "0", features = ["jpeg"] }
+image = { version = "0", features = ["jpeg","png"] }
 wgpu = "0.17"
 egui_tiles = "0.7"
 puffin = {version = "0.18.1", optional = true, default-features = false}

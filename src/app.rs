@@ -132,6 +132,8 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("telescope_init");
 
+            egui_extras::install_image_loaders(ctx);
+
             let txs = Arc::clone(&self.tx);
             let str_path = self.path.clone();
             let factor_k = self.factor as i64;
@@ -539,16 +541,25 @@ impl<'a> TelescopeApp<'a> {
         puffin::profile_scope!("open_about_window");
 
         egui::Window::new("About Telescope")
+            .fixed_size((400.0, 200.0))
             .open(&mut self.open[0])
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.heading("Telescope");
-                    ui.label("Author: Rafael Amador Galván");
-                    ui.label("©2023");
-                    if ui.link("https://github.com/rafaga/telescope").clicked() {
-                        let _a = open::that("https://github.com/rafaga/telescope");
-                    }
-                    egui::warn_if_debug_build(ui);
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Image::new(egui::include_image!("../assets/icon01-128.png"))
+                            .fit_to_original_size(1.0),
+                    );
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.heading("Telescope");
+                        ui.strong("v 0.0.1");
+                        ui.label("Author: Rafael Amador Galván");
+                        ui.label("©2023-2024, All rights reserved.");
+                        if ui.link("https://github.com/rafaga/telescope").clicked() {
+                            let _a = open::that("https://github.com/rafaga/telescope");
+                        }
+                        egui::warn_if_debug_build(ui);
+                    });
                 });
             });
     }
@@ -657,7 +668,6 @@ impl<'a> TelescopeApp<'a> {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }
         cc.egui_ctx.set_fonts(fonts);
-        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let app: TelescopeApp<'_> = Default::default();
         app
