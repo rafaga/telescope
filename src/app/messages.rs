@@ -1,4 +1,4 @@
-use egui_map::map::objects::{MapPoint,MapLine};
+use egui_map::map::objects::{MapLine, MapPoint};
 use sde::objects::EveRegionArea;
 use std::collections::HashMap;
 
@@ -7,18 +7,17 @@ pub enum Message {
     RegionAreasLabels(Vec<EveRegionArea>),
     EsiAuthSuccess((String, String)),
     ProcessedRegionalConnections(Vec<MapLine>),
-    GenericMessage((MessageType,String,String,String)),
+    GenericNotification((Type, String, String, String)),
     CenterOnSystem(usize),
     SystemNotification(usize),
 }
 
-pub enum MessageType {
+pub enum Type {
     Info,
     Error,
     Warning,
 }
 
-
-pub enum TargetType{
+pub enum Target {
     System,
 }

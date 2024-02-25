@@ -1,6 +1,7 @@
-use crate::app::messages::{Message,TargetType,MessageType};
+use crate::app::messages::{Message, Target, Type};
 use data::AppData;
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use egui_map::map::{objects::*, Map};
 use futures::executor::ThreadPool;
 use sde::objects::EveRegionArea;
@@ -8,7 +9,6 @@ use sde::SdeManager;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use egui_extras::{Column, TableBuilder};
 
 pub mod data;
 pub mod messages;
@@ -28,7 +28,7 @@ pub struct TelescopeApp<'a> {
     map: Map,
 
     #[serde(skip)]
-    tx: Arc<Box<Sender<Message>>>,
+    tx: Arc<Sender<Message>>,
 
     #[serde(skip)]
     rx: Receiver<Message>,
@@ -50,9 +50,9 @@ pub struct TelescopeApp<'a> {
 
     search_text: String,
     emit_notification: bool,
-    
+
     #[serde(skip)]
-    search_results: Vec<(usize,String,usize,String)>,
+    search_results: Vec<(usize, String, usize, String)>,
 
     factor: u64,
 
@@ -65,7 +65,7 @@ impl<'a> Default for TelescopeApp<'a> {
         let (ntx, rx) = channel::<messages::Message>(10);
         let app_data = AppData::new();
 
-        let tx = Arc::new(Box::new(ntx));
+        let tx = Arc::new(ntx);
 
         let esi = webb::esi::EsiManager::new(
             app_data.user_agent.as_str(),
@@ -142,8 +142,10 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                         let _result = txs.send(Message::ProcessedMapCoordinates(hash_map)).await;
                     }
                     //we add persistent connections
-                    if let Ok(vec_lines) = t_sde.get_regional_connections(){
-                        let _result = txs.send(Message::ProcessedRegionalConnections(vec_lines)).await;
+                    if let Ok(vec_lines) = t_sde.get_regional_connections() {
+                        let _result = txs
+                            .send(Message::ProcessedRegionalConnections(vec_lines))
+                            .await;
                     }
                 }
                 if let Ok(region_areas) = t_sde.get_region_coordinates() {
@@ -199,90 +201,113 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             });
         });
 
-        egui::SidePanel::left("side_panel").resizable(true).show(ctx, |ui| {
-            ui.heading("Search");
+        egui::SidePanel::left("side_panel")
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.heading("Search");
 
-            ui.horizontal(|ui| {
-                ui.label("Name: ");
-                let response = ui.text_edit_singleline(&mut self.search_text);
-                if response.changed() {
-                    if self.search_text.len() >= 3  {
-                        let sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
-                        match sde.get_system_id(self.search_text.clone().to_lowercase()) {
-                            Ok(system_results) => self.search_results = system_results,
-                            Err(t_error) => {
-                                let txs = Arc::clone(&self.tx);
-                                let future = async move {                          
-                                    let _ = txs.send(Message::GenericMessage((MessageType::Error,String::from("sde"),String::from("get_system_id"),t_error.to_string()))).await;
-                                };
-                                self.tpool.spawn_ok(future);
-                            }
-                        }             
-                    }
-                    if self.search_text.len() == 0 {
-                        self.search_results.clear();
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.emit_notification, "Notify");
-                if ui.button("Advanced >>>").clicked() {
-                }
-            });
-            ui.push_id("search_table", |ui| {
-                let mut table = TableBuilder::new(ui)
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::auto())
-                    .column(Column::remainder())
-                    .min_scrolled_height(0.0);
-
-                table = table.sense(egui::Sense::click());
-                table.header(20.0, |mut header| {
-                    header.col(|ui| {
-                        ui.strong("System");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Region");
-                    });
-                }).body(|mut body| {
-                    for row_index in 0..self.search_results.len() {
-                        body.row(18.00, |mut row| {
-                            //row.set_selected(self.selection.contains(&row_index));
-                            row.col(|ui| {
-                                if ui.selectable_label(false,&self.search_results[row_index].1).clicked() {
+                ui.horizontal(|ui| {
+                    ui.label("Name: ");
+                    let response = ui.text_edit_singleline(&mut self.search_text);
+                    if response.changed() {
+                        if self.search_text.len() >= 3 {
+                            let sde = SdeManager::new(
+                                Path::new(&self.path),
+                                self.factor.try_into().unwrap(),
+                            );
+                            match sde.get_system_id(self.search_text.clone().to_lowercase()) {
+                                Ok(system_results) => self.search_results = system_results,
+                                Err(t_error) => {
                                     let txs = Arc::clone(&self.tx);
-                                    let system_id = self.search_results[row_index].0;
-                                    let emit_notification = self.emit_notification;
-                                    let future = async move {                          
-                                        let _result = 
-                                            txs.send(Message::CenterOnSystem(system_id)).await;
-                                        if emit_notification {
-                                            let _ = txs.send(Message::SystemNotification(system_id)).await;
-                                        }
+                                    let future = async move {
+                                        let _ = txs
+                                            .send(Message::GenericNotification((
+                                                Type::Error,
+                                                String::from("sde"),
+                                                String::from("get_system_id"),
+                                                t_error.to_string(),
+                                            )))
+                                            .await;
                                     };
                                     self.tpool.spawn_ok(future);
                                 }
-                            });
-                            row.col(|ui| {
-                                ui.label(&self.search_results[row_index].3);
-                            });
-                        });
-                    }
-                    if self.search_results.len() == 0 {
-                        body.row(18.00, |mut row| {
-                            row.col(|ui| {
-                                ui.label("No result(s)");
-                            });
-                            row.col(|_ui| {
-                            });
-                        });
+                            }
+                        }
+                        if self.search_text.is_empty() {
+                            self.search_results.clear();
+                        }
                     }
                 });
-                //self.toggle_row_selection(row_index, &row.response());
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.emit_notification, "Notify");
+                    if ui.button("Advanced >>>").clicked() {}
+                });
+                ui.push_id("search_table", |ui| {
+                    let mut table = TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::auto())
+                        .column(Column::remainder())
+                        .min_scrolled_height(0.0);
+
+                    table = table.sense(egui::Sense::click());
+                    table
+                        .header(20.0, |mut header| {
+                            header.col(|ui| {
+                                ui.strong("System");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Region");
+                            });
+                        })
+                        .body(|mut body| {
+                            for row_index in 0..self.search_results.len() {
+                                body.row(18.00, |mut row| {
+                                    //row.set_selected(self.selection.contains(&row_index));
+                                    row.col(|ui| {
+                                        if ui
+                                            .selectable_label(
+                                                false,
+                                                &self.search_results[row_index].1,
+                                            )
+                                            .clicked()
+                                        {
+                                            let txs = Arc::clone(&self.tx);
+                                            let system_id = self.search_results[row_index].0;
+                                            let emit_notification = self.emit_notification;
+                                            let future = async move {
+                                                let _result = txs
+                                                    .send(Message::CenterOnSystem(system_id))
+                                                    .await;
+                                                if emit_notification {
+                                                    let _ = txs
+                                                        .send(Message::SystemNotification(
+                                                            system_id,
+                                                        ))
+                                                        .await;
+                                                }
+                                            };
+                                            self.tpool.spawn_ok(future);
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        ui.label(&self.search_results[row_index].3);
+                                    });
+                                });
+                            }
+                            if self.search_results.is_empty() {
+                                body.row(18.00, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label("No result(s)");
+                                    });
+                                    row.col(|_ui| {});
+                                });
+                            }
+                        });
+                    //self.toggle_row_selection(row_index, &row.response());
+                });
             });
-        });
 
         if self.open[0] {
             self.open_about_window(ctx);
@@ -314,18 +339,23 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 }
 
 impl<'a> TelescopeApp<'a> {
-
     async fn event_manager(&mut self) {
         let received_data = self.rx.try_recv();
         if let Ok(msg) = received_data {
             match msg {
                 Message::ProcessedMapCoordinates(points) => self.map.add_hashmap_points(points),
                 Message::ProcessedRegionalConnections(vec_lines) => self.map.add_lines(vec_lines),
-                Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
-                Message::GenericMessage(message) => self.update_status_with_error(message),
-                Message::RegionAreasLabels(region_areas) => self.paint_map_region_labels(region_areas).await,
+                Message::EsiAuthSuccess(character) => {
+                    self.update_character_into_database(character).await
+                }
+                Message::GenericNotification(message) => self.update_status_with_error(message),
+                Message::RegionAreasLabels(region_areas) => {
+                    self.paint_map_region_labels(region_areas).await
+                }
                 Message::SystemNotification(message) => self.notification_on_map(message).await,
-                Message::CenterOnSystem(message) => self.center_on_target(message, TargetType::System).await,
+                Message::CenterOnSystem(message) => {
+                    self.center_on_target(message, Target::System).await
+                }
             };
         }
     }
@@ -455,8 +485,8 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                                 Err(t_error) => {
                                                     let _ = tx
-                                                        .send(Message::GenericMessage(
-                                                            (MessageType::Error,
+                                                        .send(Message::GenericNotification(
+                                                            (Type::Error,
                                                             String::from("EsiManager"),
                                                             String::from("launch_auth_server"),
                                                             t_error.to_string())
@@ -471,7 +501,7 @@ impl<'a> TelescopeApp<'a> {
                                         let tx = Arc::clone(&self.tx);
                                         let future = async move {
                                             let _ =
-                                                tx.send(Message::GenericMessage((MessageType::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
+                                                tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
                                         };
                                         self.tpool.spawn_ok(future);
                                     }
@@ -493,7 +523,7 @@ impl<'a> TelescopeApp<'a> {
                                     let tx = Arc::clone(&self.tx);
                                     let future = async move {
                                         let _ =
-                                            tx.send(Message::GenericMessage((MessageType::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
+                                            tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
                                     };
                                     self.tpool.spawn_ok(future);
                                 }
@@ -523,22 +553,28 @@ impl<'a> TelescopeApp<'a> {
             });
     }
 
-    async fn center_on_target(&mut self, node_id:usize, target:TargetType) {
+    async fn center_on_target(&mut self, node_id: usize, target: Target) {
         match target {
-            TargetType::System => {
-                if let Some(system) = self.points.get(node_id){
-                    self.map.set_pos(system.coords[0] as f32, system.coords[1] as f32);
+            Target::System => {
+                if let Some(system) = self.points.get(node_id) {
+                    self.map
+                        .set_pos(system.coords[0] as f32, system.coords[1] as f32);
                 } else {
                     let stx = Arc::clone(&self.tx);
                     let mut msg = String::from("System with Id ");
                     msg += (node_id.to_string() + "could not be located").as_str();
-                    let _ = stx.send(Message::GenericMessage((MessageType::Warning,String::from("self.points Hashmap"),String::from("get"),msg))).await;
+                    let _ = stx
+                        .send(Message::GenericNotification((
+                            Type::Warning,
+                            String::from("self.points Hashmap"),
+                            String::from("get"),
+                            msg,
+                        )))
+                        .await;
                 }
-                
             }
         }
     }
-
 
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
@@ -546,27 +582,41 @@ impl<'a> TelescopeApp<'a> {
 
         let tx = Arc::clone(&self.tx);
         let auth_info = self.esi.esi.get_authorize_url().unwrap();
-        match self.esi.auth_user(auth_info,response_data).await {
+        match self.esi.auth_user(auth_info, response_data).await {
             Ok(Some(player)) => {
                 self.esi.characters.push(player);
             }
             Ok(None) => {
                 let _ = tx
-                    .send(Message::GenericMessage((MessageType::Info,String::from("EsiManager"),String::from("auth_user"),String::from("Apparently thre was some kind of trouble authenticating the player."))))
+                    .send(Message::GenericNotification((
+                        Type::Info,
+                        String::from("EsiManager"),
+                        String::from("auth_user"),
+                        String::from(
+                            "Apparently thre was some kind of trouble authenticating the player.",
+                        ),
+                    )))
                     .await;
             }
             Err(t_error) => {
-                let _ = tx.send(Message::GenericMessage((MessageType::Error,String::from("EsiManager"),String::from("auth_user"),t_error.to_string()))).await;
+                let _ = tx
+                    .send(Message::GenericNotification((
+                        Type::Error,
+                        String::from("EsiManager"),
+                        String::from("auth_user"),
+                        t_error.to_string(),
+                    )))
+                    .await;
             }
         };
     }
 
-    fn update_status_with_error(&mut self, message: (MessageType,String,String,String)) {
+    fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
         self.last_message = "Error: ".to_string() + &message.3;
     }
 
-    async fn notification_on_map(&mut self, message: usize){
-       let _result = self.map.notify(message);
+    async fn notification_on_map(&mut self, message: usize) {
+        let _result = self.map.notify(message);
     }
 
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
@@ -608,7 +658,7 @@ impl<'a> TelescopeApp<'a> {
         }
         cc.egui_ctx.set_fonts(fonts);
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        
+
         let app: TelescopeApp<'_> = Default::default();
         app
     }

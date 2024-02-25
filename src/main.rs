@@ -28,7 +28,7 @@ fn start_puffin_server() {
 
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
-fn main()  -> eframe::Result<()> {
+fn main() -> eframe::Result<()> {
     // Log to stdout (if you run with `RUST_LOG=debug`).
     //tracing_subscriber::fmt::init();
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -39,7 +39,10 @@ fn main()  -> eframe::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
             .with_min_inner_size([400.0, 300.0])
-            .with_icon(eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon01-1024.png")[..]).unwrap(),),
+            .with_icon(
+                eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon01-1024.png")[..])
+                    .unwrap(),
+            ),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
