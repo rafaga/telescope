@@ -273,8 +273,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                 body.row(18.00, |mut row| {
                                     if row_index == self.search_result_selected_index {
                                         row.set_selected(true);
-                                    }
-                                    else{
+                                    } else {
                                         row.set_selected(false);
                                     }
                                     row.col(|ui| {
