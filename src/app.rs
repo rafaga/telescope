@@ -52,6 +52,9 @@ pub struct TelescopeApp<'a> {
     emit_notification: bool,
 
     #[serde(skip)]
+    search_result_selected_index: usize,
+
+    #[serde(skip)]
     search_results: Vec<(usize, String, usize, String)>,
 
     factor: u64,
@@ -92,6 +95,7 @@ impl<'a> Default for TelescopeApp<'a> {
             tpool,
             last_message: String::from("Starting..."),
             search_text: String::new(),
+            search_result_selected_index: 0,
             emit_notification: false,
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
@@ -125,6 +129,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             emit_notification: _,
             factor: _,
             path: _,
+            search_result_selected_index: _,
             search_results: _,
         } = self;
 
@@ -271,7 +276,11 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                         .body(|mut body| {
                             for row_index in 0..self.search_results.len() {
                                 body.row(18.00, |mut row| {
-                                    //row.set_selected(self.selection.contains(&row_index));
+                                    if row_index == self.search_result_selected_index {
+                                        row.set_selected(true);
+                                    } else {
+                                        row.set_selected(false);
+                                    }
                                     row.col(|ui| {
                                         if ui
                                             .selectable_label(
@@ -280,6 +289,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                             )
                                             .clicked()
                                         {
+                                            self.search_result_selected_index = row_index;
                                             let txs = Arc::clone(&self.tx);
                                             let system_id = self.search_results[row_index].0;
                                             let emit_notification = self.emit_notification;
@@ -323,6 +333,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                         }
                                     });
                                 });
+                                //self.toggle_row_selection(row_index, &row.response());
                             }
                             if self.search_results.is_empty() {
                                 body.row(18.00, |mut row| {
@@ -333,7 +344,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                 });
                             }
                         });
-                    //self.toggle_row_selection(row_index, &row.response());
+                    //
                 });
             });
 
