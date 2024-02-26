@@ -239,9 +239,14 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                             self.search_results.clear();
                         }
                     }
+                   
                 });
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.emit_notification, "Notify");
+                    if ui.button("Clear").clicked() {
+                        self.search_text.clear();
+                        self.search_results.clear();
+                    }
                     if ui.button("Advanced >>>").clicked() {}
                 });
                 ui.push_id("search_table", |ui| {
@@ -280,7 +285,10 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                             let emit_notification = self.emit_notification;
                                             let future = async move {
                                                 let _result = txs
-                                                    .send(Message::CenterOnSystem(system_id))
+                                                    .send(Message::CenterOn((
+                                                        system_id,
+                                                        Target::System,
+                                                    )))
                                                     .await;
                                                 if emit_notification {
                                                     let _ = txs
@@ -294,7 +302,25 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                         }
                                     });
                                     row.col(|ui| {
-                                        ui.label(&self.search_results[row_index].3);
+                                        if ui
+                                            .selectable_label(
+                                                false,
+                                                &self.search_results[row_index].3,
+                                            )
+                                            .clicked()
+                                        {
+                                            let txs = Arc::clone(&self.tx);
+                                            let region_id = self.search_results[row_index].2;
+                                            let future = async move {
+                                                let _result = txs
+                                                    .send(Message::CenterOn((
+                                                        region_id,
+                                                        Target::Region,
+                                                    )))
+                                                    .await;
+                                            };
+                                            self.tpool.spawn_ok(future);
+                                        }
                                     });
                                 });
                             }
@@ -355,9 +381,7 @@ impl<'a> TelescopeApp<'a> {
                     self.paint_map_region_labels(region_areas).await
                 }
                 Message::SystemNotification(message) => self.notification_on_map(message).await,
-                Message::CenterOnSystem(message) => {
-                    self.center_on_target(message, Target::System).await
-                }
+                Message::CenterOn(message) => self.center_on_target(message).await,
             };
         }
     }
@@ -564,16 +588,16 @@ impl<'a> TelescopeApp<'a> {
             });
     }
 
-    async fn center_on_target(&mut self, node_id: usize, target: Target) {
-        match target {
+    async fn center_on_target(&mut self, message: (usize, Target)) {
+        match message.1 {
             Target::System => {
-                if let Some(system) = self.points.get(node_id) {
+                if let Some(system) = self.points.get(message.0) {
                     self.map
                         .set_pos(system.coords[0] as f32, system.coords[1] as f32);
                 } else {
                     let stx = Arc::clone(&self.tx);
                     let mut msg = String::from("System with Id ");
-                    msg += (node_id.to_string() + "could not be located").as_str();
+                    msg += (message.0.to_string() + "could not be located").as_str();
                     let _ = stx
                         .send(Message::GenericNotification((
                             Type::Warning,
@@ -583,6 +607,9 @@ impl<'a> TelescopeApp<'a> {
                         )))
                         .await;
                 }
+            }
+            Target::Region => {
+                todo!();
             }
         }
     }
@@ -623,7 +650,18 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
-        self.last_message = "Error: ".to_string() + &message.3;
+        match message.0 {
+            Type::Error => {
+                self.last_message = "Error on ".to_string() + &message.1 + "-" + &message.2 + ">" + &message.3;
+            },
+            Type::Warning => {
+
+            },
+            Type::Info => {
+
+            }
+        }
+        
     }
 
     async fn notification_on_map(&mut self, message: usize) {

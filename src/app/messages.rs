@@ -8,7 +8,7 @@ pub enum Message {
     EsiAuthSuccess((String, String)),
     ProcessedRegionalConnections(Vec<MapLine>),
     GenericNotification((Type, String, String, String)),
-    CenterOnSystem(usize),
+    CenterOn((usize, Target)),
     SystemNotification(usize),
 }
 
@@ -20,4 +20,5 @@ pub enum Type {
 
 pub enum Target {
     System,
+    Region,
 }

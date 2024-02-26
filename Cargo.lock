@@ -1086,7 +1086,7 @@ dependencies = [
 [[package]]
 name = "egui-map"
 version = "0.0.11"
-source = "git+http://github.com/rafaga/egui-map.git?branch=test#4d93427e4d659ee2b68943e2f95a7264408f4936"
+source = "git+http://github.com/rafaga/egui-map.git?branch=test#30124b6f7890f880acf145e34e75f0a96536bbab"
 dependencies = [
  "egui",
  "kdtree",
@@ -1812,9 +1812,9 @@ dependencies = [
 
 [[package]]
 name = "half"
-version = "2.3.1"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc52e53916c08643f1b56ec082790d1e86a32e58dc5268f897f313fbae7b4872"
+checksum = "b5eceaaeec696539ddaf7b333340f1af35a5aa87ae3e4f3ead0532f72affab2e"
 dependencies = [
  "cfg-if",
  "crunchy",
@@ -3491,7 +3491,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sde"
 version = "0.0.17"
-source = "git+http://github.com/rafaga/sde.git?branch=test#c8ed2299c6bb9b193c0f1d8da929194c58badcd0"
+source = "git+http://github.com/rafaga/sde.git?branch=test#e8712f8b6000dfd1cdc7a7851eb8effc002cfccd"
 dependencies = [
  "egui-map",
  "puffin 0.18.1",
