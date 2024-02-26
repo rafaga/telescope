@@ -244,7 +244,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                             self.search_results.clear();
                         }
                     }
-                   
                 });
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.emit_notification, "Notify");
@@ -663,16 +662,12 @@ impl<'a> TelescopeApp<'a> {
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
         match message.0 {
             Type::Error => {
-                self.last_message = "Error on ".to_string() + &message.1 + "-" + &message.2 + ">" + &message.3;
-            },
-            Type::Warning => {
-
-            },
-            Type::Info => {
-
+                self.last_message =
+                    "Error on ".to_string() + &message.1 + "-" + &message.2 + ">" + &message.3;
             }
+            Type::Warning => {}
+            Type::Info => {}
         }
-        
     }
 
     async fn notification_on_map(&mut self, message: usize) {
