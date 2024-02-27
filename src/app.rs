@@ -51,8 +51,7 @@ pub struct TelescopeApp<'a> {
     search_text: String,
     emit_notification: bool,
 
-    #[serde(skip)]
-    search_result_selected_index: usize,
+    search_selected_row: Option<usize>,
 
     #[serde(skip)]
     search_results: Vec<(usize, String, usize, String)>,
@@ -95,7 +94,7 @@ impl<'a> Default for TelescopeApp<'a> {
             tpool,
             last_message: String::from("Starting..."),
             search_text: String::new(),
-            search_result_selected_index: 0,
+            search_selected_row: None,
             emit_notification: false,
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
@@ -129,7 +128,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             emit_notification: _,
             factor: _,
             path: _,
-            search_result_selected_index: _,
+            search_selected_row: _,
             search_results: _,
         } = self;
 
@@ -242,6 +241,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                         }
                         if self.search_text.is_empty() {
                             self.search_results.clear();
+                            self.search_selected_row = None;
                         }
                     }
                 });
@@ -250,6 +250,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                     if ui.button("Clear").clicked() {
                         self.search_text.clear();
                         self.search_results.clear();
+                        self.search_selected_row = None;
                     }
                     if ui.button("Advanced >>>").clicked() {}
                 });
@@ -275,10 +276,11 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                         .body(|mut body| {
                             for row_index in 0..self.search_results.len() {
                                 body.row(18.00, |mut row| {
-                                    if row_index == self.search_result_selected_index {
-                                        row.set_selected(true);
-                                    } else {
-                                        row.set_selected(false);
+                                    row.set_selected(false);
+                                    if let Some(selected_row) = self.search_selected_row {
+                                        if row_index == selected_row {
+                                            row.set_selected(true);
+                                        }
                                     }
                                     row.col(|ui| {
                                         if ui
@@ -288,7 +290,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                             )
                                             .clicked()
                                         {
-                                            self.search_result_selected_index = row_index;
+                                            self.search_selected_row = Some(row_index);
                                             let txs = Arc::clone(&self.tx);
                                             let system_id = self.search_results[row_index].0;
                                             let emit_notification = self.emit_notification;
