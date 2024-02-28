@@ -282,57 +282,47 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                             row.set_selected(true);
                                         }
                                     }
-                                    row.col(|ui| {
-                                        if ui
-                                            .selectable_label(
-                                                false,
-                                                &self.search_results[row_index].1,
-                                            )
-                                            .clicked()
-                                        {
-                                            self.search_selected_row = Some(row_index);
-                                            let txs = Arc::clone(&self.tx);
-                                            let system_id = self.search_results[row_index].0;
-                                            let emit_notification = self.emit_notification;
-                                            let future = async move {
-                                                let _result = txs
-                                                    .send(Message::CenterOn((
-                                                        system_id,
-                                                        Target::System,
-                                                    )))
-                                                    .await;
-                                                if emit_notification {
-                                                    let _ = txs
-                                                        .send(Message::SystemNotification(
-                                                            system_id,
-                                                        ))
-                                                        .await;
-                                                }
-                                            };
-                                            self.tpool.spawn_ok(future);
-                                        }
+                                    let col_data = row.col(|ui| {
+                                        ui.label(&self.search_results[row_index].1);
                                     });
-                                    row.col(|ui| {
-                                        if ui
-                                            .selectable_label(
-                                                false,
-                                                &self.search_results[row_index].3,
-                                            )
-                                            .clicked()
-                                        {
-                                            let txs = Arc::clone(&self.tx);
-                                            let region_id = self.search_results[row_index].2;
-                                            let future = async move {
-                                                let _result = txs
-                                                    .send(Message::CenterOn((
-                                                        region_id,
-                                                        Target::Region,
-                                                    )))
+                                    if col_data.1.clicked() {
+                                        let txs = Arc::clone(&self.tx);
+                                        let system_id = self.search_results[row_index].0;
+                                        let emit_notification = self.emit_notification;
+                                        let future = async move {
+                                            let _result = txs
+                                                .send(Message::CenterOn((
+                                                    system_id,
+                                                    Target::System,
+                                                )))
+                                                .await;
+                                            if emit_notification {
+                                                let _ = txs
+                                                    .send(Message::SystemNotification(system_id))
                                                     .await;
-                                            };
-                                            self.tpool.spawn_ok(future);
-                                        }
+                                            }
+                                        };
+                                        self.tpool.spawn_ok(future);
+                                    }
+                                    let col_data = row.col(|ui| {
+                                        ui.label(&self.search_results[row_index].3);
                                     });
+                                    if col_data.1.clicked() {
+                                        let txs = Arc::clone(&self.tx);
+                                        let region_id = self.search_results[row_index].2;
+                                        let future = async move {
+                                            let _result = txs
+                                                .send(Message::CenterOn((
+                                                    region_id,
+                                                    Target::Region,
+                                                )))
+                                                .await;
+                                        };
+                                        self.tpool.spawn_ok(future);
+                                    }
+                                    if row.response().clicked() {
+                                        self.search_selected_row = Some(row_index);
+                                    }
                                 });
                                 //self.toggle_row_selection(row_index, &row.response());
                             }
@@ -610,7 +600,7 @@ impl<'a> TelescopeApp<'a> {
                 } else {
                     let stx = Arc::clone(&self.tx);
                     let mut msg = String::from("System with Id ");
-                    msg += (message.0.to_string() + "could not be located").as_str();
+                    msg += (message.0.to_string() + " could not be located").as_str();
                     let _ = stx
                         .send(Message::GenericNotification((
                             Type::Warning,
@@ -666,9 +656,16 @@ impl<'a> TelescopeApp<'a> {
         match message.0 {
             Type::Error => {
                 self.last_message =
-                    "Error on ".to_string() + &message.1 + "-" + &message.2 + ">" + &message.3;
+                    "Error on ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
             }
-            Type::Warning => {}
+            Type::Warning => {
+                self.last_message = "Warning on ".to_string()
+                    + &message.1
+                    + " - "
+                    + &message.2
+                    + " > "
+                    + &message.3;
+            }
             Type::Info => {}
         }
     }
