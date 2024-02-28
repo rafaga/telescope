@@ -594,9 +594,8 @@ impl<'a> TelescopeApp<'a> {
         match message.1 {
             Target::System => {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor as i64);
-                if let Ok(Some(coords)) = t_sde.get_system_coords(message.0){
-                    self.map
-                        .set_pos(coords.0 as f32, coords.1 as f32);
+                if let Ok(Some(coords)) = t_sde.get_system_coords(message.0) {
+                    self.map.set_pos(coords.0 as f32, coords.1 as f32);
                 } else {
                     let stx = Arc::clone(&self.tx);
                     let mut msg = String::from("System with Id ");
