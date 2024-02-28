@@ -603,9 +603,10 @@ impl<'a> TelescopeApp<'a> {
     async fn center_on_target(&mut self, message: (usize, Target)) {
         match message.1 {
             Target::System => {
-                if let Some(system) = self.points.get(message.0) {
+                let t_sde = SdeManager::new(Path::new(&self.path), self.factor as i64);
+                if let Ok(Some(coords)) = t_sde.get_system_coords(message.0){
                     self.map
-                        .set_pos(system.coords[0] as f32, system.coords[1] as f32);
+                        .set_pos(coords.0 as f32, coords.1 as f32);
                 } else {
                     let stx = Arc::clone(&self.tx);
                     let mut msg = String::from("System with Id ");
