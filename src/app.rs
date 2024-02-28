@@ -594,12 +594,11 @@ impl<'a> TelescopeApp<'a> {
         match message.1 {
             Target::System => {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor as i64);
-                let temp_data =
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
                         self.map.set_pos(coords.0 as f32, coords.1 as f32);
-                    },
-                    Ok(none) => {
+                    }
+                    Ok(None) => {
                         let stx = Arc::clone(&self.tx);
                         let mut msg = String::from("System with Id ");
                         msg += (message.0.to_string() + " could not be located").as_str();
@@ -611,7 +610,7 @@ impl<'a> TelescopeApp<'a> {
                                 msg,
                             )))
                             .await;
-                    },
+                    }
                     Err(t_error) => {
                         let stx = Arc::clone(&self.tx);
                         let _ = stx
