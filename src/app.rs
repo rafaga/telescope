@@ -594,21 +594,36 @@ impl<'a> TelescopeApp<'a> {
         match message.1 {
             Target::System => {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor as i64);
-                if let Ok(Some(coords)) = t_sde.get_system_coords(message.0) {
-                    self.map.set_pos(coords.0 as f32, coords.1 as f32);
-                } else {
-                    let stx = Arc::clone(&self.tx);
-                    let mut msg = String::from("System with Id ");
-                    msg += (message.0.to_string() + " could not be located").as_str();
-                    let _ = stx
-                        .send(Message::GenericNotification((
-                            Type::Warning,
-                            String::from("self.points Hashmap"),
-                            String::from("get"),
-                            msg,
-                        )))
-                        .await;
-                }
+                let temp_data =
+                match t_sde.get_system_coords(message.0) {
+                    Ok(Some(coords)) => {
+                        self.map.set_pos(coords.0 as f32, coords.1 as f32);
+                    },
+                    Ok(none) => {
+                        let stx = Arc::clone(&self.tx);
+                        let mut msg = String::from("System with Id ");
+                        msg += (message.0.to_string() + " could not be located").as_str();
+                        let _ = stx
+                            .send(Message::GenericNotification((
+                                Type::Warning,
+                                String::from("SdeManager"),
+                                String::from("get_system_coords"),
+                                msg,
+                            )))
+                            .await;
+                    },
+                    Err(t_error) => {
+                        let stx = Arc::clone(&self.tx);
+                        let _ = stx
+                            .send(Message::GenericNotification((
+                                Type::Error,
+                                String::from("SdeManager"),
+                                String::from("get_system_coords"),
+                                t_error.to_string(),
+                            )))
+                            .await;
+                    }
+                };
             }
             Target::Region => {
                 todo!();
