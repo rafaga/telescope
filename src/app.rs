@@ -596,7 +596,11 @@ impl<'a> TelescopeApp<'a> {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor as i64);
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
-                        self.map.set_pos(coords.0 as f32, coords.1 as f32);
+                        let new_coords = [coords.0 as f32 * -1.0, coords.1 as f32 * -1.0];
+                        /*for index in 0..2 {
+                            new_coords[index] = new_coords[index] / zoom;
+                        }*/
+                        self.map.set_pos(new_coords[0], new_coords[1]);
                     }
                     Ok(None) => {
                         let stx = Arc::clone(&self.tx);
@@ -624,9 +628,7 @@ impl<'a> TelescopeApp<'a> {
                     }
                 };
             }
-            Target::Region => {
-                todo!();
-            }
+            Target::Region => {}
         }
     }
 
