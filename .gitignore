@@ -8,3 +8,4 @@ src/app/data.rs
 /Cargo.lock
 /.cargo
 /.cargo-packager
+Cargo.lock
