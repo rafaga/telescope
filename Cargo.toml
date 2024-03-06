@@ -11,22 +11,22 @@ default = []
 puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
-eframe = { version = "0.26", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence"] }
-serde = { version = "1", features = ["serde_derive"] }
+eframe = { version = "0.26.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence"] }
+serde = { version = "1.0.197", features = ["serde_derive"] }
 sde = { git = "http://github.com/rafaga/sde.git", branch = "test"}
-kdtree = { version = "0.7", features = ["serde", "serde_derive", "serialize"] }
-egui-map = { git = "http://github.com/rafaga/egui-map.git", branch = "test"}
-open = "4.0"
+kdtree = { version = "0.7.0", features = ["serde", "serde_derive", "serialize"] }
+egui-map = { version = "0.0.12" }
+open = "5.1.1"
 webb = { git = "http://github.com/rafaga/webb.git", branch = "test"}
-chrono = "0.4"
-futures = { version = "0.3", features = ["thread-pool", "futures-executor"] }
+chrono = "0.4.34"
+futures = { version = "0.3.30", features = ["thread-pool", "futures-executor"] }
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.26", features = ["all_loaders"] }
-image = { version = "0", features = ["jpeg","png"] }
-wgpu = "0.17"
-egui_tiles = "0.7"
-puffin = {version = "0.18.1", optional = true, default-features = false}
-puffin_http = {version = "0.15", optional = true, default-features = false}
+egui_extras = { version = "0.26.2", features = ["all_loaders"] }
+image = { version = "0.24.9", features = ["jpeg","png"] }
+wgpu = "0.19.3"
+puffin = {version = "0.19", optional = true, default-features = false}
+puffin_http = {version = "0.16", optional = true, default-features = false}
+egui_dock = "0.11.2"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

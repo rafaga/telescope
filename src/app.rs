@@ -9,9 +9,11 @@ use sde::SdeManager;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use egui_dock::{DockArea, DockState, NodeIndex, Style};
 
 pub mod data;
 pub mod messages;
+pub mod tab_viewer;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -60,6 +62,9 @@ pub struct TelescopeApp<'a> {
 
     #[serde(skip)]
     path: String,
+
+    #[serde(skip)]
+    tree: DockState<String>,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -99,6 +104,7 @@ impl<'a> Default for TelescopeApp<'a> {
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
+            tree: DockState::new(vec!["tab1".to_owned(), "tab2".to_owned()]),
         }
     }
 }
@@ -130,6 +136,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             path: _,
             search_selected_row: _,
             search_results: _,
+            tree: _,
         } = self;
 
         if !self.initialized {
@@ -347,7 +354,12 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             self.open_character_window(ctx);
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        DockArea::new(&mut self.tree)
+        .style(Style::from_egui(ctx.style().as_ref()))
+        .show(ctx, &mut tab_viewer::TabViewer {
+        });
+
+        /*egui::CentralPanel::default().show(ctx, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
             // The central panel the region left after adding TopPanel's and SidePanel's
@@ -359,12 +371,13 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 "Source code."
             ));
             */
+            
             ui.add(&mut self.map);
             /*if let Some(points) = self.universe.points {
 
             }*/
             //ui.label("鑑於對人類家庭所有成員的固有尊嚴及其平等的和不移的權利的承認，乃是世界自由、正義與和平的基礎");
-        });
+        });*/
     }
 }
 
