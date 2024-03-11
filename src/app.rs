@@ -104,7 +104,7 @@ impl<'a> Default for TelescopeApp<'a> {
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
-            tree: DockState::new(vec!["tab1".to_owned(), "tab2".to_owned()]),
+            tree: DockState::new(vec!["tab1".to_string(), "tab2".to_string()]),
         }
     }
 }
