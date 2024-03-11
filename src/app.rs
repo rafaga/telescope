@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
+use crate::app::tab_viewer::Tab;
 
 pub mod data;
 pub mod messages;
@@ -64,7 +65,7 @@ pub struct TelescopeApp<'a> {
     path: String,
 
     #[serde(skip)]
-    tree: DockState<String>,
+    tree: DockState<Tab>,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -104,7 +105,7 @@ impl<'a> Default for TelescopeApp<'a> {
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
-            tree: DockState::new(vec!["tab1".to_string(), "tab2".to_string()]),
+            tree: DockState::new(vec![Tab::new("Universe".to_string())]),
         }
     }
 }
@@ -357,6 +358,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
         DockArea::new(&mut self.tree)
         .style(Style::from_egui(ctx.style().as_ref()))
         .show(ctx, &mut tab_viewer::TabViewer {
+            universe_map: Map::new()
         });
 
         /*egui::CentralPanel::default().show(ctx, |ui| {
