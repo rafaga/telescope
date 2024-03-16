@@ -10,7 +10,9 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
-use crate::app::tab_viewer::Tab;
+use crate::app::tab_viewer::{Type as TabType,Tab};
+
+use self::tab_viewer::TabViewer;
 
 pub mod data;
 pub mod messages;
@@ -66,6 +68,9 @@ pub struct TelescopeApp<'a> {
 
     #[serde(skip)]
     tree: DockState<Tab>,
+
+    #[serde(skip)]
+    tab_viewer: tab_viewer::TabViewer
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -105,7 +110,8 @@ impl<'a> Default for TelescopeApp<'a> {
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
-            tree: DockState::new(vec![Tab::new("Universe".to_string())]),
+            tree: DockState::new(vec![Tab::new("Universe".to_string(), TabType::Universal)]),
+            tab_viewer: TabViewer::new(),
         }
     }
 }
@@ -138,6 +144,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             search_selected_row: _,
             search_results: _,
             tree: _,
+            tab_viewer: _,
         } = self;
 
         if !self.initialized {
@@ -357,9 +364,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
         DockArea::new(&mut self.tree)
         .style(Style::from_egui(ctx.style().as_ref()))
-        .show(ctx, &mut tab_viewer::TabViewer {
-            universe_map: Map::new()
-        });
+        .show(ctx, &mut self.tab_viewer);
 
         /*egui::CentralPanel::default().show(ctx, |ui| {
             #[cfg(feature = "puffin")]
