@@ -2,40 +2,27 @@ use crate::app::messages::{Message, Target, Type};
 use data::AppData;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use egui_map::map::{objects::*, Map};
+use egui_map::map::objects::*;
 use futures::executor::ThreadPool;
 use sde::objects::EveRegionArea;
 use sde::SdeManager;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use egui_dock::{DockArea, DockState, NodeIndex, Style};
-use crate::app::tab_viewer::{Type as TabType,Tab};
-
-use self::tab_viewer::TabViewer;
+use egui_tiles::Tree;
+use crate::app::tiles::{Pane,TreeBehavior};
 
 pub mod data;
 pub mod messages;
-pub mod tab_viewer;
+pub mod tiles;
 
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
+
 pub struct TelescopeApp<'a> {
-    #[serde(skip)]
     initialized: bool,
 
     // 2d point to paint map
-    #[serde(skip)]
     points: Vec<MapPoint>,
-
-    #[serde(skip)]
-    map: Map,
-
-    #[serde(skip)]
     tx: Arc<Sender<Message>>,
-
-    #[serde(skip)]
     rx: Receiver<Message>,
 
     // these are the flags to open the windows
@@ -44,33 +31,19 @@ pub struct TelescopeApp<'a> {
     open: [bool; 2],
 
     // the ESI Manager
-    #[serde(skip)]
     esi: webb::esi::EsiManager<'a>,
-
-    #[serde(skip)]
     tpool: ThreadPool,
-
-    //#[serde(skip)]
     last_message: String,
-
     search_text: String,
     emit_notification: bool,
-
     search_selected_row: Option<usize>,
-
-    #[serde(skip)]
     search_results: Vec<(usize, String, usize, String)>,
-
     factor: u64,
-
-    #[serde(skip)]
     path: String,
 
-    #[serde(skip)]
-    tree: DockState<Tab>,
-
-    #[serde(skip)]
-    tab_viewer: tab_viewer::TabViewer
+    //tree: DockState<Tab>,
+    tree: Tree<Pane>,
+    behavior: TreeBehavior,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -93,11 +66,12 @@ impl<'a> Default for TelescopeApp<'a> {
         tp_builder.name_prefix("telescope-tp-");
         let tpool = tp_builder.create().unwrap();
 
+        //Self::create_tree();
+
         Self {
             // Example stuff:
             initialized: false,
             points: Vec::new(),
-            map: Map::new(),
             tx,
             rx,
             open: [false; 2],
@@ -110,17 +84,17 @@ impl<'a> Default for TelescopeApp<'a> {
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
-            tree: DockState::new(vec![Tab::new("Universe".to_string(), TabType::Universal)]),
-            tab_viewer: TabViewer::new(),
+            tree: Self::create_tree(),
+            behavior: TreeBehavior::default(),
         }
     }
 }
 
 impl<'a> eframe::App for TelescopeApp<'a> {
     /// Called by the frame work to save state before shutdown.
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+    /*fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
-    }
+    }*/
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
@@ -130,7 +104,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
         let Self {
             initialized: _,
             points: _points,
-            map: _map,
             tx: _tx,
             rx: _rx,
             open: _,
@@ -144,7 +117,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             search_selected_row: _,
             search_results: _,
             tree: _,
-            tab_viewer: _,
+            behavior: _,
         } = self;
 
         if !self.initialized {
@@ -179,8 +152,8 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             for pchar in self.esi.characters.iter() {
                 vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
             }
-            self.map.settings = MapSettings::default();
-            self.map.settings.node_text_visibility = VisibilitySetting::Hover;
+            //self.tab_viewer.universe_map.settings = MapSettings::default();
+            //self.tab_viewer.universe_map.settings.node_text_visibility = VisibilitySetting::Hover;
             self.initialized = true;
         }
 
@@ -362,11 +335,11 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             self.open_character_window(ctx);
         }
 
-        DockArea::new(&mut self.tree)
+        /*DockArea::new(&mut self.tree)
         .style(Style::from_egui(ctx.style().as_ref()))
-        .show(ctx, &mut self.tab_viewer);
+        .show(ctx, &mut self.tab_viewer);*/
 
-        /*egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
             // The central panel the region left after adding TopPanel's and SidePanel's
@@ -378,13 +351,13 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 "Source code."
             ));
             */
-            
-            ui.add(&mut self.map);
+            self.tree.ui(&mut self.behavior, ui);
+            //ui.add(&mut self.map);
             /*if let Some(points) = self.universe.points {
 
             }*/
             //ui.label("鑑於對人類家庭所有成員的固有尊嚴及其平等的和不移的權利的承認，乃是世界自由、正義與和平的基礎");
-        });*/
+        });
     }
 }
 
@@ -393,8 +366,12 @@ impl<'a> TelescopeApp<'a> {
         let received_data = self.rx.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                Message::ProcessedMapCoordinates(points) => self.map.add_hashmap_points(points),
-                Message::ProcessedRegionalConnections(vec_lines) => self.map.add_lines(vec_lines),
+                Message::ProcessedMapCoordinates(points) => {
+                    //self.tab_viewer.universe_map.add_hashmap_points(points)
+                },
+                Message::ProcessedRegionalConnections(vec_lines) => {
+                    //self.tab_viewer.universe_map.add_lines(vec_lines)
+                },
                 Message::EsiAuthSuccess(character) => {
                     self.update_character_into_database(character).await
                 }
@@ -617,7 +594,7 @@ impl<'a> TelescopeApp<'a> {
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
                         let new_coords = [coords.0 as f32 * -1.0, coords.1 as f32 * -1.0];
-                        self.map.set_pos(new_coords[0], new_coords[1]);
+                        //self.tab_viewer.universe_map.set_pos(new_coords[0], new_coords[1]);
                     }
                     Ok(None) => {
                         let stx = Arc::clone(&self.tx);
@@ -703,14 +680,14 @@ impl<'a> TelescopeApp<'a> {
     }
 
     async fn notification_on_map(&mut self, message: usize) {
-        let _result = self.map.notify(message);
+        //let _result = self.tab_viewer.universe_map.notify(message);
     }
 
     async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("paint_map_region_labels");
 
-        let labels = Vec::new();
+        let mut labels = Vec::new();
         for region in region_areas {
             let mut label = MapLabel::new();
             label.text = region.name;
@@ -718,8 +695,9 @@ impl<'a> TelescopeApp<'a> {
                 (region.min.x / self.factor as i64) as f32,
                 (region.min.y / self.factor as i64) as f32,
             );
+            labels.push(label);
         }
-        self.map.add_labels(labels)
+        //self.tab_viewer.universe_map.add_labels(labels)
     }
 
     /// Called once before the first frame.
@@ -740,12 +718,39 @@ impl<'a> TelescopeApp<'a> {
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
+        /*if let Some(storage) = cc.storage {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        }
+        }*/
         cc.egui_ctx.set_fonts(fonts);
 
         let app: TelescopeApp<'_> = Default::default();
         app
     }
+
+    pub fn create_tree() -> Tree<Pane> {
+        let mut next_view_nr = 0;
+        let mut gen_pane = || {
+            let pane = Pane { nr: next_view_nr, content_type: None };
+            next_view_nr += 1;
+            pane
+        };
+    
+        let mut tiles = egui_tiles::Tiles::default();
+    
+        let mut tabs = vec![];
+        tabs.push({
+            let children = (0..7).map(|_| tiles.insert_pane(gen_pane())).collect();
+            tiles.insert_horizontal_tile(children)
+        });
+        tabs.push({
+            let cells = (0..11).map(|_| tiles.insert_pane(gen_pane())).collect();
+            tiles.insert_grid_tile(cells)
+        });
+        tabs.push(tiles.insert_pane(gen_pane()));
+    
+        let root = tiles.insert_tab_tile(tabs);
+    
+        egui_tiles::Tree::new("my_tree", root, tiles)
+    }
 }
+
