@@ -367,7 +367,7 @@ impl<'a> TelescopeApp<'a> {
         if let Ok(msg) = received_data {
             match msg {
                 Message::ProcessedMapCoordinates(points) => {
-                    //self.tab_viewer.universe_map.add_hashmap_points(points)
+                   // self.tree.universe_map.add_hashmap_points(points)
                 },
                 Message::ProcessedRegionalConnections(vec_lines) => {
                     //self.tab_viewer.universe_map.add_lines(vec_lines)

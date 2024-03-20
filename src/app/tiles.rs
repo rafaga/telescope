@@ -19,13 +19,14 @@ impl UniversePane {
         }
     }
 
-    pub fn set_points(&mut self, hash_map: HashMap<usize,MapPoint>) {
+    pub fn add_hashmap_points(&mut self, hash_map: HashMap<usize,MapPoint>) {
         self.map.add_hashmap_points(hash_map);
     }
 }
 
 impl TabPane for UniversePane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        ui.add(&mut self.map);
         let dragged = ui
             .allocate_rect(ui.max_rect(), Sense::drag())
             .on_hover_cursor(CursorIcon::Grab)
@@ -51,12 +52,14 @@ pub struct TreeBehavior {
 
 impl Default for TreeBehavior {
     fn default() -> Self {
-        Self {
+        let mut a = Self {
             simplification_options: Default::default(),
             tab_bar_height: 24.0,
             gap_width: 2.0,
             add_child_to: None,
-        }
+        };
+        a.simplification_options.all_panes_must_have_tabs = true;
+        a
     }
 }
 
