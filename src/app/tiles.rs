@@ -1,33 +1,31 @@
-use eframe::egui::{Ui,CursorIcon,Sense,epaint::Hsva,DragValue,Grid,WidgetText,Style,Color32,Widget};
-use egui_tiles::{UiResponse,SimplificationOptions,TileId,Tiles};
+use std::{collections::HashMap, fmt::Debug};
+use egui_map::map::{objects::MapPoint, Map};
+use eframe::{Error, egui::{CursorIcon, DragValue, Grid, Sense, Style, Ui, WidgetText}};
+use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
 
-pub enum Type {
-    Universe,
-    Region(usize),
+pub trait TabPane{
+    fn ui(&mut self, ui: &mut Ui) -> UiResponse;
+    fn get_title(&self) -> WidgetText;
 }
 
-pub struct Pane {
-    pub nr: usize,
-    pub content_type: Option<Type>,
+pub struct UniversePane {
+    pub map: Map,
 }
 
-impl std::fmt::Debug for Pane {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("View").field("nr", &self.nr).finish()
-    }
-}
-
-impl Pane {
-    pub fn with_nr(nr: usize) -> Self {
+impl UniversePane {
+    pub fn new() -> Self {
         Self { 
-            nr, 
-            content_type: None 
+            map: Map::new()
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) -> UiResponse {
-        /*let color = Hsva::new(0.103 * self.nr as f32, 0.5, 0.5, 1.0);
-        ui.painter().rect_filled(ui.max_rect(), 0.0, color);*/
+    pub fn set_points(&mut self, hash_map: HashMap<usize,MapPoint>) {
+        self.map.add_hashmap_points(hash_map);
+    }
+}
+
+impl TabPane for UniversePane {
+    fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         let dragged = ui
             .allocate_rect(ui.max_rect(), Sense::drag())
             .on_hover_cursor(CursorIcon::Grab)
@@ -37,10 +35,10 @@ impl Pane {
         } else {
             UiResponse::None
         }
-    }
+    }    
 
-    pub fn tab_ui(&mut self, ui: &mut Ui) -> Color32 {
-        Color32::TRANSPARENT
+    fn get_title(&self) -> WidgetText {
+       "Universe".into() 
     }
 }
 
@@ -104,23 +102,23 @@ impl TreeBehavior {
     }
 }
 
-impl egui_tiles::Behavior<Pane> for TreeBehavior {
+impl egui_tiles::Behavior<Box<dyn TabPane>> for TreeBehavior {
     fn pane_ui(
         &mut self,
         ui: &mut Ui,
         _tile_id: TileId,
-        view: &mut Pane,
+        view: &mut Box<dyn TabPane>,
     ) -> UiResponse {
         view.ui(ui)
     }
 
-    fn tab_title_for_pane(&mut self, view: &Pane) -> WidgetText {
-        format!("View {}", view.nr).into()
+    fn tab_title_for_pane(&mut self, view: &Box<dyn TabPane>) -> WidgetText {
+        view.get_title()
     }
 
     fn top_bar_right_ui(
         &mut self,
-        _tiles: &Tiles<Pane>,
+        _tiles: &Tiles<Box<dyn TabPane>>,
         ui: &mut Ui,
         tile_id: egui_tiles::TileId,
         _tabs: &egui_tiles::Tabs,
@@ -146,6 +144,29 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
     fn simplification_options(&self) -> SimplificationOptions {
         self.simplification_options
     }
+
+
+    /*fn tab_bg_color(
+            &self,
+            visuals: &eframe::egui::Visuals,
+            _tiles: &Tiles<Pane>,
+            _tile_id: TileId,
+            active: bool,
+        ) -> Color32 {
+        if visuals.dark_mode {
+            if active {
+                Color32::from_rgba_unmultiplied(12, 14, 16, 100)
+            } else {
+                Color32::from_rgba_unmultiplied(50, 60, 70, 100)
+            }
+        } else {
+            if active {
+                Color32::from_rgba_unmultiplied(12, 14, 16, 100)
+            } else {
+                Color32::from_rgba_unmultiplied(50, 60, 70, 100)
+            }
+        }
+    }*/
 
 }
 

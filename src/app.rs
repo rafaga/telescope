@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use egui_tiles::Tree;
-use crate::app::tiles::{Pane,TreeBehavior};
+use crate::app::tiles::{UniversePane,TreeBehavior,TabPane};
 
 pub mod data;
 pub mod messages;
@@ -42,7 +42,7 @@ pub struct TelescopeApp<'a> {
     path: String,
 
     //tree: DockState<Tab>,
-    tree: Tree<Pane>,
+    tree: Tree<Box<dyn TabPane>>,
     behavior: TreeBehavior,
 }
 
@@ -727,30 +727,20 @@ impl<'a> TelescopeApp<'a> {
         app
     }
 
-    pub fn create_tree() -> Tree<Pane> {
-        let mut next_view_nr = 0;
-        let mut gen_pane = || {
-            let pane = Pane { nr: next_view_nr, content_type: None };
-            next_view_nr += 1;
+    pub fn create_tree() -> Tree<Box<dyn TabPane>> {
+        let gen_pane = || {
+            let pane:Box<dyn TabPane> = Box::new(UniversePane::new());
             pane
         };
     
         let mut tiles = egui_tiles::Tiles::default();
     
         let mut tabs = vec![];
-        tabs.push({
-            let children = (0..7).map(|_| tiles.insert_pane(gen_pane())).collect();
-            tiles.insert_horizontal_tile(children)
-        });
-        tabs.push({
-            let cells = (0..11).map(|_| tiles.insert_pane(gen_pane())).collect();
-            tiles.insert_grid_tile(cells)
-        });
         tabs.push(tiles.insert_pane(gen_pane()));
     
         let root = tiles.insert_tab_tile(tabs);
     
-        egui_tiles::Tree::new("my_tree", root, tiles)
+        egui_tiles::Tree::new("maps", root, tiles)
     }
 }
 
