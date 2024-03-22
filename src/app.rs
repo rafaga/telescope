@@ -1,29 +1,30 @@
-use crate::app::messages::{Message, Target, Type};
+use crate::app::messages::{MapSync, Message, Target, Type};
+use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
+use egui_tiles::{TileId, Tiles, Tree};
 use futures::executor::ThreadPool;
-use sde::objects::EveRegionArea;
 use sde::SdeManager;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
-use egui_tiles::Tree;
-use crate::app::tiles::{UniversePane,TreeBehavior,TabPane};
+use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 pub mod data;
 pub mod messages;
 pub mod tiles;
-
 
 pub struct TelescopeApp<'a> {
     initialized: bool,
 
     // 2d point to paint map
     points: Vec<MapPoint>,
-    tx: Arc<Sender<Message>>,
-    rx: Receiver<Message>,
+    // generic messages
+    app_msg: (Arc<Sender<Message>>, Receiver<Message>),
+    // map Syncronization Messages
+    map_msg: (Arc<BCSender<MapSync>>, Arc<BCReceiver<MapSync>>),
 
     // these are the flags to open the windows
     // 0 - About Window
@@ -42,17 +43,18 @@ pub struct TelescopeApp<'a> {
     path: String,
 
     //tree: DockState<Tab>,
-    tree: Tree<Box<dyn TabPane>>,
-    behavior: TreeBehavior,
+    tree: Option<Tree<Box<dyn TabPane>>>,
+    tile_ids: Vec<TileId>,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
     fn default() -> Self {
-        let (ntx, rx) = channel::<messages::Message>(10);
+        // generic message handler
+        let (gtx, grx) = mpsc::channel::<messages::Message>(40);
+        // map syncronization handler
+        let (mtx, mrx) = broadcast::channel::<messages::MapSync>(30);
+
         let app_data = AppData::new();
-
-        let tx = Arc::new(ntx);
-
         let esi = webb::esi::EsiManager::new(
             app_data.user_agent.as_str(),
             app_data.client_id.as_str(),
@@ -63,17 +65,15 @@ impl<'a> Default for TelescopeApp<'a> {
         );
 
         let mut tp_builder = ThreadPool::builder();
-        tp_builder.name_prefix("telescope-tp-");
+        tp_builder.name_prefix("telescope-");
         let tpool = tp_builder.create().unwrap();
-
-        //Self::create_tree();
 
         Self {
             // Example stuff:
             initialized: false,
             points: Vec::new(),
-            tx,
-            rx,
+            app_msg: (Arc::new(gtx), grx),
+            map_msg: (Arc::new(mtx), Arc::new(mrx)),
             open: [false; 2],
             esi,
             tpool,
@@ -84,8 +84,8 @@ impl<'a> Default for TelescopeApp<'a> {
             factor: 50000000000000,
             path: String::from("assets/sde.db"),
             search_results: Vec::new(),
-            tree: Self::create_tree(),
-            behavior: TreeBehavior::default(),
+            tree: None,
+            tile_ids: vec![],
         }
     }
 }
@@ -104,8 +104,8 @@ impl<'a> eframe::App for TelescopeApp<'a> {
         let Self {
             initialized: _,
             points: _points,
-            tx: _tx,
-            rx: _rx,
+            app_msg: _,
+            map_msg: _,
             open: _,
             esi: _,
             tpool: _,
@@ -117,7 +117,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
             search_selected_row: _,
             search_results: _,
             tree: _,
-            behavior: _,
+            tile_ids: _,
         } = self;
 
         if !self.initialized {
@@ -126,34 +126,12 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
             egui_extras::install_image_loaders(ctx);
 
-            let txs = Arc::clone(&self.tx);
-            let str_path = self.path.clone();
-            let factor_k = self.factor as i64;
-            let future = async move {
-                let t_sde = SdeManager::new(Path::new(str_path.as_str()), factor_k);
-                if let Ok(points) = t_sde.get_systempoints(2) {
-                    if let Ok(hash_map) = t_sde.get_connections(points, 2) {
-                        let _result = txs.send(Message::ProcessedMapCoordinates(hash_map)).await;
-                    }
-                    //we add persistent connections
-                    if let Ok(vec_lines) = t_sde.get_regional_connections() {
-                        let _result = txs
-                            .send(Message::ProcessedRegionalConnections(vec_lines))
-                            .await;
-                    }
-                }
-                if let Ok(region_areas) = t_sde.get_region_coordinates() {
-                    let _result = txs.send(Message::RegionAreasLabels(region_areas)).await;
-                }
-            };
-            self.tpool.spawn_ok(future);
+            self.tree = Some(self.create_tree());
 
             let mut vec_chars = Vec::new();
             for pchar in self.esi.characters.iter() {
                 vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
             }
-            //self.tab_viewer.universe_map.settings = MapSettings::default();
-            //self.tab_viewer.universe_map.settings.node_text_visibility = VisibilitySetting::Hover;
             self.initialized = true;
         }
 
@@ -212,7 +190,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                             match sde.get_system_id(self.search_text.clone().to_lowercase()) {
                                 Ok(system_results) => self.search_results = system_results,
                                 Err(t_error) => {
-                                    let txs = Arc::clone(&self.tx);
+                                    let txs = Arc::clone(&self.app_msg.0);
                                     let future = async move {
                                         let _ = txs
                                             .send(Message::GenericNotification((
@@ -274,39 +252,24 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                         ui.label(&self.search_results[row_index].1);
                                     });
                                     if col_data.1.clicked() {
-                                        let txs = Arc::clone(&self.tx);
+                                        let tx_map = Arc::clone(&self.map_msg.0);
                                         let system_id = self.search_results[row_index].0;
                                         let emit_notification = self.emit_notification;
-                                        let future = async move {
-                                            let _result = txs
-                                                .send(Message::CenterOn((
-                                                    system_id,
-                                                    Target::System,
-                                                )))
-                                                .await;
-                                            if emit_notification {
-                                                let _ = txs
-                                                    .send(Message::SystemNotification(system_id))
-                                                    .await;
-                                            }
-                                        };
-                                        self.tpool.spawn_ok(future);
+                                        let _result = tx_map
+                                            .send(MapSync::CenterOn((system_id, Target::System)));
+                                        if emit_notification {
+                                            let _result =
+                                                tx_map.send(MapSync::SystemNotification(system_id));
+                                        }
                                     }
                                     let col_data = row.col(|ui| {
                                         ui.label(&self.search_results[row_index].3);
                                     });
                                     if col_data.1.clicked() {
-                                        let txs = Arc::clone(&self.tx);
+                                        let tx_map = Arc::clone(&self.map_msg.0);
                                         let region_id = self.search_results[row_index].2;
-                                        let future = async move {
-                                            let _result = txs
-                                                .send(Message::CenterOn((
-                                                    region_id,
-                                                    Target::Region,
-                                                )))
-                                                .await;
-                                        };
-                                        self.tpool.spawn_ok(future);
+                                        let _result = tx_map
+                                            .send(MapSync::CenterOn((region_id, Target::Region)));
                                     }
                                     if row.response().clicked() {
                                         self.search_selected_row = Some(row_index);
@@ -351,7 +314,9 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 "Source code."
             ));
             */
-            self.tree.ui(&mut self.behavior, ui);
+            if let Some(tree) = &mut self.tree {
+                tree.ui(&mut TreeBehavior::default(), ui);
+            }
             //ui.add(&mut self.map);
             /*if let Some(points) = self.universe.points {
 
@@ -363,24 +328,13 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
 impl<'a> TelescopeApp<'a> {
     async fn event_manager(&mut self) {
-        let received_data = self.rx.try_recv();
+        let received_data = self.app_msg.1.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                Message::ProcessedMapCoordinates(points) => {
-                   // self.tree.universe_map.add_hashmap_points(points)
-                },
-                Message::ProcessedRegionalConnections(vec_lines) => {
-                    //self.tab_viewer.universe_map.add_lines(vec_lines)
-                },
                 Message::EsiAuthSuccess(character) => {
                     self.update_character_into_database(character).await
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
-                Message::RegionAreasLabels(region_areas) => {
-                    self.paint_map_region_labels(region_areas).await
-                }
-                Message::SystemNotification(message) => self.notification_on_map(message).await,
-                Message::CenterOn(message) => self.center_on_target(message).await,
             };
         }
     }
@@ -500,7 +454,7 @@ impl<'a> TelescopeApp<'a> {
                                 let auth_info = self.esi.esi.get_authorize_url().unwrap();
                                 match open::that(auth_info.authorization_url) {
                                     Ok(()) => {
-                                        let tx = Arc::clone(&self.tx);
+                                        let tx = Arc::clone(&self.app_msg.0);
                                         let future = async move {
                                             match webb::esi::EsiManager::launch_auth_server(56123) {
                                                 Ok(data) => {
@@ -523,7 +477,7 @@ impl<'a> TelescopeApp<'a> {
                                         self.tpool.spawn_ok(future);
                                     }
                                     Err(err) => {
-                                        let tx = Arc::clone(&self.tx);
+                                        let tx = Arc::clone(&self.app_msg.0);
                                         let future = async move {
                                             let _ =
                                                 tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
@@ -545,7 +499,7 @@ impl<'a> TelescopeApp<'a> {
                                 self.esi.characters.remove(index);
                                 self.esi.active_character = None;
                                 if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
-                                    let tx = Arc::clone(&self.tx);
+                                    let tx = Arc::clone(&self.app_msg.0);
                                     let future = async move {
                                         let _ =
                                             tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
@@ -587,50 +541,11 @@ impl<'a> TelescopeApp<'a> {
             });
     }
 
-    async fn center_on_target(&mut self, message: (usize, Target)) {
-        match message.1 {
-            Target::System => {
-                let t_sde = SdeManager::new(Path::new(&self.path), self.factor as i64);
-                match t_sde.get_system_coords(message.0) {
-                    Ok(Some(coords)) => {
-                        let new_coords = [coords.0 as f32 * -1.0, coords.1 as f32 * -1.0];
-                        //self.tab_viewer.universe_map.set_pos(new_coords[0], new_coords[1]);
-                    }
-                    Ok(None) => {
-                        let stx = Arc::clone(&self.tx);
-                        let mut msg = String::from("System with Id ");
-                        msg += (message.0.to_string() + " could not be located").as_str();
-                        let _ = stx
-                            .send(Message::GenericNotification((
-                                Type::Warning,
-                                String::from("SdeManager"),
-                                String::from("get_system_coords"),
-                                msg,
-                            )))
-                            .await;
-                    }
-                    Err(t_error) => {
-                        let stx = Arc::clone(&self.tx);
-                        let _ = stx
-                            .send(Message::GenericNotification((
-                                Type::Error,
-                                String::from("SdeManager"),
-                                String::from("get_system_coords"),
-                                t_error.to_string(),
-                            )))
-                            .await;
-                    }
-                };
-            }
-            Target::Region => {}
-        }
-    }
-
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("update_character_into_database");
 
-        let tx = Arc::clone(&self.tx);
+        let tx = Arc::clone(&self.app_msg.0);
         let auth_info = self.esi.esi.get_authorize_url().unwrap();
         match self.esi.auth_user(auth_info, response_data).await {
             Ok(Some(player)) => {
@@ -679,27 +594,6 @@ impl<'a> TelescopeApp<'a> {
         }
     }
 
-    async fn notification_on_map(&mut self, message: usize) {
-        //let _result = self.tab_viewer.universe_map.notify(message);
-    }
-
-    async fn paint_map_region_labels(&mut self, region_areas: Vec<EveRegionArea>) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("paint_map_region_labels");
-
-        let mut labels = Vec::new();
-        for region in region_areas {
-            let mut label = MapLabel::new();
-            label.text = region.name;
-            label.center = egui::Pos2::new(
-                (region.min.x / self.factor as i64) as f32,
-                (region.min.y / self.factor as i64) as f32,
-            );
-            labels.push(label);
-        }
-        //self.tab_viewer.universe_map.add_labels(labels)
-    }
-
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customize the look and feel of egui using
@@ -727,20 +621,26 @@ impl<'a> TelescopeApp<'a> {
         app
     }
 
-    pub fn create_tree() -> Tree<Box<dyn TabPane>> {
-        let gen_pane = || {
-            let pane:Box<dyn TabPane> = Box::new(UniversePane::new());
-            pane
-        };
-    
-        let mut tiles = egui_tiles::Tiles::default();
-    
-        let mut tabs = vec![];
-        tabs.push(tiles.insert_pane(gen_pane()));
-    
-        let root = tiles.insert_tab_tile(tabs);
-    
+    fn generate_pane(&self, region_id: Option<usize>) -> Box<dyn TabPane> {
+        let pane: Box<dyn TabPane>;
+        if let Some(_id) = region_id {
+            todo!();
+        } else {
+            pane = Box::new(UniversePane::new(
+                self.map_msg.0.subscribe(),
+                Arc::clone(&self.app_msg.0),
+                self.path.clone(),
+                self.factor,
+            ));
+        }
+        pane
+    }
+
+    fn create_tree(&mut self) -> Tree<Box<dyn TabPane>> {
+        let mut tiles = Tiles::default();
+        self.tile_ids
+            .push(tiles.insert_pane(self.generate_pane(None)));
+        let root = tiles.insert_tab_tile(self.tile_ids.clone());
         egui_tiles::Tree::new("maps", root, tiles)
     }
 }
-
