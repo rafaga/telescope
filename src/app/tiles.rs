@@ -1,8 +1,7 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{Pos2, Style, Ui, WidgetText};
 use egui_map::map::{
-    objects::MapLabel,
-    objects::{MapSettings, VisibilitySetting},
+    objects::{ContextMenuManager, MapLabel, MapSettings, VisibilitySetting},
     Map,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
@@ -49,6 +48,7 @@ impl UniversePane {
         object.generate_data(object.path.clone(), object.factor);
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        object.map.set_context_manager(Box::new(ContextMenu::new()));
         object
     }
 
@@ -268,7 +268,6 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     fn simplification_options(&self) -> SimplificationOptions {
         self.simplification_options
     }
-
     /*fn tab_bg_color(
             &self,
             visuals: &eframe::egui::Visuals,
@@ -290,4 +289,24 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             }
         }
     }*/
+}
+
+struct ContextMenu {}
+
+impl ContextMenu {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl ContextMenuManager for ContextMenu {
+    fn ui(&self, ui: &mut Ui) {
+        if ui.button("set beacon").clicked() {
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("⚙ settings").clicked() {
+            ui.close_menu();
+        }
+    }
 }
