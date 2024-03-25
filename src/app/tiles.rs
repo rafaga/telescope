@@ -84,7 +84,7 @@ impl UniversePane {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
-                        let new_coords = [coords.0 as f32 * -1.0, coords.1 as f32 * -1.0];
+                        let new_coords = [coords.0 as f32, coords.1 as f32];
                         self.map.set_pos(new_coords[0], new_coords[1]);
                     }
                     Ok(None) => {
