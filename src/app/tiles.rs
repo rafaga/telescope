@@ -160,6 +160,37 @@ impl TabPane for UniversePane {
     }
 }
 
+pub struct RegionPane {
+    map: Map,
+}
+
+impl RegionPane {
+    pub fn new(region_id:usize) -> Self {
+        Self {
+           map: Map::new(),
+        }
+    }
+
+    fn generate_data(&mut self, path: String, factor: i64) {
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
+        let points = t_sde.get_systempoints(2);
+    }
+}
+
+impl TabPane for RegionPane {
+    fn event_manager(&mut self) {
+        
+    }
+
+    fn get_title(&self) -> WidgetText {
+        "Region".into()
+    }
+
+    fn ui(&mut self, _ui: &mut Ui) -> UiResponse {
+        UiResponse::None
+    }
+}
+
 pub struct TreeBehavior {
     simplification_options: SimplificationOptions,
     tab_bar_height: f32,
