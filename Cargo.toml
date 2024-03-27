@@ -12,11 +12,11 @@ puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot
 
 [dependencies]
 eframe = { version = "0.26.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-sde = { git = "http://github.com/rafaga/sde.git", branch = "test"}
+sde = { git = "https://github.com/rafaga/sde.git", branch = "test"}
 kdtree = { version = "0.7.0" }
 egui-map = { version = "0.0.12" }
 open = "5.1.1"
-webb = { git = "http://github.com/rafaga/webb.git", branch = "test"}
+webb = { git = "https://github.com/rafaga/webb.git", branch = "test"}
 chrono = "0.4.34"
 futures = { version = "0.3.30", features = ["thread-pool", "futures-executor"] }
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
@@ -49,7 +49,10 @@ opt-level = 2
 # If you want to use the bleeding edge version of egui and eframe:
 # egui = { git = "https://github.com/emilk/egui", branch = "master" }
 # eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-
+egui-map = { path = "../egui-map/" }
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
+
+[patch."https://github.com/rafaga/sde.git"]
+sde = { path = "../sde/" }

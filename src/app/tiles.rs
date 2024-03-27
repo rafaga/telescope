@@ -42,7 +42,7 @@ impl UniversePane {
             mapsync_reciever: receiver,
             generic_sender,
             path,
-            factor: factor.try_into().unwrap(),
+            factor: factor as i64,
             tpool: tp_builder.create().unwrap(),
         };
         object.generate_data(object.path.clone(), object.factor);
@@ -53,7 +53,7 @@ impl UniversePane {
     }
 
     fn generate_data(&mut self, path: String, factor: i64) {
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
         if let Ok(points) = t_sde.get_systempoints(2) {
             if let Ok(hash_map) = t_sde.get_connections(points, 2) {
                 self.map.add_hashmap_points(hash_map);
@@ -81,7 +81,7 @@ impl UniversePane {
     fn center_on_target(&mut self, message: (usize, Target)) {
         match message.1 {
             Target::System => {
-                let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
+                let t_sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
                         let new_coords = [coords.0 as f32, coords.1 as f32];
@@ -165,22 +165,18 @@ pub struct RegionPane {
 }
 
 impl RegionPane {
-    pub fn new(region_id:usize) -> Self {
-        Self {
-           map: Map::new(),
-        }
+    pub fn new(region_id: usize) -> Self {
+        Self { map: Map::new() }
     }
 
     fn generate_data(&mut self, path: String, factor: i64) {
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
         let points = t_sde.get_systempoints(2);
     }
 }
 
 impl TabPane for RegionPane {
-    fn event_manager(&mut self) {
-        
-    }
+    fn event_manager(&mut self) {}
 
     fn get_title(&self) -> WidgetText {
         "Region".into()

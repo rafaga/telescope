@@ -185,7 +185,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                         if self.search_text.len() >= 3 {
                             let sde = SdeManager::new(
                                 Path::new(&self.path),
-                                self.factor.try_into().unwrap(),
+                                self.factor,
                             );
                             match sde.get_system_id(self.search_text.clone().to_lowercase()) {
                                 Ok(system_results) => self.search_results = system_results,
