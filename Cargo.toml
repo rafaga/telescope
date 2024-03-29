@@ -14,7 +14,7 @@ puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot
 eframe = { version = "0.26.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 sde = { git = "https://github.com/rafaga/sde.git", branch = "test"}
 kdtree = { version = "0.7.0" }
-egui-map = { version = "0.0.12" }
+egui-map = { version = "0.0.13" }
 open = "5.1.1"
 webb = { git = "https://github.com/rafaga/webb.git", branch = "test"}
 chrono = "0.4.34"
@@ -55,4 +55,4 @@ egui-map = { path = "../egui-map/" }
 # eframe = { path = "../egui/crates/eframe" }
 
 [patch."https://github.com/rafaga/sde.git"]
-sde = { path = "../sde/" }
+# sde = { path = "../sde/" }
