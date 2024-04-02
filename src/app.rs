@@ -638,8 +638,9 @@ impl<'a> TelescopeApp<'a> {
 
     fn create_tree(&mut self) -> Tree<Box<dyn TabPane>> {
         let mut tiles = Tiles::default();
+        let id = tiles.insert_pane(self.generate_pane(None));
         self.tile_ids
-            .push(tiles.insert_pane(self.generate_pane(None)));
+            .push(id);
         let root = tiles.insert_tab_tile(self.tile_ids.clone());
         egui_tiles::Tree::new("maps", root, tiles)
     }

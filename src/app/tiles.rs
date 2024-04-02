@@ -54,15 +54,17 @@ impl UniversePane {
 
     fn generate_data(&mut self, path: String, factor: i64) {
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
-        if let Ok(points) = t_sde.get_systempoints(2) {
-            if let Ok(hash_map) = t_sde.get_connections(points, 2) {
-                self.map.add_hashmap_points(hash_map);
+        if let Ok(points) = t_sde.get_systempoints() {
+            //we get connections
+            if let Ok(hashmap) = t_sde.get_system_connections(points) {
+                self.map.add_hashmap_points(hashmap);
             }
-            //we add persistent connections
-            if let Ok(vec_lines) = t_sde.get_regional_connections() {
-                self.map.add_lines(vec_lines);
+
+            if let Ok(hash_conns) = t_sde.get_connections() {
+                self.map.add_lines(hash_conns);
             }
         }
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
         if let Ok(region_areas) = t_sde.get_region_coordinates() {
             let mut labels = Vec::new();
             for region in region_areas {
@@ -84,8 +86,7 @@ impl UniversePane {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
-                        let new_coords = [coords.0 as f32, coords.1 as f32];
-                        self.map.set_pos(new_coords[0], new_coords[1]);
+                        self.map.set_pos(coords.try_into().unwrap());
                     }
                     Ok(None) => {
                         let mut msg = String::from("System with Id ");
@@ -171,7 +172,7 @@ impl RegionPane {
 
     fn generate_data(&mut self, path: String, factor: i64) {
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
-        let points = t_sde.get_systempoints(2);
+        let points = t_sde.get_systempoints();
     }
 }
 
