@@ -11,7 +11,7 @@ default = []
 puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
-eframe = { version = "0.27.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+eframe = { version = "0.27.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 sde = { git = "https://github.com/rafaga/sde.git", branch = "test"}
 kdtree = { version = "0.7.0" }
 egui-map = { version = "0.0.13" }
@@ -20,7 +20,7 @@ webb = { git = "https://github.com/rafaga/webb.git", branch = "test"}
 chrono = "0.4.34"
 futures = { version = "0.3.30", features = ["thread-pool", "futures-executor"] }
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.27.1", features = ["all_loaders"] }
+egui_extras = { version = "0.27.2", features = ["all_loaders"] }
 image = { version = "0.24.9", features = ["jpeg","png"] }
 wgpu = "0.19.3"
 puffin = {version = "0.19", optional = true, default-features = false}
