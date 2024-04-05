@@ -17,6 +17,7 @@ pub trait TabPane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse;
     fn get_title(&self) -> WidgetText;
     fn event_manager(&mut self);
+    fn center_on_target(&mut self, message: (usize, Target));
 }
 
 pub struct UniversePane {
@@ -79,6 +80,42 @@ impl UniversePane {
             self.map.add_labels(labels);
         }
     }
+}
+
+impl TabPane for UniversePane {
+    fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        ui.add(&mut self.map);
+        self.event_manager();
+        UiResponse::None
+        /*let dragged = ui
+            .allocate_rect(ui.max_rect(), Sense::drag())
+            .on_hover_cursor(CursorIcon::Grab)
+            .dragged();
+        if dragged {
+            UiResponse::DragStarted
+        } else {
+            UiResponse::None
+        }*/
+    }
+
+    fn get_title(&self) -> WidgetText {
+        "Universe".into()
+    }
+
+    fn event_manager(&mut self) {
+        let received_data = self.mapsync_reciever.try_recv();
+        if let Ok(msg) = received_data {
+            match msg {
+                MapSync::SystemNotification(system_id) => {
+                    let _result = self.map.notify(system_id);
+                }
+                MapSync::CenterOn(message) => {
+                    let t_msg = message.clone();
+                    self.center_on_target(t_msg);
+                }
+            };
+        }
+    }
 
     fn center_on_target(&mut self, message: (usize, Target)) {
         match message.1 {
@@ -125,26 +162,55 @@ impl UniversePane {
     }
 }
 
-impl TabPane for UniversePane {
-    fn ui(&mut self, ui: &mut Ui) -> UiResponse {
-        ui.add(&mut self.map);
-        self.event_manager();
-        UiResponse::None
-        /*let dragged = ui
-            .allocate_rect(ui.max_rect(), Sense::drag())
-            .on_hover_cursor(CursorIcon::Grab)
-            .dragged();
-        if dragged {
-            UiResponse::DragStarted
-        } else {
-            UiResponse::None
-        }*/
+pub struct RegionPane {
+    map: Map,
+    mapsync_reciever: Receiver<MapSync>,
+    generic_sender: Arc<Sender<Message>>,
+    path: String,
+    factor: i64,
+    tpool: ThreadPool,
+    region_id: usize,
+}
+
+impl RegionPane {
+    pub fn new(
+        receiver: Receiver<MapSync>,
+        generic_sender: Arc<Sender<Message>>,
+        path: String,
+        factor: u64,
+        region_id: usize) -> Self {
+        let mut tp_builder = ThreadPool::builder();
+        tp_builder.name_prefix("tc-univ-");
+        let mut object = Self {
+            map: Map::new(),
+            mapsync_reciever: receiver,
+            generic_sender,
+            path,
+            factor: factor as i64,
+            tpool: tp_builder.create().unwrap(),
+            region_id,
+        };
+        object.generate_data(object.path.clone(), object.factor, object.region_id);
+        object.map.settings = MapSettings::default();
+        object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        object.map.set_context_manager(Box::new(ContextMenu::new()));
+        object
     }
 
-    fn get_title(&self) -> WidgetText {
-        "Universe".into()
+    fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
+        if let Ok( points) = t_sde.get_abstract_systems(vec![region_id as u32]) {
+            if let Ok( points) = t_sde.get_abstract_system_connections(points, vec![region_id as u32]) {
+                self.map.add_hashmap_points(points);
+            }
+            if let Ok( lines ) = t_sde.get_abstract_connections(vec![region_id as u32]){
+                self.map.add_lines(lines);
+            }
+        }
     }
+}
 
+impl TabPane for RegionPane {
     fn event_manager(&mut self) {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
@@ -159,32 +225,58 @@ impl TabPane for UniversePane {
             };
         }
     }
-}
-
-pub struct RegionPane {
-    map: Map,
-}
-
-impl RegionPane {
-    pub fn new(region_id: usize) -> Self {
-        Self { map: Map::new() }
-    }
-
-    fn generate_data(&mut self, path: String, factor: i64) {
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
-        let points = t_sde.get_systempoints();
-    }
-}
-
-impl TabPane for RegionPane {
-    fn event_manager(&mut self) {}
 
     fn get_title(&self) -> WidgetText {
         "Region".into()
     }
 
-    fn ui(&mut self, _ui: &mut Ui) -> UiResponse {
+    fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        ui.add(&mut self.map);
         UiResponse::None
+    }
+
+    fn center_on_target(&mut self, message: (usize, Target)) {
+        match message.1 {
+            Target::System => {
+                /*let t_sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
+                match t_sde.get_abstract_system_coords(message.0) {
+                    Ok(Some(coords)) => {
+                        self.map.set_pos(coords.try_into().unwrap());
+                    }
+                    Ok(None) => {
+                        let mut msg = String::from("System with Id ");
+                        msg += (message.0.to_string() + " could not be located").as_str();
+                        let gtx = Arc::clone(&self.generic_sender);
+                        let future = async move {
+                            let _result = gtx
+                                .send(Message::GenericNotification((
+                                    Type::Warning,
+                                    String::from("SdeManager"),
+                                    String::from("get_system_coords"),
+                                    msg,
+                                )))
+                                .await;
+                        };
+                        self.tpool.spawn_ok(future);
+                    }
+                    Err(t_error) => {
+                        let gtx = Arc::clone(&self.generic_sender);
+                        let future = async move {
+                            let _result = gtx
+                                .send(Message::GenericNotification((
+                                    Type::Error,
+                                    String::from("SdeManager"),
+                                    String::from("get_system_coords"),
+                                    t_error.to_string(),
+                                )))
+                                .await;
+                        };
+                        self.tpool.spawn_ok(future);
+                    }
+                }*/
+            }
+            Target::Region => {}
+        }
     }
 }
 
