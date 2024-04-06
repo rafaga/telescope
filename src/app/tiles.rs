@@ -238,42 +238,7 @@ impl TabPane for RegionPane {
     fn center_on_target(&mut self, message: (usize, Target)) {
         match message.1 {
             Target::System => {
-                /*let t_sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
-                match t_sde.get_abstract_system_coords(message.0) {
-                    Ok(Some(coords)) => {
-                        self.map.set_pos(coords.try_into().unwrap());
-                    }
-                    Ok(None) => {
-                        let mut msg = String::from("System with Id ");
-                        msg += (message.0.to_string() + " could not be located").as_str();
-                        let gtx = Arc::clone(&self.generic_sender);
-                        let future = async move {
-                            let _result = gtx
-                                .send(Message::GenericNotification((
-                                    Type::Warning,
-                                    String::from("SdeManager"),
-                                    String::from("get_system_coords"),
-                                    msg,
-                                )))
-                                .await;
-                        };
-                        self.tpool.spawn_ok(future);
-                    }
-                    Err(t_error) => {
-                        let gtx = Arc::clone(&self.generic_sender);
-                        let future = async move {
-                            let _result = gtx
-                                .send(Message::GenericNotification((
-                                    Type::Error,
-                                    String::from("SdeManager"),
-                                    String::from("get_system_coords"),
-                                    t_error.to_string(),
-                                )))
-                                .await;
-                        };
-                        self.tpool.spawn_ok(future);
-                    }
-                }*/
+                self.map.set_pos_from_nodeid(message.0);
             }
             Target::Region => {}
         }
