@@ -7,7 +7,7 @@ use egui_map::map::{
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use futures::executor::ThreadPool;
 use sde::SdeManager;
-use std::path::Path;
+use std::{collections::HashMap, ops::Not, path::Path};
 use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -113,6 +113,7 @@ impl TabPane for UniversePane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
+                MapSync::GetRegionName(_) => () 
             };
         }
     }
@@ -170,6 +171,7 @@ pub struct RegionPane {
     factor: i64,
     tpool: ThreadPool,
     region_id: usize,
+    tab_name: String,
 }
 
 impl RegionPane {
@@ -180,7 +182,7 @@ impl RegionPane {
         factor: u64,
         region_id: usize) -> Self {
         let mut tp_builder = ThreadPool::builder();
-        tp_builder.name_prefix("tc-univ-");
+        tp_builder.name_prefix("tc-rg-".to_string() + region_id.to_string().as_str() +"-");
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -189,6 +191,7 @@ impl RegionPane {
             factor: factor as i64,
             tpool: tp_builder.create().unwrap(),
             region_id,
+            tab_name: String::from("Region"),
         };
         object.generate_data(object.path.clone(), object.factor, object.region_id);
         object.map.settings = MapSettings::default();
@@ -207,6 +210,14 @@ impl RegionPane {
                 self.map.add_lines(lines);
             }
         }
+        let txs = Arc::clone(&self.generic_sender);
+        let t_region_id = self.region_id;
+        let future = async move {
+            let _ = txs
+                .send(Message::RequestRegionName(t_region_id))
+                .await;
+        };
+        self.tpool.spawn_ok(future);
     }
 }
 
@@ -222,12 +233,15 @@ impl TabPane for RegionPane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
+                MapSync::GetRegionName(region_name) => {
+                    self.tab_name = region_name;
+                }
             };
         }
     }
 
     fn get_title(&self) -> WidgetText {
-        "Region".into()
+        self.tab_name.clone().into()
     }
 
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
@@ -249,6 +263,7 @@ pub struct TreeBehavior {
     simplification_options: SimplificationOptions,
     tab_bar_height: f32,
     gap_width: f32,
+    maps: HashMap<usize,bool>,
 }
 
 impl Default for TreeBehavior {
@@ -264,11 +279,32 @@ impl Default for TreeBehavior {
             },
             tab_bar_height: 24.0,
             gap_width: 2.0,
+            maps: HashMap::new(),
         }
     }
 }
 
 impl TreeBehavior {
+
+    pub fn new(regions_hmap:HashMap<usize,bool> ) -> Self {
+        let mut object = Self::default();
+        object.maps = regions_hmap;
+        object
+    }
+
+    pub fn toggle_region(&mut self,id:usize) -> Option<bool> {
+        self.maps.entry(id).and_modify(|x|{ x.not(); });
+        self.get_region(id)
+    }
+
+    pub fn get_region(&self,id:usize) -> Option<bool> {
+        self.maps.get(&id).copied()
+    }
+
+    pub fn set_region_toggle_map(&mut self, region_toggle_map:HashMap<usize,bool>) {
+        self.maps = region_toggle_map;
+    }
+    
     /*fn ui(&mut self, ui: &mut Ui) {
         let Self {
             simplification_options,
