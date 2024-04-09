@@ -2,7 +2,7 @@ use crate::app::messages::{MapSync, Message, Target, Type};
 use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui;
-use eframe::egui::ahash::HashMap;
+use std::collections::HashMap;
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{TileId, Tiles, Tree};
@@ -49,7 +49,7 @@ pub struct TelescopeApp<'a> {
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
-    tile_ids: Vec<TileId>,
+    tile_ids: HashMap<usize,(bool,Option<TileId>)>,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -96,7 +96,7 @@ impl<'a> Default for TelescopeApp<'a> {
             path,
             search_results: Vec::new(),
             tree: None,
-            tile_ids: vec![],
+            tile_ids: HashMap::new(),
             universe: sde.universe,
         }
     }
@@ -139,7 +139,9 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
             egui_extras::install_image_loaders(ctx);
 
-            self.tree = Some(self.create_tree());
+            let tree = self.create_tree();
+            
+            self.tree = Some(tree);
 
             let mut vec_chars = Vec::new();
             for pchar in self.esi.characters.iter() {
@@ -351,7 +353,7 @@ impl<'a> TelescopeApp<'a> {
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
                 Message::RequestRegionName(region_id) => self.get_region_name(region_id),
-                Message::ToggleRegionMap(regions) => self.toggle_regions(regions),
+                Message::ToggleRegionMap() => self.toggle_regions(),
             };
         }
     }
@@ -561,24 +563,27 @@ impl<'a> TelescopeApp<'a> {
     fn open_settings_window(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_preferences_window");
-
+        
         egui::Window::new("Settings")
             .fixed_size((400.0, 200.0))
             .open(&mut self.open[2])
             .show(ctx, |ui| {
-                let mut vec_regions= vec![];
-                for region in &mut self.universe.regions {
+                for region in &mut self.universe.regions.iter_mut() {
                     if region.0 < &11000000 {
-                        if ui.checkbox(&mut false, region.1.name.clone()).changed() {
-                            vec_regions.push(*region.0 as usize);
+                        let key = *region.0 as usize;
+                        if ui.checkbox(&mut self.tile_ids.get_mut(&key).unwrap().0, region.1.name.clone()).changed() {
+                            let txs = Arc::clone(&self.app_msg.0);
+                            let future = async move {
+                                let _ = txs
+                                    .send(Message::ToggleRegionMap())
+                                    .await;
+                            };
+                            self.tpool.spawn_ok(future);
                         };
                     }
                 }
                 if ui.button("Save").clicked() {
-                    for region in &vec_regions{
-                        let pane = self.generate_pane(Some(region.clone()));
-                        let _ = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
-                    }
+
                 }
             });
     }
@@ -636,8 +641,32 @@ impl<'a> TelescopeApp<'a> {
         }
     }
 
-    fn toggle_regions(&self, regions: Vec<usize>) {
-
+    fn toggle_regions(&mut self) {
+        let mut new_panes = vec![];
+        let mut show_panes = vec![];
+        // tile.0 - has the region ID
+        // tile.1.0 - has visible state
+        // tile.1.1 - has the TileID assosiated with the shown Tile/tab (if exists)
+        for tile in self.tile_ids.iter_mut(){
+            if tile.1.0 {
+                if tile.1.1.is_none() {
+                    new_panes.push(*tile.0);
+                }
+            } else {
+                show_panes.push(*tile.0);
+            }
+        }
+        for region_id in new_panes{
+            let pane = self.generate_pane(Some(region_id));
+            let t_tree = self.tree.as_mut().unwrap();
+            let tile_id = t_tree.tiles.insert_pane(pane);
+            self.tile_ids.entry(region_id).and_modify(|data|{
+                data.0 = true;
+                data.1 = Some(tile_id);
+            });
+            //self.tree.as_mut().unwrap().set_visible(tile_id, true);
+            //self.tree.as_mut().unwrap().tiles.insert_tab_tile(tile_id);
+        }
     }
 
     /// Called once before the first frame.
@@ -691,9 +720,14 @@ impl<'a> TelescopeApp<'a> {
     fn create_tree(&mut self) -> Tree<Box<dyn TabPane>> {
         let mut tiles = Tiles::default();
         let id = tiles.insert_pane(self.generate_pane(None));
-        self.tile_ids
-            .push(id);
-        let root = tiles.insert_tab_tile(self.tile_ids.clone());
+        let tile_ids = vec![id];
+        let root = tiles.insert_tab_tile(tile_ids);
+        let regions: Vec<u32> = self.universe.regions.keys().map(|num| *num).collect();
+        for key in regions{
+            if key < 11000000 {
+                self.tile_ids.insert(key as usize, (false, None));
+            }
+        }
         egui_tiles::Tree::new("maps", root, tiles)
     }
 

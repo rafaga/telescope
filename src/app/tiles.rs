@@ -7,7 +7,7 @@ use egui_map::map::{
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use futures::executor::ThreadPool;
 use sde::SdeManager;
-use std::{collections::HashMap, ops::Not, path::Path};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::Sender;
@@ -263,7 +263,6 @@ pub struct TreeBehavior {
     simplification_options: SimplificationOptions,
     tab_bar_height: f32,
     gap_width: f32,
-    maps: HashMap<usize,bool>,
 }
 
 impl Default for TreeBehavior {
@@ -273,37 +272,17 @@ impl Default for TreeBehavior {
                 prune_empty_containers: true,
                 prune_single_child_containers: true,
                 prune_empty_tabs: true,
-                prune_single_child_tabs: true,
+                prune_single_child_tabs: false,
                 all_panes_must_have_tabs: false,
                 join_nested_linear_containers: true,
             },
             tab_bar_height: 24.0,
             gap_width: 2.0,
-            maps: HashMap::new(),
         }
     }
 }
 
 impl TreeBehavior {
-
-    pub fn new(regions_hmap:HashMap<usize,bool> ) -> Self {
-        let mut object = Self::default();
-        object.maps = regions_hmap;
-        object
-    }
-
-    pub fn toggle_region(&mut self,id:usize) -> Option<bool> {
-        self.maps.entry(id).and_modify(|x|{ x.not(); });
-        self.get_region(id)
-    }
-
-    pub fn get_region(&self,id:usize) -> Option<bool> {
-        self.maps.get(&id).copied()
-    }
-
-    pub fn set_region_toggle_map(&mut self, region_toggle_map:HashMap<usize,bool>) {
-        self.maps = region_toggle_map;
-    }
     
     /*fn ui(&mut self, ui: &mut Ui) {
         let Self {

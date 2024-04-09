@@ -2,7 +2,7 @@ pub enum Message {
     EsiAuthSuccess((String, String)),
     GenericNotification((Type, String, String, String)),
     RequestRegionName(usize),
-    ToggleRegionMap(Vec<usize>),
+    ToggleRegionMap(),
 }
 
 #[derive(Clone)]
