@@ -45,6 +45,7 @@ pub struct TelescopeApp<'a> {
     factor: u64,
     path: String,
     universe: Universe,
+    selected_settings_option: usize,
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -93,6 +94,7 @@ impl<'a> Default for TelescopeApp<'a> {
             tree: None,
             tile_ids: HashMap::new(),
             universe: sde.universe,
+            selected_settings_option: 0,
         }
     }
 }
@@ -135,6 +137,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 tree: _,
                 tile_ids: _,
                 universe: _,
+                selected_settings_option: _,
             } = self;
 
             if !self.initialized {
@@ -579,10 +582,10 @@ impl<'a> TelescopeApp<'a> {
         puffin::profile_scope!("open_preferences_window");
 
         let t_univ = &self.universe; 
-        let mut selected_index = 0;
         let filtered_keys:Vec<&u32> = t_univ.regions.keys().filter(|key| key < &&11000000 ).collect();
         egui::Window::new("Settings")
-        .fixed_size([600.00,600.0])
+        .resizable(false)
+        .fixed_size([600.0,500.0])
         .movable(true)
         .open(&mut self.open[2])
         .show(ctx, |ui| {
@@ -598,12 +601,15 @@ impl<'a> TelescopeApp<'a> {
                             let label = labels[row.index()];
                             let current_index = row.index();
                             row.col(|ui: &mut egui::Ui|{
-                                if ui.selectable_label(if selected_index == current_index {
-                                    true
-                                } else {
-                                    false
-                                },label).clicked() {
-                                    selected_index = current_index;
+                                let option_selected = || -> bool {
+                                    if self.selected_settings_option == current_index {
+                                        return true;
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if ui.selectable_label(option_selected(),label).clicked() {
+                                    self.selected_settings_option = current_index;
                                 };
                             });
                         });
