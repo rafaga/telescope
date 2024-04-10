@@ -155,7 +155,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                     vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
                 }
 
-                let regions: Vec<u32> = self.universe.regions.keys().map(|num| *num).collect();
+                let regions: Vec<u32> = self.universe.regions.keys().copied().collect();
                 for key in regions{
                     if key < 11000000 {
                         self.tile_ids.insert(key as usize, (false, None));
@@ -603,7 +603,7 @@ impl<'a> TelescopeApp<'a> {
                             row.col(|ui: &mut egui::Ui|{
                                 let option_selected = || -> bool {
                                     if self.selected_settings_option == current_index {
-                                        return true;
+                                        true
                                     } else {
                                         false
                                     }
@@ -680,9 +680,7 @@ impl<'a> TelescopeApp<'a> {
                 });
             });
             ui.horizontal(|ui|{
-                if ui.button("Save").clicked() {
-
-                }
+                ui.button("Save").clicked();
                 if ui.button("Cancel").clicked() {
     
                 }
