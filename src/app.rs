@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{TileId, Tiles, Tree};
-use futures::executor::ThreadPool;
 use sde::{SdeManager,objects::Universe};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::runtime::Builder;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
@@ -37,7 +37,6 @@ pub struct TelescopeApp<'a> {
 
     // the ESI Manager
     esi: webb::esi::EsiManager<'a>,
-    tpool: ThreadPool,
     last_message: String,
     search_text: String,
     emit_notification: bool,
@@ -69,15 +68,12 @@ impl<'a> Default for TelescopeApp<'a> {
             Some("telescope.db"),
         );
 
-        let mut tp_builder = ThreadPool::builder();
-        tp_builder.name_prefix("telescope-");
-        let tpool = tp_builder.create().unwrap();
         let factor = 50000000000000;
         let string_path = String::from("assets/sde.db");
         let path = string_path.clone();
 
         let mut sde = SdeManager::new(Path::new(&string_path),factor);
-        let _ =sde.get_universe();
+        let _ = sde.get_universe();
 
         Self {
             // Example stuff:
@@ -87,7 +83,6 @@ impl<'a> Default for TelescopeApp<'a> {
             map_msg: (Arc::new(mtx), Arc::new(mrx)),
             open: [false; 3],
             esi,
-            tpool,
             last_message: String::from("Starting..."),
             search_text: String::new(),
             search_selected_row: None,
@@ -110,230 +105,249 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    #[tokio::main]
-    async fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.event_manager().await;
-        let Self {
-            initialized: _,
-            points: _points,
-            app_msg: _,
-            map_msg: _,
-            open: _,
-            esi: _,
-            tpool: _,
-            last_message: _,
-            search_text: _,
-            emit_notification: _,
-            factor: _,
-            path: _,
-            search_selected_row: _,
-            search_results: _,
-            tree: _,
-            tile_ids: _,
-            universe: _,
-        } = self;
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        //let mut rt = tokio::runtime::Runtime::new().unwrap();
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("update");
+        let runtime = Builder::new_multi_thread()
+        .thread_name("tp-")
+        .enable_all()
+        .build()
+        .unwrap();
 
-        if !self.initialized {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("telescope_init");
+        runtime.block_on(async {
+            self.event_manager().await;
 
-            egui_extras::install_image_loaders(ctx);
+            let Self {
+                initialized: _,
+                points: _points,
+                app_msg: _,
+                map_msg: _,
+                open: _,
+                esi: _,
+                last_message: _,
+                search_text: _,
+                emit_notification: _,
+                factor: _,
+                path: _,
+                search_selected_row: _,
+                search_results: _,
+                tree: _,
+                tile_ids: _,
+                universe: _,
+            } = self;
 
-            let tree = self.create_tree();
-            
-            self.tree = Some(tree);
+            if !self.initialized {
+                #[cfg(feature = "puffin")]
+                puffin::profile_scope!("telescope_init");
 
-            let mut vec_chars = Vec::new();
-            for pchar in self.esi.characters.iter() {
-                vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
+                egui_extras::install_image_loaders(ctx);
+
+                let tree = self.create_tree();
+                
+                self.tree = Some(tree);
+
+                let mut vec_chars = Vec::new();
+                for pchar in self.esi.characters.iter() {
+                    vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
+                }
+
+                let regions: Vec<u32> = self.universe.regions.keys().map(|num| *num).collect();
+                for key in regions{
+                    if key < 11000000 {
+                        self.tile_ids.insert(key as usize, (false, None));
+                    }
+                }
+
+                self.initialized = true;
             }
-            self.initialized = true;
-        }
 
-        // Examples of how to create different panels and windows.
-        // Pick whichever suits you.
-        // Tip: a good default choice is to just keep the `CentralPanel`.
-        // For inspiration and more examples, go to https://emilk.github.io/egui
+            // Examples of how to create different panels and windows.
+            // Pick whichever suits you.
+            // Tip: a good default choice is to just keep the `CentralPanel`.
+            // For inspiration and more examples, go to https://emilk.github.io/egui
 
-        #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    ui.menu_button("Options", |ui| {
-                        if ui.button("Characters").clicked() {
-                            self.open[1] = true;
-                        }
-                        if ui.button("Preferences").clicked() {
-                            self.open[2] = true;
+            #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
+            egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+                // The top panel is often a good place for a menu bar:
+                egui::menu::bar(ui, |ui| {
+                    ui.menu_button("File", |ui| {
+                        ui.menu_button("Options", |ui| {
+                            if ui.button("Characters").clicked() {
+                                self.open[1] = true;
+                            }
+                            if ui.button("Preferences").clicked() {
+                                self.open[2] = true;
+                            }
+                        });
+                        ui.separator();
+                        if ui.button("Quit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-                ui.menu_button("Help", |ui| {
-                    if ui.button("About Telescope").clicked() {
-                        self.open[0] = true;
-                    }
+                    ui.menu_button("Help", |ui| {
+                        if ui.button("About Telescope").clicked() {
+                            self.open[0] = true;
+                        }
+                    });
                 });
             });
-        });
 
-        // Bottom menu
-        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
-            // The top panel is often a good place for a menu bar:
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                ui.separator();
-                ui.label(&self.last_message);
-            });
-        });
-
-        egui::SidePanel::left("side_panel")
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.heading("Search");
-
+            // Bottom menu
+            egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+                // The top panel is often a good place for a menu bar:
                 ui.horizontal(|ui| {
-                    ui.label("Name: ");
-                    let response = ui.text_edit_singleline(&mut self.search_text);
-                    if response.changed() {
-                        if self.search_text.len() >= 3 {
-                            let sde = SdeManager::new(
-                                Path::new(&self.path),
-                                self.factor,
-                            );
-                            match sde.get_system_id(self.search_text.clone().to_lowercase()) {
-                                Ok(system_results) => self.search_results = system_results,
-                                Err(t_error) => {
-                                    let txs = Arc::clone(&self.app_msg.0);
-                                    let future = async move {
-                                        let _ = txs
-                                            .send(Message::GenericNotification((
-                                                Type::Error,
-                                                String::from("sde"),
-                                                String::from("get_system_id"),
-                                                t_error.to_string(),
-                                            )))
-                                            .await;
-                                    };
-                                    self.tpool.spawn_ok(future);
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    ui.separator();
+                    ui.label(&self.last_message);
+                });
+            });
+
+            egui::SidePanel::left("side_panel")
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("Search");
+
+                    ui.horizontal(|ui| {
+                        ui.label("Name: ");
+                        let response = ui.text_edit_singleline(&mut self.search_text);
+                        if response.changed() {
+                            if self.search_text.len() >= 3 {
+                                let sde = SdeManager::new(
+                                    Path::new(&self.path),
+                                    self.factor,
+                                );
+                                match sde.get_system_id(self.search_text.clone().to_lowercase()) {
+                                    Ok(system_results) => self.search_results = system_results,
+                                    Err(t_error) => {
+                                        let txs = Arc::clone(&self.app_msg.0);
+                                        let future = async move {
+                                            let _ = txs
+                                                .send(Message::GenericNotification((
+                                                    Type::Error,
+                                                    String::from("sde"),
+                                                    String::from("get_system_id"),
+                                                    t_error.to_string(),
+                                                )))
+                                                .await;
+                                        };
+                                        let _ = tokio::spawn(future);
+                                    }
                                 }
                             }
+                            if self.search_text.is_empty() {
+                                self.search_results.clear();
+                                self.search_selected_row = None;
+                            }
                         }
-                        if self.search_text.is_empty() {
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.emit_notification, "Notify");
+                        if ui.button("Clear").clicked() {
+                            self.search_text.clear();
                             self.search_results.clear();
                             self.search_selected_row = None;
                         }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.emit_notification, "Notify");
-                    if ui.button("Clear").clicked() {
-                        self.search_text.clear();
-                        self.search_results.clear();
-                        self.search_selected_row = None;
-                    }
-                    if ui.button("Advanced >>>").clicked() {}
-                });
-                ui.push_id("search_table", |ui| {
-                    let mut table = TableBuilder::new(ui)
-                        .striped(true)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::auto())
-                        .column(Column::remainder())
-                        .min_scrolled_height(0.0);
+                        if ui.button("Advanced >>>").clicked() {}
+                    });
+                    ui.push_id("search_table", |ui| {
+                        let mut table = TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(Column::auto())
+                            .column(Column::remainder())
+                            .min_scrolled_height(0.0);
 
-                    table = table.sense(egui::Sense::click());
-                    table
-                        .header(20.0, |mut header| {
-                            header.col(|ui| {
-                                ui.strong("System");
-                            });
-                            header.col(|ui| {
-                                ui.strong("Region");
-                            });
-                        })
-                        .body(|mut body| {
-                            for row_index in 0..self.search_results.len() {
-                                body.row(18.00, |mut row| {
-                                    row.set_selected(false);
-                                    if let Some(selected_row) = self.search_selected_row {
-                                        if row_index == selected_row {
-                                            row.set_selected(true);
+                        table = table.sense(egui::Sense::click());
+                        table
+                            .header(20.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong("System");
+                                });
+                                header.col(|ui| {
+                                    ui.strong("Region");
+                                });
+                            })
+                            .body(|mut body| {
+                                for row_index in 0..self.search_results.len() {
+                                    body.row(18.00, |mut row| {
+                                        row.set_selected(false);
+                                        if let Some(selected_row) = self.search_selected_row {
+                                            if row_index == selected_row {
+                                                row.set_selected(true);
+                                            }
                                         }
-                                    }
-                                    let col_data = row.col(|ui| {
-                                        if ui.label(&self.search_results[row_index].1).clicked() {
-                                            self.search_selected_row = Some(row_index);
+                                        let col_data = row.col(|ui| {
+                                            if ui.label(&self.search_results[row_index].1).clicked() {
+                                                self.search_selected_row = Some(row_index);
+                                                self.click_on_system_result(row_index);
+                                            }
+                                        });
+                                        if col_data.1.clicked() {
                                             self.click_on_system_result(row_index);
                                         }
-                                    });
-                                    if col_data.1.clicked() {
-                                        self.click_on_system_result(row_index);
-                                    }
-                                    let col_data = row.col(|ui| {
-                                        if ui.label(&self.search_results[row_index].3).clicked() {
-                                            self.search_selected_row = Some(row_index);
+                                        let col_data = row.col(|ui| {
+                                            if ui.label(&self.search_results[row_index].3).clicked() {
+                                                self.search_selected_row = Some(row_index);
+                                                self.click_on_region_result(row_index);
+                                            }
+                                        });
+                                        if col_data.1.clicked() {
                                             self.click_on_region_result(row_index);
                                         }
+                                        if row.response().clicked() {
+                                            self.search_selected_row = Some(row_index);
+                                        }
                                     });
-                                    if col_data.1.clicked() {
-                                        self.click_on_region_result(row_index);
-                                    }
-                                    if row.response().clicked() {
-                                        self.search_selected_row = Some(row_index);
-                                    }
-                                });
-                                //self.toggle_row_selection(row_index, &row.response());
-                            }
-                            if self.search_results.is_empty() {
-                                body.row(18.00, |mut row| {
-                                    row.col(|ui| {
-                                        ui.label("No result(s)");
+                                    //self.toggle_row_selection(row_index, &row.response());
+                                }
+                                if self.search_results.is_empty() {
+                                    body.row(18.00, |mut row| {
+                                        row.col(|ui| {
+                                            ui.label("No result(s)");
+                                        });
+                                        row.col(|_ui| {});
                                     });
-                                    row.col(|_ui| {});
-                                });
-                            }
-                        });
-                    //
+                                }
+                            });
+                        //
+                    });
                 });
-            });
 
-        if self.open[0] {
-            self.open_about_window(ctx);
-        }
-
-        if self.open[1] {
-            self.open_character_window(ctx);
-        }
-
-        if self.open[2] {
-            self.open_settings_window(ctx);
-        }
-
-        /*DockArea::new(&mut self.tree)
-        .style(Style::from_egui(ctx.style().as_ref()))
-        .show(ctx, &mut self.tab_viewer);*/
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("inserting map");
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            /*
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
-            */
-            if let Some(tree) = &mut self.tree {
-                tree.ui(&mut TreeBehavior::default(), ui);
+            if self.open[0] {
+                self.open_about_window(ctx);
             }
+
+            if self.open[1] {
+                self.open_character_window(ctx);
+            }
+
+            if self.open[2] {
+                self.open_settings_window(ctx);
+            }
+
+            /*DockArea::new(&mut self.tree)
+            .style(Style::from_egui(ctx.style().as_ref()))
+            .show(ctx, &mut self.tab_viewer);*/
+
+            egui::CentralPanel::default().show(ctx, |ui| {
+                #[cfg(feature = "puffin")]
+                puffin::profile_scope!("inserting map");
+                // The central panel the region left after adding TopPanel's and SidePanel's
+                /*
+                ui.heading("eframe template");
+                ui.hyperlink("https://github.com/emilk/eframe_template");
+                ui.add(egui::github_link_file!(
+                    "https://github.com/emilk/eframe_template/blob/master/",
+                    "Source code."
+                ));
+                */
+                if let Some(tree) = &mut self.tree {
+                    tree.ui(&mut TreeBehavior::default(), ui);
+                }
+            })
+        
             //ui.add(&mut self.map);
             /*if let Some(points) = self.universe.points {
 
@@ -353,7 +367,7 @@ impl<'a> TelescopeApp<'a> {
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
                 Message::RequestRegionName(region_id) => self.get_region_name(region_id),
-                Message::ToggleRegionMap() => self.toggle_regions(),
+                Message::ToggleRegionMap() => self.toggle_regions().await,
             };
         }
     }
@@ -493,7 +507,7 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                             };
                                         };
-                                        self.tpool.spawn_ok(future);
+                                        let _ = tokio::spawn(future);
                                     }
                                     Err(err) => {
                                         let tx = Arc::clone(&self.app_msg.0);
@@ -501,7 +515,7 @@ impl<'a> TelescopeApp<'a> {
                                             let _ =
                                                 tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
                                         };
-                                        self.tpool.spawn_ok(future);
+                                        let _ = tokio::spawn(future);
                                     }
                                 }
                             }
@@ -523,7 +537,7 @@ impl<'a> TelescopeApp<'a> {
                                         let _ =
                                             tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
                                     };
-                                    self.tpool.spawn_ok(future);
+                                    let _ = tokio::spawn(future);
                                 }
                             }
                         });
@@ -563,29 +577,112 @@ impl<'a> TelescopeApp<'a> {
     fn open_settings_window(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_preferences_window");
-        
+
+        let t_univ = &self.universe; 
+        let mut selected_index = 0;
+        let filtered_keys:Vec<&u32> = t_univ.regions.keys().filter(|key| key < &&11000000 ).collect();
         egui::Window::new("Settings")
-            .fixed_size((400.0, 200.0))
-            .open(&mut self.open[2])
-            .show(ctx, |ui| {
-                for region in &mut self.universe.regions.iter_mut() {
-                    if region.0 < &11000000 {
-                        let key = *region.0 as usize;
-                        if ui.checkbox(&mut self.tile_ids.get_mut(&key).unwrap().0, region.1.name.clone()).changed() {
-                            let txs = Arc::clone(&self.app_msg.0);
-                            let future = async move {
-                                let _ = txs
-                                    .send(Message::ToggleRegionMap())
-                                    .await;
-                            };
-                            self.tpool.spawn_ok(future);
-                        };
-                    }
-                }
+        .fixed_size([600.00,600.0])
+        .movable(true)
+        .open(&mut self.open[2])
+        .show(ctx, |ui| {
+            ui.horizontal(|ui|{
+                ui.push_id("settings_menu", |ui|{
+                    TableBuilder::new(ui)
+                    .column(Column::resizable(Column::exact(150.0),false))
+                    .striped(false)
+                    .body(|body| {
+                        let row_height = 25.0;
+                        let labels = ["Maps","Linked Characters"];
+                        body.rows(row_height, 2, |mut row| {
+                            let label = labels[row.index()];
+                            let current_index = row.index();
+                            row.col(|ui: &mut egui::Ui|{
+                                if ui.selectable_label(if selected_index == current_index {
+                                    true
+                                } else {
+                                    false
+                                },label).clicked() {
+                                    selected_index = current_index;
+                                };
+                            });
+                        });
+                    });
+                });
+                ui.push_id("settings_config", |ui|{
+                    ui.vertical(|ui|{
+                        egui::ScrollArea::vertical().show(ui,|ui|{
+                            ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
+                            TableBuilder::new(ui)
+                            .column(Column::resizable(Column::exact(150.0),false))
+                            .column(Column::resizable(Column::exact(150.0),false))
+                            .column(Column::resizable(Column::exact(150.0),false))
+                            .striped(true)
+                            .vscroll(false)
+                            .body(|body| {
+                                let row_height = 18.0;
+                                let num_rows = filtered_keys.len().div_ceil(3);
+                                body.rows(row_height, num_rows, |mut row| {
+                                    let key_index = row.index() * 3;
+                                    row.col(|ui: &mut egui::Ui| {
+                                        let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
+                                        if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                            let txs = Arc::clone(&self.app_msg.0);
+                                            let future = async move {
+                                                let _ = txs
+                                                    .send(Message::ToggleRegionMap())
+                                                    .await;
+                                            };
+                                            let _ = tokio::spawn(future);
+                                        };
+                                    });
+                                    let mut t_key_index = key_index + 1;
+                                    if t_key_index < filtered_keys.len() { 
+                                        row.col(|ui: &mut egui::Ui| { 
+                                            let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
+                                            if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                let txs = Arc::clone(&self.app_msg.0);
+                                                let future = async move {
+                                                    let _ = txs
+                                                        .send(Message::ToggleRegionMap())
+                                                        .await;
+                                                };
+                                                let _ = tokio::spawn(future);
+                                            };
+                                        });
+                                    }
+                                    t_key_index += 1;
+                                    if t_key_index < filtered_keys.len() { 
+                                        row.col(|ui: &mut egui::Ui| {
+                                            let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
+                                            if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                let txs = Arc::clone(&self.app_msg.0);
+                                                let future = async move {
+                                                    let _ = txs
+                                                        .send(Message::ToggleRegionMap())
+                                                        .await;
+                                                };
+                                                let _ = tokio::spawn(future);
+                                            };
+                                        });
+                                    }
+                                });
+                            });
+                        });
+                        
+                    });
+                });
+            });
+            ui.horizontal(|ui|{
                 if ui.button("Save").clicked() {
 
                 }
+                if ui.button("Cancel").clicked() {
+    
+                }
             });
+        });
+        
     }
 
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
@@ -624,6 +721,8 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("update_status_with_error");
         match message.0 {
             Type::Error => {
                 self.last_message =
@@ -641,7 +740,9 @@ impl<'a> TelescopeApp<'a> {
         }
     }
 
-    fn toggle_regions(&mut self) {
+    async fn toggle_regions(&mut self) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("toggle_regions");
         let mut new_panes = vec![];
         let mut show_panes = vec![];
         // tile.0 - has the region ID
@@ -671,6 +772,8 @@ impl<'a> TelescopeApp<'a> {
 
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("new_eframe");
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
@@ -697,6 +800,8 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn generate_pane(&mut self, region_id: Option<usize>) -> Box<dyn TabPane> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("generate_pane");
         let pane: Box<dyn TabPane>;
         if let Some(id) = region_id {
             pane = Box::new(RegionPane::new(
@@ -718,20 +823,18 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn create_tree(&mut self) -> Tree<Box<dyn TabPane>> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("create_tree");
         let mut tiles = Tiles::default();
         let id = tiles.insert_pane(self.generate_pane(None));
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
-        let regions: Vec<u32> = self.universe.regions.keys().map(|num| *num).collect();
-        for key in regions{
-            if key < 11000000 {
-                self.tile_ids.insert(key as usize, (false, None));
-            }
-        }
         egui_tiles::Tree::new("maps", root, tiles)
     }
 
     fn get_region_name(&self, region_id:usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("get_region_name");
         if let Some(region) = self.universe.regions.get(&(region_id as u32)) {
             let tx_map = Arc::clone(&self.map_msg.0);
             let _result = tx_map
@@ -740,6 +843,8 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn click_on_system_result(&self, row_index:usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("click_on_system_result");
         let tx_map = Arc::clone(&self.map_msg.0);
         let system_id = self.search_results[row_index].0;
         let emit_notification = self.emit_notification;
@@ -752,9 +857,12 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn click_on_region_result(&self, row_index:usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("click_on_region_result");
         let tx_map = Arc::clone(&self.map_msg.0);
         let region_id = self.search_results[row_index].2;
         let _result = tx_map
             .send(MapSync::CenterOn((region_id, Target::Region)));
     }
+
 }

@@ -5,7 +5,6 @@ use egui_map::map::{
     Map,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
-use futures::executor::ThreadPool;
 use sde::SdeManager;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,7 +25,6 @@ pub struct UniversePane {
     generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
-    tpool: ThreadPool,
 }
 
 impl UniversePane {
@@ -36,15 +34,12 @@ impl UniversePane {
         path: String,
         factor: u64,
     ) -> Self {
-        let mut tp_builder = ThreadPool::builder();
-        tp_builder.name_prefix("tc-univ-");
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
             generic_sender,
             path,
             factor: factor as i64,
-            tpool: tp_builder.create().unwrap(),
         };
         object.generate_data(object.path.clone(), object.factor);
         object.map.settings = MapSettings::default();
@@ -113,7 +108,7 @@ impl TabPane for UniversePane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
-                MapSync::GetRegionName(_) => () 
+                MapSync::GetRegionName(_) => (),
             };
         }
     }
@@ -140,7 +135,7 @@ impl TabPane for UniversePane {
                                 )))
                                 .await;
                         };
-                        self.tpool.spawn_ok(future);
+                        let _ = tokio::spawn(future);
                     }
                     Err(t_error) => {
                         let gtx = Arc::clone(&self.generic_sender);
@@ -154,7 +149,7 @@ impl TabPane for UniversePane {
                                 )))
                                 .await;
                         };
-                        self.tpool.spawn_ok(future);
+                        let _ = tokio::spawn(future);
                     }
                 };
             }
@@ -169,7 +164,6 @@ pub struct RegionPane {
     generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
-    tpool: ThreadPool,
     region_id: usize,
     tab_name: String,
 }
@@ -180,16 +174,14 @@ impl RegionPane {
         generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
-        region_id: usize) -> Self {
-        let mut tp_builder = ThreadPool::builder();
-        tp_builder.name_prefix("tc-rg-".to_string() + region_id.to_string().as_str() +"-");
+        region_id: usize,
+    ) -> Self {
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
             generic_sender,
             path,
             factor: factor as i64,
-            tpool: tp_builder.create().unwrap(),
             region_id,
             tab_name: String::from("Region"),
         };
@@ -202,22 +194,22 @@ impl RegionPane {
 
     fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
-        if let Ok( points) = t_sde.get_abstract_systems(vec![region_id as u32]) {
-            if let Ok( points) = t_sde.get_abstract_system_connections(points, vec![region_id as u32]) {
+        if let Ok(points) = t_sde.get_abstract_systems(vec![region_id as u32]) {
+            if let Ok(points) =
+                t_sde.get_abstract_system_connections(points, vec![region_id as u32])
+            {
                 self.map.add_hashmap_points(points);
             }
-            if let Ok( lines ) = t_sde.get_abstract_connections(vec![region_id as u32]){
+            if let Ok(lines) = t_sde.get_abstract_connections(vec![region_id as u32]) {
                 self.map.add_lines(lines);
             }
         }
         let txs = Arc::clone(&self.generic_sender);
         let t_region_id = self.region_id;
         let future = async move {
-            let _ = txs
-                .send(Message::RequestRegionName(t_region_id))
-                .await;
+            let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
         };
-        self.tpool.spawn_ok(future);
+        let _ = tokio::spawn(future);
     }
 }
 
@@ -283,7 +275,6 @@ impl Default for TreeBehavior {
 }
 
 impl TreeBehavior {
-    
     /*fn ui(&mut self, ui: &mut Ui) {
         let Self {
             simplification_options,
