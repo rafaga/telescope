@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::Sender;
 use futures::executor::ThreadPool;
+use std::rc::Rc;
 // use eframe::egui::include_image;
 
 pub trait TabPane {
@@ -20,22 +21,22 @@ pub trait TabPane {
     fn center_on_target(&mut self, message: (usize, Target));
 }
 
-pub struct UniversePane<'a> {
+pub struct UniversePane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
     generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
-    tpool: &'a ThreadPool
+    tpool: Rc<ThreadPool>
 }
 
-impl<'a> UniversePane<'a> {
+impl UniversePane {
     pub fn new(
         receiver: Receiver<MapSync>,
         generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
-        thread_pool: &'a ThreadPool
+        thread_pool: Rc<ThreadPool>
     ) -> Self {
         /*let mut tp_builder = ThreadPool::builder();
         tp_builder.name_prefix("univ-");
@@ -52,7 +53,7 @@ impl<'a> UniversePane<'a> {
         object.generate_data(object.path.clone(), object.factor);
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
-        object.map.set_context_manager(Box::new(ContextMenu::new()));
+        object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
     }
 
@@ -85,7 +86,7 @@ impl<'a> UniversePane<'a> {
     }
 }
 
-impl<'a> TabPane for UniversePane<'a> {
+impl TabPane for UniversePane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         ui.add(&mut self.map);
         self.event_manager();
@@ -166,7 +167,7 @@ impl<'a> TabPane for UniversePane<'a> {
     }
 }
 
-pub struct RegionPane<'a> {
+pub struct RegionPane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
     generic_sender: Arc<Sender<Message>>,
@@ -174,17 +175,18 @@ pub struct RegionPane<'a> {
     factor: i64,
     region_id: usize,
     tab_name: String,
-    tpool: &'a ThreadPool,
+    tpool: Rc<ThreadPool>,
 }
 
-impl<'a> RegionPane<'a> {
+impl RegionPane {
+    
     pub fn new(
         receiver: Receiver<MapSync>,
         generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
         region_id: usize,
-        thread_pool: &'a ThreadPool,
+        thread_pool: Rc<ThreadPool>,
     ) -> Self {
         //let mut tp_builder = ThreadPool::builder();
         /*let mut thread_prefix = String::from("rg-");
@@ -204,7 +206,7 @@ impl<'a> RegionPane<'a> {
         object.generate_data(object.path.clone(), object.factor, object.region_id);
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
-        object.map.set_context_manager(Box::new(ContextMenu::new()));
+        object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
     }
 
@@ -229,7 +231,7 @@ impl<'a> RegionPane<'a> {
     }
 }
 
-impl<'a> TabPane for RegionPane<'a> {
+impl TabPane for RegionPane {
     fn event_manager(&mut self) {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {

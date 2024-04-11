@@ -13,6 +13,7 @@ use tokio::runtime::Builder;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use futures::executor::ThreadPool;
+use std::rc::Rc;
 
 use self::tiles::RegionPane;
 
@@ -28,7 +29,7 @@ pub struct TelescopeApp<'a> {
     // generic messages
     app_msg: (Arc<Sender<Message>>, Receiver<Message>),
     // map Syncronization Messages
-    map_msg: (Arc<BCSender<MapSync>>, Arc<BCReceiver<MapSync>>),
+    map_msg: (Arc<BCSender<MapSync>>, BCReceiver<MapSync>),
 
     // these are the flags to open the windows
     // 0 - About Window
@@ -47,7 +48,7 @@ pub struct TelescopeApp<'a> {
     path: String,
     universe: Universe,
     selected_settings_option: usize,
-    tpool: ThreadPool,
+    tpool: Rc<ThreadPool>,
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -73,7 +74,7 @@ impl<'a> Default for TelescopeApp<'a> {
 
         let mut tp_builder = ThreadPool::builder();
         tp_builder.name_prefix("telescope-");
-        let tpool = tp_builder.create().unwrap();
+        let tpool = Rc::new(tp_builder.create().unwrap());
 
         let factor = 50000000000000;
         let string_path = String::from("assets/sde.db");
@@ -87,7 +88,7 @@ impl<'a> Default for TelescopeApp<'a> {
             initialized: false,
             points: Vec::new(),
             app_msg: (Arc::new(gtx), grx),
-            map_msg: (Arc::new(mtx), Arc::new(mrx)),
+            map_msg: (Arc::new(mtx), mrx),
             open: [false; 3],
             esi,
             last_message: String::from("Starting..."),
@@ -125,8 +126,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
         .unwrap();
 
         runtime.block_on(async {
-            self.event_manager().await;
-
             let Self {
                 initialized: _,
                 points: _points,
@@ -154,9 +153,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
                 egui_extras::install_image_loaders(ctx);
 
-                let tree  = self.create_tree();
-                
-                self.tree = Some(tree);
+                self.tree = Some(self.create_tree());
 
                 let mut vec_chars = Vec::new();
                 for pchar in self.esi.characters.iter() {
@@ -173,6 +170,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 self.initialized = true;
             }
 
+            self.event_manager().await;
             // Examples of how to create different panels and windows.
             // Pick whichever suits you.
             // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -778,8 +776,9 @@ impl<'a> TelescopeApp<'a> {
         }
         let mut tile_ids = self.tile_ids.clone();
         for region_id in new_panes{
-            let pane = self.generate_pane(Some(region_id));
-            let tile_id = self.tree.unwrap().tiles.insert_pane(pane);
+            let pane;
+            pane = Self::generate_pane(self.map_msg.0.subscribe(),Arc::clone(&self.app_msg.0),self.path.clone(),self.factor,Some(region_id),Rc::clone(&self.tpool));
+            let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
             tile_ids.entry(region_id).and_modify(|data|{
                 data.0 = true;
                 data.1 = Some(tile_id);
@@ -819,36 +818,36 @@ impl<'a> TelescopeApp<'a> {
         app
     }
 
-    fn generate_pane(&self, region_id: Option<usize>) -> Box<dyn TabPane + '_> {
+    fn generate_pane(receiver: BCReceiver<MapSync>, generic_sender: Arc<Sender<Message>>, path: String, factor: u64, region_id: Option<usize>, t_pool: Rc<ThreadPool>) -> Box<dyn TabPane> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("generate_pane");
         let pane: Box<dyn TabPane>;
-        if let Some(id) = region_id {
+        if region_id.is_some() {
             pane = Box::new(RegionPane::new(
-                self.map_msg.0.subscribe(),
-                Arc::clone(&self.app_msg.0),
-                self.path.clone(),
-                self.factor,
-                id,
-                &self.tpool,
-            ))
+                receiver,
+                generic_sender,
+                path,
+                factor,
+                region_id.unwrap(),
+                t_pool,
+            ));
         } else {
             pane = Box::new(UniversePane::new(
-                self.map_msg.0.subscribe(),
-                Arc::clone(&self.app_msg.0),
-                self.path.clone(),
-                self.factor,
-                &self.tpool,
+                receiver,
+                generic_sender,
+                path,
+                factor,
+                t_pool,
             ));
         }
         pane
     }
 
-    fn create_tree(&self) -> Tree<Box<dyn TabPane + '_>> {
+    fn create_tree(&self) -> Tree<Box<dyn TabPane>> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("create_tree");
         let mut tiles = Tiles::default();
-        let id = tiles.insert_pane(self.generate_pane(None));
+        let id = tiles.insert_pane(Self::generate_pane(self.map_msg.0.subscribe(),Arc::clone(&self.app_msg.0),self.path.clone(),self.factor,None,Rc::clone(&self.tpool)));
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
         egui_tiles::Tree::new("maps", root, tiles)
