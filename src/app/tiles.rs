@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::Sender;
+use futures::executor::ThreadPool;
 // use eframe::egui::include_image;
 
 pub trait TabPane {
@@ -19,27 +20,34 @@ pub trait TabPane {
     fn center_on_target(&mut self, message: (usize, Target));
 }
 
-pub struct UniversePane {
+pub struct UniversePane<'a> {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
     generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
+    tpool: &'a ThreadPool
 }
 
-impl UniversePane {
+impl<'a> UniversePane<'a> {
     pub fn new(
         receiver: Receiver<MapSync>,
         generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
+        thread_pool: &'a ThreadPool
     ) -> Self {
+        /*let mut tp_builder = ThreadPool::builder();
+        tp_builder.name_prefix("univ-");
+        let tpool = tp_builder.create().unwrap();*/
+
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
             generic_sender,
             path,
             factor: factor as i64,
+            tpool: thread_pool,
         };
         object.generate_data(object.path.clone(), object.factor);
         object.map.settings = MapSettings::default();
@@ -77,7 +85,7 @@ impl UniversePane {
     }
 }
 
-impl TabPane for UniversePane {
+impl<'a> TabPane for UniversePane<'a> {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         ui.add(&mut self.map);
         self.event_manager();
@@ -135,7 +143,7 @@ impl TabPane for UniversePane {
                                 )))
                                 .await;
                         };
-                        let _ = tokio::spawn(future);
+                        let _ = self.tpool.spawn_ok(future);
                     }
                     Err(t_error) => {
                         let gtx = Arc::clone(&self.generic_sender);
@@ -149,7 +157,7 @@ impl TabPane for UniversePane {
                                 )))
                                 .await;
                         };
-                        let _ = tokio::spawn(future);
+                        let _ = self.tpool.spawn_ok(future);
                     }
                 };
             }
@@ -158,7 +166,7 @@ impl TabPane for UniversePane {
     }
 }
 
-pub struct RegionPane {
+pub struct RegionPane<'a> {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
     generic_sender: Arc<Sender<Message>>,
@@ -166,16 +174,23 @@ pub struct RegionPane {
     factor: i64,
     region_id: usize,
     tab_name: String,
+    tpool: &'a ThreadPool,
 }
 
-impl RegionPane {
+impl<'a> RegionPane<'a> {
     pub fn new(
         receiver: Receiver<MapSync>,
         generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
         region_id: usize,
+        thread_pool: &'a ThreadPool,
     ) -> Self {
+        //let mut tp_builder = ThreadPool::builder();
+        /*let mut thread_prefix = String::from("rg-");
+        thread_prefix += &(region_id.to_string().as_str().to_owned() + &"-".to_string());
+        tp_builder.name_prefix(thread_prefix);
+        let tpool = tp_builder.create().unwrap();*/
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -184,6 +199,7 @@ impl RegionPane {
             factor: factor as i64,
             region_id,
             tab_name: String::from("Region"),
+            tpool: thread_pool,
         };
         object.generate_data(object.path.clone(), object.factor, object.region_id);
         object.map.settings = MapSettings::default();
@@ -209,11 +225,11 @@ impl RegionPane {
         let future = async move {
             let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
         };
-        let _ = tokio::spawn(future);
+        let _ = self.tpool.spawn_ok(future);
     }
 }
 
-impl TabPane for RegionPane {
+impl<'a> TabPane for RegionPane<'a> {
     fn event_manager(&mut self) {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {

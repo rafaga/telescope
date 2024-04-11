@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use futures::executor::ThreadPool;
 
 use self::tiles::RegionPane;
 
@@ -46,6 +47,7 @@ pub struct TelescopeApp<'a> {
     path: String,
     universe: Universe,
     selected_settings_option: usize,
+    tpool: ThreadPool,
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -69,6 +71,10 @@ impl<'a> Default for TelescopeApp<'a> {
             Some("telescope.db"),
         );
 
+        let mut tp_builder = ThreadPool::builder();
+        tp_builder.name_prefix("telescope-");
+        let tpool = tp_builder.create().unwrap();
+
         let factor = 50000000000000;
         let string_path = String::from("assets/sde.db");
         let path = string_path.clone();
@@ -90,6 +96,7 @@ impl<'a> Default for TelescopeApp<'a> {
             emit_notification: false,
             factor,
             path,
+            tpool,
             search_results: Vec::new(),
             tree: None,
             tile_ids: HashMap::new(),
@@ -138,6 +145,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 tile_ids: _,
                 universe: _,
                 selected_settings_option: _,
+                tpool: _,
             } = self;
 
             if !self.initialized {
@@ -146,7 +154,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
                 egui_extras::install_image_loaders(ctx);
 
-                let tree = self.create_tree();
+                let tree  = self.create_tree();
                 
                 self.tree = Some(tree);
 
@@ -234,7 +242,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                                 )))
                                                 .await;
                                         };
-                                        let _ = tokio::spawn(future);
+                                        let _ = self.tpool.spawn_ok(future);
                                     }
                                 }
                             }
@@ -365,12 +373,10 @@ impl<'a> TelescopeApp<'a> {
         let received_data = self.app_msg.1.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                Message::EsiAuthSuccess(character) => {
-                    self.update_character_into_database(character).await
-                }
+                Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
                 Message::GenericNotification(message) => self.update_status_with_error(message),
                 Message::RequestRegionName(region_id) => self.get_region_name(region_id),
-                Message::ToggleRegionMap() => self.toggle_regions().await,
+                Message::ToggleRegionMap() => self.toggle_regions(),
             };
         }
     }
@@ -510,7 +516,7 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                             };
                                         };
-                                        let _ = tokio::spawn(future);
+                                        let _ = self.tpool.spawn_ok(future);
                                     }
                                     Err(err) => {
                                         let tx = Arc::clone(&self.app_msg.0);
@@ -518,7 +524,7 @@ impl<'a> TelescopeApp<'a> {
                                             let _ =
                                                 tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
                                         };
-                                        let _ = tokio::spawn(future);
+                                        let _ = self.tpool.spawn_ok(future);
                                     }
                                 }
                             }
@@ -540,7 +546,7 @@ impl<'a> TelescopeApp<'a> {
                                         let _ =
                                             tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
                                     };
-                                    let _ = tokio::spawn(future);
+                                    let _ = self.tpool.spawn_ok(future);
                                 }
                             }
                         });
@@ -590,30 +596,34 @@ impl<'a> TelescopeApp<'a> {
         .open(&mut self.open[2])
         .show(ctx, |ui| {
             ui.horizontal(|ui|{
-                ui.push_id("settings_menu", |ui|{
-                    TableBuilder::new(ui)
-                    .column(Column::resizable(Column::exact(150.0),false))
-                    .striped(false)
-                    .body(|body| {
-                        let row_height = 25.0;
-                        let labels = ["Maps","Linked Characters"];
-                        body.rows(row_height, 2, |mut row| {
-                            let label = labels[row.index()];
-                            let current_index = row.index();
-                            row.col(|ui: &mut egui::Ui|{
-                                let option_selected = || -> bool {
-                                    if self.selected_settings_option == current_index {
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                };
-                                if ui.selectable_label(option_selected(),label).clicked() {
-                                    self.selected_settings_option = current_index;
-                                };
+                ui.vertical(|ui|{
+                    let row_height = 25.0;
+                    let labels = ["Maps","Linked Characters"];
+                    ui.push_id("settings_menu", |ui|{
+                        TableBuilder::new(ui)
+                        .column(Column::resizable(Column::exact(150.0),false))
+                        .striped(false)
+                        .vscroll(false)
+                        .body(|body| {
+                            body.rows(row_height, labels.len(), |mut row| {
+                                let label = labels[row.index()];
+                                let current_index = row.index();
+                                row.col(|ui: &mut egui::Ui|{
+                                    let option_selected = || -> bool {
+                                        if self.selected_settings_option == current_index {
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    };
+                                    if ui.selectable_label(option_selected(),label).clicked() {
+                                        self.selected_settings_option = current_index;
+                                    };
+                                });
                             });
                         });
                     });
+                    ui.add_space(300.0 - (labels.len() as f32 * row_height));
                 });
                 ui.push_id("settings_config", |ui|{
                     ui.vertical(|ui|{
@@ -639,7 +649,7 @@ impl<'a> TelescopeApp<'a> {
                                                     .send(Message::ToggleRegionMap())
                                                     .await;
                                             };
-                                            let _ = tokio::spawn(future);
+                                            let _ = self.tpool.spawn_ok(future);
                                         };
                                     });
                                     let mut t_key_index = key_index + 1;
@@ -653,7 +663,7 @@ impl<'a> TelescopeApp<'a> {
                                                         .send(Message::ToggleRegionMap())
                                                         .await;
                                                 };
-                                                let _ = tokio::spawn(future);
+                                                let _ = self.tpool.spawn_ok(future);
                                             };
                                         });
                                     }
@@ -668,7 +678,7 @@ impl<'a> TelescopeApp<'a> {
                                                         .send(Message::ToggleRegionMap())
                                                         .await;
                                                 };
-                                                let _ = tokio::spawn(future);
+                                                let _ = self.tpool.spawn_ok(future);
                                             };
                                         });
                                     }
@@ -692,34 +702,39 @@ impl<'a> TelescopeApp<'a> {
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("update_character_into_database");
-
-        let tx = Arc::clone(&self.app_msg.0);
         let auth_info = self.esi.esi.get_authorize_url().unwrap();
         match self.esi.auth_user(auth_info, response_data).await {
             Ok(Some(player)) => {
                 self.esi.characters.push(player);
             }
             Ok(None) => {
-                let _ = tx
-                    .send(Message::GenericNotification((
-                        Type::Info,
-                        String::from("EsiManager"),
-                        String::from("auth_user"),
-                        String::from(
-                            "Apparently thre was some kind of trouble authenticating the player.",
-                        ),
-                    )))
-                    .await;
+                let t_tx = Arc::clone(&self.app_msg.0);
+                let future = async move {
+                    let _ = t_tx
+                        .send(Message::GenericNotification((
+                            Type::Info,
+                            String::from("EsiManager"),
+                            String::from("auth_user"),
+                            String::from(
+                                "Apparently thre was some kind of trouble authenticating the player.",
+                            ),
+                        )));
+                };
+                self.tpool.spawn_ok(future);
             }
             Err(t_error) => {
-                let _ = tx
+                let t_tx = Arc::clone(&self.app_msg.0);
+                let future = async move {
+                    let _ = t_tx
                     .send(Message::GenericNotification((
                         Type::Error,
                         String::from("EsiManager"),
                         String::from("auth_user"),
                         t_error.to_string(),
-                    )))
-                    .await;
+                    )));
+                };
+                self.tpool.spawn_ok(future);
+                    
             }
         };
     }
@@ -744,7 +759,7 @@ impl<'a> TelescopeApp<'a> {
         }
     }
 
-    async fn toggle_regions(&mut self) {
+    fn toggle_regions(&mut self) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("toggle_regions");
         let mut new_panes = vec![];
@@ -761,17 +776,18 @@ impl<'a> TelescopeApp<'a> {
                 show_panes.push(*tile.0);
             }
         }
+        let mut tile_ids = self.tile_ids.clone();
         for region_id in new_panes{
             let pane = self.generate_pane(Some(region_id));
-            let t_tree = self.tree.as_mut().unwrap();
-            let tile_id = t_tree.tiles.insert_pane(pane);
-            self.tile_ids.entry(region_id).and_modify(|data|{
+            let tile_id = self.tree.unwrap().tiles.insert_pane(pane);
+            tile_ids.entry(region_id).and_modify(|data|{
                 data.0 = true;
                 data.1 = Some(tile_id);
             });
             //self.tree.as_mut().unwrap().set_visible(tile_id, true);
             //self.tree.as_mut().unwrap().tiles.insert_tab_tile(tile_id);
         }
+        self.tile_ids = tile_ids;
     }
 
     /// Called once before the first frame.
@@ -803,7 +819,7 @@ impl<'a> TelescopeApp<'a> {
         app
     }
 
-    fn generate_pane(&mut self, region_id: Option<usize>) -> Box<dyn TabPane> {
+    fn generate_pane(&self, region_id: Option<usize>) -> Box<dyn TabPane + '_> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("generate_pane");
         let pane: Box<dyn TabPane>;
@@ -814,6 +830,7 @@ impl<'a> TelescopeApp<'a> {
                 self.path.clone(),
                 self.factor,
                 id,
+                &self.tpool,
             ))
         } else {
             pane = Box::new(UniversePane::new(
@@ -821,12 +838,13 @@ impl<'a> TelescopeApp<'a> {
                 Arc::clone(&self.app_msg.0),
                 self.path.clone(),
                 self.factor,
+                &self.tpool,
             ));
         }
         pane
     }
 
-    fn create_tree(&mut self) -> Tree<Box<dyn TabPane>> {
+    fn create_tree(&self) -> Tree<Box<dyn TabPane + '_>> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("create_tree");
         let mut tiles = Tiles::default();
