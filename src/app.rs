@@ -2,18 +2,18 @@ use crate::app::messages::{MapSync, Message, Target, Type};
 use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui;
-use std::collections::HashMap;
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{TileId, Tiles, Tree};
-use sde::{SdeManager,objects::Universe};
+use futures::executor::ThreadPool;
+use sde::{objects::Universe, SdeManager};
+use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use futures::executor::ThreadPool;
-use std::rc::Rc;
 
 use self::tiles::RegionPane;
 
@@ -52,7 +52,7 @@ pub struct TelescopeApp<'a> {
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
-    tile_ids: HashMap<usize,(bool,Option<TileId>)>,
+    tile_ids: HashMap<usize, (bool, Option<TileId>)>,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -80,7 +80,7 @@ impl<'a> Default for TelescopeApp<'a> {
         let string_path = String::from("assets/sde.db");
         let path = string_path.clone();
 
-        let mut sde = SdeManager::new(Path::new(&string_path),factor);
+        let mut sde = SdeManager::new(Path::new(&string_path), factor);
         let _ = sde.get_universe();
 
         Self {
@@ -120,10 +120,10 @@ impl<'a> eframe::App for TelescopeApp<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("update");
         let runtime = Builder::new_multi_thread()
-        .thread_name("tp-")
-        .enable_all()
-        .build()
-        .unwrap();
+            .thread_name("tp-")
+            .enable_all()
+            .build()
+            .unwrap();
 
         runtime.block_on(async {
             let Self {
@@ -161,7 +161,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 }
 
                 let regions: Vec<u32> = self.universe.regions.keys().copied().collect();
-                for key in regions{
+                for key in regions {
                     if key < 11000000 {
                         self.tile_ids.insert(key as usize, (false, None));
                     }
@@ -222,10 +222,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                         let response = ui.text_edit_singleline(&mut self.search_text);
                         if response.changed() {
                             if self.search_text.len() >= 3 {
-                                let sde = SdeManager::new(
-                                    Path::new(&self.path),
-                                    self.factor,
-                                );
+                                let sde = SdeManager::new(Path::new(&self.path), self.factor);
                                 match sde.get_system_id(self.search_text.clone().to_lowercase()) {
                                     Ok(system_results) => self.search_results = system_results,
                                     Err(t_error) => {
@@ -240,7 +237,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                                 )))
                                                 .await;
                                         };
-                                        let _ = self.tpool.spawn_ok(future);
+                                        self.tpool.spawn_ok(future);
                                     }
                                 }
                             }
@@ -288,7 +285,8 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                             }
                                         }
                                         let col_data = row.col(|ui| {
-                                            if ui.label(&self.search_results[row_index].1).clicked() {
+                                            if ui.label(&self.search_results[row_index].1).clicked()
+                                            {
                                                 self.search_selected_row = Some(row_index);
                                                 self.click_on_system_result(row_index);
                                             }
@@ -297,7 +295,8 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                                             self.click_on_system_result(row_index);
                                         }
                                         let col_data = row.col(|ui| {
-                                            if ui.label(&self.search_results[row_index].3).clicked() {
+                                            if ui.label(&self.search_results[row_index].3).clicked()
+                                            {
                                                 self.search_selected_row = Some(row_index);
                                                 self.click_on_region_result(row_index);
                                             }
@@ -356,7 +355,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                     tree.ui(&mut TreeBehavior::default(), ui);
                 }
             })
-        
+
             //ui.add(&mut self.map);
             /*if let Some(points) = self.universe.points {
 
@@ -371,7 +370,9 @@ impl<'a> TelescopeApp<'a> {
         let received_data = self.app_msg.1.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                Message::EsiAuthSuccess(character) => self.update_character_into_database(character).await,
+                Message::EsiAuthSuccess(character) => {
+                    self.update_character_into_database(character).await
+                }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
                 Message::RequestRegionName(region_id) => self.get_region_name(region_id),
                 Message::ToggleRegionMap() => self.toggle_regions(),
@@ -514,7 +515,7 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                             };
                                         };
-                                        let _ = self.tpool.spawn_ok(future);
+                                        self.tpool.spawn_ok(future);
                                     }
                                     Err(err) => {
                                         let tx = Arc::clone(&self.app_msg.0);
@@ -522,7 +523,7 @@ impl<'a> TelescopeApp<'a> {
                                             let _ =
                                                 tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
                                         };
-                                        let _ = self.tpool.spawn_ok(future);
+                                        self.tpool.spawn_ok(future);
                                     }
                                 }
                             }
@@ -544,7 +545,7 @@ impl<'a> TelescopeApp<'a> {
                                         let _ =
                                             tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
                                     };
-                                    let _ = self.tpool.spawn_ok(future);
+                                    self.tpool.spawn_ok(future);
                                 }
                             }
                         });
@@ -585,8 +586,12 @@ impl<'a> TelescopeApp<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_preferences_window");
 
-        let t_univ = &self.universe; 
-        let filtered_keys:Vec<&u32> = t_univ.regions.keys().filter(|key| key < &&11000000 ).collect();
+        let t_univ = &self.universe;
+        let filtered_keys: Vec<&u32> = t_univ
+            .regions
+            .keys()
+            .filter(|key| key < &&11000000)
+            .collect();
         egui::Window::new("Settings")
         .resizable(false)
         .fixed_size([600.0,500.0])
@@ -608,11 +613,7 @@ impl<'a> TelescopeApp<'a> {
                                 let current_index = row.index();
                                 row.col(|ui: &mut egui::Ui|{
                                     let option_selected = || -> bool {
-                                        if self.selected_settings_option == current_index {
-                                            true
-                                        } else {
-                                            false
-                                        }
+                                        self.selected_settings_option == current_index
                                     };
                                     if ui.selectable_label(option_selected(),label).clicked() {
                                         self.selected_settings_option = current_index;
@@ -647,26 +648,11 @@ impl<'a> TelescopeApp<'a> {
                                                     .send(Message::ToggleRegionMap())
                                                     .await;
                                             };
-                                            let _ = self.tpool.spawn_ok(future);
+                                            self.tpool.spawn_ok(future);
                                         };
                                     });
                                     let mut t_key_index = key_index + 1;
-                                    if t_key_index < filtered_keys.len() { 
-                                        row.col(|ui: &mut egui::Ui| { 
-                                            let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                            if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
-                                                let txs = Arc::clone(&self.app_msg.0);
-                                                let future = async move {
-                                                    let _ = txs
-                                                        .send(Message::ToggleRegionMap())
-                                                        .await;
-                                                };
-                                                let _ = self.tpool.spawn_ok(future);
-                                            };
-                                        });
-                                    }
-                                    t_key_index += 1;
-                                    if t_key_index < filtered_keys.len() { 
+                                    if t_key_index < filtered_keys.len() {
                                         row.col(|ui: &mut egui::Ui| {
                                             let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
                                             if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
@@ -676,25 +662,37 @@ impl<'a> TelescopeApp<'a> {
                                                         .send(Message::ToggleRegionMap())
                                                         .await;
                                                 };
-                                                let _ = self.tpool.spawn_ok(future);
+                                                self.tpool.spawn_ok(future);
+                                            };
+                                        });
+                                    }
+                                    t_key_index += 1;
+                                    if t_key_index < filtered_keys.len() {
+                                        row.col(|ui: &mut egui::Ui| {
+                                            let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
+                                            if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                let txs = Arc::clone(&self.app_msg.0);
+                                                let future = async move {
+                                                    let _ = txs
+                                                        .send(Message::ToggleRegionMap())
+                                                        .await;
+                                                };
+                                                self.tpool.spawn_ok(future);
                                             };
                                         });
                                     }
                                 });
                             });
                         });
-                        
                     });
                 });
             });
             ui.horizontal(|ui|{
                 ui.button("Save").clicked();
-                if ui.button("Cancel").clicked() {
-    
+                if ui.button("Cancel").clicked(){
                 }
             });
         });
-        
     }
 
     async fn update_character_into_database(&mut self, response_data: (String, String)) {
@@ -716,7 +714,7 @@ impl<'a> TelescopeApp<'a> {
                             String::from(
                                 "Apparently thre was some kind of trouble authenticating the player.",
                             ),
-                        )));
+                        ))).await;
                 };
                 self.tpool.spawn_ok(future);
             }
@@ -724,15 +722,15 @@ impl<'a> TelescopeApp<'a> {
                 let t_tx = Arc::clone(&self.app_msg.0);
                 let future = async move {
                     let _ = t_tx
-                    .send(Message::GenericNotification((
-                        Type::Error,
-                        String::from("EsiManager"),
-                        String::from("auth_user"),
-                        t_error.to_string(),
-                    )));
+                        .send(Message::GenericNotification((
+                            Type::Error,
+                            String::from("EsiManager"),
+                            String::from("auth_user"),
+                            t_error.to_string(),
+                        )))
+                        .await;
                 };
                 self.tpool.spawn_ok(future);
-                    
             }
         };
     }
@@ -765,9 +763,9 @@ impl<'a> TelescopeApp<'a> {
         // tile.0 - has the region ID
         // tile.1.0 - has visible state
         // tile.1.1 - has the TileID assosiated with the shown Tile/tab (if exists)
-        for tile in self.tile_ids.iter_mut(){
-            if tile.1.0 {
-                if tile.1.1.is_none() {
+        for tile in self.tile_ids.iter_mut() {
+            if tile.1 .0 {
+                if tile.1 .1.is_none() {
                     new_panes.push(*tile.0);
                 }
             } else {
@@ -775,11 +773,17 @@ impl<'a> TelescopeApp<'a> {
             }
         }
         let mut tile_ids = self.tile_ids.clone();
-        for region_id in new_panes{
-            let pane;
-            pane = Self::generate_pane(self.map_msg.0.subscribe(),Arc::clone(&self.app_msg.0),self.path.clone(),self.factor,Some(region_id),Rc::clone(&self.tpool));
+        for region_id in new_panes {
+            let pane = Self::generate_pane(
+                self.map_msg.0.subscribe(),
+                Arc::clone(&self.app_msg.0),
+                self.path.clone(),
+                self.factor,
+                Some(region_id),
+                Rc::clone(&self.tpool),
+            );
             let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
-            tile_ids.entry(region_id).and_modify(|data|{
+            tile_ids.entry(region_id).and_modify(|data| {
                 data.0 = true;
                 data.1 = Some(tile_id);
             });
@@ -818,28 +822,34 @@ impl<'a> TelescopeApp<'a> {
         app
     }
 
-    fn generate_pane(receiver: BCReceiver<MapSync>, generic_sender: Arc<Sender<Message>>, path: String, factor: u64, region_id: Option<usize>, t_pool: Rc<ThreadPool>) -> Box<dyn TabPane> {
+    fn generate_pane(
+        receiver: BCReceiver<MapSync>,
+        generic_sender: Arc<Sender<Message>>,
+        path: String,
+        factor: u64,
+        region_id: Option<usize>,
+        t_pool: Rc<ThreadPool>,
+    ) -> Box<dyn TabPane> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("generate_pane");
-        let pane: Box<dyn TabPane>;
-        if region_id.is_some() {
-            pane = Box::new(RegionPane::new(
+        let pane: Box<dyn TabPane> = if let Some(region) = region_id {
+            Box::new(RegionPane::new(
                 receiver,
                 generic_sender,
                 path,
                 factor,
-                region_id.unwrap(),
+                region,
                 t_pool,
-            ));
+            ))
         } else {
-            pane = Box::new(UniversePane::new(
+            Box::new(UniversePane::new(
                 receiver,
                 generic_sender,
                 path,
                 factor,
                 t_pool,
-            ));
-        }
+            ))
+        };
         pane
     }
 
@@ -847,43 +857,45 @@ impl<'a> TelescopeApp<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("create_tree");
         let mut tiles = Tiles::default();
-        let id = tiles.insert_pane(Self::generate_pane(self.map_msg.0.subscribe(),Arc::clone(&self.app_msg.0),self.path.clone(),self.factor,None,Rc::clone(&self.tpool)));
+        let id = tiles.insert_pane(Self::generate_pane(
+            self.map_msg.0.subscribe(),
+            Arc::clone(&self.app_msg.0),
+            self.path.clone(),
+            self.factor,
+            None,
+            Rc::clone(&self.tpool),
+        ));
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
         egui_tiles::Tree::new("maps", root, tiles)
     }
 
-    fn get_region_name(&self, region_id:usize) {
+    fn get_region_name(&self, region_id: usize) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("get_region_name");
         if let Some(region) = self.universe.regions.get(&(region_id as u32)) {
             let tx_map = Arc::clone(&self.map_msg.0);
-            let _result = tx_map
-            .send(MapSync::GetRegionName(region.name.clone()));
+            let _result = tx_map.send(MapSync::GetRegionName(region.name.clone()));
         }
     }
 
-    fn click_on_system_result(&self, row_index:usize) {
+    fn click_on_system_result(&self, row_index: usize) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("click_on_system_result");
         let tx_map = Arc::clone(&self.map_msg.0);
         let system_id = self.search_results[row_index].0;
         let emit_notification = self.emit_notification;
-        let _result = tx_map
-            .send(MapSync::CenterOn((system_id, Target::System)));
+        let _result = tx_map.send(MapSync::CenterOn((system_id, Target::System)));
         if emit_notification {
-            let _result =
-                tx_map.send(MapSync::SystemNotification(system_id));
+            let _result = tx_map.send(MapSync::SystemNotification(system_id));
         }
     }
 
-    fn click_on_region_result(&self, row_index:usize) {
+    fn click_on_region_result(&self, row_index: usize) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("click_on_region_result");
         let tx_map = Arc::clone(&self.map_msg.0);
         let region_id = self.search_results[row_index].2;
-        let _result = tx_map
-            .send(MapSync::CenterOn((region_id, Target::Region)));
+        let _result = tx_map.send(MapSync::CenterOn((region_id, Target::Region)));
     }
-
 }

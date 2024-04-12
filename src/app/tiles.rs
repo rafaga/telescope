@@ -5,13 +5,13 @@ use egui_map::map::{
     Map,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
+use futures::executor::ThreadPool;
 use sde::SdeManager;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::Sender;
-use futures::executor::ThreadPool;
-use std::rc::Rc;
 // use eframe::egui::include_image;
 
 pub trait TabPane {
@@ -27,7 +27,7 @@ pub struct UniversePane {
     generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
-    tpool: Rc<ThreadPool>
+    tpool: Rc<ThreadPool>,
 }
 
 impl UniversePane {
@@ -36,7 +36,7 @@ impl UniversePane {
         generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
-        thread_pool: Rc<ThreadPool>
+        thread_pool: Rc<ThreadPool>,
     ) -> Self {
         /*let mut tp_builder = ThreadPool::builder();
         tp_builder.name_prefix("univ-");
@@ -144,7 +144,7 @@ impl TabPane for UniversePane {
                                 )))
                                 .await;
                         };
-                        let _ = self.tpool.spawn_ok(future);
+                        self.tpool.spawn_ok(future);
                     }
                     Err(t_error) => {
                         let gtx = Arc::clone(&self.generic_sender);
@@ -158,7 +158,7 @@ impl TabPane for UniversePane {
                                 )))
                                 .await;
                         };
-                        let _ = self.tpool.spawn_ok(future);
+                        self.tpool.spawn_ok(future);
                     }
                 };
             }
@@ -179,7 +179,6 @@ pub struct RegionPane {
 }
 
 impl RegionPane {
-    
     pub fn new(
         receiver: Receiver<MapSync>,
         generic_sender: Arc<Sender<Message>>,
@@ -227,7 +226,7 @@ impl RegionPane {
         let future = async move {
             let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
         };
-        let _ = self.tpool.spawn_ok(future);
+        self.tpool.spawn_ok(future);
     }
 }
 
