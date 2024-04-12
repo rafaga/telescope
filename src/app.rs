@@ -783,6 +783,9 @@ impl<'a> TelescopeApp<'a> {
                 Rc::clone(&self.tpool),
             );
             let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
+            let root = self.tree.as_ref().unwrap().root.unwrap();
+            let counter = self.tree.as_ref().unwrap().tiles.len();
+            self.tree.as_mut().unwrap().move_tile_to_container(tile_id, root, counter, false);
             tile_ids.entry(region_id).and_modify(|data| {
                 data.0 = true;
                 data.1 = Some(tile_id);

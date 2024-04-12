@@ -211,18 +211,29 @@ impl RegionPane {
 
     fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
-        if let Ok(points) = t_sde.get_abstract_systems(vec![region_id as u32]) {
-            if let Ok(points) =
+        
+        match t_sde.get_abstract_systems(vec![region_id as u32]) {
+            Ok(points) => {
+                if let Ok(points) =
                 t_sde.get_abstract_system_connections(points, vec![region_id as u32])
-            {
-                self.map.add_hashmap_points(points);
-            }
-            if let Ok(lines) = t_sde.get_abstract_connections(vec![region_id as u32]) {
-                self.map.add_lines(lines);
+                {
+                    self.map.add_hashmap_points(points);
+                }
+                if let Ok(lines) = t_sde.get_abstract_connections(vec![region_id as u32]) {
+                    self.map.add_lines(lines);
+                }
+            },
+            Err(t_err) => {
+                let txs = Arc::clone(&self.generic_sender);
+                let future = async move {
+                    let _ = txs.send(Message::GenericNotification((Type::Error,"RegionPane".to_string(),"generate_data".to_string(),t_err.to_string())));
+                };
+                self.tpool.spawn_ok(future);
+                return();
             }
         }
-        let txs = Arc::clone(&self.generic_sender);
         let t_region_id = self.region_id;
+        let txs = Arc::clone(&self.generic_sender);
         let future = async move {
             let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
         };
@@ -292,6 +303,8 @@ impl Default for TreeBehavior {
 }
 
 impl TreeBehavior {
+
+
     /*fn ui(&mut self, ui: &mut Ui) {
         let Self {
             simplification_options,
