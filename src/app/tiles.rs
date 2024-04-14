@@ -1,5 +1,5 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
-use eframe::egui::{Pos2, Style, Ui, WidgetText};
+use eframe::egui::{self, vec2, Pos2, Response, Sense, Stroke, Style, TextStyle, Ui, WidgetText};
 use egui_map::map::{
     objects::{ContextMenuManager, MapLabel, MapSettings, VisibilitySetting},
     Map,
@@ -7,7 +7,7 @@ use egui_map::map::{
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use futures::executor::ThreadPool;
 use sde::SdeManager;
-use std::path::Path;
+use std::{borrow::Borrow, path::Path};
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
@@ -117,7 +117,6 @@ impl TabPane for UniversePane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
-                MapSync::GetRegionName(_) => (),
             };
         }
     }
@@ -226,18 +225,23 @@ impl RegionPane {
             Err(t_err) => {
                 let txs = Arc::clone(&self.generic_sender);
                 let future = async move {
-                    let _ = txs.send(Message::GenericNotification((Type::Error,"RegionPane".to_string(),"generate_data".to_string(),t_err.to_string())));
+                    let _ = txs.send(
+                        Message::GenericNotification((Type::Error,"RegionPane".to_string(),"generate_data".to_string(),t_err.to_string()))
+                    ).await;
                 };
                 self.tpool.spawn_ok(future);
                 return();
             }
         }
         let t_region_id = self.region_id;
-        let txs = Arc::clone(&self.generic_sender);
+        let region = t_sde.get_regions(vec![t_region_id as u32]).unwrap();
+        self.tab_name = region[0].1.clone();
+        /*let txs = Arc::clone(&self.generic_sender);
         let future = async move {
             let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
         };
-        self.tpool.spawn_ok(future);
+        self.tpool.spawn_ok(future);*/
+        
     }
 }
 
@@ -253,9 +257,6 @@ impl TabPane for RegionPane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
-                MapSync::GetRegionName(region_name) => {
-                    self.tab_name = region_name;
-                }
             };
         }
     }
@@ -266,6 +267,7 @@ impl TabPane for RegionPane {
 
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         ui.add(&mut self.map);
+        self.event_manager();
         UiResponse::None
     }
 
@@ -283,10 +285,11 @@ pub struct TreeBehavior {
     simplification_options: SimplificationOptions,
     tab_bar_height: f32,
     gap_width: f32,
+    generic_sender: Arc<Sender<Message>>,
 }
 
-impl Default for TreeBehavior {
-    fn default() -> Self {
+impl TreeBehavior {
+    pub fn new(generic_sender: Arc<Sender<Message>>,) -> Self {
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -298,6 +301,7 @@ impl Default for TreeBehavior {
             },
             tab_bar_height: 24.0,
             gap_width: 2.0,
+            generic_sender,
         }
     }
 }
@@ -337,6 +341,17 @@ impl TreeBehavior {
             ui.end_row();
         });
     }*/
+
+    fn on_close_tab(&self,         
+        tiles: &Tiles<Box<dyn TabPane>>,
+        tile_id: TileId,
+        button_response: Response,) {
+        if button_response.clicked() {
+            todo!();
+            //let tx_s = Arc::clone(self.)
+            //Message::MapClosed(tile_id);
+        }
+    }
 }
 
 impl Behavior<Box<dyn TabPane>> for TreeBehavior {
@@ -347,6 +362,84 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         view: &mut Box<dyn TabPane>,
     ) -> UiResponse {
         view.ui(ui)
+    }
+
+    fn tab_ui(
+            &mut self,
+            tiles: &Tiles<Box<dyn TabPane>>,
+            ui: &mut Ui,
+            id: eframe::egui::Id,
+            tile_id: TileId,
+            active: bool,
+            is_being_dragged: bool,
+        ) -> eframe::egui::Response {
+            let text = self.tab_title_for_tile(tiles, tile_id);
+            let str_text = text.text().to_string().clone();
+            let font_id = TextStyle::Button.resolve(ui.style());
+            let galley = text.into_galley(ui, Some(false), f32::INFINITY, font_id);
+
+            let x_margin = self.tab_title_spacing(ui.visuals());
+            let (_, rect) = if str_text == "Universe" {
+                ui.allocate_space(vec2(
+                    galley.size().x + 2.0 * x_margin,
+                    ui.available_height(),
+                ))
+            } else {
+                ui.allocate_space(vec2(
+                    galley.size().x + 4.0 * x_margin,
+                    ui.available_height(),
+                ))
+            };
+            let response = ui.interact(rect, id, Sense::click_and_drag());
+
+
+            // Show a gap when dragged
+            if ui.is_rect_visible(rect) && !is_being_dragged {
+                let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, active);
+                let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, active);
+                ui.painter().rect(rect.shrink(0.5), 0.0, bg_color, stroke);
+    
+                if active {
+                    // Make the tab name area connect with the tab ui area:
+                    ui.painter().hline(
+                        rect.x_range(),
+                        rect.bottom(),
+                        Stroke::new(stroke.width + 1.0, bg_color),
+                    );
+                }
+                if str_text == "Universe" {
+                    let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, active);
+                    ui.painter().galley(
+                        egui::Align2::CENTER_CENTER
+                            .align_size_within_rect(galley.size(), rect)
+                            .min,
+                        galley,
+                        text_color,
+                    );
+                } else {
+                    let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, active);
+                    let mut pos = egui::Align2::LEFT_CENTER.align_size_within_rect(galley.size(), rect).min;
+                    pos.x += 8.0;
+                    ui.painter().galley(
+                        pos,
+                        galley,
+                        text_color,
+                    );
+                    let a = WidgetText::from(String::from("×")).into_galley(ui, Some(false), f32::INFINITY, TextStyle::Button.resolve(ui.style()));
+                    let mut pos = egui::Align2::RIGHT_CENTER.align_size_within_rect(a.size(), rect).min;
+                    pos.x -= 8.0;
+                    ui.painter().galley(
+                        pos,
+                        a.clone(),
+                        text_color,
+                    );
+                    let response = ui.interact(a.rect, id, Sense::click());
+                    self.on_close_tab(tiles, tile_id, response);
+                }
+            }
+    
+            self.on_tab_button(tiles, tile_id, response)
+
     }
 
     fn tab_title_for_pane(&mut self, view: &Box<dyn TabPane>) -> WidgetText {

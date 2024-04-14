@@ -352,7 +352,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 ));
                 */
                 if let Some(tree) = &mut self.tree {
-                    tree.ui(&mut TreeBehavior::default(), ui);
+                    tree.ui(&mut TreeBehavior::new(Arc::clone(&self.app_msg.0)), ui);
                 }
             })
 
@@ -374,8 +374,8 @@ impl<'a> TelescopeApp<'a> {
                     self.update_character_into_database(character).await
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
-                Message::RequestRegionName(region_id) => self.get_region_name(region_id),
                 Message::ToggleRegionMap() => self.toggle_regions(),
+                Message::MapClosed(region_id) => self.close_abstract_map(region_id),
             };
         }
     }
@@ -543,7 +543,9 @@ impl<'a> TelescopeApp<'a> {
                                     let tx = Arc::clone(&self.app_msg.0);
                                     let future = async move {
                                         let _ =
-                                            tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))).await;
+                                            tx.send(
+                                                Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))
+                                            ).await;
                                     };
                                     self.tpool.spawn_ok(future);
                                 }
@@ -856,6 +858,12 @@ impl<'a> TelescopeApp<'a> {
         pane
     }
 
+    fn close_abstract_map(&mut self, region_id:usize ) {
+        self.tile_ids.entry(region_id).and_modify(|entry|{entry.0 = false});
+        let tile_id = self.tile_ids.get(&region_id).unwrap().1.unwrap();
+        self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
+    }
+
     fn create_tree(&self) -> Tree<Box<dyn TabPane>> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("create_tree");
@@ -871,15 +879,6 @@ impl<'a> TelescopeApp<'a> {
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
         egui_tiles::Tree::new("maps", root, tiles)
-    }
-
-    fn get_region_name(&self, region_id: usize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("get_region_name");
-        if let Some(region) = self.universe.regions.get(&(region_id as u32)) {
-            let tx_map = Arc::clone(&self.map_msg.0);
-            let _result = tx_map.send(MapSync::GetRegionName(region.name.clone()));
-        }
     }
 
     fn click_on_system_result(&self, row_index: usize) {
