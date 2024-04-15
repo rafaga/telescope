@@ -1,8 +1,10 @@
+use egui_tiles::TileId;
+
 pub enum Message {
     EsiAuthSuccess((String, String)),
     GenericNotification((Type, String, String, String)),
     ToggleRegionMap(),
-    MapClosed(usize),
+    MapClosed(TileId),
 }
 
 #[derive(Clone)]

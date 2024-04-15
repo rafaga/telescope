@@ -352,7 +352,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 ));
                 */
                 if let Some(tree) = &mut self.tree {
-                    tree.ui(&mut TreeBehavior::new(Arc::clone(&self.app_msg.0)), ui);
+                    tree.ui(&mut TreeBehavior::new(Arc::clone(&self.app_msg.0),Rc::clone(&self.tpool)),ui);
                 }
             })
 
@@ -858,10 +858,20 @@ impl<'a> TelescopeApp<'a> {
         pane
     }
 
-    fn close_abstract_map(&mut self, region_id:usize ) {
-        self.tile_ids.entry(region_id).and_modify(|entry|{entry.0 = false});
-        let tile_id = self.tile_ids.get(&region_id).unwrap().1.unwrap();
+    fn close_abstract_map(&mut self, tile_id:TileId ) {
+       // self.tile_ids.entry(region_id).and_modify(|entry|{entry.0 = false});
+       // let tile_id = self.tile_ids.get(&region_id).unwrap().1.unwrap();
         self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
+        let keys:Vec<usize> = self.tile_ids.keys().copied().map(|value| value).collect();
+        for index in 0..keys.len() {
+            self.tile_ids.entry(keys[index]).and_modify(|entry|{
+                if let Some(map_tile_id) = entry.1 {
+                    if map_tile_id == tile_id {
+                        entry.0 = false;
+                    }
+                }
+            });
+        }
     }
 
     fn create_tree(&self) -> Tree<Box<dyn TabPane>> {

@@ -7,7 +7,7 @@ use egui_map::map::{
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use futures::executor::ThreadPool;
 use sde::SdeManager;
-use std::{borrow::Borrow, path::Path};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::broadcast::Receiver;
@@ -286,10 +286,11 @@ pub struct TreeBehavior {
     tab_bar_height: f32,
     gap_width: f32,
     generic_sender: Arc<Sender<Message>>,
+    tpool: Rc<ThreadPool>,
 }
 
 impl TreeBehavior {
-    pub fn new(generic_sender: Arc<Sender<Message>>,) -> Self {
+    pub fn new(generic_sender: Arc<Sender<Message>>, tpool: Rc<ThreadPool>) -> Self {
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -302,6 +303,7 @@ impl TreeBehavior {
             tab_bar_height: 24.0,
             gap_width: 2.0,
             generic_sender,
+            tpool,
         }
     }
 }
@@ -343,13 +345,14 @@ impl TreeBehavior {
     }*/
 
     fn on_close_tab(&self,         
-        tiles: &Tiles<Box<dyn TabPane>>,
         tile_id: TileId,
         button_response: Response,) {
         if button_response.clicked() {
-            todo!();
-            //let tx_s = Arc::clone(self.)
-            //Message::MapClosed(tile_id);
+            let ttx = Arc::clone(&self.generic_sender);
+            let future = async move {
+                let _x = ttx.send(Message::MapClosed(tile_id)).await;  
+            };
+            let _ = self.tpool.spawn_ok(future);
         }
     }
 }
@@ -425,16 +428,18 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                         galley,
                         text_color,
                     );
+                    let nid = egui::Id::new(str_text);
+
                     let a = WidgetText::from(String::from("×")).into_galley(ui, Some(false), f32::INFINITY, TextStyle::Button.resolve(ui.style()));
                     let mut pos = egui::Align2::RIGHT_CENTER.align_size_within_rect(a.size(), rect).min;
+                    let response = ui.interact(a.rect.clone(), nid, Sense::click());
                     pos.x -= 8.0;
                     ui.painter().galley(
                         pos,
-                        a.clone(),
+                        a,
                         text_color,
                     );
-                    let response = ui.interact(a.rect, id, Sense::click());
-                    self.on_close_tab(tiles, tile_id, response);
+                    self.on_close_tab(tile_id, response);
                 }
             }
     
