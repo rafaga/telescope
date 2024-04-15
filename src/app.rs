@@ -352,7 +352,10 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 ));
                 */
                 if let Some(tree) = &mut self.tree {
-                    tree.ui(&mut TreeBehavior::new(Arc::clone(&self.app_msg.0),Rc::clone(&self.tpool)),ui);
+                    tree.ui(
+                        &mut TreeBehavior::new(Arc::clone(&self.app_msg.0), Rc::clone(&self.tpool)),
+                        ui,
+                    );
                 }
             })
 
@@ -766,11 +769,10 @@ impl<'a> TelescopeApp<'a> {
         // tile.1.0 - has visible state
         // tile.1.1 - has the TileID assosiated with the shown Tile/tab (if exists)
         for tile in self.tile_ids.iter_mut() {
-            if tile.1 .0 {
-                if tile.1 .1.is_none() {
-                    new_panes.push(*tile.0);
-                }
-            } else {
+            if tile.1 .0 && tile.1 .1.is_none() {
+                new_panes.push(*tile.0);
+            }
+            if !tile.1 .0 && tile.1 .1.is_some() {
                 show_panes.push(*tile.0);
             }
         }
@@ -787,13 +789,25 @@ impl<'a> TelescopeApp<'a> {
             let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
             let root = self.tree.as_ref().unwrap().root.unwrap();
             let counter = self.tree.as_ref().unwrap().tiles.len();
-            self.tree.as_mut().unwrap().move_tile_to_container(tile_id, root, counter, false);
+            self.tree
+                .as_mut()
+                .unwrap()
+                .move_tile_to_container(tile_id, root, counter, false);
             tile_ids.entry(region_id).and_modify(|data| {
                 data.0 = true;
                 data.1 = Some(tile_id);
             });
             //self.tree.as_mut().unwrap().set_visible(tile_id, true);
             //self.tree.as_mut().unwrap().tiles.insert_tab_tile(tile_id);
+        }
+        for region_id in show_panes {
+            self.tile_ids.entry(region_id).and_modify(|region| {
+                self.tree
+                    .as_mut()
+                    .unwrap()
+                    .set_visible(region.1.unwrap(), true);
+                region.0 = true;
+            });
         }
         self.tile_ids = tile_ids;
     }
@@ -858,13 +872,13 @@ impl<'a> TelescopeApp<'a> {
         pane
     }
 
-    fn close_abstract_map(&mut self, tile_id:TileId ) {
-       // self.tile_ids.entry(region_id).and_modify(|entry|{entry.0 = false});
-       // let tile_id = self.tile_ids.get(&region_id).unwrap().1.unwrap();
+    fn close_abstract_map(&mut self, tile_id: TileId) {
+        // self.tile_ids.entry(region_id).and_modify(|entry|{entry.0 = false});
+        // let tile_id = self.tile_ids.get(&region_id).unwrap().1.unwrap();
         self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
-        let keys:Vec<usize> = self.tile_ids.keys().copied().map(|value| value).collect();
-        for index in 0..keys.len() {
-            self.tile_ids.entry(keys[index]).and_modify(|entry|{
+        let keys: Vec<usize> = self.tile_ids.keys().copied().collect();
+        for item in &keys {
+            self.tile_ids.entry(*item).and_modify(|entry| {
                 if let Some(map_tile_id) = entry.1 {
                     if map_tile_id == tile_id {
                         entry.0 = false;
