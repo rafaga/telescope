@@ -370,6 +370,8 @@ impl<'a> eframe::App for TelescopeApp<'a> {
 
 impl<'a> TelescopeApp<'a> {
     async fn event_manager(&mut self) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("event_manager");
         let received_data = self.app_msg.1.try_recv();
         if let Ok(msg) = received_data {
             match msg {
@@ -694,8 +696,7 @@ impl<'a> TelescopeApp<'a> {
             });
             ui.horizontal(|ui|{
                 ui.button("Save").clicked();
-                if ui.button("Cancel").clicked(){
-                }
+                ui.button("Cancel").clicked();
             });
         });
     }
@@ -769,11 +770,11 @@ impl<'a> TelescopeApp<'a> {
         // tile.1.0 - has visible state
         // tile.1.1 - has the TileID assosiated with the shown Tile/tab (if exists)
         for tile in self.tile_ids.iter_mut() {
-            if tile.1 .0 && tile.1 .1.is_none() {
-                new_panes.push(*tile.0);
-            }
-            if !tile.1 .0 && tile.1 .1.is_some() {
-                show_panes.push(*tile.0);
+            if tile.1 .0 {
+                match tile.1 .1 {
+                    None => new_panes.push(*tile.0),
+                    Some(_) => show_panes.push(*tile.0),
+                }
             }
         }
         let mut tile_ids = self.tile_ids.clone();
@@ -873,8 +874,8 @@ impl<'a> TelescopeApp<'a> {
     }
 
     fn close_abstract_map(&mut self, tile_id: TileId) {
-        // self.tile_ids.entry(region_id).and_modify(|entry|{entry.0 = false});
-        // let tile_id = self.tile_ids.get(&region_id).unwrap().1.unwrap();
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("close_abstract_map");
         self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
         let keys: Vec<usize> = self.tile_ids.keys().copied().collect();
         for item in &keys {

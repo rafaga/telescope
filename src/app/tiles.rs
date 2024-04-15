@@ -392,7 +392,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 ui.available_height(),
             ))
             .1;
-        if str_text != "Universe" {
+        if str_text != "Universe" && !is_being_dragged {
             rect_close = Some(
                 ui.allocate_space(vec2(2.0 * x_margin, ui.available_height()))
                     .1,
