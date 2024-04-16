@@ -1,4 +1,4 @@
-use crate::app::messages::{MapSync, Message, Target, Type};
+use crate::app::messages::{MapSync, Message, Target, Type, SettingsPage};
 use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui;
@@ -47,7 +47,7 @@ pub struct TelescopeApp<'a> {
     factor: u64,
     path: String,
     universe: Universe,
-    selected_settings_option: usize,
+    selected_settings_page: SettingsPage,
     tpool: Rc<ThreadPool>,
 
     //tree: DockState<Tab>,
@@ -102,7 +102,7 @@ impl<'a> Default for TelescopeApp<'a> {
             tree: None,
             tile_ids: HashMap::new(),
             universe: sde.universe,
-            selected_settings_option: 0,
+            selected_settings_page: SettingsPage::Mapping,
         }
     }
 }
@@ -143,7 +143,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 tree: _,
                 tile_ids: _,
                 universe: _,
-                selected_settings_option: _,
+                selected_settings_page: _,
                 tpool: _,
             } = self;
 
@@ -181,14 +181,9 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 // The top panel is often a good place for a menu bar:
                 egui::menu::bar(ui, |ui| {
                     ui.menu_button("File", |ui| {
-                        ui.menu_button("Options", |ui| {
-                            if ui.button("Characters").clicked() {
-                                self.open[1] = true;
-                            }
-                            if ui.button("Preferences").clicked() {
-                                self.open[2] = true;
-                            }
-                        });
+                        if ui.button("Preferences").clicked() {
+                            self.open[2] = true;
+                        }
                         ui.separator();
                         if ui.button("Quit").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -327,10 +322,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 self.open_about_window(ctx);
             }
 
-            if self.open[1] {
-                self.open_character_window(ctx);
-            }
-
             if self.open[2] {
                 self.open_settings_window(ctx);
             }
@@ -385,182 +376,6 @@ impl<'a> TelescopeApp<'a> {
         }
     }
 
-    fn open_character_window(&mut self, ctx: &egui::Context) {
-        egui::Window::new("Linked Characters")
-            .open(&mut self.open[1])
-            .resizable(false)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.allocate_ui(eframe::egui::Vec2::new(500.00, 150.00), |ui| {
-                        eframe::egui::ScrollArea::new([false, true])
-                            //.auto_shrink([true,false])
-                            .show(ui, |ui| {
-                                ui.vertical(|ui| {
-                                    if !self.esi.characters.is_empty() {
-                                        for char in &self.esi.characters {
-                                            #[cfg(feature = "puffin")]
-                                            puffin::profile_scope!("displaying character");
-
-                                            ui.allocate_ui(eframe::egui::Vec2::new(300.00, 50.00), |ui| {
-                                                ui.group(|ui| {
-                                                    ui.push_id(char.id, |ui| {
-                                                        let inner = ui.horizontal_centered(|ui| {
-                                                            //ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
-                                                            if let Some(idc) =
-                                                                self.esi.active_character
-                                                            {
-                                                                if char.id == idc {
-                                                                    ui.style_mut()
-                                                                        .visuals
-                                                                        .override_text_color =
-                                                                        Some(eframe::egui::Color32::YELLOW);
-                                                                    //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
-                                                                    //ui.style_mut().visuals.fade_out_to_color();
-                                                                }
-                                                            }
-                                                            if let Some(player_photo) = &char.photo
-                                                            {
-                                                                ui.add(
-                                                                    eframe::egui::Image::new(
-                                                                        player_photo.as_str(),
-                                                                    )
-                                                                    .fit_to_exact_size(eframe::egui::Vec2::new(
-                                                                        80.0, 80.0,
-                                                                    )),
-                                                                );
-                                                            }
-                                                            ui.vertical(|ui| {
-                                                                ui.horizontal(|ui| {
-                                                                    //ui.image(char_photo, Vec2::new(16.0,16.0));
-                                                                    ui.label("Name:");
-                                                                    ui.label(&char.name);
-                                                                });
-                                                                ui.horizontal(|ui| {
-                                                                    ui.label("Aliance:");
-                                                                    if let Some(alliance) =
-                                                                        char.alliance.as_ref()
-                                                                    {
-                                                                        ui.label(&alliance.name);
-                                                                    } else {
-                                                                        ui.label("No alliance");
-                                                                    }
-                                                                });
-                                                                ui.horizontal(|ui| {
-                                                                    ui.label("Corporation:");
-                                                                    if let Some(corp) =
-                                                                        char.corp.as_ref()
-                                                                    {
-                                                                        ui.label(&corp.name);
-                                                                    } else {
-                                                                        ui.label("No corporation");
-                                                                    }
-                                                                });
-                                                                ui.horizontal(|ui| {
-                                                                    ui.label("Last Logon:");
-                                                                    ui.label(
-                                                                        char.last_logon.to_string(),
-                                                                    );
-                                                                });
-                                                            });
-                                                        });
-                                                        let response = inner
-                                                            .response
-                                                            .interact(egui::Sense::click());
-                                                        if response.clicked() {
-                                                            self.esi.active_character =
-                                                                Some(char.id);
-                                                        }
-                                                    });
-                                                });
-                                            });
-                                        }
-                                    } else {
-                                        ui.allocate_ui(eframe::egui::Vec2::new(300.00, 50.00), |ui| {
-                                            ui.group(|ui| {
-                                                ui.vertical_centered(|ui| {
-                                                    ui.label(
-                                                        "No character has been linked, please",
-                                                    );
-                                                    ui.label("link a new Character to proceed.");
-                                                });
-                                            });
-                                        });
-                                    }
-                                });
-                            });
-                    });
-                    ui.separator();
-                    ui.allocate_ui(eframe::egui::Vec2::new(500.00, 150.00), |ui| {
-                        #[cfg(feature = "puffin")]
-                        puffin::profile_scope!("displaying character link buttons");
-
-                        ui.vertical(|ui| {
-                            if ui.button("Link new").clicked() {
-                                let auth_info = self.esi.esi.get_authorize_url().unwrap();
-                                match open::that(auth_info.authorization_url) {
-                                    Ok(()) => {
-                                        let tx = Arc::clone(&self.app_msg.0);
-                                        let future = async move {
-                                            match webb::esi::EsiManager::launch_auth_server(56123) {
-                                                Ok(data) => {
-                                                    let _ = tx
-                                                        .send(Message::EsiAuthSuccess(data))
-                                                        .await;
-                                                }
-                                                Err(t_error) => {
-                                                    let _ = tx
-                                                        .send(Message::GenericNotification(
-                                                            (Type::Error,
-                                                            String::from("EsiManager"),
-                                                            String::from("launch_auth_server"),
-                                                            t_error.to_string())
-                                                        ))
-                                                        .await;
-                                                }
-                                            };
-                                        };
-                                        self.tpool.spawn_ok(future);
-                                    }
-                                    Err(err) => {
-                                        let tx = Arc::clone(&self.app_msg.0);
-                                        let future = async move {
-                                            let _ =
-                                                tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
-                                        };
-                                        self.tpool.spawn_ok(future);
-                                    }
-                                }
-                            }
-                            if ui.button("Unlink").clicked() {
-                                let mut index = 0;
-                                let mut vec_id = vec![];
-                                for char in &self.esi.characters {
-                                    if self.esi.active_character.unwrap() == char.id {
-                                        vec_id.push(char.id);
-                                        break;
-                                    }
-                                    index += 1;
-                                }
-                                self.esi.characters.remove(index);
-                                self.esi.active_character = None;
-                                if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
-                                    let tx = Arc::clone(&self.app_msg.0);
-                                    let future = async move {
-                                        let _ =
-                                            tx.send(
-                                                Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))
-                                            ).await;
-                                    };
-                                    self.tpool.spawn_ok(future);
-                                }
-                            }
-                        });
-                    });
-                });
-            });
-    }
-
     fn open_about_window(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_about_window");
@@ -610,13 +425,16 @@ impl<'a> TelescopeApp<'a> {
                         .body(|body| {
                             body.rows(row_height, labels.len(), |mut row| {
                                 let label = labels[row.index()];
-                                let current_index = row.index();
+                                let current_page = match row.index(){
+                                    0 => SettingsPage::Mapping,
+                                    1 => SettingsPage::LinkedCharacters
+                                };
                                 row.col(|ui: &mut egui::Ui|{
                                     let option_selected = || -> bool {
-                                        self.selected_settings_option == current_index
+                                        self.selected_settings_page == current_index
                                     };
                                     if ui.selectable_label(option_selected(),label).clicked() {
-                                        self.selected_settings_option = current_index;
+                                        self.selected_settings_page = current_index;
                                     };
                                 });
                             });
@@ -624,18 +442,19 @@ impl<'a> TelescopeApp<'a> {
                     });
                     ui.add_space(300.0 - (labels.len() as f32 * row_height));
                 });
+                //ui.allocate_exact_size(desired_size, sense)
                 ui.push_id("settings_config", |ui|{
-                    match self.selected_settings_option {
-                        // Mapping
-                        0 => {
-                            let t_univ = &self.universe;
-                            let filtered_keys: Vec<&u32> = t_univ
-                                .regions
-                                .keys()
-                                .filter(|key| key < &&11000000)
-                                .collect();
-                            ui.vertical(|ui|{
-                                egui::ScrollArea::vertical().show(ui,|ui|{
+                    ui.vertical(|ui|{
+                        egui::ScrollArea::vertical().show(ui,|ui|{
+                            match self.selected_settings_page {
+                                // Mapping
+                                SettingsPage::Mapping => {
+                                    let t_univ = &self.universe;
+                                    let filtered_keys: Vec<&u32> = t_univ
+                                        .regions
+                                        .keys()
+                                        .filter(|key| key < &&11000000)
+                                        .collect();
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     TableBuilder::new(ui)
                                     .column(Column::resizable(Column::exact(150.0),false))
@@ -692,95 +511,158 @@ impl<'a> TelescopeApp<'a> {
                                             }
                                         });
                                     });
-                                });
-                            });
-                        },
-                        // Linked Characters
-                        1 => {
-                            TableBuilder::new(ui)
-                            .column(Column::resizable(Column::exact(300.0),false))
-                            .striped(true)
-                            .vscroll(false)
-                            .body(|body| {
-                                body.rows(10.0, 2, |mut row| {
-                                });
-                                /*
-                                ui.group(|ui| {
-                                    ui.push_id(char.id, |ui| {
-                                        let inner = ui.horizontal_centered(|ui| {
-                                            //ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
-                                            if let Some(idc) =
-                                                self.esi.active_character
-                                            {
-                                                if char.id == idc {
-                                                    ui.style_mut()
-                                                        .visuals
-                                                        .override_text_color =
-                                                        Some(eframe::egui::Color32::YELLOW);
-                                                    //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
-                                                    //ui.style_mut().visuals.fade_out_to_color();
+
+                                },
+                                // Linked Characters
+                                SettingsPage::LinkedCharacters => {
+                                    ui.label("These are your linked characters.");
+                                    ui.horizontal(|ui|{
+                                        if ui.button("➕ Add").clicked() {
+                                            let auth_info = self.esi.esi.get_authorize_url().unwrap();
+                                            match open::that(auth_info.authorization_url) {
+                                                Ok(()) => {
+                                                    let tx = Arc::clone(&self.app_msg.0);
+                                                    let future = async move {
+                                                        match webb::esi::EsiManager::launch_auth_server(56123) {
+                                                            Ok(data) => {
+                                                                let _ = tx
+                                                                    .send(Message::EsiAuthSuccess(data))
+                                                                    .await;
+                                                            }
+                                                            Err(t_error) => {
+                                                                let _ = tx
+                                                                    .send(Message::GenericNotification(
+                                                                        (Type::Error,
+                                                                        String::from("EsiManager"),
+                                                                        String::from("launch_auth_server"),
+                                                                        t_error.to_string())
+                                                                    ))
+                                                                    .await;
+                                                            }
+                                                        };
+                                                    };
+                                                    self.tpool.spawn_ok(future);
+                                                }
+                                                Err(err) => {
+                                                    let tx = Arc::clone(&self.app_msg.0);
+                                                    let future = async move {
+                                                        let _ =
+                                                            tx.send(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("get_authorize_url"),err.to_string()))).await;
+                                                    };
+                                                    self.tpool.spawn_ok(future);
                                                 }
                                             }
-                                            if let Some(player_photo) = &char.photo
-                                            {
-                                                ui.add(
-                                                    eframe::egui::Image::new(
-                                                        player_photo.as_str(),
-                                                    )
-                                                    .fit_to_exact_size(eframe::egui::Vec2::new(
-                                                        80.0, 80.0,
-                                                    )),
-                                                );
+                                        }
+                                        if ui.button("✖ Remove").clicked() {
+                                            let mut index = 0;
+                                            let mut vec_id = vec![];
+                                            for char in &self.esi.characters {
+                                                if self.esi.active_character.unwrap() == char.id {
+                                                    vec_id.push(char.id);
+                                                    break;
+                                                }
+                                                index += 1;
                                             }
-                                            ui.vertical(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    //ui.image(char_photo, Vec2::new(16.0,16.0));
-                                                    ui.label("Name:");
-                                                    ui.label(&char.name);
-                                                });
-                                                ui.horizontal(|ui| {
-                                                    ui.label("Aliance:");
-                                                    if let Some(alliance) =
-                                                        char.alliance.as_ref()
-                                                    {
-                                                        ui.label(&alliance.name);
-                                                    } else {
-                                                        ui.label("No alliance");
-                                                    }
-                                                });
-                                                ui.horizontal(|ui| {
-                                                    ui.label("Corporation:");
-                                                    if let Some(corp) =
-                                                        char.corp.as_ref()
-                                                    {
-                                                        ui.label(&corp.name);
-                                                    } else {
-                                                        ui.label("No corporation");
-                                                    }
-                                                });
-                                                ui.horizontal(|ui| {
-                                                    ui.label("Last Logon:");
-                                                    ui.label(
-                                                        char.last_logon.to_string(),
-                                                    );
+                                            self.esi.characters.remove(index);
+                                            self.esi.active_character = None;
+                                            if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
+                                                let tx = Arc::clone(&self.app_msg.0);
+                                                let future = async move {
+                                                    let _ =
+                                                        tx.send(
+                                                            Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string()))
+                                                        ).await;
+                                                };
+                                                self.tpool.spawn_ok(future);
+                                            }
+                                        }
+                                    });
+                                    TableBuilder::new(ui)
+                                    .column(Column::auto())
+                                    .striped(true)
+                                    .vscroll(false)
+                                    .body(|body| {
+                                        let characters = self.esi.characters.len();
+                                        body.rows(100.0, characters, |mut row| {
+                                            let index = row.index();
+                                            row.col(|ui|{
+                                                ui.group(|ui|{
+                                                    ui.push_id(self.esi.characters[index].id, |ui| {
+                                                        let inner = ui.horizontal_centered(|ui| {
+                                                            //ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
+                                                            if let Some(idc) =
+                                                                self.esi.active_character
+                                                            {
+                                                                if self.esi.characters[index].id == idc {
+                                                                    ui.style_mut()
+                                                                        .visuals
+                                                                        .override_text_color =
+                                                                        Some(eframe::egui::Color32::YELLOW);
+                                                                    //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
+                                                                    //ui.style_mut().visuals.fade_out_to_color();
+                                                                }
+                                                            }
+                                                            if let Some(player_photo) = &self.esi.characters[index].photo
+                                                            {
+                                                                ui.add(
+                                                                    eframe::egui::Image::new(
+                                                                        player_photo.as_str(),
+                                                                    )
+                                                                    .fit_to_exact_size(eframe::egui::Vec2::new(
+                                                                        80.0, 80.0,
+                                                                    )),
+                                                                );
+                                                            }
+                                                            ui.vertical(|ui| {
+                                                                ui.horizontal(|ui| {
+                                                                    //ui.image(char_photo, Vec2::new(16.0,16.0));
+                                                                    ui.label("Name:");
+                                                                    ui.label(&self.esi.characters[index].name);
+                                                                });
+                                                                ui.horizontal(|ui| {
+                                                                    ui.label("Aliance:");
+                                                                    if let Some(alliance) =
+                                                                    self.esi.characters[index].alliance.as_ref()
+                                                                    {
+                                                                        ui.label(&alliance.name);
+                                                                    } else {
+                                                                        ui.label("No alliance");
+                                                                    }
+                                                                });
+                                                                ui.horizontal(|ui| {
+                                                                    ui.label("Corporation:");
+                                                                    if let Some(corp) =
+                                                                    self.esi.characters[index].corp.as_ref()
+                                                                    {
+                                                                        ui.label(&corp.name);
+                                                                    } else {
+                                                                        ui.label("No corporation");
+                                                                    }
+                                                                });
+                                                                ui.horizontal(|ui| {
+                                                                    ui.label("Last Logon:");
+                                                                    ui.label(
+                                                                        self.esi.characters[index].last_logon.to_string(),
+                                                                    );
+                                                                });
+                                                            });
+                                                        });
+                                                        let response = inner
+                                                            .response
+                                                            .interact(egui::Sense::click());
+                                                        if response.clicked() {
+                                                            self.esi.active_character =
+                                                                Some(self.esi.characters[index].id);
+                                                        }
+                                                    });
                                                 });
                                             });
                                         });
-                                        let response = inner
-                                            .response
-                                            .interact(egui::Sense::click());
-                                        if response.clicked() {
-                                            self.esi.active_character =
-                                                Some(char.id);
-                                        }
                                     });
-                                });*/
-                            });
-                        },
-                        2_usize.. => {
-
-                        }
-                    }
+                                },
+                            }
+                        });
+                    });
                 });
             });
             ui.horizontal(|ui|{

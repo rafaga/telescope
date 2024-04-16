@@ -24,3 +24,8 @@ pub enum Target {
     System,
     Region,
 }
+
+pub enum SettingsPage {
+    Mapping,
+    LinkedCharacters
+}
