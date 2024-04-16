@@ -17,9 +17,9 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use self::tiles::RegionPane;
 
-pub mod data;
-pub mod messages;
-pub mod tiles;
+mod data;
+mod messages;
+mod tiles;
 
 pub struct TelescopeApp<'a> {
     initialized: bool,
@@ -52,7 +52,7 @@ pub struct TelescopeApp<'a> {
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
-    tile_ids: HashMap<usize, (bool, Option<TileId>)>,
+    tile_ids: HashMap<usize, (bool, Option<TileId>, bool)>,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -163,7 +163,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 let regions: Vec<u32> = self.universe.regions.keys().copied().collect();
                 for key in regions {
                     if key < 11000000 {
-                        self.tile_ids.insert(key as usize, (false, None));
+                        self.tile_ids.insert(key as usize, (false, None, false));
                     }
                 }
 
@@ -592,13 +592,6 @@ impl<'a> TelescopeApp<'a> {
     fn open_settings_window(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_preferences_window");
-
-        let t_univ = &self.universe;
-        let filtered_keys: Vec<&u32> = t_univ
-            .regions
-            .keys()
-            .filter(|key| key < &&11000000)
-            .collect();
         egui::Window::new("Settings")
         .resizable(false)
         .fixed_size([600.0,500.0])
@@ -632,66 +625,162 @@ impl<'a> TelescopeApp<'a> {
                     ui.add_space(300.0 - (labels.len() as f32 * row_height));
                 });
                 ui.push_id("settings_config", |ui|{
-                    ui.vertical(|ui|{
-                        egui::ScrollArea::vertical().show(ui,|ui|{
-                            ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
+                    match self.selected_settings_option {
+                        // Mapping
+                        0 => {
+                            let t_univ = &self.universe;
+                            let filtered_keys: Vec<&u32> = t_univ
+                                .regions
+                                .keys()
+                                .filter(|key| key < &&11000000)
+                                .collect();
+                            ui.vertical(|ui|{
+                                egui::ScrollArea::vertical().show(ui,|ui|{
+                                    ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
+                                    TableBuilder::new(ui)
+                                    .column(Column::resizable(Column::exact(150.0),false))
+                                    .column(Column::resizable(Column::exact(150.0),false))
+                                    .column(Column::resizable(Column::exact(150.0),false))
+                                    .striped(true)
+                                    .vscroll(false)
+                                    .body(|body| {
+                                        let row_height = 18.0;
+                                        let num_rows = filtered_keys.len().div_ceil(3);
+                                        body.rows(row_height, num_rows, |mut row| {
+                                            let key_index = row.index() * 3;
+                                            row.col(|ui: &mut egui::Ui| {
+                                                let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
+                                                if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                    let txs = Arc::clone(&self.app_msg.0);
+                                                    let future = async move {
+                                                        let _ = txs
+                                                            .send(Message::ToggleRegionMap())
+                                                            .await;
+                                                    };
+                                                    self.tpool.spawn_ok(future);
+                                                };
+                                            });
+                                            let mut t_key_index = key_index + 1;
+                                            if t_key_index < filtered_keys.len() {
+                                                row.col(|ui: &mut egui::Ui| {
+                                                    let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
+                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                        let txs = Arc::clone(&self.app_msg.0);
+                                                        let future = async move {
+                                                            let _ = txs
+                                                                .send(Message::ToggleRegionMap())
+                                                                .await;
+                                                        };
+                                                        self.tpool.spawn_ok(future);
+                                                    };
+                                                });
+                                            }
+                                            t_key_index += 1;
+                                            if t_key_index < filtered_keys.len() {
+                                                row.col(|ui: &mut egui::Ui| {
+                                                    let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
+                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                        let txs = Arc::clone(&self.app_msg.0);
+                                                        let future = async move {
+                                                            let _ = txs
+                                                                .send(Message::ToggleRegionMap())
+                                                                .await;
+                                                        };
+                                                        self.tpool.spawn_ok(future);
+                                                    };
+                                                });
+                                            }
+                                        });
+                                    });
+                                });
+                            });
+                        },
+                        // Linked Characters
+                        1 => {
                             TableBuilder::new(ui)
-                            .column(Column::resizable(Column::exact(150.0),false))
-                            .column(Column::resizable(Column::exact(150.0),false))
-                            .column(Column::resizable(Column::exact(150.0),false))
+                            .column(Column::resizable(Column::exact(300.0),false))
                             .striped(true)
                             .vscroll(false)
                             .body(|body| {
-                                let row_height = 18.0;
-                                let num_rows = filtered_keys.len().div_ceil(3);
-                                body.rows(row_height, num_rows, |mut row| {
-                                    let key_index = row.index() * 3;
-                                    row.col(|ui: &mut egui::Ui| {
-                                        let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
-                                        if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
-                                            let txs = Arc::clone(&self.app_msg.0);
-                                            let future = async move {
-                                                let _ = txs
-                                                    .send(Message::ToggleRegionMap())
-                                                    .await;
-                                            };
-                                            self.tpool.spawn_ok(future);
-                                        };
-                                    });
-                                    let mut t_key_index = key_index + 1;
-                                    if t_key_index < filtered_keys.len() {
-                                        row.col(|ui: &mut egui::Ui| {
-                                            let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                            if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
-                                                let txs = Arc::clone(&self.app_msg.0);
-                                                let future = async move {
-                                                    let _ = txs
-                                                        .send(Message::ToggleRegionMap())
-                                                        .await;
-                                                };
-                                                self.tpool.spawn_ok(future);
-                                            };
-                                        });
-                                    }
-                                    t_key_index += 1;
-                                    if t_key_index < filtered_keys.len() {
-                                        row.col(|ui: &mut egui::Ui| {
-                                            let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                            if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
-                                                let txs = Arc::clone(&self.app_msg.0);
-                                                let future = async move {
-                                                    let _ = txs
-                                                        .send(Message::ToggleRegionMap())
-                                                        .await;
-                                                };
-                                                self.tpool.spawn_ok(future);
-                                            };
-                                        });
-                                    }
+                                body.rows(10.0, 2, |mut row| {
                                 });
+                                /*
+                                ui.group(|ui| {
+                                    ui.push_id(char.id, |ui| {
+                                        let inner = ui.horizontal_centered(|ui| {
+                                            //ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
+                                            if let Some(idc) =
+                                                self.esi.active_character
+                                            {
+                                                if char.id == idc {
+                                                    ui.style_mut()
+                                                        .visuals
+                                                        .override_text_color =
+                                                        Some(eframe::egui::Color32::YELLOW);
+                                                    //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
+                                                    //ui.style_mut().visuals.fade_out_to_color();
+                                                }
+                                            }
+                                            if let Some(player_photo) = &char.photo
+                                            {
+                                                ui.add(
+                                                    eframe::egui::Image::new(
+                                                        player_photo.as_str(),
+                                                    )
+                                                    .fit_to_exact_size(eframe::egui::Vec2::new(
+                                                        80.0, 80.0,
+                                                    )),
+                                                );
+                                            }
+                                            ui.vertical(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    //ui.image(char_photo, Vec2::new(16.0,16.0));
+                                                    ui.label("Name:");
+                                                    ui.label(&char.name);
+                                                });
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Aliance:");
+                                                    if let Some(alliance) =
+                                                        char.alliance.as_ref()
+                                                    {
+                                                        ui.label(&alliance.name);
+                                                    } else {
+                                                        ui.label("No alliance");
+                                                    }
+                                                });
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Corporation:");
+                                                    if let Some(corp) =
+                                                        char.corp.as_ref()
+                                                    {
+                                                        ui.label(&corp.name);
+                                                    } else {
+                                                        ui.label("No corporation");
+                                                    }
+                                                });
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Last Logon:");
+                                                    ui.label(
+                                                        char.last_logon.to_string(),
+                                                    );
+                                                });
+                                            });
+                                        });
+                                        let response = inner
+                                            .response
+                                            .interact(egui::Sense::click());
+                                        if response.clicked() {
+                                            self.esi.active_character =
+                                                Some(char.id);
+                                        }
+                                    });
+                                });*/
                             });
-                        });
-                    });
+                        },
+                        2_usize.. => {
+
+                        }
+                    }
                 });
             });
             ui.horizontal(|ui|{
