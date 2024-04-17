@@ -410,7 +410,7 @@ impl<'a> TelescopeApp<'a> {
         egui::Window::new("Settings")
         .movable(true)
         .resizable(false)
-        .fixed_size([600.0,500.0])
+        .fixed_size([650.0,500.0])
         .movable(true)
         .open(&mut self.open[2])
         .show(ctx, |ui| {
@@ -444,7 +444,7 @@ impl<'a> TelescopeApp<'a> {
                     });
                     ui.add_space(480.0 - (labels.len() as f32 * row_height));
                 });
-                //ui.allocate_exact_size(desired_size, sense)
+                ui.separator();
                 ui.push_id("settings_config", |ui|{
                     ui.vertical(|ui|{
                         egui::ScrollArea::vertical().show(ui,|ui|{
@@ -471,7 +471,7 @@ impl<'a> TelescopeApp<'a> {
                                             let key_index = row.index() * 3;
                                             row.col(|ui: &mut egui::Ui| {
                                                 let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
-                                                if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
                                                     let txs = Arc::clone(&self.app_msg.0);
                                                     let future = async move {
                                                         let _ = txs
@@ -485,7 +485,7 @@ impl<'a> TelescopeApp<'a> {
                                             if t_key_index < filtered_keys.len() {
                                                 row.col(|ui: &mut egui::Ui| {
                                                     let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
                                                         let txs = Arc::clone(&self.app_msg.0);
                                                         let future = async move {
                                                             let _ = txs
@@ -500,7 +500,7 @@ impl<'a> TelescopeApp<'a> {
                                             if t_key_index < filtered_keys.len() {
                                                 row.col(|ui: &mut egui::Ui| {
                                                     let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().0, region.name.clone()).changed() {
+                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
                                                         let txs = Arc::clone(&self.app_msg.0);
                                                         let future = async move {
                                                             let _ = txs
@@ -554,7 +554,12 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                             }
                                         }
-                                        if ui.button("✖ Remove").clicked() {
+                                        let button_state= if self.esi.characters.len() > 0 {
+                                            true
+                                        } else {
+                                            false
+                                        };
+                                        if ui.add_enabled(button_state, egui::Button::new("✖ Remove")).clicked() {
                                             let mut index = 0;
                                             let mut vec_id = vec![];
                                             for char in &self.esi.characters {
@@ -579,86 +584,93 @@ impl<'a> TelescopeApp<'a> {
                                         }
                                     });
                                     TableBuilder::new(ui)
-                                    .column(Column::auto())
+                                    .column(Column::exact(470.00))
                                     .striped(true)
                                     .vscroll(false)
-                                    .body(|body| {
+                                    .body(|mut body| {
                                         let characters = self.esi.characters.len();
-                                        body.rows(100.0, characters, |mut row| {
-                                            let index = row.index();
-                                            row.col(|ui|{
-                                                ui.group(|ui|{
-                                                    ui.push_id(self.esi.characters[index].id, |ui| {
-                                                        let inner = ui.horizontal_centered(|ui| {
-                                                            //ui.radio_value(&mut self.esi.active_character, Some(char.id),"");
-                                                            if let Some(idc) =
-                                                                self.esi.active_character
-                                                            {
-                                                                if self.esi.characters[index].id == idc {
-                                                                    ui.style_mut()
-                                                                        .visuals
-                                                                        .override_text_color =
-                                                                        Some(eframe::egui::Color32::YELLOW);
-                                                                    //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
-                                                                    //ui.style_mut().visuals.fade_out_to_color();
+                                        if characters > 0 {
+                                            body.rows(100.0, characters, |mut row| {
+                                                let index = row.index();
+                                                row.col(|ui|{
+                                                    ui.group(|ui|{
+                                                        ui.push_id(self.esi.characters[index].id, |ui| {
+                                                            let inner = ui.horizontal_centered(|ui| {
+                                                                if let Some(idc) =
+                                                                    self.esi.active_character
+                                                                {
+                                                                    if self.esi.characters[index].id == idc {
+                                                                        ui.style_mut()
+                                                                            .visuals
+                                                                            .override_text_color =
+                                                                            Some(eframe::egui::Color32::YELLOW);
+                                                                        //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
+                                                                        //ui.style_mut().visuals.fade_out_to_color();
+                                                                    }
                                                                 }
-                                                            }
-                                                            if let Some(player_photo) = &self.esi.characters[index].photo
-                                                            {
-                                                                ui.add(
-                                                                    eframe::egui::Image::new(
-                                                                        player_photo.as_str(),
-                                                                    )
-                                                                    .fit_to_exact_size(eframe::egui::Vec2::new(
-                                                                        80.0, 80.0,
-                                                                    )),
-                                                                );
-                                                            }
-                                                            ui.vertical(|ui| {
-                                                                ui.horizontal(|ui| {
-                                                                    //ui.image(char_photo, Vec2::new(16.0,16.0));
-                                                                    ui.label("Name:");
-                                                                    ui.label(&self.esi.characters[index].name);
-                                                                });
-                                                                ui.horizontal(|ui| {
-                                                                    ui.label("Aliance:");
-                                                                    if let Some(alliance) =
-                                                                    self.esi.characters[index].alliance.as_ref()
-                                                                    {
-                                                                        ui.label(&alliance.name);
-                                                                    } else {
-                                                                        ui.label("No alliance");
-                                                                    }
-                                                                });
-                                                                ui.horizontal(|ui| {
-                                                                    ui.label("Corporation:");
-                                                                    if let Some(corp) =
-                                                                    self.esi.characters[index].corp.as_ref()
-                                                                    {
-                                                                        ui.label(&corp.name);
-                                                                    } else {
-                                                                        ui.label("No corporation");
-                                                                    }
-                                                                });
-                                                                ui.horizontal(|ui| {
-                                                                    ui.label("Last Logon:");
-                                                                    ui.label(
-                                                                        self.esi.characters[index].last_logon.to_string(),
+                                                                if let Some(player_photo) = &self.esi.characters[index].photo
+                                                                {
+                                                                    ui.add(
+                                                                        eframe::egui::Image::new(
+                                                                            player_photo.as_str(),
+                                                                        )
+                                                                        .fit_to_exact_size(eframe::egui::Vec2::new(
+                                                                            80.0, 80.0,
+                                                                        )),
                                                                     );
+                                                                }
+                                                                ui.vertical(|ui| {
+                                                                    ui.horizontal(|ui| {
+                                                                        //ui.image(char_photo, Vec2::new(16.0,16.0));
+                                                                        ui.label("Name:");
+                                                                        ui.label(&self.esi.characters[index].name);
+                                                                    });
+                                                                    ui.horizontal(|ui| {
+                                                                        ui.label("Aliance:");
+                                                                        if let Some(alliance) =
+                                                                        self.esi.characters[index].alliance.as_ref()
+                                                                        {
+                                                                            ui.label(&alliance.name);
+                                                                        } else {
+                                                                            ui.label("No alliance");
+                                                                        }
+                                                                    });
+                                                                    ui.horizontal(|ui| {
+                                                                        ui.label("Corporation:");
+                                                                        if let Some(corp) =
+                                                                        self.esi.characters[index].corp.as_ref()
+                                                                        {
+                                                                            ui.label(&corp.name);
+                                                                        } else {
+                                                                            ui.label("No corporation");
+                                                                        }
+                                                                    });
+                                                                    ui.horizontal(|ui| {
+                                                                        ui.label("Last Logon:");
+                                                                        ui.label(
+                                                                            self.esi.characters[index].last_logon.to_string(),
+                                                                        );
+                                                                    });
                                                                 });
                                                             });
+                                                            let response = inner
+                                                                .response
+                                                                .interact(egui::Sense::click());
+                                                            if response.clicked() {
+                                                                self.esi.active_character =
+                                                                    Some(self.esi.characters[index].id);
+                                                            }
                                                         });
-                                                        let response = inner
-                                                            .response
-                                                            .interact(egui::Sense::click());
-                                                        if response.clicked() {
-                                                            self.esi.active_character =
-                                                                Some(self.esi.characters[index].id);
-                                                        }
                                                     });
                                                 });
                                             });
-                                        });
+                                        } else {
+                                            body.row(200.00,|mut row|{
+                                                row.col(|ui|{
+                                                    ui.add_sized(ui.available_size(),egui::Label::new("⚠ There is no characters currently linked in Telescope."));
+                                                });
+                                            });
+                                        }
                                     });
                                     
                                 },
@@ -666,6 +678,9 @@ impl<'a> TelescopeApp<'a> {
                         });
                     });
                 });
+            });
+            ui.horizontal(|ui|{
+                ui.add_space(650.00);
             });
             ui.horizontal(|ui|{
                 ui.button("Save").clicked();

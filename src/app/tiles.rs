@@ -291,6 +291,7 @@ pub struct TreeBehavior {
     gap_width: f32,
     generic_sender: Arc<Sender<Message>>,
     tpool: Rc<ThreadPool>,
+    search_text: String,
 }
 
 impl TreeBehavior {
@@ -308,6 +309,7 @@ impl TreeBehavior {
             gap_width: 2.0,
             generic_sender,
             tpool,
+            search_text: String::new(),
         }
     }
 }
@@ -464,17 +466,10 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         _scroll_offset: &mut f32,
     ) {
         ui.add_space(1.5);
-        /* let img = include_image!("../../assets/layout-board.png");
-        ui.menu_image_button(img, |ui| {
-            ui.menu_button("My sub-menu", |ui| {
-                if ui.button("Close the menu").clicked() {
-                    ui.close_menu();
-                }
-            });
-        }); */
-        /*if ui.button("➕").clicked() {
-            self.add_child_to = Some(tile_id);
-        }*/
+        ui.menu_button("➕", |ui| {
+            ui.label("Search region:");
+            ui.text_edit_singleline(&mut self.search_text);
+        });
     }
 
     // ---
