@@ -25,6 +25,7 @@ pub enum Target {
     Region,
 }
 
+#[derive(PartialEq)]
 pub enum SettingsPage {
     Mapping,
     LinkedCharacters

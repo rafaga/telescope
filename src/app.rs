@@ -408,6 +408,7 @@ impl<'a> TelescopeApp<'a> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("open_preferences_window");
         egui::Window::new("Settings")
+        .movable(true)
         .resizable(false)
         .fixed_size([600.0,500.0])
         .movable(true)
@@ -427,20 +428,21 @@ impl<'a> TelescopeApp<'a> {
                                 let label = labels[row.index()];
                                 let current_page = match row.index(){
                                     0 => SettingsPage::Mapping,
-                                    1 => SettingsPage::LinkedCharacters
+                                    1 => SettingsPage::LinkedCharacters,
+                                    2usize.. => SettingsPage::LinkedCharacters,
                                 };
                                 row.col(|ui: &mut egui::Ui|{
                                     let option_selected = || -> bool {
-                                        self.selected_settings_page == current_index
+                                        self.selected_settings_page == current_page
                                     };
                                     if ui.selectable_label(option_selected(),label).clicked() {
-                                        self.selected_settings_page = current_index;
+                                        self.selected_settings_page = current_page;
                                     };
                                 });
                             });
                         });
                     });
-                    ui.add_space(300.0 - (labels.len() as f32 * row_height));
+                    ui.add_space(480.0 - (labels.len() as f32 * row_height));
                 });
                 //ui.allocate_exact_size(desired_size, sense)
                 ui.push_id("settings_config", |ui|{
@@ -511,7 +513,6 @@ impl<'a> TelescopeApp<'a> {
                                             }
                                         });
                                     });
-
                                 },
                                 // Linked Characters
                                 SettingsPage::LinkedCharacters => {
@@ -659,6 +660,7 @@ impl<'a> TelescopeApp<'a> {
                                             });
                                         });
                                     });
+                                    
                                 },
                             }
                         });
@@ -669,6 +671,7 @@ impl<'a> TelescopeApp<'a> {
                 ui.button("Save").clicked();
                 ui.button("Cancel").clicked();
             });
+            
         });
     }
 
