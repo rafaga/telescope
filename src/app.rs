@@ -53,6 +53,7 @@ pub struct TelescopeApp<'a> {
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
     tile_ids: HashMap<usize, (bool, Option<TileId>, bool)>,
+    behavior: TreeBehavior,
 }
 
 impl<'a> Default for TelescopeApp<'a> {
@@ -83,11 +84,14 @@ impl<'a> Default for TelescopeApp<'a> {
         let mut sde = SdeManager::new(Path::new(&string_path), factor);
         let _ = sde.get_universe();
 
+        let arc_msg_app = Arc::new(gtx);
+        let arc_msg_app_clone = Arc::clone(&arc_msg_app);
+
         Self {
             // Example stuff:
             initialized: false,
             points: Vec::new(),
-            app_msg: (Arc::new(gtx), grx),
+            app_msg: (arc_msg_app, grx),
             map_msg: (Arc::new(mtx), mrx),
             open: [false; 3],
             esi,
@@ -97,6 +101,7 @@ impl<'a> Default for TelescopeApp<'a> {
             emit_notification: false,
             factor,
             path,
+            behavior: TreeBehavior::new(arc_msg_app_clone, Rc::clone(&tpool)),
             tpool,
             search_results: Vec::new(),
             tree: None,
@@ -145,6 +150,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 universe: _,
                 selected_settings_page: _,
                 tpool: _,
+                behavior: _,
             } = self;
 
             if !self.initialized {
@@ -344,7 +350,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 */
                 if let Some(tree) = &mut self.tree {
                     tree.ui(
-                        &mut TreeBehavior::new(Arc::clone(&self.app_msg.0), Rc::clone(&self.tpool)),
+                        &mut self.behavior,
                         ui,
                     );
                 }

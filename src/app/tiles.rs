@@ -7,11 +7,10 @@ use egui_map::map::{
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use futures::executor::ThreadPool;
 use sde::SdeManager;
-use std::path::Path;
-use std::rc::Rc;
-use std::sync::Arc;
-use tokio::sync::broadcast::Receiver;
-use tokio::sync::mpsc::Sender;
+use std::{path::Path,rc::Rc,sync::Arc};
+use tokio::sync::{broadcast::Receiver,mpsc::Sender};
+use egui_extras::{TableBuilder,Column};
+
 // use eframe::egui::include_image;
 
 pub trait TabPane {
@@ -469,6 +468,32 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         ui.menu_button("➕", |ui| {
             ui.label("Search region:");
             ui.text_edit_singleline(&mut self.search_text);
+            TableBuilder::new(ui)
+            .column(Column::exact(100.0))
+            .striped(true)
+            .body(|body| {
+                /*let t_univ = &self.universe;
+                let filtered_keys: Vec<&u32> = t_univ
+                    .regions
+                    .keys()
+                    .filter(|key| key < &&11000000)
+                    .collect();
+                body.rows(25.0, 2, |mut row| {
+                    let key_index = row.index() * 3;
+                    row.col(|ui: &mut egui::Ui| {
+                        let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
+                        if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
+                            let txs = Arc::clone(&self.app_msg.0);
+                            let future = async move {
+                                let _ = txs
+                                    .send(Message::ToggleRegionMap())
+                                    .await;
+                            };
+                            self.tpool.spawn_ok(future);
+                        };
+                    });
+                });*/
+            });
         });
     }
 
