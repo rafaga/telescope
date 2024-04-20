@@ -26,6 +26,7 @@ puffin = {version = "0.19", optional = true, default-features = false}
 puffin_http = {version = "0.16", optional = true, default-features = false}
 egui_tiles = { version = "0.8.0" }
 futures = { version = "0.3.30", features = ["thread-pool", "futures-executor"] }
+toml = "0.8.12"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
