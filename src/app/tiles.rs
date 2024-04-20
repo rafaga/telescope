@@ -332,6 +332,7 @@ pub struct TreeBehavior {
     search_text: String,
     factor: u64,
     path: String,
+    search_regions: Vec<usize>,
     pub tile_data: HashMap<usize, TileData>,
 }
 
@@ -359,6 +360,7 @@ impl TreeBehavior {
             path,
             search_text: String::new(),
             tile_data: HashMap::new(),
+            search_regions: Vec::new(),
         }
     }
 
@@ -438,6 +440,7 @@ impl TreeBehavior {
             }
         }
     }
+
 }
 
 impl Behavior<Box<dyn TabPane>> for TreeBehavior {
@@ -548,28 +551,32 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     ) {
         ui.add_space(1.5);
         ui.menu_button("➕", |ui| {
-            let mut data: Option<Vec<usize>> = None;
+            let mut _data: Vec<usize> = Vec::new();
             ui.label("Search region:");
-            if ui.text_edit_singleline(&mut self.search_text).changed()
-                && self.search_text.len() > 3
-            {
-                let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
-                let regions = t_sde
-                    .get_region(vec![], Some(self.search_text.clone()))
-                    .unwrap();
-                data = Some(
-                    regions
-                        .iter()
-                        .map(|region| *region.0 as usize)
-                        .collect(),
-                );
+            if ui.text_edit_singleline(&mut self.search_text).changed() {
+                self.search_regions.clear();
+                if self.search_text.len() > 3 {
+                    let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
+                    let regions = t_sde
+                        .get_region(vec![], Some(self.search_text.clone()))
+                        .unwrap();
+                    self.search_regions = 
+                        regions
+                            .keys()
+                            .copied()
+                            .map(|x| x as usize)
+                            .collect();
+                }
             }
-            if data.is_none() {
-                data = Some(self
+
+            if self.search_regions.is_empty() {
+                _data = self
                     .tile_data
                     .keys()
                     .copied()
-                    .collect());
+                    .collect();
+            } else {
+                _data = self.search_regions.clone();
             }
             ui.add_space(7.0);
             TableBuilder::new(ui)
@@ -578,22 +585,22 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 .vscroll(true)
                 .max_scroll_height(100.00)
                 .body(|body| {
-                    body.rows(25.0, data.as_ref().unwrap().len(), |mut row| {
+                    body.rows(25.0, _data.len(), |mut row| {
                         let key_index = row.index();
-                        let name = self.tile_data.get_mut(&(data.as_ref().unwrap()[key_index])).unwrap().get_name();
+                        let name = self.tile_data.get_mut(&(_data[key_index])).unwrap().get_name();
                         row.col(|ui: &mut egui::Ui| {
                             if ui
                                 .checkbox(
                                     &mut self
                                         .tile_data
-                                        .get_mut(&(data.as_ref().unwrap()[key_index]))
+                                        .get_mut(&(_data[key_index]))
                                         .unwrap()
                                         .visible,
                                         name,
                                 )
                                 .changed()
                             {
-                                self.toggle_regions(data.as_ref().unwrap()[key_index]);
+                                self.toggle_regions(_data[key_index]);
                             };
                         });
                     });
