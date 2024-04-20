@@ -1,10 +1,9 @@
-use egui_tiles::TileId;
-
 pub enum Message {
     EsiAuthSuccess((String, String)),
     GenericNotification((Type, String, String, String)),
-    ToggleRegionMap(),
-    MapClosed(TileId),
+    NewRegionalPane(usize),
+    MapHidden(usize),
+    MapShown(usize),
 }
 
 #[derive(Clone)]
@@ -28,5 +27,5 @@ pub enum Target {
 #[derive(PartialEq)]
 pub enum SettingsPage {
     Mapping,
-    LinkedCharacters
+    LinkedCharacters,
 }

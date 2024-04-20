@@ -1,13 +1,12 @@
-use crate::app::messages::{MapSync, Message, Target, Type, SettingsPage};
-use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
+use crate::app::messages::{MapSync, Message, SettingsPage, Target, Type};
+use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
-use egui_tiles::{TileId, Tiles, Tree};
+use egui_tiles::{Tiles, Tree};
 use futures::executor::ThreadPool;
 use sde::{objects::Universe, SdeManager};
-use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -52,7 +51,7 @@ pub struct TelescopeApp<'a> {
 
     //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
-    tile_ids: HashMap<usize, (bool, Option<TileId>, bool)>,
+
     behavior: TreeBehavior,
 }
 
@@ -100,12 +99,11 @@ impl<'a> Default for TelescopeApp<'a> {
             search_selected_row: None,
             emit_notification: false,
             factor,
-            path,
-            behavior: TreeBehavior::new(arc_msg_app_clone, Rc::clone(&tpool)),
+            path: path.clone(),
+            behavior: TreeBehavior::new(arc_msg_app_clone, Rc::clone(&tpool), factor, path),
             tpool,
             search_results: Vec::new(),
             tree: None,
-            tile_ids: HashMap::new(),
             universe: sde.universe,
             selected_settings_page: SettingsPage::Mapping,
         }
@@ -146,7 +144,6 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 search_selected_row: _,
                 search_results: _,
                 tree: _,
-                tile_ids: _,
                 universe: _,
                 selected_settings_page: _,
                 tpool: _,
@@ -166,11 +163,19 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                     vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
                 }
 
-                let regions: Vec<u32> = self.universe.regions.keys().copied().collect();
+                let regions: Vec<u32> = self
+                    .universe
+                    .regions
+                    .keys()
+                    .copied()
+                    .filter(|val| val < &11000000)
+                    .collect();
                 for key in regions {
-                    if key < 11000000 {
-                        self.tile_ids.insert(key as usize, (false, None, false));
-                    }
+                    let region = self.universe.regions.get(&key).unwrap();
+                    self.behavior.tile_data.insert(
+                        region.id as usize,
+                        TileData::new(region.name.clone(), false),
+                    );
                 }
 
                 self.initialized = true;
@@ -349,10 +354,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
                 ));
                 */
                 if let Some(tree) = &mut self.tree {
-                    tree.ui(
-                        &mut self.behavior,
-                        ui,
-                    );
+                    tree.ui(&mut self.behavior, ui);
                 }
             })
 
@@ -376,8 +378,9 @@ impl<'a> TelescopeApp<'a> {
                     self.update_character_into_database(character).await
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
-                Message::ToggleRegionMap() => self.toggle_regions(),
-                Message::MapClosed(region_id) => self.close_abstract_map(region_id),
+                Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
+                Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
+                Message::MapShown(region_id) => self.show_abstract_map(region_id),
             };
         }
     }
@@ -457,12 +460,13 @@ impl<'a> TelescopeApp<'a> {
                             match self.selected_settings_page {
                                 // Mapping
                                 SettingsPage::Mapping => {
-                                    let t_univ = &self.universe;
-                                    let filtered_keys: Vec<&u32> = t_univ
-                                        .regions
+                                    let keys:Vec<usize> = self
+                                        .behavior
+                                        .tile_data
                                         .keys()
-                                        .filter(|key| key < &&11000000)
-                                        .collect();
+                                        .copied().collect();
+                                    let num_rows = keys.len().div_ceil(3);
+                                    let row_height = 18.0;
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     TableBuilder::new(ui)
                                     .column(Column::resizable(Column::exact(150.0),false))
@@ -471,50 +475,28 @@ impl<'a> TelescopeApp<'a> {
                                     .striped(true)
                                     .vscroll(false)
                                     .body(|body| {
-                                        let row_height = 18.0;
-                                        let num_rows = filtered_keys.len().div_ceil(3);
                                         body.rows(row_height, num_rows, |mut row| {
                                             let key_index = row.index() * 3;
                                             row.col(|ui: &mut egui::Ui| {
-                                                let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
-                                                if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
-                                                    let txs = Arc::clone(&self.app_msg.0);
-                                                    let future = async move {
-                                                        let _ = txs
-                                                            .send(Message::ToggleRegionMap())
-                                                            .await;
-                                                    };
-                                                    self.tpool.spawn_ok(future);
-                                                };
+                                                let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
+                                                let name = region.get_name();
+                                                //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
+                                                ui.checkbox(&mut region.show_on_startup, name);
                                             });
                                             let mut t_key_index = key_index + 1;
-                                            if t_key_index < filtered_keys.len() {
+                                            if t_key_index < keys.len() {
                                                 row.col(|ui: &mut egui::Ui| {
-                                                    let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
-                                                        let txs = Arc::clone(&self.app_msg.0);
-                                                        let future = async move {
-                                                            let _ = txs
-                                                                .send(Message::ToggleRegionMap())
-                                                                .await;
-                                                        };
-                                                        self.tpool.spawn_ok(future);
-                                                    };
+                                                    let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                    let name = region.get_name();
+                                                    ui.checkbox(&mut region.show_on_startup, name);
                                                 });
                                             }
                                             t_key_index += 1;
-                                            if t_key_index < filtered_keys.len() {
+                                            if t_key_index < keys.len() {
                                                 row.col(|ui: &mut egui::Ui| {
-                                                    let region = t_univ.regions.get(filtered_keys[t_key_index]).unwrap();
-                                                    if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
-                                                        let txs = Arc::clone(&self.app_msg.0);
-                                                        let future = async move {
-                                                            let _ = txs
-                                                                .send(Message::ToggleRegionMap())
-                                                                .await;
-                                                        };
-                                                        self.tpool.spawn_ok(future);
-                                                    };
+                                                    let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                    let name = region.get_name();
+                                                    ui.checkbox(&mut region.show_on_startup, name);
                                                 });
                                             }
                                         });
@@ -560,11 +542,7 @@ impl<'a> TelescopeApp<'a> {
                                                 }
                                             }
                                         }
-                                        let button_state= if self.esi.characters.len() > 0 {
-                                            true
-                                        } else {
-                                            false
-                                        };
+                                        let button_state = !self.esi.characters.is_empty();
                                         if ui.add_enabled(button_state, egui::Button::new("✖ Remove")).clicked() {
                                             let mut index = 0;
                                             let mut vec_id = vec![];
@@ -678,7 +656,6 @@ impl<'a> TelescopeApp<'a> {
                                             });
                                         }
                                     });
-                                    
                                 },
                             }
                         });
@@ -692,7 +669,6 @@ impl<'a> TelescopeApp<'a> {
                 ui.button("Save").clicked();
                 ui.button("Cancel").clicked();
             });
-            
         });
     }
 
@@ -756,56 +732,39 @@ impl<'a> TelescopeApp<'a> {
         }
     }
 
-    fn toggle_regions(&mut self) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("toggle_regions");
-        let mut new_panes = vec![];
-        let mut show_panes = vec![];
-        // tile.0 - has the region ID
-        // tile.1.0 - has visible state
-        // tile.1.1 - has the TileID assosiated with the shown Tile/tab (if exists)
-        for tile in self.tile_ids.iter_mut() {
-            if tile.1 .0 {
-                match tile.1 .1 {
-                    None => new_panes.push(*tile.0),
-                    Some(_) => show_panes.push(*tile.0),
-                }
-            }
-        }
-        let mut tile_ids = self.tile_ids.clone();
-        for region_id in new_panes {
-            let pane = Self::generate_pane(
-                self.map_msg.0.subscribe(),
-                Arc::clone(&self.app_msg.0),
-                self.path.clone(),
-                self.factor,
-                Some(region_id),
-                Rc::clone(&self.tpool),
-            );
-            let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
-            let root = self.tree.as_ref().unwrap().root.unwrap();
-            let counter = self.tree.as_ref().unwrap().tiles.len();
-            self.tree
-                .as_mut()
-                .unwrap()
-                .move_tile_to_container(tile_id, root, counter, false);
-            tile_ids.entry(region_id).and_modify(|data| {
-                data.0 = true;
-                data.1 = Some(tile_id);
-            });
-            //self.tree.as_mut().unwrap().set_visible(tile_id, true);
-            //self.tree.as_mut().unwrap().tiles.insert_tab_tile(tile_id);
-        }
-        for region_id in show_panes {
-            self.tile_ids.entry(region_id).and_modify(|region| {
+    fn create_new_regional_pane(&mut self, region_id: usize) {
+        let pane = Self::generate_pane(
+            self.map_msg.0.subscribe(),
+            Arc::clone(&self.app_msg.0),
+            self.path.clone(),
+            self.factor,
+            Some(region_id),
+            Rc::clone(&self.tpool),
+        );
+        let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
+        let root = self.tree.as_ref().unwrap().root.unwrap();
+        let counter = self.tree.as_ref().unwrap().tiles.len();
+        self.tree
+            .as_mut()
+            .unwrap()
+            .move_tile_to_container(tile_id, root, counter, false);
+        self.behavior.tile_data.entry(region_id).and_modify(|data| {
+            data.set_visible(true);
+            data.set_tile_id(Some(tile_id));
+        });
+    }
+
+    fn show_abstract_map(&mut self, region_id: usize) {
+        self.behavior
+            .tile_data
+            .entry(region_id)
+            .and_modify(|region| {
                 self.tree
                     .as_mut()
                     .unwrap()
-                    .set_visible(region.1.unwrap(), true);
-                region.0 = true;
+                    .set_visible(region.get_tile_id().unwrap(), true);
+                region.set_visible(true);
             });
-        }
-        self.tile_ids = tile_ids;
     }
 
     /// Called once before the first frame.
@@ -868,19 +827,21 @@ impl<'a> TelescopeApp<'a> {
         pane
     }
 
-    fn close_abstract_map(&mut self, tile_id: TileId) {
+    fn hide_abstract_map(&mut self, region_id: usize) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("close_abstract_map");
-        self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
-        let keys: Vec<usize> = self.tile_ids.keys().copied().collect();
-        for item in &keys {
-            self.tile_ids.entry(*item).and_modify(|entry| {
-                if let Some(map_tile_id) = entry.1 {
-                    if map_tile_id == tile_id {
-                        entry.0 = false;
-                    }
-                }
+        if let Some(tile_id) = self
+            .behavior
+            .tile_data
+            .get(&region_id)
+            .unwrap()
+            .get_tile_id()
+        {
+            self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
+            self.behavior.tile_data.entry(region_id).and_modify(|entry| {
+                entry.set_visible(false);
             });
+
         }
     }
 

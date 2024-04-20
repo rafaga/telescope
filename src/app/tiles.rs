@@ -1,5 +1,6 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{self, vec2, Pos2, Response, Sense, Stroke, Style, TextStyle, Ui, WidgetText};
+use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     objects::{ContextMenuManager, MapLabel, MapSettings, VisibilitySetting},
     Map,
@@ -7,12 +8,11 @@ use egui_map::map::{
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 use futures::executor::ThreadPool;
 use sde::SdeManager;
-use std::{path::Path,rc::Rc,sync::Arc};
-use tokio::sync::{broadcast::Receiver,mpsc::Sender};
-use egui_extras::{TableBuilder,Column};
+use std::collections::HashMap;
+use std::{path::Path, rc::Rc, sync::Arc};
+use tokio::sync::{broadcast::Receiver, mpsc::Sender};
 
 // use eframe::egui::include_image;
-
 pub trait TabPane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse;
     fn get_title(&self) -> WidgetText;
@@ -238,8 +238,9 @@ impl RegionPane {
             }
         }
         let t_region_id = self.region_id;
-        let region = t_sde.get_regions(vec![t_region_id as u32]).unwrap();
-        self.tab_name = region[0].1.clone();
+        let region = t_sde.get_region(vec![t_region_id as u32], None).unwrap();
+        let keys: Vec<u32> = region.keys().copied().collect();
+        self.tab_name = region.get(&keys[0]).unwrap().name.clone();
         /*let txs = Arc::clone(&self.generic_sender);
         let future = async move {
             let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
@@ -284,6 +285,44 @@ impl TabPane for RegionPane {
     }
 }
 
+pub struct TileData {
+    tile_id: Option<TileId>,
+    name: String,
+    visible: bool,
+    pub(crate) show_on_startup: bool,
+}
+
+impl TileData {
+    pub fn new(name: String, show_on_startup: bool) -> Self {
+        Self {
+            tile_id: None,
+            name,
+            visible: false,
+            show_on_startup,
+        }
+    }
+
+    pub fn set_visible(&mut self, value: bool) {
+        self.visible = value;
+    }
+
+    pub fn get_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_tile_id(&mut self, value: Option<TileId>) {
+        self.tile_id = value;
+    }
+
+    pub fn get_tile_id(&self) -> Option<TileId> {
+        self.tile_id
+    }
+
+    pub fn get_name(&self) -> String {
+        self.name.clone()
+    }
+}
+
 pub struct TreeBehavior {
     simplification_options: SimplificationOptions,
     tab_bar_height: f32,
@@ -291,10 +330,18 @@ pub struct TreeBehavior {
     generic_sender: Arc<Sender<Message>>,
     tpool: Rc<ThreadPool>,
     search_text: String,
+    factor: u64,
+    path: String,
+    pub tile_data: HashMap<usize, TileData>,
 }
 
 impl TreeBehavior {
-    pub fn new(generic_sender: Arc<Sender<Message>>, tpool: Rc<ThreadPool>) -> Self {
+    pub fn new(
+        generic_sender: Arc<Sender<Message>>,
+        tpool: Rc<ThreadPool>,
+        factor: u64,
+        path: String,
+    ) -> Self {
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -308,8 +355,38 @@ impl TreeBehavior {
             gap_width: 2.0,
             generic_sender,
             tpool,
+            factor,
+            path,
             search_text: String::new(),
+            tile_data: HashMap::new(),
         }
+    }
+
+    fn toggle_regions(&mut self, region_id: usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_scope!("toggle_regions");
+        let visible = self.tile_data.get_mut(&region_id).unwrap().get_visible();
+        let tile_id = self.tile_data.get_mut(&region_id).unwrap().get_tile_id();
+        let ttx = Arc::clone(&self.generic_sender);
+        if visible {
+            if tile_id.is_some() {
+                let future = async move {
+                    let _x = ttx.send(Message::MapShown(region_id)).await;
+                };
+                self.tpool.spawn_ok(future);
+            } else {
+                let future = async move {
+                    let _x = ttx.send(Message::NewRegionalPane(region_id)).await;
+                };
+                self.tpool.spawn_ok(future);
+            }
+        } else {
+            let future = async move {
+                let _x = ttx.send(Message::MapHidden(region_id)).await;
+            };
+            self.tpool.spawn_ok(future);
+        }
+        //self.behavior.tile_ids = tile_ids;
     }
 }
 
@@ -349,11 +426,16 @@ impl TreeBehavior {
 
     fn on_close_tab(&self, tile_id: TileId, button_response: Response) {
         if button_response.clicked() {
-            let ttx = Arc::clone(&self.generic_sender);
-            let future = async move {
-                let _x = ttx.send(Message::MapClosed(tile_id)).await;
-            };
-            self.tpool.spawn_ok(future);
+            for tile in self.tile_data.iter() {
+                if tile.1.get_tile_id() == Some(tile_id) {
+                    let ttx = Arc::clone(&self.generic_sender);
+                    let region_id = *tile.0;
+                    let future = async move {
+                        let _x = ttx.send(Message::MapHidden(region_id)).await;
+                    };
+                    self.tpool.spawn_ok(future);
+                }
+            }
         }
     }
 }
@@ -466,34 +548,56 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     ) {
         ui.add_space(1.5);
         ui.menu_button("➕", |ui| {
+            let mut data: Option<Vec<usize>> = None;
             ui.label("Search region:");
-            ui.text_edit_singleline(&mut self.search_text);
-            TableBuilder::new(ui)
-            .column(Column::exact(100.0))
-            .striped(true)
-            .body(|body| {
-                /*let t_univ = &self.universe;
-                let filtered_keys: Vec<&u32> = t_univ
-                    .regions
+            if ui.text_edit_singleline(&mut self.search_text).changed()
+                && self.search_text.len() > 3
+            {
+                let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
+                let regions = t_sde
+                    .get_region(vec![], Some(self.search_text.clone()))
+                    .unwrap();
+                data = Some(
+                    regions
+                        .iter()
+                        .map(|region| *region.0 as usize)
+                        .collect(),
+                );
+            }
+            if data.is_none() {
+                data = Some(self
+                    .tile_data
                     .keys()
-                    .filter(|key| key < &&11000000)
-                    .collect();
-                body.rows(25.0, 2, |mut row| {
-                    let key_index = row.index() * 3;
-                    row.col(|ui: &mut egui::Ui| {
-                        let region = t_univ.regions.get(filtered_keys[key_index]).unwrap();
-                        if ui.checkbox(&mut self.tile_ids.get_mut(&(region.id as usize)).unwrap().2, region.name.clone()).changed() {
-                            let txs = Arc::clone(&self.app_msg.0);
-                            let future = async move {
-                                let _ = txs
-                                    .send(Message::ToggleRegionMap())
-                                    .await;
+                    .copied()
+                    .collect());
+            }
+            ui.add_space(7.0);
+            TableBuilder::new(ui)
+                .column(Column::remainder())
+                .striped(true)
+                .vscroll(true)
+                .max_scroll_height(100.00)
+                .body(|body| {
+                    body.rows(25.0, data.as_ref().unwrap().len(), |mut row| {
+                        let key_index = row.index();
+                        let name = self.tile_data.get_mut(&(data.as_ref().unwrap()[key_index])).unwrap().get_name();
+                        row.col(|ui: &mut egui::Ui| {
+                            if ui
+                                .checkbox(
+                                    &mut self
+                                        .tile_data
+                                        .get_mut(&(data.as_ref().unwrap()[key_index]))
+                                        .unwrap()
+                                        .visible,
+                                        name,
+                                )
+                                .changed()
+                            {
+                                self.toggle_regions(data.as_ref().unwrap()[key_index]);
                             };
-                            self.tpool.spawn_ok(future);
-                        };
+                        });
                     });
-                });*/
-            });
+                });
         });
     }
 
