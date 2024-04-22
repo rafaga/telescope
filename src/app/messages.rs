@@ -26,6 +26,6 @@ pub enum Target {
 
 #[derive(PartialEq)]
 pub enum SettingsPage {
-    Mapping,
+    StartUp,
     LinkedCharacters,
 }

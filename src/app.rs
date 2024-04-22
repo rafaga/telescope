@@ -20,7 +20,7 @@ mod data;
 mod messages;
 mod tiles;
 
-pub struct TelescopeApp<'a> {
+pub struct TelescopeApp {
     initialized: bool,
 
     // 2d point to paint map
@@ -37,7 +37,7 @@ pub struct TelescopeApp<'a> {
     open: [bool; 3],
 
     // the ESI Manager
-    esi: webb::esi::EsiManager<'a>,
+    esi: webb::esi::EsiManager,
     last_message: String,
     search_text: String,
     emit_notification: bool,
@@ -55,7 +55,7 @@ pub struct TelescopeApp<'a> {
     behavior: TreeBehavior,
 }
 
-impl<'a> Default for TelescopeApp<'a> {
+impl<'a> Default for TelescopeApp {
     fn default() -> Self {
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
@@ -69,7 +69,7 @@ impl<'a> Default for TelescopeApp<'a> {
             app_data.secret_key.as_str(),
             app_data.url.as_str(),
             app_data.scope,
-            Some("telescope.db"),
+            Some(String::from("telescope.db")),
         );
 
         let mut tp_builder = ThreadPool::builder();
@@ -105,12 +105,12 @@ impl<'a> Default for TelescopeApp<'a> {
             search_results: Vec::new(),
             tree: None,
             universe: sde.universe,
-            selected_settings_page: SettingsPage::Mapping,
+            selected_settings_page: SettingsPage::StartUp,
         }
     }
 }
 
-impl<'a> eframe::App for TelescopeApp<'a> {
+impl eframe::App for TelescopeApp {
     /// Called by the frame work to save state before shutdown.
     /*fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
@@ -367,7 +367,7 @@ impl<'a> eframe::App for TelescopeApp<'a> {
     }
 }
 
-impl<'a> TelescopeApp<'a> {
+impl TelescopeApp {
     async fn event_manager(&mut self) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("event_manager");
@@ -426,7 +426,7 @@ impl<'a> TelescopeApp<'a> {
             ui.horizontal(|ui|{
                 ui.vertical(|ui|{
                     let row_height = 25.0;
-                    let labels = ["Maps","Linked Characters"];
+                    let labels = ["Startup","Linked Characters"];
                     ui.push_id("settings_menu", |ui|{
                         TableBuilder::new(ui)
                         .column(Column::resizable(Column::exact(150.0),false))
@@ -436,7 +436,7 @@ impl<'a> TelescopeApp<'a> {
                             body.rows(row_height, labels.len(), |mut row| {
                                 let label = labels[row.index()];
                                 let current_page = match row.index(){
-                                    0 => SettingsPage::Mapping,
+                                    0 => SettingsPage::StartUp,
                                     1 => SettingsPage::LinkedCharacters,
                                     2usize.. => SettingsPage::LinkedCharacters,
                                 };
@@ -459,7 +459,7 @@ impl<'a> TelescopeApp<'a> {
                         egui::ScrollArea::vertical().show(ui,|ui|{
                             match self.selected_settings_page {
                                 // Mapping
-                                SettingsPage::Mapping => {
+                                SettingsPage::StartUp => {
                                     let keys:Vec<usize> = self
                                         .behavior
                                         .tile_data
@@ -467,6 +467,15 @@ impl<'a> TelescopeApp<'a> {
                                         .copied().collect();
                                     let num_rows = keys.len().div_ceil(3);
                                     let row_height = 18.0;
+                                    ui.label("Datasources");
+                                    ui.horizontal(|ui|{
+                                        ui.label("SDE database path:");
+                                        ui.text_edit_singleline(&mut self.path);
+                                    });
+                                    ui.horizontal(|ui|{
+                                        ui.label("private data:");
+                                        ui.text_edit_singleline(&mut self.esi.path);
+                                    });
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     TableBuilder::new(ui)
                                     .column(Column::resizable(Column::exact(150.0),false))
@@ -792,7 +801,7 @@ impl<'a> TelescopeApp<'a> {
         }*/
         cc.egui_ctx.set_fonts(fonts);
 
-        let app: TelescopeApp<'_> = Default::default();
+        let app: TelescopeApp = Default::default();
         app
     }
 
