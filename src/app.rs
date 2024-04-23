@@ -56,7 +56,7 @@ pub struct TelescopeApp {
     behavior: TreeBehavior,
 }
 
-impl<'a> Default for TelescopeApp {
+impl Default for TelescopeApp {
     fn default() -> Self {
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
