@@ -1,7 +1,7 @@
 use crate::app::messages::{MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui;
+use eframe::egui::{self,RichText,FontId};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
@@ -19,6 +19,7 @@ use self::tiles::RegionPane;
 mod data;
 mod messages;
 mod tiles;
+mod settings;
 
 pub struct TelescopeApp {
     initialized: bool,
@@ -105,7 +106,7 @@ impl<'a> Default for TelescopeApp {
             search_results: Vec::new(),
             tree: None,
             universe: sde.universe,
-            selected_settings_page: SettingsPage::StartUp,
+            selected_settings_page: SettingsPage::Intelligence,
         }
     }
 }
@@ -426,7 +427,7 @@ impl TelescopeApp {
             ui.horizontal(|ui|{
                 ui.vertical(|ui|{
                     let row_height = 25.0;
-                    let labels = ["Startup","Linked Characters"];
+                    let labels = ["Intelligence","Data Sources"];
                     ui.push_id("settings_menu", |ui|{
                         TableBuilder::new(ui)
                         .column(Column::resizable(Column::exact(150.0),false))
@@ -436,9 +437,9 @@ impl TelescopeApp {
                             body.rows(row_height, labels.len(), |mut row| {
                                 let label = labels[row.index()];
                                 let current_page = match row.index(){
-                                    0 => SettingsPage::StartUp,
-                                    1 => SettingsPage::LinkedCharacters,
-                                    2usize.. => SettingsPage::LinkedCharacters,
+                                    0 => SettingsPage::Intelligence,
+                                    1 => SettingsPage::DataSources,
+                                    2usize.. => SettingsPage::DataSources,
                                 };
                                 row.col(|ui: &mut egui::Ui|{
                                     let option_selected = || -> bool {
@@ -459,23 +460,20 @@ impl TelescopeApp {
                         egui::ScrollArea::vertical().show(ui,|ui|{
                             match self.selected_settings_page {
                                 // Mapping
-                                SettingsPage::StartUp => {
+                                SettingsPage::Intelligence => {
                                     let keys:Vec<usize> = self
                                         .behavior
                                         .tile_data
                                         .keys()
                                         .copied().collect();
                                     let num_rows = keys.len().div_ceil(3);
+                                    ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
+                                    ui.horizontal(|ui|{
+                                        ui.label("Warn when an enemy is within this number of jumps close to you:");
+                                        ui.text_edit_singleline(&mut "0");
+                                    });
                                     let row_height = 18.0;
-                                    ui.label("Datasources");
-                                    ui.horizontal(|ui|{
-                                        ui.label("SDE database path:");
-                                        ui.text_edit_singleline(&mut self.path);
-                                    });
-                                    ui.horizontal(|ui|{
-                                        ui.label("private data:");
-                                        ui.text_edit_singleline(&mut self.esi.path);
-                                    });
+                                    ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     TableBuilder::new(ui)
                                     .column(Column::resizable(Column::exact(150.0),false))
@@ -510,10 +508,12 @@ impl TelescopeApp {
                                             }
                                         });
                                     });
+                                    
                                 },
                                 // Linked Characters
-                                SettingsPage::LinkedCharacters => {
-                                    ui.label("These are your linked characters.");
+                                SettingsPage::DataSources => {
+                                    ui.label(RichText::new("Linked characters").font(FontId::proportional(20.0)));
+                                    ui.label("These are used to emit notifications when something it is close to your location.");
                                     ui.horizontal(|ui|{
                                         if ui.button("➕ Add").clicked() {
                                             let auth_info = self.esi.esi.get_authorize_url().unwrap();
@@ -664,6 +664,15 @@ impl TelescopeApp {
                                                 });
                                             });
                                         }
+                                    });
+                                    ui.label(RichText::new("Static data").font(FontId::proportional(20.0)));
+                                    ui.horizontal(|ui|{
+                                        ui.label("SDE database path:");
+                                        ui.text_edit_singleline(&mut self.path);
+                                    });
+                                    ui.horizontal(|ui|{
+                                        ui.label("private data:");
+                                        ui.text_edit_singleline(&mut self.esi.path);
                                     });
                                 },
                             }

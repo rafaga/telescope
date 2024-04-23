@@ -26,6 +26,6 @@ pub enum Target {
 
 #[derive(PartialEq)]
 pub enum SettingsPage {
-    StartUp,
-    LinkedCharacters,
+    Intelligence,
+    DataSources,
 }
