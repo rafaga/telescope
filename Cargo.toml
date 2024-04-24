@@ -16,7 +16,7 @@ sde = { git = "https://github.com/rafaga/sde.git", branch = "test"}
 kdtree = { version = "0.7.0" }
 egui-map = { version = "0.0.13" }
 open = "5.1.1"
-webb = { git = "https://github.com/rafaga/webb.git", branch = "test", features = ["native-auth-flow"]}
+webb = { git = "https://github.com/rafaga/webb.git", branch = "test", default-features = false, features = []}
 chrono = "0.4.34"
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.27.2", features = ["all_loaders"] }
