@@ -1,6 +1,11 @@
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
-use tokio::time;
+use tokio::task::JoinHandle;
+use hyper::Server;
+use std::net::SocketAddr;
+use webb::auth_service::MakeSvc;
+use tokio::time::{timeout_at, Instant, Duration};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub enum MapSync {
@@ -45,102 +50,48 @@ async fn handle_message(message: Message) {
 }
 
 
-#[derive(Clone)]
-pub struct TaskSpawner {
-    spawn: mpsc::Sender<Message>,
-}
-
-impl TaskSpawner {
-    pub fn new() -> TaskSpawner {
-        // Set up a channel for communicating.
-        let (send, mut recv) = mpsc::channel(16);
-
-        // Build the runtime for the new thread.
-        //
-        // The runtime is created before spawning the thread
-        // to more cleanly forward errors if the `unwrap()`
-        // panics.
-        let rt = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        std::thread::spawn(move || {
-            rt.block_on(async move {
-                while let Some(task) = recv.recv().await {
-                    tokio::spawn(handle_message(task));
-                }
-
-                // Once all senders have gone out of scope,
-                // the `.recv()` call returns None and it will
-                // exit from the while loop and shut down the
-                // thread.
-            });
-        });
-
-        TaskSpawner {
-            spawn: send,
-        }
-    }
-
-    pub fn spawn_task(&self, msg: Message) {
-        match self.spawn.blocking_send(msg) {
-            Ok(()) => {},
-            Err(_) => panic!("The shared runtime has shut down."),
-        }
-    }
-}
-
-async fn handle_auth(time: usize) {
-
-
-    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-    let (tx, rx) = channel::<(String, String)>();
-    crate::SHARED_TX.lock().await.replace(tx);
+async fn handle_auth(time: usize, tx: Arc<mpsc::Sender<Message>>) {
+    let addr: SocketAddr = ([127, 0, 0, 1], 56123).into();
     let mut result = (String::new(), String::new());
     let server = Server::bind(&addr)
         .serve(MakeSvc::new())
         .with_graceful_shutdown(async {
             let msg = rx.await.ok();
-            if let Some(values) = msg {
-                result = values;
+            match msg {
+                Ok(data) => {
+                    let _ = tx
+                        .send(Message::EsiAuthSuccess(data))
+                        .await;
+                }
+                Err(t_error) => {
+                    let _ = tx
+                        .send(Message::GenericNotification(
+                            (Type::Error,
+                            String::from("EsiManager"),
+                            String::from("launch_auth_server"),
+                            t_error.to_string())
+                        ))
+                        .await;
+                }
             }
         });
     let _ = timeout_at(Instant::now() + Duration::from_secs(60), server).await;
-    Ok(result)
-
-    let tx = Arc::clone(&self.app_msg.0);
-    let future = async move {
-        match webb::esi::EsiManager::launch_auth_server(56123) {
-            Ok(data) => {
-                let _ = tx
-                    .send(Message::EsiAuthSuccess(data))
-                    .await;
-            }
-            Err(t_error) => {
-                let _ = tx
-                    .send(Message::GenericNotification(
-                        (Type::Error,
-                        String::from("EsiManager"),
-                        String::from("launch_auth_server"),
-                        t_error.to_string())
-                    ))
-                    .await;
-            }
-        };
-    };
-    self.tpool.spawn_ok(future);
+    //Ok(result);
 }
 
-pub struct AuthSpawner {
-    spawn: mpsc::Sender<usize>,
+pub struct TaskSpawner {
+    msg_spawn: mpsc::Sender<Message>,
+    auth_spawn: mpsc::Sender<usize>,
+    join_handlers: Vec<JoinHandle<()>>
 }
 
-impl AuthSpawner {
-    pub fn new() -> AuthSpawner {
+impl TaskSpawner {
+    pub fn new() -> TaskSpawner {
         // Set up a channel for communicating.
-        let (send, mut recv) = mpsc::channel(5);
+        let (send, mut recv) = mpsc::channel(30);
+        let (auth_send, mut auth_recv) = mpsc::channel(5);
 
+        let mut join_handlers = Vec::new();
         // Build the runtime for the new thread.
         //
         // The runtime is created before spawning the thread
@@ -152,9 +103,9 @@ impl AuthSpawner {
             .unwrap();
 
         std::thread::spawn(move || {
-            rt.block_on(async move {
+            let handle = rt.spawn(async move {
                 while let Some(time) = recv.recv().await {
-                    tokio::spawn(handle_auth(time));
+                    tokio::spawn(handle_message(time));
                 }
 
                 // Once all senders have gone out of scope,
@@ -162,15 +113,39 @@ impl AuthSpawner {
                 // exit from the while loop and shut down the
                 // thread.
             });
+            join_handlers.push(handle);
         });
 
-        AuthSpawner {
-            spawn: send,
+        std::thread::spawn(move || {
+            let handle = rt.spawn(async move {
+                while let Some(time) = auth_recv.recv().await {
+                    tokio::spawn(handle_auth(time,Arc::new(send)));
+                }
+
+                // Once all senders have gone out of scope,
+                // the `.recv()` call returns None and it will
+                // exit from the while loop and shut down the
+                // thread.
+            });
+            join_handlers.push(handle);
+        });
+
+        TaskSpawner {
+            msg_spawn: send,
+            auth_spawn: auth_send,
+            join_handlers
         }
     }
 
-    pub fn spawn_task(&self, time: usize) {
-        match self.spawn.blocking_send(time) {
+    pub fn spawn_msg_task(&self, msg: Message) {
+        match self.msg_spawn.blocking_send(msg) {
+            Ok(()) => {},
+            Err(_) => panic!("The shared runtime has shut down."),
+        }
+    }
+
+    pub fn spawn_auth_task(&self, time: usize) {
+        match self.auth_spawn.blocking_send(time) {
             Ok(()) => {},
             Err(_) => panic!("The shared runtime has shut down."),
         }
