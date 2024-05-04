@@ -6,11 +6,13 @@ use egui_map::map::{
     Map,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
-use futures::executor::ThreadPool;
+//use futures::executor::ThreadPool;
 use sde::SdeManager;
 use std::collections::HashMap;
 use std::{path::Path, rc::Rc, sync::Arc};
-use tokio::sync::{broadcast::Receiver, mpsc::Sender};
+use tokio::sync::broadcast::Receiver;
+
+use super::messages::MessageSpawner;
 
 // use eframe::egui::include_image;
 pub trait TabPane {
@@ -23,31 +25,27 @@ pub trait TabPane {
 pub struct UniversePane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
-    generic_sender: Arc<Sender<Message>>,
+    //generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
-    tpool: Rc<ThreadPool>,
+    task_msg: Arc<MessageSpawner>,
+    //tpool: Rc<ThreadPool>,
 }
 
 impl UniversePane {
     pub fn new(
         receiver: Receiver<MapSync>,
-        generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
-        thread_pool: Rc<ThreadPool>,
+        task_msg: Arc<MessageSpawner>,
     ) -> Self {
-        /*let mut tp_builder = ThreadPool::builder();
-        tp_builder.name_prefix("univ-");
-        let tpool = tp_builder.create().unwrap();*/
 
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
-            generic_sender,
             path,
             factor: factor as i64,
-            tpool: thread_pool,
+            task_msg,
         };
         object.generate_data(object.path.clone(), object.factor);
         object.map.settings = MapSettings::default();
@@ -131,32 +129,20 @@ impl TabPane for UniversePane {
                     Ok(None) => {
                         let mut msg = String::from("System with Id ");
                         msg += (message.0.to_string() + " could not be located").as_str();
-                        let gtx = Arc::clone(&self.generic_sender);
-                        let future = async move {
-                            let _result = gtx
-                                .send(Message::GenericNotification((
-                                    Type::Warning,
-                                    String::from("SdeManager"),
-                                    String::from("get_system_coords"),
-                                    msg,
-                                )))
-                                .await;
-                        };
-                        self.tpool.spawn_ok(future);
+                        self.task_msg.spawn(Message::GenericNotification((
+                            Type::Warning,
+                            String::from("SdeManager"),
+                            String::from("get_system_coords"),
+                            msg,
+                        )));
                     }
                     Err(t_error) => {
-                        let gtx = Arc::clone(&self.generic_sender);
-                        let future = async move {
-                            let _result = gtx
-                                .send(Message::GenericNotification((
-                                    Type::Error,
-                                    String::from("SdeManager"),
-                                    String::from("get_system_coords"),
-                                    t_error.to_string(),
-                                )))
-                                .await;
-                        };
-                        self.tpool.spawn_ok(future);
+                        self.task_msg.spawn(Message::GenericNotification((
+                            Type::Error,
+                            String::from("SdeManager"),
+                            String::from("get_system_coords"),
+                            t_error.to_string(),
+                        )));
                     }
                 };
             }
@@ -168,37 +154,29 @@ impl TabPane for UniversePane {
 pub struct RegionPane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
-    generic_sender: Arc<Sender<Message>>,
     path: String,
     factor: i64,
     region_id: usize,
     tab_name: String,
-    tpool: Rc<ThreadPool>,
+    task_msg: Arc<MessageSpawner>,
 }
 
 impl RegionPane {
     pub fn new(
         receiver: Receiver<MapSync>,
-        generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
         region_id: usize,
-        thread_pool: Rc<ThreadPool>,
+        task_msg: Arc<MessageSpawner>
     ) -> Self {
-        //let mut tp_builder = ThreadPool::builder();
-        /*let mut thread_prefix = String::from("rg-");
-        thread_prefix += &(region_id.to_string().as_str().to_owned() + &"-".to_string());
-        tp_builder.name_prefix(thread_prefix);
-        let tpool = tp_builder.create().unwrap();*/
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
-            generic_sender,
             path,
             factor: factor as i64,
             region_id,
             tab_name: String::from("Region"),
-            tpool: thread_pool,
+            task_msg,
         };
         object.generate_data(object.path.clone(), object.factor, object.region_id);
         object.map.settings = MapSettings::default();
@@ -222,18 +200,12 @@ impl RegionPane {
                 }
             }
             Err(t_err) => {
-                let txs = Arc::clone(&self.generic_sender);
-                let future = async move {
-                    let _ = txs
-                        .send(Message::GenericNotification((
-                            Type::Error,
-                            "RegionPane".to_string(),
-                            "generate_data".to_string(),
-                            t_err.to_string(),
-                        )))
-                        .await;
-                };
-                self.tpool.spawn_ok(future);
+                self.task_msg.spawn(Message::GenericNotification((
+                    Type::Error,
+                    "RegionPane".to_string(),
+                    "generate_data".to_string(),
+                    t_err.to_string(),
+                )));
                 return;
             }
         }
@@ -241,11 +213,6 @@ impl RegionPane {
         let region = t_sde.get_region(vec![t_region_id as u32], None).unwrap();
         let keys: Vec<u32> = region.keys().copied().collect();
         self.tab_name = region.get(&keys[0]).unwrap().name.clone();
-        /*let txs = Arc::clone(&self.generic_sender);
-        let future = async move {
-            let _ = txs.send(Message::RequestRegionName(t_region_id)).await;
-        };
-        self.tpool.spawn_ok(future);*/
     }
 }
 
@@ -327,8 +294,7 @@ pub struct TreeBehavior {
     simplification_options: SimplificationOptions,
     tab_bar_height: f32,
     gap_width: f32,
-    generic_sender: Arc<Sender<Message>>,
-    tpool: Rc<ThreadPool>,
+    task_msg: Arc<MessageSpawner>,
     search_text: String,
     factor: u64,
     path: String,
@@ -338,8 +304,7 @@ pub struct TreeBehavior {
 
 impl TreeBehavior {
     pub fn new(
-        generic_sender: Arc<Sender<Message>>,
-        tpool: Rc<ThreadPool>,
+        task_msg: Arc<MessageSpawner>,
         factor: u64,
         path: String,
     ) -> Self {
@@ -354,8 +319,7 @@ impl TreeBehavior {
             },
             tab_bar_height: 24.0,
             gap_width: 2.0,
-            generic_sender,
-            tpool,
+            task_msg,
             factor,
             path,
             search_text: String::new(),
@@ -369,26 +333,16 @@ impl TreeBehavior {
         puffin::profile_scope!("toggle_regions");
         let visible = self.tile_data.get_mut(&region_id).unwrap().get_visible();
         let tile_id = self.tile_data.get_mut(&region_id).unwrap().get_tile_id();
-        let ttx = Arc::clone(&self.generic_sender);
+        //let ttx = Arc::clone(&self.generic_sender);
         if visible {
             if tile_id.is_some() {
-                let future = async move {
-                    let _x = ttx.send(Message::MapShown(region_id)).await;
-                };
-                self.tpool.spawn_ok(future);
+                self.task_msg.spawn(Message::MapShown(region_id));
             } else {
-                let future = async move {
-                    let _x = ttx.send(Message::NewRegionalPane(region_id)).await;
-                };
-                self.tpool.spawn_ok(future);
+                self.task_msg.spawn(Message::NewRegionalPane(region_id));
             }
         } else {
-            let future = async move {
-                let _x = ttx.send(Message::MapHidden(region_id)).await;
-            };
-            self.tpool.spawn_ok(future);
+            self.task_msg.spawn(Message::MapHidden(region_id));
         }
-        //self.behavior.tile_ids = tile_ids;
     }
 }
 
@@ -430,12 +384,13 @@ impl TreeBehavior {
         if button_response.clicked() {
             for tile in self.tile_data.iter() {
                 if tile.1.get_tile_id() == Some(tile_id) {
-                    let ttx = Arc::clone(&self.generic_sender);
+                    //let ttx = Arc::clone(&self.generic_sender);
                     let region_id = *tile.0;
-                    let future = async move {
+                    /*let future = async move {
                         let _x = ttx.send(Message::MapHidden(region_id)).await;
                     };
-                    self.tpool.spawn_ok(future);
+                    self.tpool.spawn_ok(future);*/
+                    self.task_msg.spawn(Message::MapHidden(region_id));
                 }
             }
         }
