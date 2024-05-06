@@ -20,14 +20,15 @@ webb = { git = "https://github.com/rafaga/webb.git", branch = "test", default-fe
 chrono = "0.4.34"
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.27.2", features = ["all_loaders"] }
-image = { version = "0.24.9", features = ["jpeg","png"] }
-wgpu = "0.19.3"
+image = { version = "0.25.1", features = ["jpeg","png"] }
+wgpu = "0.20.0"
 puffin = {version = "0.19", optional = true, default-features = false}
 puffin_http = {version = "0.16", optional = true, default-features = false}
 egui_tiles = { version = "0.8.0" }
 toml = "0.8.12"
-hyper = { version = "0.14", features = ["server", "runtime", "http1"] }
+hyper = { version = "0.14.28", features = ["server", "runtime", "http1"] }
 rfesi = {version = "0"}
+serde = { version = "1.0.200", features = ["derive"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

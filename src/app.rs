@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use webb::esi::EsiManager;
+use settings::Manager;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -44,22 +45,19 @@ pub struct TelescopeApp {
     emit_notification: bool,
     search_selected_row: Option<usize>,
     search_results: Vec<(usize, String, usize, String)>,
-    factor: u64,
-    path: String,
     universe: Universe,
     selected_settings_page: SettingsPage,
-    //tpool: Rc<ThreadPool>,
-
-    //tree: DockState<Tab>,
     tree: Option<Tree<Box<dyn TabPane>>>,
 
     behavior: TreeBehavior,
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
+    settings: Manager,
 }
 
 impl Default for TelescopeApp {
     fn default() -> Self {
+        let settings = Manager::new();
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map syncronization handler
@@ -72,18 +70,10 @@ impl Default for TelescopeApp {
             app_data.secret_key.as_str(),
             app_data.url.as_str(),
             app_data.scope,
-            Some(String::from("telescope.db")),
+            settings.paths.local_db.clone(),
         );
 
-        //let mut tp_builder = ThreadPool::builder();
-        //tp_builder.name_prefix("telescope-");
-        //let tpool = Rc::new(tp_builder.create().unwrap());
-
-        let factor = 50000000000000;
-        let string_path = String::from("assets/sde.db");
-        let path = string_path.clone();
-
-        let mut sde = SdeManager::new(Path::new(&string_path), factor);
+        let mut sde = SdeManager::new(Path::new(&settings.paths.sde_db), settings.factor);
         let _ = sde.get_universe();
 
         let arc_msg_sender = Arc::new(gtx);
@@ -104,16 +94,14 @@ impl Default for TelescopeApp {
             search_text: String::new(),
             search_selected_row: None,
             emit_notification: false,
-            factor,
-            path: path.clone(),
-            behavior: TreeBehavior::new(Arc::clone(&msgmon),  factor, path),
-            //tpool,
+            behavior: TreeBehavior::new(Arc::clone(&msgmon),  settings.factor, settings.paths.sde_db.clone()),
             search_results: Vec::new(),
             tree: None,
             universe: sde.universe,
             selected_settings_page: SettingsPage::Intelligence,
             task_msg: msgmon,
             task_auth: authmon,
+            settings
         }
     }
 }
@@ -140,17 +128,15 @@ impl eframe::App for TelescopeApp {
             last_message: _,
             search_text: _,
             emit_notification: _,
-            factor: _,
-            path: _,
             search_selected_row: _,
             search_results: _,
             tree: _,
             universe: _,
             selected_settings_page: _,
-            //tpool: _,
             behavior: _,
             task_msg: _,
             task_auth: _,
+            settings: _,
         } = self;
 
         if !self.initialized {
@@ -231,7 +217,7 @@ impl eframe::App for TelescopeApp {
                     let response = ui.text_edit_singleline(&mut self.search_text);
                     if response.changed() {
                         if self.search_text.len() >= 3 {
-                            let sde = SdeManager::new(Path::new(&self.path), self.factor);
+                            let sde = SdeManager::new(Path::new(&self.settings.paths.sde_db), self.settings.factor);
                             match sde.get_system_id(self.search_text.clone().to_lowercase()) {
                                 Ok(system_results) => self.search_results = system_results,
                                 Err(t_error) => {
@@ -629,11 +615,11 @@ impl TelescopeApp {
                                     ui.label(RichText::new("Static data").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
                                         ui.label("SDE database path:");
-                                        ui.text_edit_singleline(&mut self.path);
+                                        ui.text_edit_singleline(&mut self.settings.paths.sde_db);
                                     });
                                     ui.horizontal(|ui|{
                                         ui.label("private data:");
-                                        ui.text_edit_singleline(&mut self.esi.path);
+                                        ui.text_edit_singleline(&mut self.settings.paths.local_db);
                                     });
                                 },
                             }
@@ -714,12 +700,10 @@ impl TelescopeApp {
     fn create_new_regional_pane(&mut self, region_id: usize) {
         let pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
-            //Arc::clone(&self.app_msg.0),
-            self.path.clone(),
-            self.factor,
+            self.settings.paths.sde_db.clone(),
+            self.settings.factor,
             Some(region_id),
             Arc::clone(&self.task_msg)
-            //Rc::clone(&self.tpool),
         );
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
         let root = self.tree.as_ref().unwrap().root.unwrap();
@@ -778,11 +762,9 @@ impl TelescopeApp {
 
     fn generate_pane(
         receiver: BCReceiver<MapSync>,
-        //generic_sender: Arc<Sender<Message>>,
         path: String,
         factor: u64,
         region_id: Option<usize>,
-        //t_pool: Rc<ThreadPool>,
         task_msg:Arc<MessageSpawner>,
     ) -> Box<dyn TabPane> {
         #[cfg(feature = "puffin")]
@@ -790,20 +772,16 @@ impl TelescopeApp {
         let pane: Box<dyn TabPane> = if let Some(region) = region_id {
             Box::new(RegionPane::new(
                 receiver,
-                //generic_sender,
                 path,
                 factor,
                 region,
-                //t_pool,
                 task_msg
             ))
         } else {
             Box::new(UniversePane::new(
                 receiver,
-                //generic_sender,
                 path,
                 factor,
-                //t_pool,
                 task_msg,
             ))
         };
@@ -833,11 +811,9 @@ impl TelescopeApp {
         let mut tiles = Tiles::default();
         let id = tiles.insert_pane(Self::generate_pane(
             self.map_msg.0.subscribe(),
-            //Arc::clone(&self.app_msg.0),
-            self.path.clone(),
-            self.factor,
+            self.settings.paths.sde_db.clone(),
+            self.settings.factor,
             None,
-            //Rc::clone(&self.tpool),
             Arc::clone(&self.task_msg)
         ));
         let tile_ids = vec![id];
