@@ -1,26 +1,26 @@
 use crate::app::messages::{MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self,RichText,FontId};
+use eframe::egui::{self, FontId, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 //use futures::executor::ThreadPool;
 use sde::{objects::Universe, SdeManager};
+use settings::Manager;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use webb::esi::EsiManager;
-use settings::Manager;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
 
 mod data;
 mod messages;
-mod tiles;
 mod settings;
+mod tiles;
 
 pub struct TelescopeApp {
     initialized: bool,
@@ -79,8 +79,8 @@ impl Default for TelescopeApp {
         let arc_msg_sender = Arc::new(gtx);
 
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
-        
-        let authmon= AuthSpawner::new(Arc::clone(&arc_msg_sender));
+
+        let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
         Self {
             // Example stuff:
@@ -94,14 +94,18 @@ impl Default for TelescopeApp {
             search_text: String::new(),
             search_selected_row: None,
             emit_notification: false,
-            behavior: TreeBehavior::new(Arc::clone(&msgmon),  settings.factor, settings.paths.sde_db.clone()),
+            behavior: TreeBehavior::new(
+                Arc::clone(&msgmon),
+                settings.factor,
+                settings.paths.sde_db.clone(),
+            ),
             search_results: Vec::new(),
             tree: None,
             universe: sde.universe,
             selected_settings_page: SettingsPage::Intelligence,
             task_msg: msgmon,
             task_auth: authmon,
-            settings
+            settings,
         }
     }
 }
@@ -217,7 +221,10 @@ impl eframe::App for TelescopeApp {
                     let response = ui.text_edit_singleline(&mut self.search_text);
                     if response.changed() {
                         if self.search_text.len() >= 3 {
-                            let sde = SdeManager::new(Path::new(&self.settings.paths.sde_db), self.settings.factor);
+                            let sde = SdeManager::new(
+                                Path::new(&self.settings.paths.sde_db),
+                                self.settings.factor,
+                            );
                             match sde.get_system_id(self.search_text.clone().to_lowercase()) {
                                 Ok(system_results) => self.search_results = system_results,
                                 Err(t_error) => {
@@ -274,8 +281,7 @@ impl eframe::App for TelescopeApp {
                                         }
                                     }
                                     let col_data = row.col(|ui| {
-                                        if ui.label(&self.search_results[row_index].1).clicked()
-                                        {
+                                        if ui.label(&self.search_results[row_index].1).clicked() {
                                             self.search_selected_row = Some(row_index);
                                             self.click_on_system_result(row_index);
                                         }
@@ -284,8 +290,7 @@ impl eframe::App for TelescopeApp {
                                         self.click_on_system_result(row_index);
                                     }
                                     let col_data = row.col(|ui| {
-                                        if ui.label(&self.search_results[row_index].3).clicked()
-                                        {
+                                        if ui.label(&self.search_results[row_index].3).clicked() {
                                             self.search_selected_row = Some(row_index);
                                             self.click_on_region_result(row_index);
                                         }
@@ -342,7 +347,6 @@ impl eframe::App for TelescopeApp {
 
         }*/
         //ui.label("鑑於對人類家庭所有成員的固有尊嚴及其平等的和不移的權利的承認，乃是世界自由、正義與和平的基礎");
-
     }
 }
 
@@ -362,7 +366,6 @@ impl TelescopeApp {
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),
             };
         }
-
     }
 
     fn open_about_window(&mut self, ctx: &egui::Context) {
@@ -487,7 +490,6 @@ impl TelescopeApp {
                                             }
                                         });
                                     });
-                                    
                                 },
                                 // Linked Characters
                                 SettingsPage::DataSources => {
@@ -644,7 +646,10 @@ impl TelescopeApp {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
-        match rt.expect("Esi character authentication failure").block_on(self.esi.auth_user(auth_info, response_data)) {
+        match rt
+            .expect("Esi character authentication failure")
+            .block_on(self.esi.auth_user(auth_info, response_data))
+        {
             Ok(Some(player)) => {
                 self.esi.characters.push(player);
             }
@@ -667,7 +672,6 @@ impl TelescopeApp {
                 )));
             }
         };
-        
     }
 
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
@@ -679,20 +683,12 @@ impl TelescopeApp {
                     "ERROR: ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
             }
             Type::Warning => {
-                self.last_message = "WARN:  ".to_string()
-                    + &message.1
-                    + " - "
-                    + &message.2
-                    + " > "
-                    + &message.3;
+                self.last_message =
+                    "WARN:  ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
             }
             Type::Info => {
-                self.last_message = "INFO:  ".to_string()
-                    + &message.1
-                    + " - "
-                    + &message.2
-                    + " > "
-                    + &message.3;
+                self.last_message =
+                    "INFO:  ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
             }
         }
     }
@@ -703,7 +699,7 @@ impl TelescopeApp {
             self.settings.paths.sde_db.clone(),
             self.settings.factor,
             Some(region_id),
-            Arc::clone(&self.task_msg)
+            Arc::clone(&self.task_msg),
         );
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
         let root = self.tree.as_ref().unwrap().root.unwrap();
@@ -765,25 +761,14 @@ impl TelescopeApp {
         path: String,
         factor: u64,
         region_id: Option<usize>,
-        task_msg:Arc<MessageSpawner>,
+        task_msg: Arc<MessageSpawner>,
     ) -> Box<dyn TabPane> {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("generate_pane");
         let pane: Box<dyn TabPane> = if let Some(region) = region_id {
-            Box::new(RegionPane::new(
-                receiver,
-                path,
-                factor,
-                region,
-                task_msg
-            ))
+            Box::new(RegionPane::new(receiver, path, factor, region, task_msg))
         } else {
-            Box::new(UniversePane::new(
-                receiver,
-                path,
-                factor,
-                task_msg,
-            ))
+            Box::new(UniversePane::new(receiver, path, factor, task_msg))
         };
         pane
     }
@@ -799,9 +784,12 @@ impl TelescopeApp {
             .get_tile_id()
         {
             self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
-            self.behavior.tile_data.entry(region_id).and_modify(|entry| {
-                entry.set_visible(false);
-            });
+            self.behavior
+                .tile_data
+                .entry(region_id)
+                .and_modify(|entry| {
+                    entry.set_visible(false);
+                });
         }
     }
 
@@ -814,7 +802,7 @@ impl TelescopeApp {
             self.settings.paths.sde_db.clone(),
             self.settings.factor,
             None,
-            Arc::clone(&self.task_msg)
+            Arc::clone(&self.task_msg),
         ));
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);

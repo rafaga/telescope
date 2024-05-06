@@ -39,7 +39,6 @@ impl UniversePane {
         factor: u64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
-
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -167,7 +166,7 @@ impl RegionPane {
         path: String,
         factor: u64,
         region_id: usize,
-        task_msg: Arc<MessageSpawner>
+        task_msg: Arc<MessageSpawner>,
     ) -> Self {
         let mut object = Self {
             map: Map::new(),
@@ -303,11 +302,7 @@ pub struct TreeBehavior {
 }
 
 impl TreeBehavior {
-    pub fn new(
-        task_msg: Arc<MessageSpawner>,
-        factor: u64,
-        path: String,
-    ) -> Self {
+    pub fn new(task_msg: Arc<MessageSpawner>, factor: u64, path: String) -> Self {
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -395,7 +390,6 @@ impl TreeBehavior {
             }
         }
     }
-
 }
 
 impl Behavior<Box<dyn TabPane>> for TreeBehavior {
@@ -515,21 +509,12 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                     let regions = t_sde
                         .get_region(vec![], Some(self.search_text.clone()))
                         .unwrap();
-                    self.search_regions = 
-                        regions
-                            .keys()
-                            .copied()
-                            .map(|x| x as usize)
-                            .collect();
+                    self.search_regions = regions.keys().copied().map(|x| x as usize).collect();
                 }
             }
 
             if self.search_regions.is_empty() {
-                _data = self
-                    .tile_data
-                    .keys()
-                    .copied()
-                    .collect();
+                _data = self.tile_data.keys().copied().collect();
             } else {
                 _data = self.search_regions.clone();
             }
@@ -542,7 +527,11 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 .body(|body| {
                     body.rows(25.0, _data.len(), |mut row| {
                         let key_index = row.index();
-                        let name = self.tile_data.get_mut(&(_data[key_index])).unwrap().get_name();
+                        let name = self
+                            .tile_data
+                            .get_mut(&(_data[key_index]))
+                            .unwrap()
+                            .get_name();
                         row.col(|ui: &mut egui::Ui| {
                             if ui
                                 .checkbox(
@@ -551,7 +540,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                                         .get_mut(&(_data[key_index]))
                                         .unwrap()
                                         .visible,
-                                        name,
+                                    name,
                                 )
                                 .changed()
                             {
