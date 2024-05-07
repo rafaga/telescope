@@ -1,11 +1,10 @@
 use crate::app::messages::{MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, FontId, RichText};
+use eframe::egui::{self, FontId, RichText, Color32, Button};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
-//use futures::executor::ThreadPool;
 use sde::{objects::Universe, SdeManager};
 use settings::Manager;
 use std::path::Path;
@@ -77,9 +76,7 @@ impl Default for TelescopeApp {
         let _ = sde.get_universe();
 
         let arc_msg_sender = Arc::new(gtx);
-
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
-
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
         Self {
@@ -163,7 +160,8 @@ impl eframe::App for TelescopeApp {
                 .copied()
                 .filter(|val| val < &11000000)
                 .collect();
-            for key in regions {
+
+            for key in &regions {
                 let region = self.universe.regions.get(&key).unwrap();
                 self.behavior.tile_data.insert(
                     region.id as usize,
@@ -171,6 +169,14 @@ impl eframe::App for TelescopeApp {
                 );
             }
 
+            for counter in 0..self.settings.mapping.startup_regions.len() {
+                if regions.contains(&(self.settings.mapping.startup_regions[counter] as u32)) {
+                    self.behavior.tile_data.entry(self.settings.mapping.startup_regions[counter]).and_modify(|z_region|{
+                        z_region.show_on_startup = true;
+                    });
+                    self.create_new_regional_pane(self.settings.mapping.startup_regions[counter]);
+                }                
+            }
             self.initialized = true;
         }
 
@@ -443,16 +449,22 @@ impl TelescopeApp {
                             match self.selected_settings_page {
                                 // Mapping
                                 SettingsPage::Intelligence => {
-                                    let keys:Vec<usize> = self
+                                    let mut keys:Vec<usize> = self
                                         .behavior
                                         .tile_data
                                         .keys()
                                         .copied().collect();
+                                    keys.sort();
                                     let num_rows = keys.len().div_ceil(3);
                                     ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
                                         ui.label("Warn when an enemy is within this number of jumps close to you:");
-                                        ui.text_edit_singleline(&mut "0");
+                                        if ui.text_edit_singleline(&mut self.settings.mapping.warning_area).changed() {
+                                            if self.settings.mapping.warning_area.parse::<i8>().is_err() {
+                                                self.settings.mapping.warning_area = String::from("1");
+                                            }
+                                            self.settings.saved = false;
+                                        }
                                     });
                                     let row_height = 18.0;
                                     ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
@@ -470,14 +482,18 @@ impl TelescopeApp {
                                                 let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
                                                 let name = region.get_name();
                                                 //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
-                                                ui.checkbox(&mut region.show_on_startup, name);
+                                                if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                    self.settings.saved = false;
+                                                }
                                             });
                                             let mut t_key_index = key_index + 1;
                                             if t_key_index < keys.len() {
                                                 row.col(|ui: &mut egui::Ui| {
                                                     let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
                                                     let name = region.get_name();
-                                                    ui.checkbox(&mut region.show_on_startup, name);
+                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                        self.settings.saved = false;
+                                                    }
                                                 });
                                             }
                                             t_key_index += 1;
@@ -485,7 +501,9 @@ impl TelescopeApp {
                                                 row.col(|ui: &mut egui::Ui| {
                                                     let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
                                                     let name = region.get_name();
-                                                    ui.checkbox(&mut region.show_on_startup, name);
+                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                        self.settings.saved = false;
+                                                    }
                                                 });
                                             }
                                         });
@@ -617,11 +635,15 @@ impl TelescopeApp {
                                     ui.label(RichText::new("Static data").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
                                         ui.label("SDE database path:");
-                                        ui.text_edit_singleline(&mut self.settings.paths.sde_db);
+                                        if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
+                                            self.settings.saved = false;
+                                        }
                                     });
                                     ui.horizontal(|ui|{
                                         ui.label("private data:");
-                                        ui.text_edit_singleline(&mut self.settings.paths.local_db);
+                                        if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
+                                            self.settings.saved = false;
+                                        }
                                     });
                                 },
                             }
@@ -633,8 +655,19 @@ impl TelescopeApp {
                 ui.add_space(650.00);
             });
             ui.horizontal(|ui|{
-                ui.button("Save").clicked();
+                if ui.add(Button::new("Save")).clicked() {
+                    self.settings.mapping.startup_regions.clear();
+                    for region in self.behavior.tile_data.iter() {
+                        if region.1.show_on_startup {
+                            self.settings.mapping.startup_regions.push(*region.0);
+                        }
+                    }
+                    self.settings.save();
+                }
                 ui.button("Cancel").clicked();
+                if self.settings.saved == false {
+                    ui.colored_label(Color32::YELLOW, "⚠ unsaved changes");
+                }
             });
         });
     }
