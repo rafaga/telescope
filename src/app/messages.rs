@@ -11,7 +11,7 @@ use webb::auth_service::MakeSvc;
 pub enum MapSync {
     CenterOn((usize, Target)),
     SystemNotification(usize),
-    PlayerMoved((usize,usize)),
+    PlayerMoved((usize, usize)),
 }
 
 pub enum Type {
@@ -40,9 +40,9 @@ pub enum Message {
     MapShown(usize),
 }
 
-pub enum CharacterSync{
+pub enum CharacterSync {
     Add(usize),
-    Remove(usize)
+    Remove(usize),
 }
 
 pub struct MessageSpawner {

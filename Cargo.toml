@@ -4,7 +4,7 @@ version = "0.0.1"
 authors = ["Rafael Amador <rafaga@duck.com>"]
 edition = "2021"
 description = "Application to gather intel and alert players in Eve Online"
-rust-version = "1.75"
+rust-version = "1.77"
 
 [features]
 default = []

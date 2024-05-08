@@ -112,8 +112,8 @@ impl TabPane for UniversePane {
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
-                },
-                MapSync::PlayerMoved((player_id,location)) => (),
+                }
+                MapSync::PlayerMoved((player_id, location)) => (),
             };
         }
     }
@@ -212,7 +212,8 @@ impl RegionPane {
         let t_region_id = self.region_id;
         let region = t_sde.get_region(vec![t_region_id as u32], None).unwrap();
         let keys: Vec<u32> = region.keys().copied().collect();
-        self.tab_name = region.get(&keys[0]).unwrap().name.clone();
+        self.tab_name
+            .clone_from(&region.get(&keys[0]).unwrap().name);
     }
 }
 
@@ -227,8 +228,8 @@ impl TabPane for RegionPane {
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
-                },
-                MapSync::PlayerMoved((player_id,location)) => (),
+                }
+                MapSync::PlayerMoved((player_id, location)) => (),
             };
         }
     }
@@ -518,7 +519,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             if self.search_regions.is_empty() {
                 _data = self.tile_data.keys().copied().collect();
             } else {
-                _data = self.search_regions.clone();
+                _data.clone_from(&self.search_regions);
             }
             ui.add_space(7.0);
             TableBuilder::new(ui)

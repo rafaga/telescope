@@ -14,7 +14,7 @@ pub(crate) struct FilePaths {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Mapping {
     pub startup_regions: Vec<usize>,
-    pub warning_area: String,  
+    pub warning_area: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -34,7 +34,10 @@ impl Manager {
 
     pub(crate) fn save(&mut self) {
         let file_path = Path::new(&self.paths.settings);
-        let mut toml_file = File::options().write(true).open(file_path).expect("Unable to create settings file.");
+        let mut toml_file = File::options()
+            .write(true)
+            .open(file_path)
+            .expect("Unable to create settings file.");
         let toml_data = toml::to_string_pretty(self).unwrap();
         toml_file
             .write_all(toml_data.as_bytes())
@@ -81,7 +84,7 @@ impl Default for Manager {
                 sde_db: String::from("assets/sde.db"),
                 local_db: String::from("telescope.db"),
             },
-            mapping: Mapping{
+            mapping: Mapping {
                 startup_regions: vec![],
                 warning_area: 4.to_string(),
             },
@@ -93,7 +96,7 @@ impl Default for Manager {
             config.create();
         } else {
             config = config.load();
-            config.paths.settings = settings_file.clone();
+            config.paths.settings.clone_from(&settings_file);
             config.factor = 50000000000000;
         }
         config.saved = true;
