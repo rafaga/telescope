@@ -1,4 +1,4 @@
-use crate::app::messages::{MapSync, Message, SettingsPage, Target, Type};
+use crate::app::messages::{MapSync, Message, CharacterSync, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui::{self, FontId, RichText, Color32, Button};
@@ -10,8 +10,10 @@ use settings::Manager;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
+use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
+use std::thread;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -30,6 +32,7 @@ pub struct TelescopeApp {
     app_msg: (Arc<Sender<Message>>, Receiver<Message>),
     // map Syncronization Messages
     map_msg: (Arc<BCSender<MapSync>>, BCReceiver<MapSync>),
+    char_msg: Option<Arc<Sender<CharacterSync>>>,
 
     // these are the flags to open the windows
     // 0 - About Window
@@ -85,6 +88,7 @@ impl Default for TelescopeApp {
             points: Vec::new(),
             app_msg: (arc_msg_sender, grx),
             map_msg: (Arc::new(mtx), mrx),
+            char_msg: None,
             open: [false; 3],
             esi,
             last_message: String::from("Starting..."),
@@ -124,6 +128,7 @@ impl eframe::App for TelescopeApp {
             points: _points,
             app_msg: _,
             map_msg: _,
+            char_msg: _,
             open: _,
             esi: _,
             last_message: _,
@@ -531,11 +536,16 @@ impl TelescopeApp {
                                             let mut vec_id = vec![];
                                             for char in &self.esi.characters {
                                                 if self.esi.active_character.unwrap() == char.id {
+                                                    if let Some(sender) = &self.char_msg {
+                                                        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                                                        let _result = runtime.block_on(async{sender.send(CharacterSync::Add(char.id as usize)).await});
+                                                    }
                                                     vec_id.push(char.id);
                                                     break;
                                                 }
                                                 index += 1;
                                             }
+                                            
                                             self.esi.characters.remove(index);
                                             self.esi.active_character = None;
                                             if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
@@ -679,12 +689,20 @@ impl TelescopeApp {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
-        match rt
+        match rt.as_ref()
             .expect("Esi character authentication failure")
             .block_on(self.esi.auth_user(auth_info, response_data))
         {
             Ok(Some(player)) => {
+                let id = player.id as usize;
                 self.esi.characters.push(player);
+                if self.esi.characters.len() == 1 {
+                    self.start_watchdog(vec![id]);
+                } else {
+                    if let Some(sender) = &self.char_msg {
+                        let _result = rt.as_ref().expect("Esi character authentication failure").block_on(async{sender.send(CharacterSync::Add(id)).await});
+                    }
+                }
             }
             Ok(None) => {
                 self.task_msg.spawn(Message::GenericNotification((
@@ -860,5 +878,54 @@ impl TelescopeApp {
         let tx_map = Arc::clone(&self.map_msg.0);
         let region_id = self.search_results[row_index].2;
         let _result = tx_map.send(MapSync::CenterOn((region_id, Target::Region)));
+    }
+
+    pub fn start_watchdog(&mut self, character_id: Vec<usize>) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (sender, mut receiver) = mpsc::channel::<CharacterSync>(10);
+        let app_sender = Arc::clone(&self.app_msg.0);
+        let map_sender = Arc::clone(&self.map_msg.0);
+        let t_esi = self.esi.clone();
+        thread::spawn(move||{
+            runtime.block_on( async {
+                let mut character_ids = vec![];
+                for char_id in character_id {
+                    character_ids.push((char_id,0))
+                }
+                while character_ids.len() > 0 {
+                    sleep(Duration::new(5,0)).await;
+                    while let Ok(message) = receiver.try_recv() {
+                        match message {
+                            CharacterSync::Add(char_data) => character_ids.push((char_data,0)),
+                            CharacterSync::Remove(char_id) => {
+                                for index in 0.. character_ids.len() {
+                                    if character_ids[index].0 == char_id {
+                                        character_ids.remove(index);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Err(TryRecvError::Disconnected) = receiver.try_recv() {
+                        character_ids.clear();
+                    }
+                    sleep(Duration::new(25,0)).await;
+                    for index in 0..character_ids.len() {
+                        if let Ok(new_location) = t_esi.esi.group_location().get_location(character_ids[index].0.try_into().unwrap()).await{
+                            if character_ids[index].1 != (new_location.solar_system_id as usize) {
+                                //TODO: Agregar mensajes de broadcast para actualizar posicion en pantalla, probablemente sea MapSync
+                                character_ids[index].1 = new_location.solar_system_id as usize;
+                                if let Err(t_error) =  map_sender.send(MapSync::PlayerMoved((character_ids[index].0, character_ids[index].1))) {
+                                    let _ = app_sender.send(Message::GenericNotification((Type::Error,String::from("Telescope App"),String::from("start_watchdog"),t_error.to_string()))).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                let _ = app_sender.send(Message::GenericNotification((Type::Info,String::from("Telescope App"),String::from("start_watchdog"),String::from("Watchdog ended")))).await;
+            });
+        });
+        self.char_msg = Some(Arc::new(sender));
     }
 }

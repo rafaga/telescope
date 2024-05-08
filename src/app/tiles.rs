@@ -112,7 +112,8 @@ impl TabPane for UniversePane {
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
-                }
+                },
+                MapSync::PlayerMoved((player_id,location)) => (),
             };
         }
     }
@@ -226,7 +227,8 @@ impl TabPane for RegionPane {
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
-                }
+                },
+                MapSync::PlayerMoved((player_id,location)) => (),
             };
         }
     }
