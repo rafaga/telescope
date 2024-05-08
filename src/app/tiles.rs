@@ -113,7 +113,7 @@ impl TabPane for UniversePane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
-                MapSync::PlayerMoved((player_id, location)) => (),
+                MapSync::PlayerMoved((player_id, location)) => self.map.update_marker(player_id, location),
             };
         }
     }
@@ -229,7 +229,7 @@ impl TabPane for RegionPane {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
                 }
-                MapSync::PlayerMoved((player_id, location)) => (),
+                MapSync::PlayerMoved((player_id, location)) => self.map.update_marker(player_id, location),
             };
         }
     }
