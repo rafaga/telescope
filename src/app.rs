@@ -185,6 +185,14 @@ impl eframe::App for TelescopeApp {
                     self.create_new_regional_pane(self.settings.mapping.startup_regions[counter]);
                 }
             }
+
+            if !self.esi.characters.is_empty() {
+                let mut ids = vec![];
+                for char in &self.esi.characters {
+                    ids.push(char.id as usize);
+                }
+                self.start_watchdog(ids);
+            }
             self.initialized = true;
         }
 
@@ -892,10 +900,20 @@ impl TelescopeApp {
         let (sender, mut receiver) = mpsc::channel::<CharacterSync>(10);
         let app_sender = Arc::clone(&self.app_msg.0);
         let map_sender = Arc::clone(&self.map_msg.0);
-        let t_esi = self.esi.clone();
+        let mut t_esi = self.esi.clone();
         thread::spawn(move || {
             runtime.block_on(async {
                 let mut character_ids = vec![];
+                if let Err(t_error) = t_esi.esi.update_spec().await {
+                    let _= app_sender
+                        .send(Message::GenericNotification((
+                            Type::Error,
+                            String::from("Telescope App"),
+                            String::from("start_watchdog"),
+                            t_error.to_string(),
+                        )))
+                        .await;
+                };
                 for char_id in character_id {
                     character_ids.push((char_id, 0))
                 }
@@ -919,27 +937,34 @@ impl TelescopeApp {
                     }
                     sleep(Duration::new(25, 0)).await;
                     for item in &mut character_ids {
-                        if let Ok(new_location) = t_esi
-                            .esi
-                            .group_location()
-                            .get_location(item.0.try_into().unwrap())
-                            .await
-                        {
-                            if item.1 != (new_location.solar_system_id as usize) {
-                                //TODO: Agregar mensajes de broadcast para actualizar posicion en pantalla, probablemente sea MapSync
-                                item.1 = new_location.solar_system_id as usize;
-                                if let Err(t_error) =
-                                    map_sender.send(MapSync::PlayerMoved((item.0, item.1)))
-                                {
-                                    let _ = app_sender
-                                        .send(Message::GenericNotification((
-                                            Type::Error,
-                                            String::from("Telescope App"),
-                                            String::from("start_watchdog"),
-                                            t_error.to_string(),
-                                        )))
-                                        .await;
+                        match t_esi.esi.group_location().get_location(item.0.try_into().unwrap()).await {
+                            Ok(new_location) => {
+                                if item.1 != (new_location.solar_system_id as usize) {
+                                    //TODO: Agregar mensajes de broadcast para actualizar posicion en pantalla, probablemente sea MapSync
+                                    item.1 = new_location.solar_system_id as usize;
+                                    if let Err(t_error) =
+                                        map_sender.send(MapSync::PlayerMoved((item.0, item.1)))
+                                    {
+                                        let _ = app_sender
+                                            .send(Message::GenericNotification((
+                                                Type::Error,
+                                                String::from("Telescope App"),
+                                                String::from("start_watchdog"),
+                                                t_error.to_string(),
+                                            )))
+                                            .await;
+                                    }
                                 }
+                            },
+                            Err(t_error) => {
+                                let _= app_sender
+                                    .send(Message::GenericNotification((
+                                        Type::Error,
+                                        String::from("Telescope App"),
+                                        String::from("start_watchdog"),
+                                        t_error.to_string(),
+                                    )))
+                                    .await;
                             }
                         }
                     }

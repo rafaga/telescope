@@ -38,7 +38,7 @@ impl Manager {
             .write(true)
             .open(file_path)
             .expect("Unable to create settings file.");
-        let toml_data = toml::to_string_pretty(self).unwrap();
+        let toml_data = toml::to_string(self).unwrap();
         toml_file
             .write_all(toml_data.as_bytes())
             .expect("Unable to write settings on file.");
@@ -47,7 +47,7 @@ impl Manager {
 
     pub(crate) fn create(&mut self) {
         let file_path = Path::new(&self.paths.settings);
-        let toml_data = toml::to_string_pretty(self).unwrap();
+        let toml_data = toml::to_string(self).unwrap();
         let mut toml_file = File::create_new(file_path).expect("Unable to create settings file.");
         toml_file
             .write_all(toml_data.as_bytes())
