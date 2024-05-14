@@ -937,6 +937,7 @@ impl TelescopeApp {
                     }
                     sleep(Duration::new(25, 0)).await;
                     for item in &mut character_ids {
+                        //PlayerDatabase
                         match t_esi.esi.group_location().get_location(item.0.try_into().unwrap()).await {
                             Ok(new_location) => {
                                 if item.1 != (new_location.solar_system_id as usize) {
