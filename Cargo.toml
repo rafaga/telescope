@@ -26,9 +26,10 @@ puffin = {version = "0.19", optional = true, default-features = false}
 puffin_http = {version = "0.16", optional = true, default-features = false}
 egui_tiles = { version = "0.8.0" }
 toml = "0.8.12"
-hyper = { version = "0.14.28", features = ["server", "runtime", "http1"] }
+hyper = { version = "0.14.28", features = ["server", "runtime", "http1", "backports", "deprecated"] }
 rfesi = {version = "0"}
 serde = { version = "1.0.200", features = ["derive"] }
+hyper-util = { version = "0.1.3", features = ["client-legacy", "http1", "server"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
