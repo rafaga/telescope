@@ -1,11 +1,15 @@
-use hyper::Server;
+use hyper::server::conn::http1;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
+use tokio::pin;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::time::{timeout_at, Duration, Instant};
-use webb::auth_service::MakeSvc;
+use webb::auth_service::AuthService2;
+use tokio::net::TcpListener;
+use hyper_util::rt::TokioIo;
 
 #[derive(Clone)]
 pub enum MapSync {
@@ -71,35 +75,42 @@ impl MessageSpawner {
 async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
     let addr: SocketAddr = ([127, 0, 0, 1], 56123).into();
     let (atx, mut arx) = mpsc::channel::<(String, String)>(1);
-    match Server::try_bind(&addr) {
-        Ok(builder) => {
-            let server = builder
-                .serve(MakeSvc::new(Arc::new(atx)))
-                .with_graceful_shutdown(async {
-                    while let Some(result) = arx.recv().await {
-                        let _ = tx.send(Message::EsiAuthSuccess(result)).await;
+    match TcpListener::bind(addr).await {
+        Ok(listener) => {
+            if let Ok((stream, _)) = listener.accept().await{
+                let io = TokioIo::new(stream);
+                //let svc_clone = svc.clone();
+                let server = http1::Builder::new()
+                    .serve_connection(io, AuthService2{tx: Arc::new(atx)});
+
+                // TODO: Implement graceful_shutdown
+                pin!(server);
+
+                let future = async {
+                    loop {
+                        match arx.try_recv() {
+                            Ok(result) => {
+                                let _send_result = tx.send(Message::EsiAuthSuccess(result)).await;
+                                break;
+                            },
+                            Err(TryRecvError::Empty) => {},
+                            Err(TryRecvError::Disconnected) => { break;},
+                        }
                     }
-                });
-            let result =
-                timeout_at(Instant::now() + Duration::from_secs(time as u64), server).await;
-            if let Err(t_error) = result {
-                let _ = tx
-                    .send(Message::GenericNotification((
-                        Type::Error,
-                        String::from("MessageSpawner"),
-                        String::from("handle_auth"),
-                        t_error.to_string(),
-                    )))
-                    .await;
-            } else {
-                let _ = tx
-                    .send(Message::GenericNotification((
-                        Type::Info,
-                        String::from("MessageSpawner"),
-                        String::from("handle_auth"),
-                        String::from("logged in"),
-                    )))
-                    .await;
+                };
+
+                if let Err(t_error) = timeout_at(Instant::now() + Duration::from_secs(time as u64), future).await {
+                    let _ = tx
+                        .send(Message::GenericNotification((
+                            Type::Error,
+                            String::from("MessageSpawner"),
+                            String::from("handle_auth"),
+                            t_error.to_string(),
+                        )))
+                        .await;
+                } else {
+                    server.graceful_shutdown();
+                }
             }
         }
         Err(t_error) => {
