@@ -1,15 +1,14 @@
 use hyper::server::conn::http1;
-use std::net::SocketAddr;
+use hyper_util::rt::TokioIo;
 use std::sync::Arc;
+use std::thread;
+use std::{future::IntoFuture, net::SocketAddr};
+use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
-use tokio::pin;
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio::time::{timeout_at, Duration, Instant};
 use webb::auth_service::AuthService2;
-use tokio::net::TcpListener;
-use hyper_util::rt::TokioIo;
 
 #[derive(Clone)]
 pub enum MapSync {
@@ -77,29 +76,32 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
     let (atx, mut arx) = mpsc::channel::<(String, String)>(1);
     match TcpListener::bind(addr).await {
         Ok(listener) => {
-            if let Ok((stream, _)) = listener.accept().await{
+            if let Ok((stream, _)) = listener.accept().await {
                 let io = TokioIo::new(stream);
                 //let svc_clone = svc.clone();
                 let server = http1::Builder::new()
-                    .serve_connection(io, AuthService2{tx: Arc::new(atx)});
+                    .serve_connection(io, AuthService2 { tx: Arc::new(atx) })
+                    .into_future();
 
                 // TODO: Implement graceful_shutdown
-                pin!(server);
+                //pin!(server);
 
-                let future = async {
-                    loop {
-                        match arx.try_recv() {
-                            Ok(result) => {
-                                let _send_result = tx.send(Message::EsiAuthSuccess(result)).await;
-                                break;
-                            },
-                            Err(TryRecvError::Empty) => {},
-                            Err(TryRecvError::Disconnected) => { break;},
+                let stx = Arc::clone(&tx);
+                thread::spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let _result = runtime.block_on(async {
+                        while let Some(result) = arx.recv().await {
+                            let _send_result = stx.send(Message::EsiAuthSuccess(result)).await;
                         }
-                    }
-                };
+                    });
+                });
 
-                if let Err(t_error) = timeout_at(Instant::now() + Duration::from_secs(time as u64), future).await {
+                if let Err(t_error) =
+                    timeout_at(Instant::now() + Duration::from_secs(time as u64), server).await
+                {
                     let _ = tx
                         .send(Message::GenericNotification((
                             Type::Error,
@@ -109,7 +111,7 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         )))
                         .await;
                 } else {
-                    server.graceful_shutdown();
+                    //server.graceful_shutdown();
                 }
             }
         }

@@ -905,7 +905,7 @@ impl TelescopeApp {
             runtime.block_on(async {
                 let mut character_ids = vec![];
                 if let Err(t_error) = t_esi.esi.update_spec().await {
-                    let _= app_sender
+                    let _ = app_sender
                         .send(Message::GenericNotification((
                             Type::Error,
                             String::from("Telescope App"),
@@ -938,7 +938,12 @@ impl TelescopeApp {
                     sleep(Duration::new(25, 0)).await;
                     for item in &mut character_ids {
                         //PlayerDatabase
-                        match t_esi.esi.group_location().get_location(item.0.try_into().unwrap()).await {
+                        match t_esi
+                            .esi
+                            .group_location()
+                            .get_location(item.0.try_into().unwrap())
+                            .await
+                        {
                             Ok(new_location) => {
                                 if item.1 != (new_location.solar_system_id as usize) {
                                     //TODO: Agregar mensajes de broadcast para actualizar posicion en pantalla, probablemente sea MapSync
@@ -956,9 +961,9 @@ impl TelescopeApp {
                                             .await;
                                     }
                                 }
-                            },
+                            }
                             Err(t_error) => {
-                                let _= app_sender
+                                let _ = app_sender
                                     .send(Message::GenericNotification((
                                         Type::Error,
                                         String::from("Telescope App"),
