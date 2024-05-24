@@ -932,6 +932,9 @@ impl TelescopeApp {
                             }
                         }
                     }
+                    if let Ok(false) = t_esi.valid_token().await {
+                        t_esi.refresh_token(t_esi.esi.refresh_token.unwrap());
+                    }
                     if let Err(TryRecvError::Disconnected) = receiver.try_recv() {
                         character_ids.clear();
                     }
@@ -967,7 +970,7 @@ impl TelescopeApp {
                                     .send(Message::GenericNotification((
                                         Type::Error,
                                         String::from("Telescope App"),
-                                        String::from("start_watchdog"),
+                                        String::from("start_watchdog - get_location - ") + item.0.to_string().as_str(),
                                         t_error.to_string(),
                                     )))
                                     .await;
