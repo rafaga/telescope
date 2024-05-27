@@ -92,7 +92,7 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         .enable_all()
                         .build()
                         .unwrap();
-                    let _result = runtime.block_on(async {
+                    runtime.block_on(async {
                         while let Some(result) = arx.recv().await {
                             let _send_result = stx.send(Message::EsiAuthSuccess(result)).await;
                         }
@@ -111,7 +111,7 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         )))
                         .await;
                 } else {
-                    //server.graceful_shutdown();
+                    //server.without_shutdown()
                 }
             }
         }
