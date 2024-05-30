@@ -633,7 +633,6 @@ impl Template {
 impl NodeTemplate for Template {
     fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
         let mut shapes = Vec::new();
-        let fonts = ui.fonts(|a| a.clone());
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
         let rect = Rect::from_center_size(viewport_point, Vec2::new(50.0 * zoom, 20.0 * zoom));
         colors.1 = if ui.visuals().dark_mode {
@@ -641,22 +640,23 @@ impl NodeTemplate for Template {
         } else {
             Color32::BLACK
         };
-
         shapes.push(Shape::rect_stroke(
             rect,
             Rounding::same(5.0),
             Stroke::new(2.0, colors.1),
         ));
-
         shapes.push(Shape::rect_filled(rect, Rounding::same(5.0), colors.0));
-        shapes.push(Shape::text(
-            &fonts,
-            viewport_point,
-            Align2::CENTER_CENTER,
-            system.get_name(),
-            FontId::proportional(14.0),
-            Color32::WHITE,
-        ));
-        ui.painter().extend(shapes);
+        let painter = ui.painter();
+        painter.fonts(|fonts|{
+            shapes.push(Shape::text(
+                fonts,
+                viewport_point,
+                Align2::CENTER_CENTER,
+                system.get_name(),
+                FontId::proportional(5.0 * zoom),
+                colors.1,
+            ));
+        });
+        painter.extend(shapes);
     }
 }
