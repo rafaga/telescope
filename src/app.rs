@@ -904,7 +904,7 @@ impl TelescopeApp {
         thread::spawn(move || {
             runtime.block_on(async {
                 let mut character_ids = vec![];
-                
+
                 if let Err(t_error) = t_esi.esi.update_spec().await {
                     let _ = app_sender
                         .send(Message::GenericNotification((
@@ -922,58 +922,20 @@ impl TelescopeApp {
                     match t_esi.valid_token().await {
                         Ok(false) => {
                             let _ = t_esi.refresh_token().await;
-                        },
+                        }
                         Ok(true) => (),
                         Err(t_error) => {
                             let _ = app_sender
-                            .send(Message::GenericNotification((
-                                Type::Error,
-                                String::from("Telescope App"),
-                                String::from("start_watchdog"),
-                                t_error.to_string(),
-                            )))
-                            .await;
+                                .send(Message::GenericNotification((
+                                    Type::Error,
+                                    String::from("Telescope App"),
+                                    String::from("start_watchdog"),
+                                    t_error.to_string(),
+                                )))
+                                .await;
                             return;
                         }
                     };
-                    sleep(Duration::new(5, 0)).await;
-                    while let Ok(message) = receiver.try_recv() {
-                        match message {
-                            CharacterSync::Add(char_data) => character_ids.push((char_data, 0)),
-                            CharacterSync::Remove(char_id) => {
-                                for index in 0..character_ids.len() {
-                                    if character_ids[index].0 == char_id {
-                                        character_ids.remove(index);
-                                        break;
-                                    }
-                                }
-                                if character_ids.is_empty() {
-                                    let _ = app_sender
-                                    .send(Message::GenericNotification((
-                                        Type::Info,
-                                        String::from("Telescope App"),
-                                        String::from("start_watchdog"),
-                                        String::from("Watchdog ended"),
-                                    )))
-                                    .await;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if let Err(TryRecvError::Disconnected) = receiver.try_recv() {
-                        character_ids.clear();
-                        let _ = app_sender
-                            .send(Message::GenericNotification((
-                                Type::Info,
-                                String::from("Telescope App"),
-                                String::from("start_watchdog"),
-                                String::from("Watchdog ended"),
-                            )))
-                            .await;
-                        break;
-                    }
-                    sleep(Duration::new(25, 0)).await;
                     for item in &mut character_ids {
                         //PlayerDatabase
                         match t_esi
@@ -1012,6 +974,44 @@ impl TelescopeApp {
                             }
                         }
                     }
+                    sleep(Duration::new(5, 0)).await;
+                    while let Ok(message) = receiver.try_recv() {
+                        match message {
+                            CharacterSync::Add(char_data) => character_ids.push((char_data, 0)),
+                            CharacterSync::Remove(char_id) => {
+                                for index in 0..character_ids.len() {
+                                    if character_ids[index].0 == char_id {
+                                        character_ids.remove(index);
+                                        break;
+                                    }
+                                }
+                                if character_ids.is_empty() {
+                                    let _ = app_sender
+                                        .send(Message::GenericNotification((
+                                            Type::Info,
+                                            String::from("Telescope App"),
+                                            String::from("start_watchdog"),
+                                            String::from("Watchdog ended"),
+                                        )))
+                                        .await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Err(TryRecvError::Disconnected) = receiver.try_recv() {
+                        character_ids.clear();
+                        let _ = app_sender
+                            .send(Message::GenericNotification((
+                                Type::Info,
+                                String::from("Telescope App"),
+                                String::from("start_watchdog"),
+                                String::from("Watchdog ended"),
+                            )))
+                            .await;
+                        break;
+                    }
+                    sleep(Duration::new(25, 0)).await;
                 }
             });
         });

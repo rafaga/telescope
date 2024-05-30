@@ -1,8 +1,13 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
-use eframe::egui::{self, vec2, Pos2, Response, Sense, Stroke, Style, TextStyle, Ui, WidgetText};
+use eframe::egui::{
+    self, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke,
+    Style, TextStyle, Ui, Vec2, WidgetText,
+};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
-    objects::{ContextMenuManager, MapLabel, MapSettings, VisibilitySetting},
+    objects::{
+        ContextMenuManager, MapLabel, MapPoint, MapSettings, NodeTemplate, VisibilitySetting,
+    },
     Map,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
@@ -184,6 +189,7 @@ impl RegionPane {
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
+        object.map.set_node_template(Rc::new(Template::new()));
         object
     }
 
@@ -613,5 +619,44 @@ impl ContextMenuManager for ContextMenu {
         if ui.button("⚙ settings").clicked() {
             ui.close_menu();
         }
+    }
+}
+
+struct Template {}
+
+impl Template {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl NodeTemplate for Template {
+    fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
+        let mut shapes = Vec::new();
+        let fonts = ui.fonts(|a| a.clone());
+        let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(50.0 * zoom, 20.0 * zoom));
+        colors.1 = if ui.visuals().dark_mode {
+            Color32::WHITE
+        } else {
+            Color32::BLACK
+        };
+
+        shapes.push(Shape::rect_stroke(
+            rect,
+            Rounding::same(5.0),
+            Stroke::new(2.0, colors.1),
+        ));
+
+        shapes.push(Shape::rect_filled(rect, Rounding::same(5.0), colors.0));
+        shapes.push(Shape::text(
+            &fonts,
+            viewport_point,
+            Align2::CENTER_CENTER,
+            system.get_name(),
+            FontId::proportional(14.0),
+            Color32::WHITE,
+        ));
+        ui.painter().extend(shapes);
     }
 }
