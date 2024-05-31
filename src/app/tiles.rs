@@ -193,6 +193,7 @@ impl RegionPane {
         object
     }
 
+    // TODO: Implement region_factor on data retrieval
     fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
 
@@ -622,11 +623,13 @@ impl ContextMenuManager for ContextMenu {
     }
 }
 
-struct Template {}
+struct Template {
+}
 
 impl Template {
     fn new() -> Self {
-        Self {}
+        Self {
+        }
     }
 }
 
@@ -656,6 +659,22 @@ impl NodeTemplate for Template {
                 colors.1,
             ));
         });
+        ui.painter().extend(shapes);
+    }
+
+    fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32 , _system: &MapPoint) {
+        let mut shapes = Vec::new();
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(52.0 * zoom, 22.0 * zoom));
+        let color = if ui.visuals().dark_mode {
+            Color32::YELLOW
+        } else {
+            Color32::KHAKI
+        };
+        shapes.push(Shape::rect_stroke(
+            rect,
+            Rounding::same(5.0),
+            Stroke::new(4.0, color)
+        ));
         ui.painter().extend(shapes);
     }
 }

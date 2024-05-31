@@ -760,7 +760,7 @@ impl TelescopeApp {
         let pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
             self.settings.paths.sde_db.clone(),
-            self.settings.factor,
+            self.settings.region_factor,
             Some(region_id),
             Arc::clone(&self.task_msg),
         );
