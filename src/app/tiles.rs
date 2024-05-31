@@ -640,13 +640,11 @@ impl NodeTemplate for Template {
         } else {
             Color32::BLACK
         };
-
         shapes.push(Shape::rect_stroke(
             rect,
             Rounding::same(5.0),
             Stroke::new(2.0, colors.1),
         ));
-
         shapes.push(Shape::rect_filled(rect, Rounding::same(5.0), colors.0));
         ui.ctx().fonts(|fonts|{
             shapes.push(Shape::text(
