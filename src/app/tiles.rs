@@ -637,7 +637,7 @@ impl NodeTemplate for Template {
     fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
         let mut shapes = Vec::new();
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(100.0 * zoom, 40.0 * zoom));
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
         colors.1 = if ui.visuals().dark_mode {
             Color32::WHITE
         } else {
@@ -655,16 +655,16 @@ impl NodeTemplate for Template {
                 viewport_point,
                 Align2::CENTER_CENTER,
                 system.get_name(),
-                FontId::proportional(20.0 * zoom),
+                FontId::proportional(12.0 * zoom),
                 colors.1,
             ));
         });
         ui.painter().extend(shapes);
     }
 
-    fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32 , _system: &MapPoint) {
+    fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32) {
         let mut shapes = Vec::new();
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(104.0 * zoom, 44.0 * zoom));
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(94.0 * zoom, 39.0 * zoom));
         let color = if ui.visuals().dark_mode {
             Color32::YELLOW
         } else {
@@ -673,7 +673,7 @@ impl NodeTemplate for Template {
         shapes.push(Shape::rect_stroke(
             rect,
             Rounding::same(10.0 * zoom),
-            Stroke::new(8.0 * zoom, color)
+            Stroke::new(5.0 * zoom, color)
         ));
         ui.painter().extend(shapes);
     }
