@@ -22,9 +22,9 @@ pub(crate) struct Manager {
     pub paths: FilePaths,
     pub mapping: Mapping,
     #[serde(skip)]
-    pub factor: u64,
+    pub factor: i64,
     #[serde(skip)]
-    pub region_factor: u64,
+    pub region_factor: i64,
     #[serde(skip)]
     pub saved: bool,
 }
@@ -91,7 +91,7 @@ impl Default for Manager {
                 warning_area: 4.to_string(),
             },
             factor: 50000000000000,
-            region_factor: 4,
+            region_factor: -2,
             saved: true,
         };
 
@@ -101,7 +101,7 @@ impl Default for Manager {
             config = config.load();
             config.paths.settings.clone_from(&settings_file);
             config.factor = 50000000000000;
-            config.region_factor= 4;
+            config.region_factor= -2;
         }
         config.saved = true;
         config

@@ -41,7 +41,7 @@ impl UniversePane {
     pub fn new(
         receiver: Receiver<MapSync>,
         path: String,
-        factor: u64,
+        factor: i64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
         let mut object = Self {
@@ -172,7 +172,7 @@ impl RegionPane {
     pub fn new(
         receiver: Receiver<MapSync>,
         path: String,
-        factor: u64,
+        factor: i64,
         region_id: usize,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
@@ -309,14 +309,14 @@ pub struct TreeBehavior {
     gap_width: f32,
     task_msg: Arc<MessageSpawner>,
     search_text: String,
-    factor: u64,
+    factor: i64,
     path: String,
     search_regions: Vec<usize>,
     pub tile_data: HashMap<usize, TileData>,
 }
 
 impl TreeBehavior {
-    pub fn new(task_msg: Arc<MessageSpawner>, factor: u64, path: String) -> Self {
+    pub fn new(task_msg: Arc<MessageSpawner>, factor: i64, path: String) -> Self {
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -637,7 +637,7 @@ impl NodeTemplate for Template {
     fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
         let mut shapes = Vec::new();
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(50.0 * zoom, 20.0 * zoom));
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(100.0 * zoom, 40.0 * zoom));
         colors.1 = if ui.visuals().dark_mode {
             Color32::WHITE
         } else {
@@ -645,17 +645,17 @@ impl NodeTemplate for Template {
         };
         shapes.push(Shape::rect_stroke(
             rect,
-            Rounding::same(5.0),
-            Stroke::new(2.0, colors.1),
+            Rounding::same(10.0 * zoom),
+            Stroke::new(4.0 * zoom, colors.1),
         ));
-        shapes.push(Shape::rect_filled(rect, Rounding::same(5.0), colors.0));
+        shapes.push(Shape::rect_filled(rect, Rounding::same(10.0 * zoom), colors.0));
         ui.ctx().fonts(|fonts|{
             shapes.push(Shape::text(
                 fonts,
                 viewport_point,
                 Align2::CENTER_CENTER,
                 system.get_name(),
-                FontId::proportional(8.0 * zoom),
+                FontId::proportional(20.0 * zoom),
                 colors.1,
             ));
         });
@@ -664,7 +664,7 @@ impl NodeTemplate for Template {
 
     fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32 , _system: &MapPoint) {
         let mut shapes = Vec::new();
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(52.0 * zoom, 22.0 * zoom));
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(104.0 * zoom, 44.0 * zoom));
         let color = if ui.visuals().dark_mode {
             Color32::YELLOW
         } else {
@@ -672,8 +672,8 @@ impl NodeTemplate for Template {
         };
         shapes.push(Shape::rect_stroke(
             rect,
-            Rounding::same(5.0),
-            Stroke::new(4.0, color)
+            Rounding::same(10.0 * zoom),
+            Stroke::new(8.0 * zoom, color)
         ));
         ui.painter().extend(shapes);
     }

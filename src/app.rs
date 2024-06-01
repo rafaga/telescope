@@ -822,7 +822,7 @@ impl TelescopeApp {
     fn generate_pane(
         receiver: BCReceiver<MapSync>,
         path: String,
-        factor: u64,
+        factor: i64,
         region_id: Option<usize>,
         task_msg: Arc<MessageSpawner>,
     ) -> Box<dyn TabPane> {
