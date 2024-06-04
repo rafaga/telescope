@@ -14,6 +14,7 @@ use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
 use std::collections::HashMap;
+use std::time::Instant;
 use std::{path::Path, rc::Rc, sync::Arc};
 use tokio::sync::broadcast::Receiver;
 
@@ -673,8 +674,44 @@ impl NodeTemplate for Template {
         shapes.push(Shape::rect_stroke(
             rect,
             Rounding::same(10.0 * zoom),
-            Stroke::new(5.0 * zoom, color)
+            Stroke::new(3.0 * zoom, color)
         ));
         ui.painter().extend(shapes);
+    }
+
+    fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32) {
+        let mut shapes = Vec::new();
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
+        
+        ui.painter().extend(shapes);
+    }
+
+    fn notification_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32, initial_time: Instant, color: Color32) -> bool {
+        let mut shapes = Vec::new();
+        let current_instant = Instant::now();
+        let time_diff = current_instant.duration_since(initial_time);
+        let secs_played = time_diff.as_secs_f32();
+        let mut transparency:f32 = 1.00 - (secs_played / 2.00).abs();
+        if transparency < 0.00 {
+            transparency = 0.00;
+        }
+        let corrected_color = Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            (255.00 * transparency).round() as u8,
+        );
+        let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
+        shapes.push(Shape::rect_stroke(
+            rect,
+            Rounding::same(10.0 * zoom),
+            Stroke::new((4.00 + (25.00 * secs_played)) * zoom, corrected_color)
+        ));
+        ui.painter().extend(shapes);
+        ui.ctx().request_repaint();
+        if secs_played < 2.00 {
+            return true;
+        }
+        false
     }
 }
