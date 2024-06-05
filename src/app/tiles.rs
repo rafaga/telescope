@@ -681,8 +681,7 @@ impl NodeTemplate for Template {
 
     fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32) {
         let mut shapes = Vec::new();
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
-        
+        shapes.push(Shape::Circle(egui::epaint::CircleShape::filled(viewport_point,12.0 * zoom, Color32::DARK_GREEN)));
         ui.painter().extend(shapes);
     }
 
