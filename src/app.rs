@@ -260,16 +260,20 @@ impl eframe::App for TelescopeApp {
                 "Source code."
             ));
             */
-            ui.vertical(|ui|{
+            //ui.vertical(|ui|{
                 if let Some(tree) = &mut self.tree {
                     tree.ui(&mut self.behavior, ui);
                 }
-                let frame = egui::Frame::default().rounding(egui::Rounding::same(2.0));
-                frame.show(ui, |ui|{
-                    ui.colored_label(Color32::YELLOW, "Warning");
-                    ui.label("Normal Text")
-                });
-            })
+               
+                let resp = egui::Area::new(egui::Id::new("messages"))
+                    .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(10.00,-8.00))
+                    .interactable(true)
+                    .movable(false)
+                    .show(ui.ctx(), |ui|{
+                        ui.colored_label(Color32::YELLOW, "Warning");
+                        ui.label("Normal Text")
+                    });
+            //})
             
         });
 
