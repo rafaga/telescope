@@ -1,7 +1,6 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
-    self, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke,
-    Style, TextStyle, Ui, Vec2, WidgetText,
+    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke, Style, TextStyle, Ui, Vec2, WidgetText
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
@@ -112,8 +111,8 @@ impl TabPane for UniversePane {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                MapSync::SystemNotification(system_id) => {
-                    let _result = self.map.notify(system_id);
+                MapSync::SystemNotification((system_id,time)) => {
+                    let _result = self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -194,7 +193,6 @@ impl RegionPane {
         object
     }
 
-    // TODO: Implement region_factor on data retrieval
     fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
 
@@ -232,8 +230,8 @@ impl TabPane for RegionPane {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                MapSync::SystemNotification(system_id) => {
-                    let _result = self.map.notify(system_id);
+                MapSync::SystemNotification((system_id,time)) => {
+                    let _result = self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -681,7 +679,31 @@ impl NodeTemplate for Template {
 
     fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32) {
         let mut shapes = Vec::new();
-        shapes.push(Shape::Circle(egui::epaint::CircleShape::filled(viewport_point,12.0 * zoom, Color32::DARK_GREEN)));
+        let led_position = Pos2::new(viewport_point.x + (45.0 * zoom), viewport_point.y - (17.0 * zoom));
+        let color = if ui.visuals().dark_mode {
+            Color32::LIGHT_GREEN
+        } else {
+            Color32::GREEN
+        };
+        let mut transparency = (chrono::Local::now().timestamp_millis() % 2550) / 5;
+        if transparency > 255 {
+            transparency = 255 - (transparency - 255)
+        }
+        let corrected_color = Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            transparency as u8,
+        );
+        let border_color = if ui.visuals().dark_mode {
+            Color32::WHITE
+        } else {
+            Color32::BLACK
+        };
+        shapes.push(Shape::Circle(CircleShape::stroke(led_position, 6.5 * zoom, Stroke::new(4.0 * zoom, border_color))));
+        shapes.push(Shape::Circle(CircleShape::filled(led_position, 6.0 * zoom, ui.visuals().extreme_bg_color)));
+        shapes.push(Shape::Circle(CircleShape::filled(led_position, 6.0 * zoom, corrected_color)));
+        ui.ctx().request_repaint();
         ui.painter().extend(shapes);
     }
 

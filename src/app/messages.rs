@@ -13,7 +13,7 @@ use webb::auth_service::AuthService2;
 #[derive(Clone)]
 pub enum MapSync {
     CenterOn((usize, Target)),
-    SystemNotification(usize),
+    SystemNotification((usize, Instant)),
     PlayerMoved((usize, usize)),
 }
 
