@@ -1,7 +1,7 @@
 use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, Button, Color32, FontId, RichText, Vec2};
+use eframe::egui::{self, Button, Color32, FontId, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
@@ -263,16 +263,10 @@ impl eframe::App for TelescopeApp {
             //ui.vertical(|ui|{
                 if let Some(tree) = &mut self.tree {
                     tree.ui(&mut self.behavior, ui);
+                    ui.allocate_space(ui.available_size());
                 }
-               
-                let resp = egui::Area::new(egui::Id::new("messages"))
-                    .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(10.00,-8.00))
-                    .interactable(true)
-                    .movable(false)
-                    .show(ui.ctx(), |ui|{
-                        ui.colored_label(Color32::YELLOW, "Warning");
-                        ui.label("Normal Text")
-                    });
+                ui.colored_label(Color32::YELLOW, "Warning");
+                ui.label("Normal Text");
             //})
             
         });
@@ -784,25 +778,6 @@ impl TelescopeApp {
         let root = tiles.insert_tab_tile(tile_ids);
         egui_tiles::Tree::new("maps", root, tiles)
     }
-
-    /*fn click_on_system_result(&self, row_index: usize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("click_on_system_result");
-        let tx_map = Arc::clone(&self.map_msg.0);
-        let system_id = self.search_results[row_index].0;
-        let _result = tx_map.send(MapSync::CenterOn((system_id, Target::System)));
-        if self.emit_notification {
-            let _result = tx_map.send(MapSync::SystemNotification((system_id,tokio::time::Instant::now())));
-        }
-    }*/
-
-    /*fn click_on_region_result(&self, row_index: usize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_scope!("click_on_region_result");
-        let tx_map = Arc::clone(&self.map_msg.0);
-        let region_id = self.search_results[row_index].2;
-        let _result = tx_map.send(MapSync::CenterOn((region_id, Target::Region)));
-    }*/
 
     pub fn start_watchdog(&mut self, character_id: Vec<usize>) {
         let runtime = tokio::runtime::Builder::new_current_thread()
