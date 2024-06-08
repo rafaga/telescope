@@ -89,18 +89,9 @@ impl UniversePane {
 
 impl TabPane for UniversePane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
-        ui.add(&mut self.map);
         self.event_manager();
+        ui.add(&mut self.map);
         UiResponse::None
-        /*let dragged = ui
-            .allocate_rect(ui.max_rect(), Sense::drag())
-            .on_hover_cursor(CursorIcon::Grab)
-            .dragged();
-        if dragged {
-            UiResponse::DragStarted
-        } else {
-            UiResponse::None
-        }*/
     }
 
     fn get_title(&self) -> WidgetText {
@@ -249,8 +240,8 @@ impl TabPane for RegionPane {
     }
 
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
-        ui.add(&mut self.map);
         self.event_manager();
+        ui.add(&mut self.map);
         UiResponse::None
     }
 

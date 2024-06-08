@@ -262,8 +262,10 @@ impl eframe::App for TelescopeApp {
             */
             //ui.vertical(|ui|{
                 if let Some(tree) = &mut self.tree {
+                    let mut rect = ui.available_size_before_wrap();
+                    rect.y -= 100.0;
+                    tree.set_height(rect.y);
                     tree.ui(&mut self.behavior, ui);
-                    ui.allocate_space(ui.available_size());
                 }
                 ui.colored_label(Color32::YELLOW, "Warning");
                 ui.label("Normal Text");
