@@ -101,7 +101,7 @@ impl Default for Manager {
             config = config.load();
             config.paths.settings.clone_from(&settings_file);
             config.factor = 50000000000000;
-            config.region_factor= -2;
+            config.region_factor = -2;
         }
         config.saved = true;
         config

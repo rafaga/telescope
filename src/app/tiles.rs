@@ -1,6 +1,7 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
-    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke, Style, TextStyle, Ui, Vec2, WidgetText
+    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding,
+    Sense, Shape, Stroke, Style, TextStyle, Ui, Vec2, WidgetText,
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
@@ -48,7 +49,7 @@ impl UniversePane {
             map: Map::new(),
             mapsync_reciever: receiver,
             path,
-            factor: factor as i64,
+            factor,
             task_msg,
         };
         object.generate_data(object.path.clone(), object.factor);
@@ -59,7 +60,7 @@ impl UniversePane {
     }
 
     fn generate_data(&mut self, path: String, factor: i64) {
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
         if let Ok(points) = t_sde.get_systempoints() {
             //we get connections
             if let Ok(hashmap) = t_sde.get_system_connections(points) {
@@ -70,7 +71,7 @@ impl UniversePane {
                 self.map.add_lines(hash_conns);
             }
         }
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
         if let Ok(region_areas) = t_sde.get_region_coordinates() {
             let mut labels = Vec::new();
             for region in region_areas {
@@ -102,7 +103,7 @@ impl TabPane for UniversePane {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                MapSync::SystemNotification((system_id,time)) => {
+                MapSync::SystemNotification((system_id, time)) => {
                     let _result = self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
@@ -119,7 +120,7 @@ impl TabPane for UniversePane {
     fn center_on_target(&mut self, message: (usize, Target)) {
         match message.1 {
             Target::System => {
-                let t_sde = SdeManager::new(Path::new(&self.path), self.factor.try_into().unwrap());
+                let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
                         self.map.set_pos(coords.try_into().unwrap());
@@ -171,7 +172,7 @@ impl RegionPane {
             map: Map::new(),
             mapsync_reciever: receiver,
             path,
-            factor: factor as i64,
+            factor,
             region_id,
             tab_name: String::from("Region"),
             task_msg,
@@ -185,7 +186,7 @@ impl RegionPane {
     }
 
     fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor.try_into().unwrap());
+        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
 
         match t_sde.get_abstract_systems(vec![region_id as u32]) {
             Ok(points) => {
@@ -221,7 +222,7 @@ impl TabPane for RegionPane {
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
-                MapSync::SystemNotification((system_id,time)) => {
+                MapSync::SystemNotification((system_id, time)) => {
                     let _result = self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
@@ -613,13 +614,11 @@ impl ContextMenuManager for ContextMenu {
     }
 }
 
-struct Template {
-}
+struct Template {}
 
 impl Template {
     fn new() -> Self {
-        Self {
-        }
+        Self {}
     }
 }
 
@@ -638,8 +637,12 @@ impl NodeTemplate for Template {
             Rounding::same(10.0 * zoom),
             Stroke::new(4.0 * zoom, colors.1),
         ));
-        shapes.push(Shape::rect_filled(rect, Rounding::same(10.0 * zoom), colors.0));
-        ui.ctx().fonts(|fonts|{
+        shapes.push(Shape::rect_filled(
+            rect,
+            Rounding::same(10.0 * zoom),
+            colors.0,
+        ));
+        ui.ctx().fonts(|fonts| {
             shapes.push(Shape::text(
                 fonts,
                 viewport_point,
@@ -652,7 +655,7 @@ impl NodeTemplate for Template {
         ui.painter().extend(shapes);
     }
 
-    fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32) {
+    fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
         let mut shapes = Vec::new();
         let rect = Rect::from_center_size(viewport_point, Vec2::new(94.0 * zoom, 39.0 * zoom));
         let color = if ui.visuals().dark_mode {
@@ -663,14 +666,17 @@ impl NodeTemplate for Template {
         shapes.push(Shape::rect_stroke(
             rect,
             Rounding::same(10.0 * zoom),
-            Stroke::new(3.0 * zoom, color)
+            Stroke::new(3.0 * zoom, color),
         ));
         ui.painter().extend(shapes);
     }
 
-    fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32) {
+    fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
         let mut shapes = Vec::new();
-        let led_position = Pos2::new(viewport_point.x + (45.0 * zoom), viewport_point.y - (17.0 * zoom));
+        let led_position = Pos2::new(
+            viewport_point.x + (45.0 * zoom),
+            viewport_point.y - (17.0 * zoom),
+        );
         let color = if ui.visuals().dark_mode {
             Color32::LIGHT_GREEN
         } else {
@@ -680,30 +686,45 @@ impl NodeTemplate for Template {
         if transparency > 255 {
             transparency = 255 - (transparency - 255)
         }
-        let corrected_color = Color32::from_rgba_unmultiplied(
-            color.r(),
-            color.g(),
-            color.b(),
-            transparency as u8,
-        );
+        let corrected_color =
+            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), transparency as u8);
         let border_color = if ui.visuals().dark_mode {
             Color32::WHITE
         } else {
             Color32::BLACK
         };
-        shapes.push(Shape::Circle(CircleShape::stroke(led_position, 6.5 * zoom, Stroke::new(4.0 * zoom, border_color))));
-        shapes.push(Shape::Circle(CircleShape::filled(led_position, 6.0 * zoom, ui.visuals().extreme_bg_color)));
-        shapes.push(Shape::Circle(CircleShape::filled(led_position, 6.0 * zoom, corrected_color)));
+        shapes.push(Shape::Circle(CircleShape::stroke(
+            led_position,
+            6.5 * zoom,
+            Stroke::new(4.0 * zoom, border_color),
+        )));
+        shapes.push(Shape::Circle(CircleShape::filled(
+            led_position,
+            6.0 * zoom,
+            ui.visuals().extreme_bg_color,
+        )));
+        shapes.push(Shape::Circle(CircleShape::filled(
+            led_position,
+            6.0 * zoom,
+            corrected_color,
+        )));
         ui.ctx().request_repaint();
         ui.painter().extend(shapes);
     }
 
-    fn notification_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom:f32, initial_time: Instant, color: Color32) -> bool {
+    fn notification_ui(
+        &self,
+        ui: &mut Ui,
+        viewport_point: Pos2,
+        zoom: f32,
+        initial_time: Instant,
+        color: Color32,
+    ) -> bool {
         let mut shapes = Vec::new();
         let current_instant = Instant::now();
         let time_diff = current_instant.duration_since(initial_time);
         let secs_played = time_diff.as_secs_f32();
-        let mut transparency:f32 = 1.00 - (secs_played / 2.00).abs();
+        let mut transparency: f32 = 1.00 - (secs_played / 2.00).abs();
         if transparency < 0.00 {
             transparency = 0.00;
         }
@@ -717,7 +738,7 @@ impl NodeTemplate for Template {
         shapes.push(Shape::rect_stroke(
             rect,
             Rounding::same(10.0 * zoom),
-            Stroke::new((4.00 + (25.00 * secs_played)) * zoom, corrected_color)
+            Stroke::new((4.00 + (25.00 * secs_played)) * zoom, corrected_color),
         ));
         ui.painter().extend(shapes);
         ui.ctx().request_repaint();

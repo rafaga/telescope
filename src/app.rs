@@ -1,7 +1,7 @@
 use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, Button, Color32, FontId, RichText};
+use eframe::egui::{self, Button, Color32, FontId, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
@@ -19,6 +19,7 @@ use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
 
 mod data;
+mod file;
 mod messages;
 mod settings;
 mod tiles;
@@ -251,26 +252,36 @@ impl eframe::App for TelescopeApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            /*
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
-            */
-            //ui.vertical(|ui|{
-                if let Some(tree) = &mut self.tree {
-                    let mut rect = ui.available_size_before_wrap();
-                    rect.y -= 100.0;
-                    tree.set_height(rect.y);
-                    tree.ui(&mut self.behavior, ui);
-                }
-                ui.colored_label(Color32::YELLOW, "Warning");
-                ui.label("Normal Text");
-            //})
-            
+            if let Some(tree) = &mut self.tree {
+                let mut rect = ui.available_size_before_wrap();
+                rect.y -= 100.0;
+                tree.set_height(rect.y);
+                tree.ui(&mut self.behavior, ui);
+            }
+            let _ = egui::Frame::canvas(ui.style())
+                .inner_margin(Margin::symmetric(2.0, 5.0))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .stick_to_bottom(true)
+                        .max_height(100.0)
+                        .max_width(f32::INFINITY)
+                        .auto_shrink(false)
+                        .show_rows(
+                            ui,
+                            ui.text_style_height(&egui::TextStyle::Body),
+                            6,
+                            |ui, row_range| {
+                                ui.vertical(|ui| {
+                                    ui.colored_label(Color32::YELLOW, "Warning!");
+                                    ui.colored_label(Color32::RED, "Error");
+                                    ui.colored_label(Color32::BLUE, "Info");
+                                    ui.label("Normal text");
+                                    ui.label("Normal text");
+                                    ui.label("Normal text");
+                                });
+                            },
+                        );
+                });
         });
 
         //ui.add(&mut self.map);
@@ -909,124 +920,138 @@ impl TelescopeApp {
 
     fn open_debug_menu(&mut self, ctx: &egui::Context) {
         egui::Window::new("Debug Menu")
-        .fixed_size((400.0, 600.0))
-        .open(&mut self.open[1])
-        .show(ctx, |ui| {
-            ui.heading("Search");
+            .fixed_size((400.0, 600.0))
+            .open(&mut self.open[1])
+            .show(ctx, |ui| {
+                ui.heading("Search");
 
-            ui.horizontal(|ui| {
-                ui.label("Name: ");
-                let response = ui.text_edit_singleline(&mut self.search_text);
-                if response.changed() {
-                    if self.search_text.len() >= 3 {
-                        let sde = SdeManager::new(
-                            Path::new(&self.settings.paths.sde_db),
-                            self.settings.factor,
-                        );
-                        match sde.get_system_id(self.search_text.clone().to_lowercase()) {
-                            Ok(system_results) => self.search_results = system_results,
-                            Err(t_error) => {
-                                self.task_msg.spawn(Message::GenericNotification((
-                                    Type::Error,
-                                    String::from("sde"),
-                                    String::from("get_system_id"),
-                                    t_error.to_string(),
-                                )));
+                ui.horizontal(|ui| {
+                    ui.label("Name: ");
+                    let response = ui.text_edit_singleline(&mut self.search_text);
+                    if response.changed() {
+                        if self.search_text.len() >= 3 {
+                            let sde = SdeManager::new(
+                                Path::new(&self.settings.paths.sde_db),
+                                self.settings.factor,
+                            );
+                            match sde.get_system_id(self.search_text.clone().to_lowercase()) {
+                                Ok(system_results) => self.search_results = system_results,
+                                Err(t_error) => {
+                                    self.task_msg.spawn(Message::GenericNotification((
+                                        Type::Error,
+                                        String::from("sde"),
+                                        String::from("get_system_id"),
+                                        t_error.to_string(),
+                                    )));
+                                }
                             }
                         }
+                        if self.search_text.is_empty() {
+                            self.search_results.clear();
+                            self.search_selected_row = None;
+                        }
                     }
-                    if self.search_text.is_empty() {
+                });
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.emit_notification, "Notify");
+                    if ui.button("Clear").clicked() {
+                        self.search_text.clear();
                         self.search_results.clear();
                         self.search_selected_row = None;
                     }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.emit_notification, "Notify");
-                if ui.button("Clear").clicked() {
-                    self.search_text.clear();
-                    self.search_results.clear();
-                    self.search_selected_row = None;
-                }
-                if ui.button("Advanced >>>").clicked() {}
-            });
-            ui.push_id("search_table", |ui| {
-                let mut table = TableBuilder::new(ui)
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::auto())
-                    .column(Column::remainder())
-                    .min_scrolled_height(0.0);
+                    if ui.button("Advanced >>>").clicked() {}
+                });
+                ui.push_id("search_table", |ui| {
+                    let mut table = TableBuilder::new(ui)
+                        .striped(true)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::auto())
+                        .column(Column::remainder())
+                        .min_scrolled_height(0.0);
 
-                table = table.sense(egui::Sense::click());
-                table
-                    .header(20.0, |mut header| {
-                        header.col(|ui| {
-                            ui.strong("System");
-                        });
-                        header.col(|ui| {
-                            ui.strong("Region");
-                        });
-                    })
-                    .body(|mut body| {
-                        for row_index in 0..self.search_results.len() {
-                            body.row(18.00, |mut row| {
-                                row.set_selected(false);
-                                if let Some(selected_row) = self.search_selected_row {
-                                    if row_index == selected_row {
-                                        row.set_selected(true);
-                                    }
-                                }
-                                let col_data = row.col(|ui| {
-                                    if ui.label(&self.search_results[row_index].1).clicked() {
-                                        self.search_selected_row = Some(row_index);
-                                        let tx_map = Arc::clone(&self.map_msg.0);
-                                        let system_id = self.search_results[row_index].0;
-                                        let _result = tx_map.send(MapSync::CenterOn((system_id, Target::System)));
-                                        if self.emit_notification {
-                                            let _result = tx_map.send(MapSync::SystemNotification((system_id,tokio::time::Instant::now())));
+                    table = table.sense(egui::Sense::click());
+                    table
+                        .header(20.0, |mut header| {
+                            header.col(|ui| {
+                                ui.strong("System");
+                            });
+                            header.col(|ui| {
+                                ui.strong("Region");
+                            });
+                        })
+                        .body(|mut body| {
+                            for row_index in 0..self.search_results.len() {
+                                body.row(18.00, |mut row| {
+                                    row.set_selected(false);
+                                    if let Some(selected_row) = self.search_selected_row {
+                                        if row_index == selected_row {
+                                            row.set_selected(true);
                                         }
                                     }
-                                });
-                                if col_data.1.clicked() {
-                                    let tx_map = Arc::clone(&self.map_msg.0);
-                                    let system_id = self.search_results[row_index].0;
-                                    let _result = tx_map.send(MapSync::CenterOn((system_id, Target::System)));
-                                    if self.emit_notification {
-                                        let _result = tx_map.send(MapSync::SystemNotification((system_id,tokio::time::Instant::now())));
+                                    let col_data = row.col(|ui| {
+                                        if ui.label(&self.search_results[row_index].1).clicked() {
+                                            self.search_selected_row = Some(row_index);
+                                            let tx_map = Arc::clone(&self.map_msg.0);
+                                            let system_id = self.search_results[row_index].0;
+                                            let _result = tx_map.send(MapSync::CenterOn((
+                                                system_id,
+                                                Target::System,
+                                            )));
+                                            if self.emit_notification {
+                                                let _result =
+                                                    tx_map.send(MapSync::SystemNotification((
+                                                        system_id,
+                                                        tokio::time::Instant::now(),
+                                                    )));
+                                            }
+                                        }
+                                    });
+                                    if col_data.1.clicked() {
+                                        let tx_map = Arc::clone(&self.map_msg.0);
+                                        let system_id = self.search_results[row_index].0;
+                                        let _result = tx_map
+                                            .send(MapSync::CenterOn((system_id, Target::System)));
+                                        if self.emit_notification {
+                                            let _result = tx_map.send(MapSync::SystemNotification(
+                                                (system_id, tokio::time::Instant::now()),
+                                            ));
+                                        }
                                     }
-                                }
-                                let col_data = row.col(|ui| {
-                                    if ui.label(&self.search_results[row_index].3).clicked() {
-                                        self.search_selected_row = Some(row_index);
+                                    let col_data = row.col(|ui| {
+                                        if ui.label(&self.search_results[row_index].3).clicked() {
+                                            self.search_selected_row = Some(row_index);
+                                            let tx_map = Arc::clone(&self.map_msg.0);
+                                            let region_id = self.search_results[row_index].2;
+                                            let _result = tx_map.send(MapSync::CenterOn((
+                                                region_id,
+                                                Target::Region,
+                                            )));
+                                        }
+                                    });
+                                    if col_data.1.clicked() {
                                         let tx_map = Arc::clone(&self.map_msg.0);
                                         let region_id = self.search_results[row_index].2;
-                                        let _result = tx_map.send(MapSync::CenterOn((region_id, Target::Region)));
+                                        let _result = tx_map
+                                            .send(MapSync::CenterOn((region_id, Target::Region)));
+                                    }
+                                    if row.response().clicked() {
+                                        self.search_selected_row = Some(row_index);
                                     }
                                 });
-                                if col_data.1.clicked() {
-                                    let tx_map = Arc::clone(&self.map_msg.0);
-                                    let region_id = self.search_results[row_index].2;
-                                    let _result = tx_map.send(MapSync::CenterOn((region_id, Target::Region)));
-                                }
-                                if row.response().clicked() {
-                                    self.search_selected_row = Some(row_index);
-                                }
-                            });
-                            //self.toggle_row_selection(row_index, &row.response());
-                        }
-                        if self.search_results.is_empty() {
-                            body.row(18.00, |mut row| {
-                                row.col(|ui| {
-                                    ui.label("No result(s)");
+                                //self.toggle_row_selection(row_index, &row.response());
+                            }
+                            if self.search_results.is_empty() {
+                                body.row(18.00, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label("No result(s)");
+                                    });
+                                    row.col(|_ui| {});
                                 });
-                                row.col(|_ui| {});
-                            });
-                        }
-                    });
-                //
+                            }
+                        });
+                    //
+                });
             });
-        });
     }
 }
