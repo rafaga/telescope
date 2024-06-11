@@ -43,7 +43,7 @@ pub struct TelescopeApp {
 
     // the ESI Manager
     esi: EsiManager,
-    last_message: String,
+    app_messages: Vec<String>,
     search_text: String,
     emit_notification: bool,
     search_selected_row: Option<usize>,
@@ -92,7 +92,7 @@ impl Default for TelescopeApp {
             char_msg: None,
             open: [false; 3],
             esi,
-            last_message: String::from("Starting..."),
+            app_messages: Vec::new(),
             search_text: String::new(),
             search_selected_row: None,
             emit_notification: false,
@@ -132,7 +132,7 @@ impl eframe::App for TelescopeApp {
             char_msg: _,
             open: _,
             esi: _,
-            last_message: _,
+            app_messages: _,
             search_text: _,
             emit_notification: _,
             search_selected_row: _,
@@ -232,7 +232,6 @@ impl eframe::App for TelescopeApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.separator();
-                ui.label(&self.last_message);
             });
         });
 
@@ -269,15 +268,12 @@ impl eframe::App for TelescopeApp {
                         .show_rows(
                             ui,
                             ui.text_style_height(&egui::TextStyle::Body),
-                            6,
+                            self.app_messages.len(),
                             |ui, row_range| {
-                                ui.vertical(|ui| {
-                                    ui.colored_label(Color32::YELLOW, "Warning!");
-                                    ui.colored_label(Color32::RED, "Error");
-                                    ui.colored_label(Color32::BLUE, "Info");
-                                    ui.label("Normal text");
-                                    ui.label("Normal text");
-                                    ui.label("Normal text");
+                                ui.vertical(|ui|{
+                                    for index in row_range {
+                                        ui.label(self.app_messages[index].clone());
+                                    }
                                 });
                             },
                         );
@@ -660,18 +656,20 @@ impl TelescopeApp {
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("update_status_with_error");
+        let full_time = chrono::Local::now().time().to_string();
+        let time:Vec<&str> = full_time.split('.').collect();
         match message.0 {
             Type::Error => {
-                self.last_message =
-                    "ERROR: ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
+                self.app_messages.push(
+                    String::from("[") + time[0] + "] ERROR: " + &message.1 + " - " + &message.2 + " > " + &message.3);
             }
             Type::Warning => {
-                self.last_message =
-                    "WARN:  ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
+                self.app_messages.push(
+                    String::from("[") + time[0] + "] WARN: " + &message.1 + " - " + &message.2 + " > " + &message.3);
             }
             Type::Info => {
-                self.last_message =
-                    "INFO:  ".to_string() + &message.1 + " - " + &message.2 + " > " + &message.3;
+                self.app_messages.push(
+                    String::from("[") + time[0] + "] INFO: " + &message.1 + " - " + &message.2 + " > " + &message.3);
             }
         }
     }
@@ -814,7 +812,16 @@ impl TelescopeApp {
                             t_error.to_string(),
                         )))
                         .await;
-                };
+                } else {
+                    let _ = app_sender
+                        .send(Message::GenericNotification((
+                            Type::Info,
+                            String::from("Telescope App"),
+                            String::from("start_watchdog"),
+                            String::from("Starting watchdog"),
+                        )))
+                        .await;
+                }
                 for char_id in character_id {
                     character_ids.push((char_id, 0))
                 }
