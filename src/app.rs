@@ -1,7 +1,7 @@
 use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, Button, Color32, FontId, Margin, RichText};
+use eframe::egui::{self, Button, Color32, FontId, Margin, RichText, FontFamily, TextFormat, epaint::text::LayoutJob};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
@@ -43,7 +43,7 @@ pub struct TelescopeApp {
 
     // the ESI Manager
     esi: EsiManager,
-    app_messages: Vec<String>,
+    app_messages: Vec<LayoutJob>,
     search_text: String,
     emit_notification: bool,
     search_selected_row: Option<usize>,
@@ -657,21 +657,50 @@ impl TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_scope!("update_status_with_error");
         let full_time = chrono::Local::now().time().to_string();
-        let time:Vec<&str> = full_time.split('.').collect();
+        let time = full_time.split_at(12);
+        let mut job = LayoutJob::default();
+        let normal_text = TextFormat{
+            font_id: FontId::new(12.0, FontFamily::Proportional),
+            color: Color32::LIGHT_GRAY,
+            ..Default::default()
+        };
+        let time_text = TextFormat{
+            font_id: FontId::new(12.0, FontFamily::Proportional),
+            color: Color32::DARK_GRAY,
+            ..Default::default()
+        };
+        let warn = TextFormat{
+            font_id: FontId::new(12.0, FontFamily::Proportional),
+            color: Color32::KHAKI,
+            ..Default::default()
+        };
+        let info = TextFormat{
+            font_id: FontId::new(12.0, FontFamily::Proportional),
+            color: Color32::BLUE,
+            ..Default::default()
+        };
+        let error = TextFormat{
+            font_id: FontId::new(12.0, FontFamily::Proportional),
+            color: Color32::RED,
+            ..Default::default()
+        };
+        job.append("[", 0.0, normal_text.clone());
+        job.append(time.0, 0.0, time_text.clone());
+        job.append("] ", 0.0, normal_text.clone());
         match message.0 {
             Type::Error => {
-                self.app_messages.push(
-                    String::from("[") + time[0] + "] ERROR: " + &message.1 + " - " + &message.2 + " > " + &message.3);
+                job.append("ERROR: ", 0.0, error.clone());
+                job.append((message.1 + " - " +  &message.2 + " - ").as_str(), 0.0, normal_text.clone());
             }
             Type::Warning => {
-                self.app_messages.push(
-                    String::from("[") + time[0] + "] WARN: " + &message.1 + " - " + &message.2 + " > " + &message.3);
+                job.append("WARN: ", 0.0, warn.clone());
             }
             Type::Info => {
-                self.app_messages.push(
-                    String::from("[") + time[0] + "] INFO: " + &message.1 + " - " + &message.2 + " > " + &message.3);
+                job.append("INFO: ", 0.0, info.clone());
             }
         }
+        job.append(&message.3, 0.0, normal_text.clone());
+        self.app_messages.push(job);
     }
 
     fn create_new_regional_pane(&mut self, region_id: usize) {
@@ -878,6 +907,7 @@ impl TelescopeApp {
                                         t_error.to_string(),
                                     )))
                                     .await;
+                                break;
                             }
                         }
                     }
