@@ -1,7 +1,10 @@
 use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, Button, Color32, FontId, Margin, RichText, FontFamily, TextFormat, epaint::text::LayoutJob};
+use eframe::egui::{
+    self, epaint::text::LayoutJob, Button, Color32, FontFamily, FontId, Margin, RichText,
+    TextFormat,
+};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
@@ -270,7 +273,7 @@ impl eframe::App for TelescopeApp {
                             ui.text_style_height(&egui::TextStyle::Body),
                             self.app_messages.len(),
                             |ui, row_range| {
-                                ui.vertical(|ui|{
+                                ui.vertical(|ui| {
                                     for index in row_range {
                                         ui.label(self.app_messages[index].clone());
                                     }
@@ -659,27 +662,27 @@ impl TelescopeApp {
         let full_time = chrono::Local::now().time().to_string();
         let time = full_time.split_at(12);
         let mut job = LayoutJob::default();
-        let normal_text = TextFormat{
+        let normal_text = TextFormat {
             font_id: FontId::new(12.0, FontFamily::Proportional),
             color: Color32::LIGHT_GRAY,
             ..Default::default()
         };
-        let time_text = TextFormat{
+        let time_text = TextFormat {
             font_id: FontId::new(12.0, FontFamily::Proportional),
             color: Color32::DARK_GRAY,
             ..Default::default()
         };
-        let warn = TextFormat{
+        let warn = TextFormat {
             font_id: FontId::new(12.0, FontFamily::Proportional),
             color: Color32::KHAKI,
             ..Default::default()
         };
-        let info = TextFormat{
+        let info = TextFormat {
             font_id: FontId::new(12.0, FontFamily::Proportional),
             color: Color32::BLUE,
             ..Default::default()
         };
-        let error = TextFormat{
+        let error = TextFormat {
             font_id: FontId::new(12.0, FontFamily::Proportional),
             color: Color32::RED,
             ..Default::default()
@@ -690,7 +693,11 @@ impl TelescopeApp {
         match message.0 {
             Type::Error => {
                 job.append("ERROR: ", 0.0, error.clone());
-                job.append((message.1 + " - " +  &message.2 + " - ").as_str(), 0.0, normal_text.clone());
+                job.append(
+                    (message.1 + " - " + &message.2 + " - ").as_str(),
+                    0.0,
+                    normal_text.clone(),
+                );
             }
             Type::Warning => {
                 job.append("WARN: ", 0.0, warn.clone());
@@ -855,12 +862,8 @@ impl TelescopeApp {
                     character_ids.push((char_id, 0))
                 }
                 while !character_ids.is_empty() {
-                    match t_esi.valid_token().await {
-                        Ok(false) => {
-                            let _ = t_esi.refresh_token().await;
-                        }
-                        Ok(true) => (),
-                        Err(t_error) => {
+                    if !t_esi.valid_token().await {
+                        if let Err(t_error) = t_esi.refresh_token().await {
                             let _ = app_sender
                                 .send(Message::GenericNotification((
                                     Type::Error,
@@ -869,20 +872,18 @@ impl TelescopeApp {
                                     t_error.to_string(),
                                 )))
                                 .await;
-                            return;
+                            return; 
                         }
-                    };
+                    }
                     for item in &mut character_ids {
                         //PlayerDatabase
                         match t_esi
-                            .esi
-                            .group_location()
                             .get_location(item.0.try_into().unwrap())
                             .await
                         {
                             Ok(new_location) => {
-                                if item.1 != (new_location.solar_system_id as usize) {
-                                    item.1 = new_location.solar_system_id as usize;
+                                if item.1 != (new_location as usize) {
+                                    item.1 = new_location as usize;
                                     if let Err(t_error) =
                                         map_sender.send(MapSync::PlayerMoved((item.0, item.1)))
                                     {
