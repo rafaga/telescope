@@ -34,7 +34,7 @@ pub struct TelescopeApp {
     points: Vec<MapPoint>,
     // generic messages
     app_msg: (Arc<Sender<Message>>, Receiver<Message>),
-    // map Syncronization Messages
+    // map synchronization Messages
     map_msg: (Arc<BCSender<MapSync>>, BCReceiver<MapSync>),
     char_msg: Option<Arc<Sender<CharacterSync>>>,
 
@@ -66,7 +66,7 @@ impl Default for TelescopeApp {
         let settings = Manager::new();
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
-        // map syncronization handler
+        // map synchronization handler
         let (mtx, mrx) = broadcast::channel::<messages::MapSync>(30);
 
         let app_data = AppData::new();
@@ -525,7 +525,7 @@ impl TelescopeApp {
                                                                         ui.label(&self.esi.characters[index].name);
                                                                     });
                                                                     ui.horizontal(|ui| {
-                                                                        ui.label("Aliance:");
+                                                                        ui.label("Alliance:");
                                                                         if let Some(alliance) =
                                                                         self.esi.characters[index].alliance.as_ref()
                                                                         {
@@ -873,6 +873,15 @@ impl TelescopeApp {
                                 )))
                                 .await;
                             return; 
+                        } else {
+                            let _ = app_sender
+                                .send(Message::GenericNotification((
+                                    Type::Info,
+                                    String::from("Telescope App"),
+                                    String::from("start_watchdog"),
+                                    String::from("token refreshed successfully"),
+                                )))
+                                .await;
                         }
                     }
                     for item in &mut character_ids {
