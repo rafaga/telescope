@@ -305,6 +305,7 @@ impl TelescopeApp {
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),
+                Message::PlayerNewLocation((player_id, solar_system_id)) => self.update_player_location(player_id, solar_system_id)
             };
         }
     }
@@ -682,6 +683,11 @@ impl TelescopeApp {
             color: Color32::BLUE,
             ..Default::default()
         };
+        let debug = TextFormat {
+            font_id: FontId::new(12.0, FontFamily::Proportional),
+            color: Color32::DEBUG_COLOR,
+            ..Default::default()
+        };
         let error = TextFormat {
             font_id: FontId::new(12.0, FontFamily::Proportional),
             color: Color32::RED,
@@ -704,6 +710,9 @@ impl TelescopeApp {
             }
             Type::Info => {
                 job.append("INFO: ", 0.0, info.clone());
+            },
+            Type::Debug => {
+                job.append("DEBUG: ", 0.0, debug.clone());
             }
         }
         job.append(&message.3, 0.0, normal_text.clone());
@@ -838,7 +847,6 @@ impl TelescopeApp {
         thread::spawn(move || {
             runtime.block_on(async {
                 let mut character_ids = vec![];
-
                 if let Err(t_error) = t_esi.esi.update_spec().await {
                     let _ = app_sender
                         .send(Message::GenericNotification((
@@ -893,6 +901,9 @@ impl TelescopeApp {
                             Ok(new_location) => {
                                 if item.1 != (new_location as usize) {
                                     item.1 = new_location as usize;
+                                    let _ = app_sender
+                                                .send(Message::PlayerNewLocation((item.0.try_into().unwrap(),new_location)))
+                                                .await;
                                     if let Err(t_error) =
                                         map_sender.send(MapSync::PlayerMoved((item.0, item.1)))
                                     {
@@ -1100,5 +1111,22 @@ impl TelescopeApp {
                     //
                 });
             });
+    }
+
+    fn update_player_location(&mut self,player_id: i32, solar_system_id: i32) {
+        for index in 0..self.esi.characters.len() {
+            if self.esi.characters[index].id == player_id as i32 {
+                self.esi.characters[index].location=solar_system_id as i32;
+                let char = &mut self.esi.characters[index].clone();
+                if let Ok(a) = self.esi.write_character(char){
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Debug,
+                        String::from("Telescope App"),
+                        String::from("update_player_location"),
+                        String::from("Player location updated"),
+                    )));
+                }
+            }
+        }
     }
 }

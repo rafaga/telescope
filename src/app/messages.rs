@@ -21,6 +21,7 @@ pub enum Type {
     Info,
     Error,
     Warning,
+    Debug,
 }
 
 #[derive(Clone)]
@@ -41,6 +42,7 @@ pub enum Message {
     NewRegionalPane(usize),
     MapHidden(usize),
     MapShown(usize),
+    PlayerNewLocation((i32, i32)),
 }
 
 pub enum CharacterSync {
