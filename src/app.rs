@@ -884,7 +884,7 @@ impl TelescopeApp {
                         } else {
                             let _ = app_sender
                                 .send(Message::GenericNotification((
-                                    Type::Info,
+                                    Type::Debug,
                                     String::from("Telescope App"),
                                     String::from("start_watchdog"),
                                     String::from("token refreshed successfully"),
