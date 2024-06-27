@@ -111,6 +111,7 @@ impl TabPane for UniversePane {
                     self.center_on_target(t_msg);
                 }
                 MapSync::PlayerMoved((player_id, location)) => {
+                    self.task_msg.spawn(Message::GenericNotification((Type::Debug,String::from("UniversePane"),String::from("event_manager"),String::from("Universe Pane - Player moved RCV"))));
                     self.map.update_marker(player_id, location)
                 }
             };
@@ -230,6 +231,7 @@ impl TabPane for RegionPane {
                     self.center_on_target(t_msg);
                 }
                 MapSync::PlayerMoved((player_id, location)) => {
+                    self.task_msg.spawn(Message::GenericNotification((Type::Debug,String::from("UniversePane"),String::from("event_manager"),self.tab_name.clone() + " - Player moved RCV")));
                     self.map.update_marker(player_id, location)
                 }
             };
