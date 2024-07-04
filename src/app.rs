@@ -327,7 +327,7 @@ impl TelescopeApp {
                     ui.vertical_centered(|ui| {
                         ui.add_space(10.0);
                         ui.heading("Telescope");
-                        ui.strong("v 0.0.1");
+                        ui.strong("v ".to_owned() + env!("CARGO_PKG_VERSION"));
                         ui.label("Author: Rafael Amador Galván");
                         ui.label("©2023-2024, All rights reserved.");
                         if ui.link("https://github.com/rafaga/telescope").clicked() {
