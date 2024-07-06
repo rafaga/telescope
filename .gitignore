@@ -10,5 +10,4 @@ src/app/data.rs
 /.cargo-packager
 Cargo.lock
 *.db.old
-*.toml
-set_env.sh
+telescope.toml

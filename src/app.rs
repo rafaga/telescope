@@ -73,8 +73,8 @@ impl Default for TelescopeApp {
         let app_data = AppData::new();
         let esi = webb::esi::EsiManager::new(
             app_data.user_agent.as_str(),
-            app_data.client_id.as_str(),
-            app_data.secret_key.as_str(),
+            app_data.client_id,
+            app_data.secret_key,
             app_data.url.as_str(),
             app_data.scope,
             settings.paths.local_db.clone(),
