@@ -4,34 +4,38 @@ version = "0.0.1"
 authors = ["Rafael Amador <rafaga@duck.com>"]
 edition = "2021"
 description = "Application to gather intel and alert players in Eve Online"
-rust-version = "1.75"
+rust-version = "1.77"
 
 [features]
 default = []
 puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
-eframe = { version = "0.26", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence"] }
-serde = { version = "1", features = ["serde_derive"] }
-sde = { git = "http://github.com/rafaga/sde.git", branch = "test"}
-kdtree = { version = "0.7", features = ["serde", "serde_derive", "serialize"] }
-egui-map = { git = "http://github.com/rafaga/egui-map.git", branch = "test"}
-open = "4.0"
-webb = { git = "http://github.com/rafaga/webb.git", branch = "test"}
-chrono = "0.4"
-futures = { version = "0.3", features = ["thread-pool", "futures-executor"] }
+eframe = { version = "0.28.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+sde = { version="0.0.18"}
+kdtree = { version = "0.7.0" }
+egui-map = { version = "0.0.14" }
+open = "5.1.1"
+webb = { git = "https://github.com/rafaga/webb.git", version="0.0.2", default-features = false, features = []}
+chrono = "0.4.34"
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.26", features = ["all_loaders"] }
-image = { version = "0", features = ["jpeg","png"] }
-wgpu = "0.17"
-egui_tiles = "0.7"
-puffin = {version = "0.18.1", optional = true, default-features = false}
-puffin_http = {version = "0.15", optional = true, default-features = false}
+egui_extras = { version = "0.28.1", features = ["all_loaders"] }
+image = { version = "0.25.1", features = ["jpeg","png"] }
+wgpu = "0.20.0"
+puffin = {version = "0.19", optional = true, default-features = false}
+puffin_http = {version = "0.16", optional = true, default-features = false}
+egui_tiles = { version = "0.9.0" }
+toml = "0.8.12"
+hyper = { version = "1.3.1", features = ["server", "http1", "client"] }
+rfesi = {version = "0"}
+serde = { version = "1.0.200", features = ["derive"] }
+hyper-util = { version = "0.1.3", features = ["full"] }
+notify = "6.1.1"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-subscriber = "0.3"
-env_logger = { version = "0.10", features = ["auto-color", "humantime"] }
+env_logger = { version = "0.11", features = ["auto-color", "humantime"] }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -46,11 +50,15 @@ opt-level = 2 # fast and small wasm
 opt-level = 0
 
 [patch.crates-io]
-
 # If you want to use the bleeding edge version of egui and eframe:
 # egui = { git = "https://github.com/emilk/egui", branch = "master" }
 # eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-
+egui-map = { path = "../egui-map/" }
+egui_tiles = { git = "https://github.com/rafaga/egui_tiles.git", branch = "set-size" }
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
+sde = { path = "../sde/" }
+
+[patch."https://github.com/rafaga/webb.git"]
+webb = { path = "../webb/" }

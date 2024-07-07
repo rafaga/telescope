@@ -2,6 +2,7 @@
     "name": "telescope",
     "description": "An application to gather intel from multiple sources for Eve Online",
     "longDescription": null,
+    "outDir": "target/release/",
     "enabled": true,
     "productName": "Telescope",
     "version": "0.0.1",
@@ -15,22 +16,22 @@
     "beforePackagingCommand": null,
     "beforeEachPackageCommand": null,
     "logLevel": "info",
-    "formats": null,
+    "formats": ["wix", "dmg"],
     "targetTriple": null,
     "homepage": "http://github.com/rafaga/telescope/",
-    "icons": ["../assets/icon01-256.png","../assets/icon01-1024.png"],
+    "icons": ["./assets/icon01-256.png","./assets/icon01-1024.png"],
     "authors": [
       "Rafael Amador Galván"
     ],
     "publisher": null,
-    "licenseFile": "../LICENSE.md",
+    "licenseFile": "./LICENSE.md",
     "copyright": null,
     "category": "Utility",
     "fileAssociations": null,
     "resources": [
       {
-        "src": "../assets/icon01-256.png",
-        "target": "../assets/icon01-256.png"
+        "src": "./assets/icon01-256.png",
+        "target": "./assets/icon01-256.png"
       },
       "Lorem ipsum"
     ],
@@ -48,8 +49,8 @@
     "pacman": null,
     "wix": {
       "languages": [
-        "ENU",
-        "ESN"
+        "en-US",
+        "es-ES"
       ],
       "template": null,
       "merge_modules": null,
