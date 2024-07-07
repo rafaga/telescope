@@ -1,7 +1,6 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
-    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding,
-    Sense, Shape, Stroke, Style, TextStyle, Ui, Vec2, WidgetText,
+    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
@@ -10,7 +9,7 @@ use egui_map::map::{
     },
     Map,
 };
-use egui_tiles::{Behavior, SimplificationOptions, TileId, Tiles, UiResponse};
+use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
 use std::collections::HashMap;
@@ -411,17 +410,16 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
 
     fn tab_ui(
         &mut self,
-        tiles: &Tiles<Box<dyn TabPane>>,
+        tiles: &mut Tiles<Box<dyn TabPane>>,
         ui: &mut Ui,
         id: eframe::egui::Id,
         tile_id: TileId,
-        active: bool,
-        is_being_dragged: bool,
+        tab_state: &TabState,
     ) -> eframe::egui::Response {
         let text = self.tab_title_for_tile(tiles, tile_id);
         let str_text = text.text().to_string().clone();
         let font_id = TextStyle::Button.resolve(ui.style());
-        let galley = text.into_galley(ui, Some(false), f32::INFINITY, font_id);
+        let galley = text.into_galley(ui, Some(TextWrapMode::Truncate), f32::INFINITY, font_id);
 
         // this is for close button
         let nid = egui::Id::new(str_text.clone());
@@ -434,7 +432,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 ui.available_height(),
             ))
             .1;
-        if str_text != "Universe" && !is_being_dragged {
+        if str_text != "Universe" && !tab_state.is_being_dragged {
             rect_close = Some(
                 ui.allocate_space(vec2(2.0 * x_margin, ui.available_height()))
                     .1,
@@ -446,14 +444,14 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             close_response = Some(ui.interact(rect2, nid, Sense::click()));
         }
 
-        let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, active);
+        let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, tab_state);
         // Show a gap when dragged
-        if ui.is_rect_visible(rect) && !is_being_dragged {
-            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, active);
-            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, active);
+        if ui.is_rect_visible(rect) && !tab_state.is_being_dragged {
+            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
+            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
             ui.painter().rect(rect.shrink(0.5), 0.0, bg_color, stroke);
 
-            if active {
+            if tab_state.active {
                 // Make the tab name area connect with the tab ui area:
                 ui.painter().hline(
                     rect.x_range(),
@@ -471,14 +469,14 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         }
 
         if rect_close.is_some() {
-            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, active);
-            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, active);
+            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
+            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
             ui.painter()
                 .rect(rect_close.unwrap().shrink(0.5), 0.0, bg_color, stroke);
             if ui.is_rect_visible(rect_close.unwrap()) {
                 let a = WidgetText::from(String::from("×")).into_galley(
                     ui,
-                    Some(false),
+                    Some(TextWrapMode::Truncate),
                     f32::INFINITY,
                     TextStyle::Button.resolve(ui.style()),
                 );

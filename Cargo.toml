@@ -11,20 +11,20 @@ default = []
 puffin = ["dep:puffin", "dep:puffin_http", "eframe/puffin", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
-eframe = { version = "0.27.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-sde = { git = "https://github.com/rafaga/sde.git", branch = "test"}
+eframe = { version = "0.28.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+sde = { version="0.0.18"}
 kdtree = { version = "0.7.0" }
-egui-map = { version = "0.0.13" }
+egui-map = { version = "0.0.14" }
 open = "5.1.1"
-webb = { git = "https://github.com/rafaga/webb.git", branch = "test", default-features = false, features = []}
+webb = { git = "https://github.com/rafaga/webb.git", version="0.0.2", default-features = false, features = []}
 chrono = "0.4.34"
 tokio = { version = "1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.27.2", features = ["all_loaders"] }
-image = { version = "0.24.9", features = ["jpeg","png"] }
+egui_extras = { version = "0.28.1", features = ["all_loaders"] }
+image = { version = "0.25.1", features = ["jpeg","png"] }
 wgpu = "0.20.0"
 puffin = {version = "0.19", optional = true, default-features = false}
 puffin_http = {version = "0.16", optional = true, default-features = false}
-egui_tiles = { version = "0.8.0" }
+egui_tiles = { version = "0.9.0" }
 toml = "0.8.12"
 hyper = { version = "1.3.1", features = ["server", "http1", "client"] }
 rfesi = {version = "0"}
@@ -58,8 +58,6 @@ egui_tiles = { git = "https://github.com/rafaga/egui_tiles.git", branch = "set-s
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
-
-[patch."https://github.com/rafaga/sde.git"]
 sde = { path = "../sde/" }
 
 [patch."https://github.com/rafaga/webb.git"]
