@@ -22,25 +22,40 @@ pub struct IntelChannelWatcher {
 impl IntelChannelWatcher {
 
     pub fn new() -> Self {
-        IntelChannelWatcher{
-            channels: Vec::new()
-        }
+        let mut obj = IntelChannelWatcher{
+            channels: Vec::new(),
+        };
+        obj.scan_for_files();
     }
 
-    fn scan_for_files(&mut self,) {
-        let path;
+    fn scan_for_files(&mut self) -> Result<(),String>{
         self.channels.clear();
-        if cfg!(target_os = "macos") {
-            path = Path::new("");
-        } else if cfg!(target_os = "windows") {
-            path = Path::new("");
-        } else if cfg!(target_os = "unix") {
-            path = Path::new("");
+        let mut files = Vec::new();
+        if let Some(os_dirs) = directories::BaseDirs::new() {
+            let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
+            let mut kat = path.as_path().into_iter();
+            while let Some(ostr) = kat.next() {
+                let kpath = Path::new(ostr);
+                if kpath.is_file() {
+                    files.push(kpath.file_name().unwrap());
+                }
+            }
+            for file in files {
+                if let Some((name,_file_date)) = file.to_string_lossy().split_once('_') {
+                    let temp_name = String::from(name);
+                    if !self.channels.contains(&temp_name) {
+                        self.channels.push(String::from(temp_name));
+                    }
+                }
+            }
+        } else {
+            return Err(String::from("Error on path initialization"));
         }
+        Ok(())
     }
 
     fn async_watcher(&mut self ) -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
-        let (mut tx, rx) = channel(1);
+        let (tx, rx) = channel(1);
     
         // Automatically select the best implementation for your platform.
         // You can also access each implementation directly e.g. INotifyWatcher.
