@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{fs::File,path::Path};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc::{Receiver,  channel};
@@ -15,17 +16,18 @@ impl LogManager {
     }
 }
 
-pub struct IntelChannelWatcher {
-    pub channels: Vec<String>,
+pub struct IntelWatcher {
+    pub channels: HashMap<String,bool>,
 }
 
-impl IntelChannelWatcher {
+impl IntelWatcher {
 
     pub fn new() -> Self {
-        let mut obj = IntelChannelWatcher{
-            channels: Vec::new(),
+        let mut obj = IntelWatcher{
+            channels: HashMap::new(),
         };
-        obj.scan_for_files();
+        let _ = obj.scan_for_files();
+        obj
     }
 
     fn scan_for_files(&mut self) -> Result<(),String>{
@@ -34,18 +36,15 @@ impl IntelChannelWatcher {
         if let Some(os_dirs) = directories::BaseDirs::new() {
             let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
             let mut kat = path.as_path().into_iter();
-            while let Some(ostr) = kat.next() {
-                let kpath = Path::new(ostr);
-                if kpath.is_file() {
-                    files.push(kpath.file_name().unwrap());
+            while let Some(file_path_str) = kat.next() {
+                let file_path = Path::new(file_path_str);
+                if file_path.is_file() {
+                    files.push(file_path.file_name().unwrap());
                 }
             }
             for file in files {
                 if let Some((name,_file_date)) = file.to_string_lossy().split_once('_') {
-                    let temp_name = String::from(name);
-                    if !self.channels.contains(&temp_name) {
-                        self.channels.push(String::from(temp_name));
-                    }
+                    self.channels.entry(String::from(name)).or_insert(false);
                 }
             }
         } else {
@@ -54,13 +53,11 @@ impl IntelChannelWatcher {
         Ok(())
     }
 
-    fn async_watcher(&mut self ) -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
-        let (tx, rx) = channel(1);
-    
-        // Automatically select the best implementation for your platform.
-        // You can also access each implementation directly e.g. INotifyWatcher.
+    fn async_watcher(&mut self) -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
+        let (tx, rx) = channel(10);
         let watcher = RecommendedWatcher::new(
             move |res| {
+                
                 let runtime = Builder::new_current_thread().enable_all().build().unwrap();
                 runtime.block_on(async {
                     tx.send(res).await.unwrap();
@@ -68,7 +65,8 @@ impl IntelChannelWatcher {
             },
             Config::default(),
         )?;
-    
+        // Automatically select the best implementation for your platform.
+        // You can also access each implementation directly e.g. INotifyWatcher.
         Ok((watcher, rx))
     }
     
@@ -77,7 +75,7 @@ impl IntelChannelWatcher {
     
         // Add a path to be watched. All files and directories at that path and
         // below will be monitored for changes.
-        watcher.watch(path.as_ref(), RecursiveMode::Recursive)?;
+        watcher.watch(path.as_ref(), RecursiveMode::NonRecursive)?;
     
         while let Some(res) = rx.recv().await {
             match res {

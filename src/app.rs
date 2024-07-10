@@ -17,7 +17,7 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
-
+use notify::{Config, Event, FsEventWatcher, RecommendedWatcher, RecursiveMode, Watcher, Error};
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -60,6 +60,7 @@ pub struct TelescopeApp {
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
     settings: Manager,
+    watcher: Option<FsEventWatcher>,
 }
 
 impl Default for TelescopeApp {
@@ -112,6 +113,7 @@ impl Default for TelescopeApp {
             task_msg: msgmon,
             task_auth: authmon,
             settings,
+            watcher: None,
         }
     }
 }
@@ -148,6 +150,7 @@ impl eframe::App for TelescopeApp {
             task_msg: _,
             task_auth: _,
             settings: _,
+            watcher: _,
         } = self;
 
         if !self.initialized {
@@ -198,6 +201,24 @@ impl eframe::App for TelescopeApp {
                 }
                 self.start_watchdog(ids);
             }
+
+            let (atx, arx) = std::sync::mpsc::channel();
+            let fs_watcher = RecommendedWatcher::new(
+                move |res| {
+                    thread::spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                        runtime.block_on(async {
+                            atx.send(res);
+                        });
+                    });
+                },
+                Config::default(),
+            );
+
+            if let Ok(watcher) = fs_watcher {
+                self.watcher = Some(watcher);
+            }
+
             self.initialized = true;
         }
 
@@ -974,9 +995,8 @@ impl TelescopeApp {
                 }
             });
         });
-        thread::spawn(move || {
-            // TODO: Insert filesystem watchdog
-        });
+        
+       
         self.char_msg = Some(Arc::new(sender));
     }
 
