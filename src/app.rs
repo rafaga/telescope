@@ -8,6 +8,7 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
+use file::IntelWatcher;
 use sde::{objects::Universe, SdeManager};
 use settings::Manager;
 use std::path::Path;
@@ -17,7 +18,7 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
-use notify::{Config, Event, FsEventWatcher, RecommendedWatcher, RecursiveMode, Watcher, Error};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher, ReadDirectoryChangesWatcher};
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -60,7 +61,7 @@ pub struct TelescopeApp {
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
     settings: Manager,
-    watcher: Option<FsEventWatcher>,
+    watcher: Option<ReadDirectoryChangesWatcher>,
 }
 
 impl Default for TelescopeApp {
@@ -995,8 +996,9 @@ impl TelescopeApp {
                 }
             });
         });
-        
-       
+        if let Ok(objs) = IntelWatcher::async_watcher() {
+            self.watcher = Some(objs.0);
+        }
         self.char_msg = Some(Arc::new(sender));
     }
 

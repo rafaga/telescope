@@ -3,6 +3,7 @@ use std::{fs::File,path::Path};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc::{Receiver,  channel};
 use tokio::runtime::Builder;
+use std::thread;
 
 pub(crate) struct LogManager {
     obj_file: File,
@@ -53,29 +54,28 @@ impl IntelWatcher {
         Ok(())
     }
 
-    fn async_watcher(&mut self) -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
-        let (tx, rx) = channel(10);
+    pub fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
+        let (ntx, nrx) = channel(10);
         let watcher = RecommendedWatcher::new(
             move |res| {
-                
-                let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-                runtime.block_on(async {
-                    tx.send(res).await.unwrap();
-                })
+                let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+                runtime.spawn(async {
+                    ntx.send(res).await;
+                });
             },
             Config::default(),
         )?;
         // Automatically select the best implementation for your platform.
         // You can also access each implementation directly e.g. INotifyWatcher.
-        Ok((watcher, rx))
+        Ok((watcher, nrx))
     }
     
     async fn async_watch<P: AsRef<Path>>(&mut self, path: P) -> notify::Result<()> {
-        let (mut watcher, mut rx) = self.async_watcher()?;
+        let (mut watcher, mut rx) = Self::async_watcher()?;
     
         // Add a path to be watched. All files and directories at that path and
         // below will be monitored for changes.
-        watcher.watch(path.as_ref(), RecursiveMode::NonRecursive)?;
+        //watcher.watch(path.as_ref(), RecursiveMode::NonRecursive)?;
     
         while let Some(res) = rx.recv().await {
             match res {

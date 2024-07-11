@@ -30,7 +30,7 @@ hyper = { version = "1.4.0", features = ["server", "http1", "client"] }
 rfesi = {version = "0.42.0"}
 serde = { version = "1.0.204", features = ["derive"] }
 hyper-util = { version = "0.1.6", features = ["full"] }
-notify = "6.1.1"
+notify = { version = "6.1.1", default-features = false, features = ["macos_kqueue"] }
 directories = "5.0.1"
 
 # native:
@@ -60,6 +60,7 @@ egui_tiles = { git = "https://github.com/rafaga/egui_tiles.git"}
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
 sde = { path = "../sde/" }
+rfesi = { git = "https://github.com/rafaga/rfesi.git", branch = "crate-update" }
 
 [patch."https://github.com/rafaga/webb.git"]
 webb = { path = "../webb/" }
