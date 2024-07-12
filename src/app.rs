@@ -18,7 +18,7 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -38,7 +38,6 @@ pub struct TelescopeApp {
     app_msg: (Arc<Sender<Message>>, Receiver<Message>),
     // map synchronization Messages
     map_msg: (Arc<BCSender<MapSync>>, BCReceiver<MapSync>),
-    fs_rx: Option<Receiver<notify::Result<Event>>>,
     char_msg: Option<Arc<Sender<CharacterSync>>>,
 
     // these are the flags to open the windows
@@ -116,7 +115,6 @@ impl Default for TelescopeApp {
             task_auth: authmon,
             settings,
             watcher: None,
-            fs_rx: None,
         }
     }
 }
@@ -154,7 +152,6 @@ impl eframe::App for TelescopeApp {
             task_auth: _,
             settings: _,
             watcher: _,
-            fs_rx: _,
         } = self;
 
         if !self.initialized {
@@ -195,16 +192,6 @@ impl eframe::App for TelescopeApp {
                             z_region.show_on_startup = true;
                         });
                     self.create_new_regional_pane(self.settings.mapping.startup_regions[counter]);
-                }
-            }
-
-            if let Ok((mut watcher,fs_rx)) = IntelWatcher::async_watcher() {
-                if let Some(os_dirs) = directories::BaseDirs::new() {
-                    let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
-                    if watcher.watch(&path, RecursiveMode::NonRecursive).is_ok() {
-                        self.watcher = Some(watcher);
-                        self.fs_rx = Some(fs_rx);
-                    }
                 }
             }
 
@@ -992,23 +979,31 @@ impl TelescopeApp {
                 }
             });
         });
-        if self.fs_rx.is_some() {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-            let tfs_rx = self.fs_rx.as_mut().unwrap();
-            thread::spawn(move || {
-                runtime.block_on(async {
-                    while let Some(res) = tfs_rx.recv().await {
-                        match res {
-                            Ok(event) => println!("changed: {:?}", event),
-                            Err(e) => println!("watch error: {:?}", e),
-                        }
-                    }
-                });
-            });
+        
+        if let Ok((mut watcher,mut fs_rx)) = IntelWatcher::async_watcher() {
+            if let Some(os_dirs) = directories::BaseDirs::new() {
+                let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
+                if watcher.watch(&path, RecursiveMode::NonRecursive).is_ok() {
+                    self.watcher = Some(watcher);
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                    thread::spawn(move || {
+                        runtime.block_on(async {
+                            while let Some(res) = fs_rx.recv().await {
+                                match res {
+                                    Ok(event) => println!("changed: {:?}", event),
+                                    Err(e) => println!("watch error: {:?}", e),
+                                }
+                            }
+                        });
+                    });
+                }
+            }
         }
+
+        
         self.char_msg = Some(Arc::new(sender));
     }
 

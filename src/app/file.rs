@@ -69,22 +69,5 @@ impl IntelWatcher {
         // You can also access each implementation directly e.g. INotifyWatcher.
         Ok((watcher, nrx))
     }
-    
-    async fn async_watch<P: AsRef<Path>>(&mut self, path: P) -> notify::Result<()> {
-        let (mut watcher, mut rx) = Self::async_watcher()?;
-    
-        // Add a path to be watched. All files and directories at that path and
-        // below will be monitored for changes.
-        //watcher.watch(path.as_ref(), RecursiveMode::NonRecursive)?;
-    
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => println!("changed: {:?}", event),
-                Err(e) => println!("watch error: {:?}", e),
-            }
-        }
-    
-        Ok(())
-    }
 
 }
