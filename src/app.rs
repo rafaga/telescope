@@ -18,7 +18,7 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{event, RecommendedWatcher, RecursiveMode, Watcher};
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -993,16 +993,19 @@ impl TelescopeApp {
                         runtime.block_on(async {
                             while let Some(res) = fs_rx.recv().await {
                                 match res {
-                                    Ok(event) => println!("changed: {:?}", event),
-                                    Err(e) => println!("watch error: {:?}", e),
+                                    Ok(event) => {
+                                        let path = event.paths;
+                                    },
+                                    Err(e) => {
+
+                                    },
                                 }
                             }
                         });
                     });
                 }
             }
-        }
-
+        } 
         
         self.char_msg = Some(Arc::new(sender));
     }
