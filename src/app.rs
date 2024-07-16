@@ -8,7 +8,6 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
-use file::IntelWatcher;
 use sde::{objects::Universe, SdeManager};
 use settings::Manager;
 use std::path::Path;
@@ -18,7 +17,7 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
-use notify::{event, RecommendedWatcher, RecursiveMode, Watcher};
+use crate::app::file::IntelWatcher;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -61,7 +60,7 @@ pub struct TelescopeApp {
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
     settings: Manager,
-    watcher: Option<RecommendedWatcher>,
+    intel: IntelWatcher,
 }
 
 impl Default for TelescopeApp {
@@ -89,6 +88,8 @@ impl Default for TelescopeApp {
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
+        let mut intel: IntelWatcher::new();
+
         Self {
             // Example stuff:
             initialized: false,
@@ -114,7 +115,7 @@ impl Default for TelescopeApp {
             task_msg: msgmon,
             task_auth: authmon,
             settings,
-            watcher: None,
+            intel,
         }
     }
 }
@@ -151,7 +152,7 @@ impl eframe::App for TelescopeApp {
             task_msg: _,
             task_auth: _,
             settings: _,
-            watcher: _,
+            intel: _,
         } = self;
 
         if !self.initialized {
@@ -979,34 +980,6 @@ impl TelescopeApp {
                 }
             });
         });
-        
-        if let Ok((mut watcher,mut fs_rx)) = IntelWatcher::async_watcher() {
-            if let Some(os_dirs) = directories::BaseDirs::new() {
-                let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
-                if watcher.watch(&path, RecursiveMode::NonRecursive).is_ok() {
-                    self.watcher = Some(watcher);
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                    thread::spawn(move || {
-                        runtime.block_on(async {
-                            while let Some(res) = fs_rx.recv().await {
-                                match res {
-                                    Ok(event) => {
-                                        let path = event.paths;
-                                    },
-                                    Err(e) => {
-
-                                    },
-                                }
-                            }
-                        });
-                    });
-                }
-            }
-        } 
-        
         self.char_msg = Some(Arc::new(sender));
     }
 
