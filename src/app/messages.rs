@@ -43,6 +43,7 @@ pub enum Message {
     MapHidden(usize),
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
+    RawIntelMessage(String),
 }
 
 pub enum CharacterSync {

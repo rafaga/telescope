@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::{fs::File,path::Path};
 use std::thread;
-
+use std::sync::Arc;
 use notify::{Config, Event, RecommendedWatcher, Watcher, RecursiveMode};
 use tokio::sync::mpsc::{Receiver,  channel};
 use tokio::runtime::Builder;
+use tokio::sync::broadcast::Sender as BCSender;
+use tokio::sync::mpsc::Sender;
+use crate::app::messages::{Message,MapSync};
 
 pub(crate) struct LogManager {
     obj_file: File,
@@ -21,23 +24,23 @@ impl LogManager {
 pub struct IntelWatcher {
     pub channels: HashMap<String,bool>,
     watcher: Option<RecommendedWatcher>,
-    app_msg: Option<()>,
-    map_msg: Option<()>,
+    app_msg: Arc<Sender<Message>>,
+    map_msg: Arc<BCSender<MapSync>>,
 }
 
 impl IntelWatcher {
-    pub fn new() -> Self {
-        let mut obj = Self{
+    pub fn new(app_sender: Arc<Sender<Message>>, map_syncer: Arc<BCSender<MapSync>>) -> Self {
+        let mut a = Self {
             channels: HashMap::new(),
             watcher: None,
-            app_msg: None,
-            map_msg: None
+            app_msg: app_sender,
+            map_msg: map_syncer,
         };
-        let _ = obj.scan_for_files();
-        obj
+        let _ = a.scan_for_files();
+        a
     }
 
-    fn scan_for_files(&mut self) -> Result<(),String>{
+    pub fn scan_for_files(&mut self) -> Result<(),String>{
         self.channels.clear();
         let mut files = Vec::new();
         if let Some(os_dirs) = directories::BaseDirs::new() {
@@ -77,6 +80,9 @@ impl IntelWatcher {
         Ok((watcher, nrx))
     }
 
+    fn translate_raw_message(message: String) {
+    }
+
     pub fn start_watcher(&mut self) -> Result<(),String> {
         if let Ok((mut watcher,mut fs_rx)) = Self::async_watcher() {
             if let Some(os_dirs) = directories::BaseDirs::new() {
@@ -87,12 +93,14 @@ impl IntelWatcher {
                     .enable_all()
                     .build()
                     .unwrap();
+                    let app_sender = Arc::clone(&self.app_msg); 
                     thread::spawn(move || {
                         runtime.block_on(async {
                             while let Some(res) = fs_rx.recv().await {
                                 match res {
                                     Ok(event) => {
                                         let path = event.paths;
+                                        Self::translate_raw_message(String::new());
                                     },
                                     Err(t_error) => {
 

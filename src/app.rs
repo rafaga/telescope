@@ -84,18 +84,20 @@ impl Default for TelescopeApp {
         let mut sde = SdeManager::new(Path::new(&settings.paths.sde_db), settings.factor);
         let _ = sde.get_universe();
 
+
+        let arc_map_sender= Arc::new(mtx);
         let arc_msg_sender = Arc::new(gtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
-        let mut intel: IntelWatcher::new();
+        let watcher = IntelWatcher::new(Arc::clone(&arc_msg_sender), Arc::clone(&arc_map_sender));
 
         Self {
             // Example stuff:
             initialized: false,
             points: Vec::new(),
             app_msg: (arc_msg_sender, grx),
-            map_msg: (Arc::new(mtx), mrx),
+            map_msg: (arc_map_sender, mrx),
             char_msg: None,
             open: [false; 3],
             esi,
@@ -115,7 +117,7 @@ impl Default for TelescopeApp {
             task_msg: msgmon,
             task_auth: authmon,
             settings,
-            intel,
+            intel: watcher,
         }
     }
 }
@@ -312,7 +314,8 @@ impl TelescopeApp {
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),
-                Message::PlayerNewLocation((player_id, solar_system_id)) => self.update_player_location(player_id, solar_system_id)
+                Message::PlayerNewLocation((player_id, solar_system_id)) => self.update_player_location(player_id, solar_system_id),
+                Message::RawIntelMessage(msg) => {},
             };
         }
     }
@@ -1136,4 +1139,5 @@ impl TelescopeApp {
             }
         }
     }
+
 }
