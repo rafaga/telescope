@@ -400,7 +400,7 @@ impl TelescopeApp {
                                         .tile_data
                                         .keys()
                                         .copied().collect();
-                                    keys.sort();
+                                    keys.sort_unstable();
                                     let num_rows = keys.len().div_ceil(3);
                                     ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
@@ -412,46 +412,75 @@ impl TelescopeApp {
                                             self.settings.saved = false;
                                         }
                                     });
+
                                     let row_height = 18.0;
+
+                                    ui.label("Monitored Channels:");
+                                    ui.push_id("chan_tbl",|ui|{
+                                        TableBuilder::new(ui)
+                                        .columns(Column::resizable(Column::exact(225.0), true), 2)
+                                        .striped(true)
+                                        .vscroll(true)
+                                        .header(row_height,|mut header|{
+                                            header.col(|ui| {
+                                                ui.heading("Active");
+                                            });
+                                            header.col(|ui| {
+                                                ui.heading("Channel name");
+                                            });
+                                        })
+                                        .body(|mut body|{
+                                            body.rows(row_height, num_rows, |mut row| {
+                                            
+                                            });
+                                            /*for channel in &self.intel.channels {
+                                                
+                                            }*/
+                                        });
+                                    });
+
+                                    
                                     ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
-                                    TableBuilder::new(ui)
-                                    .column(Column::resizable(Column::exact(150.0),false))
-                                    .column(Column::resizable(Column::exact(150.0),false))
-                                    .column(Column::resizable(Column::exact(150.0),false))
-                                    .striped(true)
-                                    .vscroll(false)
-                                    .body(|body| {
-                                        body.rows(row_height, num_rows, |mut row| {
-                                            let key_index = row.index() * 3;
-                                            row.col(|ui: &mut egui::Ui| {
-                                                let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
-                                                let name = region.get_name();
-                                                //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
-                                                if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                    self.settings.saved = false;
+                                    ui.push_id("rgn_tbl",|ui|{
+                                        TableBuilder::new(ui)
+                                        .column(Column::resizable(Column::exact(150.0),false))
+                                        .column(Column::resizable(Column::exact(150.0),false))
+                                        .column(Column::resizable(Column::exact(150.0),false))
+                                        .striped(true)
+                                        .vscroll(false)
+                                        .body(|body| {
+                                            body.rows(row_height, num_rows, |mut row| {
+                                                let key_index = row.index() * 3;
+                                                row.col(|ui: &mut egui::Ui| {
+                                                    let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
+                                                    let name = region.get_name();
+                                                    //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
+                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                        self.settings.saved = false;
+                                                    }
+                                                });
+                                                let mut t_key_index = key_index + 1;
+                                                if t_key_index < keys.len() {
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                        let name = region.get_name();
+                                                        if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
+                                                }
+                                                t_key_index += 1;
+                                                if t_key_index < keys.len() {
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                        let name = region.get_name();
+                                                        if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
                                                 }
                                             });
-                                            let mut t_key_index = key_index + 1;
-                                            if t_key_index < keys.len() {
-                                                row.col(|ui: &mut egui::Ui| {
-                                                    let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
-                                                    let name = region.get_name();
-                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                        self.settings.saved = false;
-                                                    }
-                                                });
-                                            }
-                                            t_key_index += 1;
-                                            if t_key_index < keys.len() {
-                                                row.col(|ui: &mut egui::Ui| {
-                                                    let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
-                                                    let name = region.get_name();
-                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                        self.settings.saved = false;
-                                                    }
-                                                });
-                                            }
                                         });
                                     });
                                 },
