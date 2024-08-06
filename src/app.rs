@@ -414,28 +414,32 @@ impl TelescopeApp {
                                     });
 
                                     let row_height = 18.0;
-
-                                    ui.label("Monitored Channels:");
+                                    let mut channels:Vec<String> = self
+                                        .intel
+                                        .channels
+                                        .keys().cloned().collect();
+                                    channels.sort_unstable();
+                                    ui.label(RichText::new("Monitored channels").font(FontId::proportional(20.0)));
                                     ui.push_id("chan_tbl",|ui|{
                                         TableBuilder::new(ui)
-                                        .columns(Column::resizable(Column::exact(225.0), true), 2)
+                                        .columns(Column::resizable(Column::exact(450.0), true), 1)
                                         .striped(true)
                                         .vscroll(true)
                                         .header(row_height,|mut header|{
                                             header.col(|ui| {
-                                                ui.heading("Active");
-                                            });
-                                            header.col(|ui| {
-                                                ui.heading("Channel name");
+                                                ui.label("Channel");
                                             });
                                         })
                                         .body(|mut body|{
-                                            body.rows(row_height, num_rows, |mut row| {
-                                            
+                                            body.rows(row_height, channels.len(), |mut row| {
+                                                let index = row.index();
+                                                row.col(|ui: &mut egui::Ui| {
+                                                    let chan = self.intel.channels.get_mut(&channels[index]).unwrap();
+                                                    if ui.checkbox(chan, &channels[index]).changed() {
+                                                        self.settings.saved = false;
+                                                    }
+                                                });
                                             });
-                                            /*for channel in &self.intel.channels {
-                                                
-                                            }*/
                                         });
                                     });
 
