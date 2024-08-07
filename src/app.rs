@@ -420,26 +420,30 @@ impl TelescopeApp {
                                         .keys().cloned().collect();
                                     channels.sort_unstable();
                                     ui.label(RichText::new("Monitored channels").font(FontId::proportional(20.0)));
+                                    ui.label("Select all the Intel Channels to monitor.");
                                     ui.push_id("chan_tbl",|ui|{
                                         TableBuilder::new(ui)
                                         .columns(Column::resizable(Column::exact(450.0), true), 1)
                                         .striped(true)
                                         .vscroll(true)
-                                        .header(row_height,|mut header|{
-                                            header.col(|ui| {
-                                                ui.label("Channel");
-                                            });
-                                        })
                                         .body(|mut body|{
-                                            body.rows(row_height, channels.len(), |mut row| {
-                                                let index = row.index();
-                                                row.col(|ui: &mut egui::Ui| {
-                                                    let chan = self.intel.channels.get_mut(&channels[index]).unwrap();
-                                                    if ui.checkbox(chan, &channels[index]).changed() {
-                                                        self.settings.saved = false;
-                                                    }
+                                            if channels.len() > 0 {
+                                                body.rows(row_height, channels.len(), |mut row| {
+                                                    let index = row.index();
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let chan = self.intel.channels.get_mut(&channels[index]).unwrap();
+                                                        if ui.checkbox(chan, &channels[index]).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
                                                 });
-                                            });
+                                            } else {
+                                                body.row(row_height,|mut row|{
+                                                    row.col(|ui|{
+                                                        ui.label("No intel channels detected");
+                                                    });
+                                                });
+                                            }
                                         });
                                     });
 
