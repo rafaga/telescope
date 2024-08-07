@@ -40,24 +40,24 @@ impl IntelWatcher {
         a
     }
 
-    pub fn scan_for_files(&mut self) -> Result<(),String>{
+    pub fn scan_for_files(&mut self) -> Result<(), String>{
         self.channels.clear();
-        let mut files = Vec::new();
-        let os_dirs = directories::BaseDirs::new()?;
-        let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
-        let mut kat = path.as_path().into_iter();
-        while let Some(file_path_str) = kat.next() {
-            let file_path = Path::new(file_path_str);
-            if file_path.is_file() {
-                files.push(file_path.file_name().unwrap());
+        let os_dirs = directories::BaseDirs::new();
+        if os_dirs.is_some() {
+            let path = os_dirs.unwrap().home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
+            if let Ok(mut directory) = path.as_path().read_dir() {
+                while let Some(Ok(entry)) = directory.next() {
+                    if let Some((name,_file_date)) = entry.file_name().to_string_lossy().split_once('_') {
+                        self.channels.entry(String::from(name)).or_insert(false);
+                    }
+                }
+                Ok(())
+            } else {
+                Err(String::from("Error on Intel path setup"))
             }
+        } else {
+            Err(String::from("Error on Intel path setup"))
         }
-        for file in files {
-            if let Some((name,_file_date)) = file.to_string_lossy().split_once('_') {
-                self.channels.entry(String::from(name)).or_insert(false);
-            }
-        }
-        Ok(())
     }
 
     fn async_watcher() -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {

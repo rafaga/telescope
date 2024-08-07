@@ -354,7 +354,7 @@ impl TelescopeApp {
         egui::Window::new("Settings")
         .movable(true)
         .resizable(false)
-        .fixed_size([650.0,500.0])
+        .fixed_size([650.0,510.0])
         .movable(true)
         .open(&mut self.open[2])
         .show(ctx, |ui| {
@@ -404,13 +404,19 @@ impl TelescopeApp {
                                     let num_rows = keys.len().div_ceil(3);
                                     ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
-                                        ui.label("Warn when an enemy is within this number of jumps close to you:");
-                                        if ui.text_edit_singleline(&mut self.settings.mapping.warning_area).changed() {
-                                            if self.settings.mapping.warning_area.parse::<i8>().is_err() {
-                                                self.settings.mapping.warning_area = String::from("1");
-                                            }
-                                            self.settings.saved = false;
-                                        }
+                                        ui.label("Warn me when an enemy is within");
+                                        egui::ComboBox::from_label("systems close to me")
+                                            .selected_text(self.settings.mapping.warning_area.clone())
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("1"), "1");
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("2"), "2");
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("3"), "3");
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("4"), "4");
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("5"), "5");
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("6"), "6");
+                                                ui.selectable_value(&mut self.settings.mapping.warning_area, String::from("7"), "7");
+                                            });
+                                        ui.end_row();
                                     });
 
                                     let row_height = 18.0;
@@ -423,16 +429,22 @@ impl TelescopeApp {
                                     ui.label("Select all the Intel Channels to monitor.");
                                     ui.push_id("chan_tbl",|ui|{
                                         TableBuilder::new(ui)
-                                        .columns(Column::resizable(Column::exact(450.0), true), 1)
+                                        .columns(Column::resizable(Column::exact(230.0), true), 2)
                                         .striped(true)
                                         .vscroll(true)
                                         .body(|mut body|{
                                             if channels.len() > 0 {
-                                                body.rows(row_height, channels.len(), |mut row| {
-                                                    let index = row.index();
+                                                body.rows(row_height, channels.len().div_ceil(2), |mut row| {
+                                                    let index = row.index() * 2;
                                                     row.col(|ui: &mut egui::Ui| {
                                                         let chan = self.intel.channels.get_mut(&channels[index]).unwrap();
                                                         if ui.checkbox(chan, &channels[index]).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let chan = self.intel.channels.get_mut(&channels[index + 1]).unwrap();
+                                                        if ui.checkbox(chan, &channels[index + 1]).changed() {
                                                             self.settings.saved = false;
                                                         }
                                                     });
