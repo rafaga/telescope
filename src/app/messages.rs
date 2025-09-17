@@ -43,6 +43,7 @@ pub enum Message {
     MapHidden(usize),
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
+    IntelFileChanged(String),
 }
 
 pub enum CharacterSync {
@@ -56,6 +57,9 @@ pub struct MessageSpawner {
 
 impl MessageSpawner {
     pub fn new(sender: Arc<mpsc::Sender<Message>>) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         // Set up a channel for communicating.
         // Build the runtime for the new thread.
         //
@@ -67,6 +71,9 @@ impl MessageSpawner {
     }
 
     pub fn spawn(&self, msg: Message) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if self.spawn.blocking_send(msg).is_err() {
             panic!("The shared runtime has shut down.");
         }
@@ -80,13 +87,9 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
         Ok(listener) => {
             if let Ok((stream, _)) = listener.accept().await {
                 let io = TokioIo::new(stream);
-                //let svc_clone = svc.clone();
                 let server = http1::Builder::new()
                     .serve_connection(io, AuthService2 { tx: Arc::new(atx) })
                     .into_future();
-
-                // TODO: Implement graceful_shutdown
-                //pin!(server);
 
                 let stx = Arc::clone(&tx);
                 thread::spawn(move || {
@@ -95,6 +98,9 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         .build()
                         .unwrap();
                     runtime.block_on(async {
+                        #[cfg(feature = "puffin")]
+                        puffin::profile_scope!("spawned Auth success message");
+
                         while let Some(result) = arx.recv().await {
                             let _send_result = stx.send(Message::EsiAuthSuccess(result)).await;
                         }
@@ -136,6 +142,9 @@ pub struct AuthSpawner {
 
 impl AuthSpawner {
     pub fn new(msg_tx: Arc<mpsc::Sender<Message>>) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         // Set up a channel for communicating.
         let (send, mut recv) = mpsc::channel(3);
         let arc_send = Arc::new(send);
@@ -147,10 +156,14 @@ impl AuthSpawner {
         // to more cleanly forward errors if the `unwrap()`
         // panics.
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let cloned_msg_sender = Arc::clone(&msg_tx);
         std::thread::spawn(move || {
             rt.block_on(async move {
+                #[cfg(feature = "puffin")]
+                puffin::profile_scope!("spawned auth handler");
+
                 while let Some(time) = recv.recv().await {
-                    let cloned_msg_sender = Arc::clone(&msg_tx);
+                    let cloned_msg_sender = Arc::clone(&cloned_msg_sender);
                     tokio::spawn(handle_auth(time, cloned_msg_sender));
                 }
                 // Once all senders have gone out of scope,
@@ -164,6 +177,9 @@ impl AuthSpawner {
     }
 
     pub fn spawn(&self) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if self.spawn.blocking_send(60).is_err() {
             panic!("The shared runtime has shut down.");
         }

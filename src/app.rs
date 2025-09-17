@@ -1,5 +1,9 @@
-use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
+use crate::app::file::IntelEventHandler;
+use crate::app::messages::{
+    CharacterSync, MapSync, Message, SettingsPage, Target, Type,
+};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
+use chrono::Utc;
 use data::AppData;
 use eframe::egui::{
     self, epaint::text::LayoutJob, Button, Color32, FontFamily, FontId, Margin, RichText,
@@ -8,16 +12,21 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
+use regex::RegexBuilder;
 use sde::{objects::Universe, SdeManager};
 use settings::Manager;
-use std::path::Path;
-use std::sync::Arc;
 use std::thread;
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+    sync::Arc,
+};
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
 use tokio::time::{sleep, Duration};
 use webb::esi::EsiManager;
-use notify::{Config, Event, FsEventWatcher, RecommendedWatcher, RecursiveMode, Watcher, Error};
+use notify::{Config, RecommendedWatcher, Watcher, RecursiveMode};
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -60,11 +69,14 @@ pub struct TelescopeApp {
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
     settings: Manager,
-    watcher: Option<FsEventWatcher>,
+    watcher: RecommendedWatcher,
 }
 
 impl Default for TelescopeApp {
     fn default() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let settings = Manager::new();
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
@@ -84,16 +96,24 @@ impl Default for TelescopeApp {
         let mut sde = SdeManager::new(Path::new(&settings.paths.sde_db), settings.factor);
         let _ = sde.get_universe();
 
+        let arc_map_sender = Arc::new(mtx);
         let arc_msg_sender = Arc::new(gtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
+
+        let intel_event_handler = IntelEventHandler::new(settings.channels.monitored.clone(),Arc::clone(&arc_msg_sender));
+        let mut watcher = RecommendedWatcher::new(intel_event_handler,Config::default()).unwrap();
+
+        if let Some(intel_path) = &settings.paths.intel {
+            watcher.watch(intel_path, RecursiveMode::NonRecursive).expect("Error monitoring intel file path");
+        }
 
         Self {
             // Example stuff:
             initialized: false,
             points: Vec::new(),
             app_msg: (arc_msg_sender, grx),
-            map_msg: (Arc::new(mtx), mrx),
+            map_msg: (arc_map_sender, mrx),
             char_msg: None,
             open: [false; 3],
             esi,
@@ -113,7 +133,7 @@ impl Default for TelescopeApp {
             task_msg: msgmon,
             task_auth: authmon,
             settings,
-            watcher: None,
+            watcher,
         }
     }
 }
@@ -129,7 +149,8 @@ impl eframe::App for TelescopeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         //let mut rt = tokio::runtime::Runtime::new().unwrap();
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("update");
+        puffin::profile_function!();
+
         let Self {
             initialized: _,
             points: _points,
@@ -201,24 +222,7 @@ impl eframe::App for TelescopeApp {
                 }
                 self.start_watchdog(ids);
             }
-
-            let (atx, arx) = std::sync::mpsc::channel();
-            let fs_watcher = RecommendedWatcher::new(
-                move |res| {
-                    thread::spawn(move || {
-                        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-                        runtime.block_on(async {
-                            atx.send(res);
-                        });
-                    });
-                },
-                Config::default(),
-            );
-
-            if let Ok(watcher) = fs_watcher {
-                self.watcher = Some(watcher);
-            }
-
+            
             self.initialized = true;
         }
 
@@ -231,7 +235,7 @@ impl eframe::App for TelescopeApp {
         #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
-            egui::menu::bar(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Preferences").clicked() {
                         self.open[2] = true;
@@ -283,7 +287,7 @@ impl eframe::App for TelescopeApp {
                 tree.ui(&mut self.behavior, ui);
             }
             let _ = egui::Frame::canvas(ui.style())
-                .inner_margin(Margin::symmetric(2.0, 5.0))
+                .inner_margin(Margin::symmetric(2, 5))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .stick_to_bottom(true)
@@ -316,7 +320,7 @@ impl eframe::App for TelescopeApp {
 impl TelescopeApp {
     fn event_manager(&mut self) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("event_manager");
+        puffin::profile_function!();
 
         while let Ok(message) = self.app_msg.1.try_recv() {
             match message {
@@ -327,14 +331,19 @@ impl TelescopeApp {
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),
-                Message::PlayerNewLocation((player_id, solar_system_id)) => self.update_player_location(player_id, solar_system_id)
+                Message::PlayerNewLocation((player_id, solar_system_id)) => {
+                    self.update_player_location(player_id, solar_system_id)
+                }
+                Message::IntelFileChanged(file_name) => {
+                    self.load_intel_file(file_name);
+                }
             };
         }
     }
 
     fn open_about_window(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("open_about_window");
+        puffin::profile_function!();
 
         egui::Window::new("About Telescope")
             .fixed_size((400.0, 200.0))
@@ -362,11 +371,12 @@ impl TelescopeApp {
 
     fn open_settings_window(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("open_preferences_window");
+        puffin::profile_function!();
+
         egui::Window::new("Settings")
         .movable(true)
         .resizable(false)
-        .fixed_size([650.0,500.0])
+        .fixed_size([650.0,510.0])
         .movable(true)
         .open(&mut self.open[2])
         .show(ctx, |ui| {
@@ -412,58 +422,107 @@ impl TelescopeApp {
                                         .tile_data
                                         .keys()
                                         .copied().collect();
-                                    keys.sort();
+                                    keys.sort_unstable();
                                     let num_rows = keys.len().div_ceil(3);
                                     ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
-                                        ui.label("Warn when an enemy is within this number of jumps close to you:");
-                                        if ui.text_edit_singleline(&mut self.settings.mapping.warning_area).changed() {
-                                            if self.settings.mapping.warning_area.parse::<i8>().is_err() {
-                                                self.settings.mapping.warning_area = String::from("1");
-                                            }
-                                            self.settings.saved = false;
-                                        }
-                                    });
-                                    let row_height = 18.0;
-                                    ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
-                                    ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
-                                    TableBuilder::new(ui)
-                                    .column(Column::resizable(Column::exact(150.0),false))
-                                    .column(Column::resizable(Column::exact(150.0),false))
-                                    .column(Column::resizable(Column::exact(150.0),false))
-                                    .striped(true)
-                                    .vscroll(false)
-                                    .body(|body| {
-                                        body.rows(row_height, num_rows, |mut row| {
-                                            let key_index = row.index() * 3;
-                                            row.col(|ui: &mut egui::Ui| {
-                                                let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
-                                                let name = region.get_name();
-                                                //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
-                                                if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                    self.settings.saved = false;
+                                        ui.label("Warn me when an enemy is within");
+                                        egui::ComboBox::from_label("systems close to me")
+                                            .selected_text(self.settings.mapping.warning_area.clone())
+                                            .show_ui(ui, |ui| {
+                                                for i in 1u8..8 {
+                                                    if ui.selectable_value(&mut self.settings.mapping.warning_area, i.to_string(), i.to_string()).changed() {
+                                                        self.settings.saved = false;
+                                                    }
                                                 }
                                             });
-                                            let mut t_key_index = key_index + 1;
-                                            if t_key_index < keys.len() {
+                                        ui.end_row();
+                                    });
+
+                                    let row_height = 18.0;
+                                    let mut channels:Vec<String> = self
+                                        .settings
+                                        .channels
+                                        .available
+                                        .keys().cloned().collect();
+                                    channels.sort_unstable();
+                                    ui.label(RichText::new("Monitored channels").font(FontId::proportional(20.0)));
+                                    ui.label("Select all the Intel Channels to monitor.");
+                                    ui.push_id("chan_tbl",|ui|{
+                                        TableBuilder::new(ui)
+                                        .columns(Column::resizable(Column::exact(230.0), true), 2)
+                                        .striped(true)
+                                        .vscroll(true)
+                                        .body(|mut body|{
+                                            if !channels.is_empty() {
+                                                body.rows(row_height, channels.len().div_ceil(2), |mut row| {
+                                                    let index = row.index() * 2;
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let chan = self.settings.channels.available.get_mut(&channels[index]).unwrap();
+                                                        if ui.checkbox(chan, &channels[index]).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
+                                                    if index < channels.len()-1 {
+                                                        row.col(|ui: &mut egui::Ui| {
+                                                            let chan = self.settings.channels.available.get_mut(&channels[index + 1]).unwrap();
+                                                            if ui.checkbox(chan, &channels[index + 1]).changed() {
+                                                                self.settings.saved = false;
+                                                            }
+                                                        });
+                                                    }
+                                                });
+                                            } else {
+                                                body.row(row_height,|mut row|{
+                                                    row.col(|ui|{
+                                                        ui.label("No intel channels detected");
+                                                    });
+                                                });
+                                            }
+                                        });
+                                    });
+
+                                    ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
+                                    ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
+                                    ui.push_id("rgn_tbl",|ui|{
+                                        TableBuilder::new(ui)
+                                        .column(Column::resizable(Column::exact(150.0),false))
+                                        .column(Column::resizable(Column::exact(150.0),false))
+                                        .column(Column::resizable(Column::exact(150.0),false))
+                                        .striped(true)
+                                        .vscroll(false)
+                                        .body(|body| {
+                                            body.rows(row_height, num_rows, |mut row| {
+                                                let key_index = row.index() * 3;
                                                 row.col(|ui: &mut egui::Ui| {
-                                                    let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                    let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
                                                     let name = region.get_name();
+                                                    //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
                                                     if ui.checkbox(&mut region.show_on_startup, name).changed() {
                                                         self.settings.saved = false;
                                                     }
                                                 });
-                                            }
-                                            t_key_index += 1;
-                                            if t_key_index < keys.len() {
-                                                row.col(|ui: &mut egui::Ui| {
-                                                    let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
-                                                    let name = region.get_name();
-                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                        self.settings.saved = false;
-                                                    }
-                                                });
-                                            }
+                                                let mut t_key_index = key_index + 1;
+                                                if t_key_index < keys.len() {
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                        let name = region.get_name();
+                                                        if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
+                                                }
+                                                t_key_index += 1;
+                                                if t_key_index < keys.len() {
+                                                    row.col(|ui: &mut egui::Ui| {
+                                                        let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                                        let name = region.get_name();
+                                                        if ui.checkbox(&mut region.show_on_startup, name).changed() {
+                                                            self.settings.saved = false;
+                                                        }
+                                                    });
+                                                }
+                                            });
                                         });
                                     });
                                 },
@@ -624,9 +683,22 @@ impl TelescopeApp {
                             self.settings.mapping.startup_regions.push(*region.0);
                         }
                     }
+                    if let Some(intel_path) = &self.settings.paths.intel {
+                        let _ = self.watcher.unwatch(intel_path);
+                    }
+                    let mut monitored_channels = Vec::new();
+                    for channel_data in self.settings.channels.available.iter() {
+                        if *channel_data.1 {
+                            monitored_channels.push(channel_data.0.to_string());
+                        }
+                    }
+                    monitored_channels.sort_unstable();
+                    if let Some(intel_path) = &self.settings.paths.intel {
+                        let _ = self.watcher.watch(intel_path, RecursiveMode::NonRecursive);
+                    }
+                    self.settings.channels.monitored = Arc::new(monitored_channels);
                     self.settings.save();
                 }
-                ui.button("Cancel").clicked();
                 if !self.settings.saved {
                     ui.colored_label(Color32::YELLOW, "⚠ unsaved changes");
                 }
@@ -634,9 +706,86 @@ impl TelescopeApp {
         });
     }
 
+    fn load_intel_file(&mut self, file_name: String) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
+        let mut path = self.settings.paths.intel.as_ref().unwrap().clone();
+        path = path.join(file_name.as_str());
+
+        //getting the first byte to read from ythe last recorded file lenght
+        let mut start = 0;
+        if let Some(log_entry) = self.settings.channels.log_files.get(&file_name) {
+            start = log_entry.0;
+        }
+        let mut _length = 0;
+
+        if let Ok(mut intel_file) = File::open(path) {
+            // Seek to the start position
+            _length = start - intel_file.metadata().unwrap().len();
+            if intel_file.seek(SeekFrom::Start(start)).is_ok() {
+                // Create a reader with a fixed length
+                let mut chunk = intel_file.take(_length);
+                let mut new_data = String::new();
+                if let Ok(bytes_read) = chunk.read_to_string(&mut new_data) {
+                    let _ = self.parse_intel_data(new_data);
+                    self.settings
+                        .channels
+                        .log_files
+                        .entry(file_name)
+                        .and_modify(|hash_entry| {
+                            hash_entry.0 = start + bytes_read as u64;
+                            hash_entry.1 = Utc::now();
+                        });
+                }
+            }
+        }
+    }
+
+    fn parse_intel_data(&mut self, data: String) -> Result<(), String> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
+        if let Ok(set) =
+            RegexBuilder::new(r"(\[\s\d{4}\.\d{2}\.\d{2}\s\d{2}:\d{2}:\d{2}\s\]){1}(.+>)(.+)")
+                .case_insensitive(true)
+                .build()
+        {
+            data.lines()
+                .filter(|line| set.is_match(line))
+                .for_each(|intel_line| {
+                    let data_x = intel_line.to_string().clone();
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let app_msg_tx = Arc::clone(&self.app_msg.0);
+                    thread::spawn(move || {
+                        runtime.block_on(async {
+                            #[cfg(feature = "puffin")]
+                            puffin::profile_scope!("spawned intel message data");
+
+                            let _ = app_msg_tx
+                                .send(Message::GenericNotification((
+                                    Type::Info,
+                                    String::from("TelescopeApp"),
+                                    String::from("parse_intel_data"),
+                                    data_x,
+                                )))
+                                .await;
+                        });
+                    });
+                });
+            Ok(())
+        } else {
+            Err(String::from("Error Building Regex"))
+        }
+    }
+
     fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("update_character_into_database");
+        puffin::profile_function!();
+
         let auth_info = self.esi.esi.get_authorize_url().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -681,7 +830,8 @@ impl TelescopeApp {
 
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("update_status_with_error");
+        puffin::profile_function!();
+
         let full_time = chrono::Local::now().time().to_string();
         let time = full_time.split_at(12);
         let mut job = LayoutJob::default();
@@ -732,7 +882,7 @@ impl TelescopeApp {
             }
             Type::Info => {
                 job.append("INFO: ", 0.0, info.clone());
-            },
+            }
             Type::Debug => {
                 job.append("DEBUG: ", 0.0, debug.clone());
             }
@@ -742,6 +892,9 @@ impl TelescopeApp {
     }
 
     fn create_new_regional_pane(&mut self, region_id: usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
             self.settings.paths.sde_db.clone(),
@@ -763,6 +916,9 @@ impl TelescopeApp {
     }
 
     fn show_abstract_map(&mut self, region_id: usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.behavior
             .tile_data
             .entry(region_id)
@@ -778,14 +934,15 @@ impl TelescopeApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("new_eframe");
+        puffin::profile_function!();
+
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
         let mut fonts = eframe::egui::FontDefinitions::default();
         fonts.font_data.insert(
             "Noto Sans Regular".to_owned(),
-            eframe::egui::FontData::from_static(include_bytes!("../assets/NotoSansTC-Regular.otf")),
+            Arc::new(eframe::egui::FontData::from_static(include_bytes!("../assets/NotoSansTC-Regular.otf"))),
         );
         fonts
             .families
@@ -812,7 +969,8 @@ impl TelescopeApp {
         task_msg: Arc<MessageSpawner>,
     ) -> Box<dyn TabPane> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("generate_pane");
+        puffin::profile_function!();
+
         let pane: Box<dyn TabPane> = if let Some(region) = region_id {
             Box::new(RegionPane::new(receiver, path, factor, region, task_msg))
         } else {
@@ -823,7 +981,8 @@ impl TelescopeApp {
 
     fn hide_abstract_map(&mut self, region_id: usize) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("close_abstract_map");
+        puffin::profile_function!();
+
         if let Some(tile_id) = self
             .behavior
             .tile_data
@@ -843,7 +1002,8 @@ impl TelescopeApp {
 
     fn create_tree(&self) -> Tree<Box<dyn TabPane>> {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("create_tree");
+        puffin::profile_function!();
+
         let mut tiles = Tiles::default();
         let id = tiles.insert_pane(Self::generate_pane(
             self.map_msg.0.subscribe(),
@@ -858,6 +1018,9 @@ impl TelescopeApp {
     }
 
     pub fn start_watchdog(&mut self, character_id: Vec<usize>) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -868,6 +1031,9 @@ impl TelescopeApp {
         let mut t_esi = self.esi.clone();
         thread::spawn(move || {
             runtime.block_on(async {
+                #[cfg(feature = "puffin")]
+                puffin::profile_scope!("spawned watchdog");
+
                 let mut character_ids = vec![];
                 if let Err(t_error) = t_esi.esi.update_spec().await {
                     let _ = app_sender
@@ -902,7 +1068,7 @@ impl TelescopeApp {
                                     t_error.to_string(),
                                 )))
                                 .await;
-                            return; 
+                            return;
                         } else {
                             let _ = app_sender
                                 .send(Message::GenericNotification((
@@ -916,16 +1082,16 @@ impl TelescopeApp {
                     }
                     for item in &mut character_ids {
                         //PlayerDatabase
-                        match t_esi
-                            .get_location(item.0.try_into().unwrap())
-                            .await
-                        {
+                        match t_esi.get_location(item.0.try_into().unwrap()).await {
                             Ok(new_location) => {
                                 if item.1 != (new_location as usize) {
                                     item.1 = new_location as usize;
                                     let _ = app_sender
-                                                .send(Message::PlayerNewLocation((item.0.try_into().unwrap(),new_location)))
-                                                .await;
+                                        .send(Message::PlayerNewLocation((
+                                            item.0.try_into().unwrap(),
+                                            new_location,
+                                        )))
+                                        .await;
                                     if let Err(t_error) =
                                         map_sender.send(MapSync::PlayerMoved((item.0, item.1)))
                                     {
@@ -995,12 +1161,14 @@ impl TelescopeApp {
                 }
             });
         });
-        
-       
+
         self.char_msg = Some(Arc::new(sender));
     }
 
     fn open_debug_menu(&mut self, ctx: &egui::Context) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         egui::Window::new("Debug Menu")
             .fixed_size((400.0, 600.0))
             .open(&mut self.open[1])
@@ -1137,12 +1305,15 @@ impl TelescopeApp {
             });
     }
 
-    fn update_player_location(&mut self,player_id: i32, solar_system_id: i32) {
+    fn update_player_location(&mut self, player_id: i32, solar_system_id: i32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         for index in 0..self.esi.characters.len() {
-            if self.esi.characters[index].id == player_id as i32 {
-                self.esi.characters[index].location=solar_system_id as i32;
+            if self.esi.characters[index].id == player_id {
+                self.esi.characters[index].location = solar_system_id;
                 let char = &mut self.esi.characters[index].clone();
-                if let Ok(_a) = self.esi.write_character(char){
+                if let Ok(_a) = self.esi.write_character(char) {
                     self.task_msg.spawn(Message::GenericNotification((
                         Type::Debug,
                         String::from("Telescope App"),

@@ -1,90 +1,91 @@
-use std::collections::HashMap;
-use std::{fs::File,path::Path};
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::mpsc::{Receiver,  channel};
-use tokio::runtime::Builder;
+use crate::app::messages::{Message, Type};
+use notify::event::{CreateKind, ModifyKind};
+use notify::EventHandler;
+use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+use std::thread;
 
-pub(crate) struct LogManager {
-    obj_file: File,
+pub struct IntelEventHandler {
+    app_msg: Arc<Sender<Message>>,
+    channels: Arc<Vec<String>>,
 }
 
-impl LogManager {
-    pub fn new() -> Self {
+
+impl EventHandler for IntelEventHandler {
+    fn handle_event(&mut self, event: Result<notify::Event, notify::Error>) {
+        if self.channels.is_empty() {
+            return;
+        }
+        if let Ok(event) = event {
+            let app_sender_file = Arc::clone(&self.app_msg);
+            match event.kind {
+                notify::EventKind::Modify(ModifyKind::Data(
+                    notify::event::DataChange::Content,
+                )) => {
+                    if let Some(path) = event.paths[0].file_name() {
+                        let file_name = path.to_string_lossy().to_string();
+                        let splitted_file_name = file_name.split_once('_').unwrap();
+                        if self.channels
+                            .binary_search(&splitted_file_name.0.to_string())
+                            .is_ok()
+                        {
+                            thread::spawn(move || {
+                                let runtime = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .unwrap();
+                                runtime.block_on(async {
+                                    #[cfg(feature = "puffin")]
+                                    puffin::profile_scope!("spawned Auth success message");
+            
+                                    let _ = app_sender_file
+                                        .send(Message::IntelFileChanged(file_name.clone()))
+                                        .await;
+                                    let _ = app_sender_file
+                                        .send(Message::GenericNotification((
+                                            Type::Debug,
+                                            String::from("Telescope"),
+                                            String::from("IntelWatcher"),
+                                            file_name + " Changed",
+                                        )))
+                                        .await;
+                                });
+                            });
+                        }
+                    }
+                }
+                notify::EventKind::Create(CreateKind::File) => {}
+                _ => {
+                    thread::spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                        runtime.block_on(async {
+                            let _ = app_sender_file
+                            .send(Message::GenericNotification((
+                                Type::Debug,
+                                String::from("Telescope"),
+                                String::from("IntelWatcher"),
+                                event.paths[0].file_name().unwrap().to_str().unwrap().to_owned() + " Created",
+                            )))
+                            .await;
+                        });
+                    });
+                }
+            }
+        }
+    }
+}
+
+
+impl IntelEventHandler {
+    pub fn new(channels:Arc<Vec<String>>, app_sender: Arc<Sender<Message>>) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
         Self {
-            obj_file: File::open(Path::new("orale.log")).expect("woah!!"),
+            app_msg: app_sender,
+            channels,
         }
     }
-}
-
-pub struct IntelWatcher {
-    pub channels: HashMap<String,bool>,
-}
-
-impl IntelWatcher {
-
-    pub fn new() -> Self {
-        let mut obj = IntelWatcher{
-            channels: HashMap::new(),
-        };
-        let _ = obj.scan_for_files();
-        obj
-    }
-
-    fn scan_for_files(&mut self) -> Result<(),String>{
-        self.channels.clear();
-        let mut files = Vec::new();
-        if let Some(os_dirs) = directories::BaseDirs::new() {
-            let path = os_dirs.home_dir().join("Documents").join("EVE").join("logs").join("ChatLogs");
-            let mut kat = path.as_path().into_iter();
-            while let Some(file_path_str) = kat.next() {
-                let file_path = Path::new(file_path_str);
-                if file_path.is_file() {
-                    files.push(file_path.file_name().unwrap());
-                }
-            }
-            for file in files {
-                if let Some((name,_file_date)) = file.to_string_lossy().split_once('_') {
-                    self.channels.entry(String::from(name)).or_insert(false);
-                }
-            }
-        } else {
-            return Err(String::from("Error on path initialization"));
-        }
-        Ok(())
-    }
-
-    fn async_watcher(&mut self) -> notify::Result<(RecommendedWatcher, Receiver<notify::Result<Event>>)> {
-        let (tx, rx) = channel(10);
-        let watcher = RecommendedWatcher::new(
-            move |res| {
-                
-                let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-                runtime.block_on(async {
-                    tx.send(res).await.unwrap();
-                })
-            },
-            Config::default(),
-        )?;
-        // Automatically select the best implementation for your platform.
-        // You can also access each implementation directly e.g. INotifyWatcher.
-        Ok((watcher, rx))
-    }
-    
-    async fn async_watch<P: AsRef<Path>>(&mut self, path: P) -> notify::Result<()> {
-        let (mut watcher, mut rx) = self.async_watcher()?;
-    
-        // Add a path to be watched. All files and directories at that path and
-        // below will be monitored for changes.
-        watcher.watch(path.as_ref(), RecursiveMode::NonRecursive)?;
-    
-        while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => println!("changed: {:?}", event),
-                Err(e) => println!("watch error: {:?}", e),
-            }
-        }
-    
-        Ok(())
-    }
-
 }

@@ -1,6 +1,7 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
-    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText
+    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding,
+    Sense, Shape, Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText,
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
@@ -44,6 +45,9 @@ impl UniversePane {
         factor: i64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -59,6 +63,9 @@ impl UniversePane {
     }
 
     fn generate_data(&mut self, path: String, factor: i64) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
         if let Ok(points) = t_sde.get_systempoints() {
             //we get connections
@@ -89,16 +96,25 @@ impl UniversePane {
 
 impl TabPane for UniversePane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.event_manager();
         ui.add(&mut self.map);
         UiResponse::None
     }
 
     fn get_title(&self) -> WidgetText {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         "Universe".into()
     }
 
     fn event_manager(&mut self) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
@@ -110,7 +126,12 @@ impl TabPane for UniversePane {
                     self.center_on_target(t_msg);
                 }
                 MapSync::PlayerMoved((player_id, location)) => {
-                    self.task_msg.spawn(Message::GenericNotification((Type::Debug,String::from("UniversePane"),String::from("event_manager"),String::from("Universe Pane - Player moved RCV"))));
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Debug,
+                        String::from("UniversePane"),
+                        String::from("event_manager"),
+                        String::from("Universe Pane - Player moved RCV"),
+                    )));
                     self.map.update_marker(player_id, location)
                 }
             };
@@ -118,6 +139,9 @@ impl TabPane for UniversePane {
     }
 
     fn center_on_target(&mut self, message: (usize, Target)) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         match message.1 {
             Target::System => {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
@@ -168,6 +192,9 @@ impl RegionPane {
         region_id: usize,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -186,6 +213,9 @@ impl RegionPane {
     }
 
     fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
 
         match t_sde.get_abstract_systems(vec![region_id as u32]) {
@@ -219,6 +249,9 @@ impl RegionPane {
 
 impl TabPane for RegionPane {
     fn event_manager(&mut self) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
@@ -230,7 +263,12 @@ impl TabPane for RegionPane {
                     self.center_on_target(t_msg);
                 }
                 MapSync::PlayerMoved((player_id, location)) => {
-                    self.task_msg.spawn(Message::GenericNotification((Type::Debug,String::from("UniversePane"),String::from("event_manager"),self.tab_name.clone() + " - Player moved RCV")));
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Debug,
+                        String::from("UniversePane"),
+                        String::from("event_manager"),
+                        self.tab_name.clone() + " - Player moved RCV",
+                    )));
                     self.map.update_marker(player_id, location)
                 }
             };
@@ -238,16 +276,25 @@ impl TabPane for RegionPane {
     }
 
     fn get_title(&self) -> WidgetText {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.tab_name.clone().into()
     }
 
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.event_manager();
         ui.add(&mut self.map);
         UiResponse::None
     }
 
     fn center_on_target(&mut self, message: (usize, Target)) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         match message.1 {
             Target::System => {
                 self.map.set_pos_from_nodeid(message.0);
@@ -266,6 +313,9 @@ pub struct TileData {
 
 impl TileData {
     pub fn new(name: String, show_on_startup: bool) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {
             tile_id: None,
             name,
@@ -275,22 +325,37 @@ impl TileData {
     }
 
     pub fn set_visible(&mut self, value: bool) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.visible = value;
     }
 
     pub fn get_visible(&self) -> bool {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.visible
     }
 
     pub fn set_tile_id(&mut self, value: Option<TileId>) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.tile_id = value;
     }
 
     pub fn get_tile_id(&self) -> Option<TileId> {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.tile_id
     }
 
     pub fn get_name(&self) -> String {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.name.clone()
     }
 }
@@ -309,6 +374,9 @@ pub struct TreeBehavior {
 
 impl TreeBehavior {
     pub fn new(task_msg: Arc<MessageSpawner>, factor: i64, path: String) -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -331,7 +399,8 @@ impl TreeBehavior {
 
     fn toggle_regions(&mut self, region_id: usize) {
         #[cfg(feature = "puffin")]
-        puffin::profile_scope!("toggle_regions");
+        puffin::profile_function!();
+
         let visible = self.tile_data.get_mut(&region_id).unwrap().get_visible();
         let tile_id = self.tile_data.get_mut(&region_id).unwrap().get_tile_id();
         //let ttx = Arc::clone(&self.generic_sender);
@@ -348,40 +417,10 @@ impl TreeBehavior {
 }
 
 impl TreeBehavior {
-    /*fn ui(&mut self, ui: &mut Ui) {
-        let Self {
-            simplification_options,
-            tab_bar_height,
-            gap_width,
-        } = self;
-
-        Grid::new("behavior_ui").num_columns(2).show(ui, |ui| {
-            ui.label("All panes must have tabs:");
-            ui.checkbox(&mut simplification_options.all_panes_must_have_tabs, "");
-            ui.end_row();
-
-            ui.label("Join nested containers:");
-            ui.checkbox(
-                &mut simplification_options.join_nested_linear_containers,
-                "",
-            );
-            ui.end_row();
-
-            ui.label("Tab bar height:");
-            ui.add(
-                DragValue::new(tab_bar_height)
-                    .clamp_range(0.0..=100.0)
-                    .speed(1.0),
-            );
-            ui.end_row();
-
-            ui.label("Gap width:");
-            ui.add(DragValue::new(gap_width).clamp_range(0.0..=20.0).speed(1.0));
-            ui.end_row();
-        });
-    }*/
-
     fn on_close_tab(&self, tile_id: TileId, button_response: Response) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if button_response.clicked() {
             for tile in self.tile_data.iter() {
                 if tile.1.get_tile_id() == Some(tile_id) {
@@ -416,6 +455,9 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         tile_id: TileId,
         tab_state: &TabState,
     ) -> eframe::egui::Response {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let text = self.tab_title_for_tile(tiles, tile_id);
         let str_text = text.text().to_string().clone();
         let font_id = TextStyle::Button.resolve(ui.style());
@@ -492,6 +534,9 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     }
 
     fn tab_title_for_pane(&mut self, view: &Box<dyn TabPane>) -> WidgetText {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         view.get_title()
     }
 
@@ -503,6 +548,9 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         _tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         ui.add_space(1.5);
         ui.menu_button("➕", |ui| {
             let mut _data: Vec<usize> = Vec::new();
@@ -561,49 +609,43 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     // Settings:
 
     fn tab_bar_height(&self, _style: &Style) -> f32 {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.tab_bar_height
     }
 
     fn gap_width(&self, _style: &Style) -> f32 {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.gap_width
     }
 
     fn simplification_options(&self) -> SimplificationOptions {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         self.simplification_options
     }
-    /*fn tab_bg_color(
-            &self,
-            visuals: &eframe::egui::Visuals,
-            _tiles: &Tiles<Pane>,
-            _tile_id: TileId,
-            active: bool,
-        ) -> Color32 {
-        if visuals.dark_mode {
-            if active {
-                Color32::from_rgba_unmultiplied(12, 14, 16, 100)
-            } else {
-                Color32::from_rgba_unmultiplied(50, 60, 70, 100)
-            }
-        } else {
-            if active {
-                Color32::from_rgba_unmultiplied(12, 14, 16, 100)
-            } else {
-                Color32::from_rgba_unmultiplied(50, 60, 70, 100)
-            }
-        }
-    }*/
 }
 
 struct ContextMenu {}
 
 impl ContextMenu {
     fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {}
     }
 }
 
 impl ContextMenuManager for ContextMenu {
     fn ui(&self, ui: &mut Ui) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         if ui.button("set beacon").clicked() {
             ui.close_menu();
         }
@@ -618,12 +660,18 @@ struct Template {}
 
 impl Template {
     fn new() -> Self {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         Self {}
     }
 }
 
 impl NodeTemplate for Template {
     fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut shapes = Vec::new();
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
         let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
@@ -656,6 +704,9 @@ impl NodeTemplate for Template {
     }
 
     fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut shapes = Vec::new();
         let rect = Rect::from_center_size(viewport_point, Vec2::new(94.0 * zoom, 39.0 * zoom));
         let color = if ui.visuals().dark_mode {
@@ -672,6 +723,9 @@ impl NodeTemplate for Template {
     }
 
     fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut shapes = Vec::new();
         let led_position = Pos2::new(
             viewport_point.x + (45.0 * zoom),
@@ -720,6 +774,9 @@ impl NodeTemplate for Template {
         initial_time: Instant,
         color: Color32,
     ) -> bool {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
         let mut shapes = Vec::new();
         let current_instant = Instant::now();
         let time_diff = current_instant.duration_since(initial_time);

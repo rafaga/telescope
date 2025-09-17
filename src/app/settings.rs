@@ -1,12 +1,17 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::collections::HashMap;
+use std::fs::{remove_file, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FilePaths {
     #[serde(skip)]
     pub settings: String,
+    #[serde(skip)]
+    pub intel: Option<PathBuf>,
     pub sde_db: String,
     pub local_db: String,
 }
@@ -18,9 +23,19 @@ pub(crate) struct Mapping {
 }
 
 #[derive(Serialize, Deserialize)]
+pub(crate) struct Channels {
+    #[serde(skip)]
+    pub available: HashMap<String, bool>,
+    #[serde(skip)]
+    pub log_files: HashMap<String, (u64, DateTime<Utc>)>,
+    pub monitored: Arc<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Manager {
     pub paths: FilePaths,
     pub mapping: Mapping,
+    pub channels: Channels,
     #[serde(skip)]
     pub factor: i64,
     #[serde(skip)]
@@ -57,20 +72,57 @@ impl Manager {
         self.saved = true;
     }
 
-    pub(crate) fn load(&mut self) -> Self {
+    pub(crate) fn load(&mut self) -> Result<(), String> {
         let file_path = Path::new(&self.paths.settings);
         let mut toml_data = String::new();
         let mut toml_file = File::open(file_path).expect("Unable to create settings file.");
         toml_file
             .read_to_string(&mut toml_data)
             .expect("Unable to write settings on new file.");
-        if let Ok(toml_formated_data) = toml::from_str::<Manager>(&toml_data) {
+        if let Ok(toml_formatted_data) = toml::from_str::<Manager>(&toml_data) {
+            self.mapping = toml_formatted_data.mapping;
+            self.channels.monitored = toml_formatted_data.channels.monitored;
+            self.paths.local_db = toml_formatted_data.paths.local_db;
+            self.paths.sde_db = toml_formatted_data.paths.sde_db;
+            self.scan_for_files()?;
             if self.mapping.warning_area.parse::<i8>().is_err() {
                 self.mapping.warning_area = String::from("1");
             }
-            toml_formated_data
+            for channel in self.channels.monitored.iter() {
+                self.channels
+                    .available
+                    .entry(channel.to_string())
+                    .and_modify(|val| *val = true);
+            }
+            Ok(())
         } else {
-            panic!("Invalid Data");
+            Err(String::from("Invalid Data"))
+        }
+    }
+
+    pub fn scan_for_files(&mut self) -> Result<(), String> {
+        self.channels.available.clear();
+        if let Ok(mut directory) = self.paths.intel.as_ref().unwrap().as_path().read_dir() {
+            while let Some(Ok(entry)) = directory.next() {
+                if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
+                {
+                    self.channels
+                        .available
+                        .entry(String::from(name))
+                        .or_insert(false);
+                    self.channels
+                        .log_files
+                        .entry(String::from(name) + "_" + file_date)
+                        .and_modify(|hash_entry| {
+                            hash_entry.1 = Utc::now();
+                            hash_entry.0 = entry.metadata().unwrap().len();
+                        })
+                        .or_insert((entry.metadata().unwrap().len(), Utc::now()));
+                }
+            }
+            Ok(())
+        } else {
+            Err(String::from("Error on Intel path setup"))
         }
     }
 }
@@ -79,9 +131,22 @@ impl Default for Manager {
     fn default() -> Self {
         let settings_file = String::from("telescope.toml");
         let file_path = Path::new(&settings_file);
+        let mut path = None;
+
+        if let Some(os_dirs) = directories::BaseDirs::new() {
+            path = Some(
+                os_dirs
+                    .home_dir()
+                    .join("Documents")
+                    .join("EVE")
+                    .join("logs")
+                    .join("ChatLogs"),
+            );
+        }
 
         let mut config = Self {
             paths: FilePaths {
+                intel: path,
                 settings: settings_file.clone(),
                 sde_db: String::from("assets/sde.db"),
                 local_db: String::from("telescope.db"),
@@ -93,15 +158,16 @@ impl Default for Manager {
             factor: 50000000000000,
             region_factor: -2,
             saved: true,
+            channels: Channels {
+                available: HashMap::new(),
+                log_files: HashMap::new(),
+                monitored: Arc::new(Vec::new()),
+            },
         };
 
-        if !file_path.is_file() {
+        if !file_path.is_file() || (config.load().is_err() && remove_file(file_path).is_ok()) {
             config.create();
-        } else {
-            config = config.load();
-            config.paths.settings.clone_from(&settings_file);
-            config.factor = 50000000000000;
-            config.region_factor = -2;
+            config.scan_for_files().unwrap();
         }
         config.saved = true;
         config
