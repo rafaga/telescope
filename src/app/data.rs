@@ -23,10 +23,10 @@ impl<'a> AppData<'a> {
                 "esi-corporations.read_standings.v1",
                 "esi-alliances.read_contacts.v1",
             ],
-            secret_key: option_env!("TELESCOPE_SECRET_KEY")
-                .expect("ESI Secret Key it is undefined, add it to Cargo.toml in env section."),
-            client_id: option_env!("TELESCOPE_CLIENT_ID")
-                .expect("ESI Client Id it is undefined, add it to Cargo.toml in env section"),
+            secret_key: option_env!("ESI_SECRET_KEY")
+                .expect("ESI_SECRET_KEY its undefined, please add to .cargo/config.toml in the [env] section."),
+            client_id: option_env!("ESI_CLIENT_ID")
+                .expect("ESI_CLIENT_ID its undefined, please add to .cargo/config.toml in the [env] section."),
             url: String::from("http://localhost:56123/login"),
             user_agent: String::from("telescope/dev"),
         }

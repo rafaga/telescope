@@ -1,7 +1,6 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
-    self, epaint::CircleShape, vec2, Align2, Color32, FontId, Pos2, Rect, Response, Rounding,
-    Sense, Shape, Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText,
+    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, vec2
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
@@ -491,7 +490,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         if ui.is_rect_visible(rect) && !tab_state.is_being_dragged {
             let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
-            ui.painter().rect(rect.shrink(0.5), 0.0, bg_color, stroke);
+            ui.painter().rect(rect.shrink(0.5), 0.0, bg_color, stroke,egui::StrokeKind::Middle);
 
             if tab_state.active {
                 // Make the tab name area connect with the tab ui area:
@@ -514,7 +513,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
             ui.painter()
-                .rect(rect_close.unwrap().shrink(0.5), 0.0, bg_color, stroke);
+                .rect(rect_close.unwrap().shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Middle);
             if ui.is_rect_visible(rect_close.unwrap()) {
                 let a = WidgetText::from(String::from("×")).into_galley(
                     ui,
@@ -647,11 +646,11 @@ impl ContextMenuManager for ContextMenu {
         puffin::profile_function!();
 
         if ui.button("set beacon").clicked() {
-            ui.close_menu();
+            ui.close();
         }
         ui.separator();
         if ui.button("⚙ settings").clicked() {
-            ui.close_menu();
+            ui.close();
         }
     }
 }
@@ -682,12 +681,13 @@ impl NodeTemplate for Template {
         };
         shapes.push(Shape::rect_stroke(
             rect,
-            Rounding::same(10.0 * zoom),
+            CornerRadius::same((10.0 * zoom).round() as u8),
             Stroke::new(4.0 * zoom, colors.1),
+            egui::StrokeKind::Middle
         ));
         shapes.push(Shape::rect_filled(
             rect,
-            Rounding::same(10.0 * zoom),
+            CornerRadius::same((10.0 * zoom).round() as u8),
             colors.0,
         ));
         ui.ctx().fonts(|fonts| {
@@ -716,8 +716,9 @@ impl NodeTemplate for Template {
         };
         shapes.push(Shape::rect_stroke(
             rect,
-            Rounding::same(10.0 * zoom),
+            CornerRadius::same((10.0 * zoom).round() as u8),
             Stroke::new(3.0 * zoom, color),
+            egui::StrokeKind::Middle
         ));
         ui.painter().extend(shapes);
     }
@@ -794,8 +795,9 @@ impl NodeTemplate for Template {
         let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
         shapes.push(Shape::rect_stroke(
             rect,
-            Rounding::same(10.0 * zoom),
+            CornerRadius::same((10.0 * zoom).round() as u8),
             Stroke::new((4.00 + (25.00 * secs_played)) * zoom, corrected_color),
+            egui::StrokeKind::Middle
         ));
         ui.painter().extend(shapes);
         ui.ctx().request_repaint();

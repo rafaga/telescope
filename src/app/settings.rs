@@ -100,29 +100,36 @@ impl Manager {
         }
     }
 
-    pub fn scan_for_files(&mut self) -> Result<(), String> {
+    pub fn scan_for_files(&mut self) -> Result< bool, String> {
         self.channels.available.clear();
-        if let Ok(mut directory) = self.paths.intel.as_ref().unwrap().as_path().read_dir() {
-            while let Some(Ok(entry)) = directory.next() {
-                if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
-                {
-                    self.channels
-                        .available
-                        .entry(String::from(name))
-                        .or_insert(false);
-                    self.channels
-                        .log_files
-                        .entry(String::from(name) + "_" + file_date)
-                        .and_modify(|hash_entry| {
-                            hash_entry.1 = Utc::now();
-                            hash_entry.0 = entry.metadata().unwrap().len();
-                        })
-                        .or_insert((entry.metadata().unwrap().len(), Utc::now()));
+        match &self.paths.intel {
+            Some(path) => {
+                if let Ok(mut directory) = path.as_path().read_dir() {
+                    while let Some(Ok(entry)) = directory.next() {
+                        if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
+                        {
+                            self.channels
+                                .available
+                                .entry(String::from(name))
+                                .or_insert(false);
+                            self.channels
+                                .log_files
+                                .entry(String::from(name) + "_" + file_date)
+                                .and_modify(|hash_entry| {
+                                    hash_entry.1 = Utc::now();
+                                    hash_entry.0 = entry.metadata().unwrap().len();
+                                })
+                                .or_insert((entry.metadata().unwrap().len(), Utc::now()));
+                        }
+                    }
+                    Ok(true)
+                } else {
+                    Err(String::from("Error on Intel path setup"))
                 }
-            }
-            Ok(())
-        } else {
-            Err(String::from("Error on Intel path setup"))
+            },
+            None => {
+                Ok(false)
+            },
         }
     }
 }
@@ -134,14 +141,15 @@ impl Default for Manager {
         let mut path = None;
 
         if let Some(os_dirs) = directories::BaseDirs::new() {
-            path = Some(
-                os_dirs
+            let t_path = os_dirs
                     .home_dir()
                     .join("Documents")
                     .join("EVE")
                     .join("logs")
-                    .join("ChatLogs"),
-            );
+                    .join("ChatLogs");
+            if t_path.exists() {
+                path = Some(t_path)
+            }
         }
 
         let mut config = Self {
@@ -167,7 +175,7 @@ impl Default for Manager {
 
         if !file_path.is_file() || (config.load().is_err() && remove_file(file_path).is_ok()) {
             config.create();
-            config.scan_for_files().unwrap();
+            let _result = config.scan_for_files();
         }
         config.saved = true;
         config
