@@ -314,10 +314,8 @@ impl EsiManager {
         self.auth.token = self.esi.access_token.as_ref().unwrap().clone();
         self.auth.expiration = chrono::DateTime::from_timestamp_millis(self.esi.access_expiration.unwrap());
         self.auth.refresh_token = self.esi.refresh_token.as_ref().unwrap().clone();
-        if let Ok(conn) = self.get_standard_connection() {
-            if let Err(t_error) = PlayerDatabase::update_auth(&conn, &self.auth){
-                return Err(t_error.to_string());
-            }
+        if let Ok(conn) = self.get_standard_connection() && let Err(t_error) = PlayerDatabase::update_auth(&conn, &self.auth){
+            return Err(t_error.to_string());
         }
         Ok(0)
         

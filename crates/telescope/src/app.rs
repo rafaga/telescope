@@ -143,7 +143,6 @@ impl eframe::App for TelescopeApp {
     /*fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }*/
-
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -579,8 +578,7 @@ impl TelescopeApp {
                                                             let inner = ui.horizontal_centered(|ui| {
                                                                 if let Some(idc) =
                                                                     self.esi.active_character
-                                                                {
-                                                                    if self.esi.characters[index].id == idc {
+                                                                    && self.esi.characters[index].id == idc {
                                                                         ui.style_mut()
                                                                             .visuals
                                                                             .override_text_color =
@@ -588,7 +586,6 @@ impl TelescopeApp {
                                                                         //ui.style_mut().visuals.selection.bg_fill = Color32::LIGHT_GRAY;
                                                                         //ui.style_mut().visuals.fade_out_to_color();
                                                                     }
-                                                                }
                                                                 if let Some(player_photo) = &self.esi.characters[index].photo
                                                                 {
                                                                     ui.add(
@@ -1234,11 +1231,10 @@ impl TelescopeApp {
                             for row_index in 0..self.search_results.len() {
                                 body.row(18.00, |mut row| {
                                     row.set_selected(false);
-                                    if let Some(selected_row) = self.search_selected_row {
-                                        if row_index == selected_row {
+                                    if let Some(selected_row) = self.search_selected_row
+                                        && row_index == selected_row {
                                             row.set_selected(true);
                                         }
-                                    }
                                     let col_data = row.col(|ui| {
                                         if ui.label(&self.search_results[row_index].1).clicked() {
                                             self.search_selected_row = Some(row_index);

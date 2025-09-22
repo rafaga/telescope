@@ -509,12 +509,12 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             );
         }
 
-        if rect_close.is_some() {
+        if let Some(tr_close) = rect_close {
             let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
             ui.painter()
-                .rect(rect_close.unwrap().shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Middle);
-            if ui.is_rect_visible(rect_close.unwrap()) {
+                .rect(tr_close.shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Middle);
+            if ui.is_rect_visible(tr_close) {
                 let a = WidgetText::from(String::from("×")).into_galley(
                     ui,
                     Some(TextWrapMode::Truncate),
@@ -522,7 +522,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                     TextStyle::Button.resolve(ui.style()),
                 );
                 let pos = egui::Align2::CENTER_CENTER
-                    .align_size_within_rect(a.size(), rect_close.unwrap())
+                    .align_size_within_rect(a.size(), tr_close)
                     .min;
                 ui.painter().galley(pos, a, text_color);
                 self.on_close_tab(tile_id, close_response.unwrap());
