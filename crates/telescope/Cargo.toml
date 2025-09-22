@@ -1,10 +1,11 @@
 [package]
 name = "telescope"
-version = "0.0.1"
 authors = ["Rafael Amador <rafaga@duck.com>"]
-edition = "2021"
 description = "Application to gather intel and alert players in Eve Online"
-rust-version = "1.89"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [features]
 default = []
@@ -12,11 +13,11 @@ puffin = ["dep:puffin", "dep:puffin_http", "eframe/__screenshot", "egui-map/puff
 
 [dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-sde = { version="0.0.19"}
+sde = { path="../sde/"}
 kdtree = { version = "0.7.0" }
 egui-map = { version = "0.0.14" }
 open = "5.3.2"
-webb = { git = "https://github.com/rafaga/webb.git", version="0.0.2", default-features = false, features = []}
+webb = { path="../webb/", default-features = false, features = []}
 chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.32.3", features = ["all_loaders"] }
@@ -43,25 +44,8 @@ env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.53"
 
-[profile.release]
-opt-level = 2 # fast and small wasm
 
-# Optimize all dependencies even in debug builds:
-[profile.dev.package."*"]
-opt-level = 0
 
-[patch.crates-io]
-# If you want to use the bleeding edge version of egui and eframe:
-# egui = { git = "https://github.com/emilk/egui", branch = "master" }
-# eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-egui-map = { path = "../egui-map/" }
-# egui_tiles = { git = "https://github.com/rafaga/egui_tiles.git"}
-# If you fork https://github.com/emilk/egui you can test with:
-# egui = { path = "../egui/crates/egui" }
-# eframe = { path = "../egui/crates/eframe" }
-sde = { path = "../sde/" }
-# rfesi = { git = "https://github.com/rafaga/rfesi.git", branch = "rustls-feature", features = ["rustls"] }
 
-[patch."https://github.com/rafaga/webb.git"]
-webb = { path = "../webb/" }
+
 

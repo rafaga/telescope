@@ -351,7 +351,7 @@ impl TelescopeApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(
-                        egui::Image::new(egui::include_image!("../assets/icon01-128.png"))
+                        egui::Image::new(egui::include_image!("../../../assets/icon01-128.png"))
                             .fit_to_original_size(1.0),
                     );
                     ui.vertical_centered(|ui| {
@@ -942,7 +942,7 @@ impl TelescopeApp {
         let mut fonts = eframe::egui::FontDefinitions::default();
         fonts.font_data.insert(
             "Noto Sans Regular".to_owned(),
-            Arc::new(eframe::egui::FontData::from_static(include_bytes!("../assets/NotoSansTC-Regular.otf"))),
+            Arc::new(eframe::egui::FontData::from_static(include_bytes!("../../../assets/NotoSansTC-Regular.otf"))),
         );
         fonts
             .families
