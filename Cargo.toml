@@ -1,67 +1,57 @@
-[package]
-name = "telescope"
-version = "0.0.1"
-authors = ["Rafael Amador <rafaga@duck.com>"]
-edition = "2021"
-description = "Application to gather intel and alert players in Eve Online"
+[workspace]
+resolver = "2"
+members = [
+    "crates/telescope",
+    "crates/sde",
+    "crates/webb",
+    # "tests/*",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
 rust-version = "1.89"
-
-[features]
-default = []
-puffin = ["dep:puffin", "dep:puffin_http", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
-
-[dependencies]
-eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-sde = { version="0.0.19"}
-kdtree = { version = "0.7.0" }
-egui-map = { version = "0.0.14" }
-open = "5.3.2"
-webb = { git = "https://github.com/rafaga/webb.git", version="0.0.2", default-features = false, features = []}
-chrono = "0.4.42"
-tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.32.3", features = ["all_loaders"] }
-image = { version = "0.25.8", features = ["jpeg","png"] }
-wgpu = "25.0.2"
-puffin = {version = "0.19.1", optional = true, default-features = false}
-puffin_http = {version = "0.16.1", optional = true, default-features = false}
-egui_tiles = { version = "0.13.0" }
-toml = "0.9.7"
-hyper = { version = "1.7.0", features = ["server", "http1", "client"] }
-rfesi = {version = "0.50.0", default-features = false, features = ["rustls-tls", "random_state", "validate_jwt"] }
-serde = { version = "1.0.225", features = ["derive"] }
-hyper-util = { version = "0.1.17", features = ["full"] }
-notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
-directories = "6.0.0"
-regex = "1.11.2"
-
-# native:
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing-subscriber = "0.3.20"
-env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
-
-# web:
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4.53"
+version = "0.1.0"
 
 [profile.release]
-opt-level = 2 # fast and small wasm
+# lto = true # VERY slightly smaller wasm
+# opt-level = 's' # 10-20% smaller wasm compared to `opt-level = 3`
+# opt-level = 1 # very slow and big wasm. Don't do this.
+opt-level = 2 # fast and small wasm, basically same as `opt-level = 's'`
+# opt-level = 3 # unnecessarily large wasm for no performance gain
 
-# Optimize all dependencies even in debug builds:
+# debug = true # include debug symbols, useful when profiling wasm
+
+panic = "abort" # This leads to better optimizations and smaller binaries (and is the default in Wasm anyways).
+
+
+[profile.dev]
+# Can't leave this on by default, because it breaks the Windows build. Related: https://github.com/rust-lang/cargo/issues/4897
+# split-debuginfo = "unpacked" # faster debug builds on mac
+# opt-level = 1                # Make debug builds run faster
+
+# panic = "abort" leads to better optimizations and smaller binaries (and is the default in Wasm anyways),
+# but it also means backtraces don't work with the `backtrace` library (https://github.com/rust-lang/backtrace-rs/issues/397).
+# egui has a feature where if you hold down all modifiers keys on your keyboard and hover any UI widget,
+# you will see the backtrace to that widget, and we don't want to break that feature in dev builds.
+
 [profile.dev.package."*"]
-opt-level = 0
+# Optimize all dependencies even in debug builds (does not affect workspace packages):
+opt-level = 2
 
-[patch.crates-io]
-# If you want to use the bleeding edge version of egui and eframe:
-# egui = { git = "https://github.com/emilk/egui", branch = "master" }
-# eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-egui-map = { path = "../egui-map/" }
-# egui_tiles = { git = "https://github.com/rafaga/egui_tiles.git"}
-# If you fork https://github.com/emilk/egui you can test with:
-# egui = { path = "../egui/crates/egui" }
-# eframe = { path = "../egui/crates/eframe" }
-sde = { path = "../sde/" }
-# rfesi = { git = "https://github.com/rafaga/rfesi.git", branch = "rustls-feature", features = ["rustls"] }
 
-[patch."https://github.com/rafaga/webb.git"]
-webb = { path = "../webb/" }
+[workspace.dependencies]
+telescope = { version = "0.32.3", path = "crates/telescope", default-features = false }
+sde = { version = "0.32.3", path = "crates/sde", default-features = false }
+webb = { version = "0.32.3", path = "crates/webb", default-features = false }
+# epaint_default_fonts = { version = "0.32.3", path = "crates/epaint_default_fonts" }
+
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.rustdoc]
+all = "warn"
+missing_crate_level_docs = "warn"
+broken_intra_doc_links = "warn"
 
