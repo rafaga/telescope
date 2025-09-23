@@ -11,3 +11,5 @@ src/app/data.rs
 Cargo.lock
 *.db.old
 telescope.toml
+/crates/sde/target/
+/crates/webb/target/
