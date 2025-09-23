@@ -7,7 +7,7 @@ use chrono::Utc;
 use data::AppData;
 use eframe::egui::{
     self, epaint::text::LayoutJob, Button, Color32, FontFamily, FontId, Margin, RichText,
-    TextFormat,
+    TextFormat, Vec2
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
@@ -350,15 +350,14 @@ impl TelescopeApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(
-                        egui::Image::new(egui::include_image!("../../../assets/icon.png"))
-                            .fit_to_original_size(1.0),
+                        egui::Image::new(egui::include_image!("../../../assets/icon.png")).fit_to_exact_size(Vec2{x:200.0,y:200.0}),
                     );
                     ui.vertical_centered(|ui| {
                         ui.add_space(10.0);
                         ui.heading("Telescope");
                         ui.strong("v ".to_owned() + env!("CARGO_PKG_VERSION"));
                         ui.label("Author: Rafael Amador Galván");
-                        ui.label("©2023-2024, All rights reserved.");
+                        ui.label("Licensed under MIT");
                         if ui.link("https://github.com/rafaga/telescope").clicked() {
                             let _a = open::that("https://github.com/rafaga/telescope");
                         }
