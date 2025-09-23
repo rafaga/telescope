@@ -350,7 +350,7 @@ impl TelescopeApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(
-                        egui::Image::new(egui::include_image!("../../../assets/icon01-128.png"))
+                        egui::Image::new(egui::include_image!("../../../assets/icon.png"))
                             .fit_to_original_size(1.0),
                     );
                     ui.vertical_centered(|ui| {
