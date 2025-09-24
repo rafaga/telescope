@@ -95,18 +95,32 @@ impl PlayerDatabase {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut query = String::from("UPDATE char SET name = ?, alliance = ?, corporation = ?, ");
+        let mut query = if character.alliance.is_none() {
+            String::from("UPDATE char SET name = ?, corporation = ?, ")
+        } else {
+            String::from("UPDATE char SET name = ?, alliance = ?, corporation = ?, ")
+        };
         query += "lastlogon = ?, location = ? WHERE id = ?;";
         let mut statement = conn.prepare(query.as_str()).unwrap();
-        let params = rusqlite::params![
-            character.name,
-            character.alliance.as_ref().unwrap().id,
-            character.corp.as_ref().unwrap().id,
-            character.last_logon.to_string(),
-            character.location,
-            character.id
-        ];
-        let rows: usize = statement.execute(params)?;
+        let params = if character.alliance.is_none() {
+            rusqlite::params![
+                character.name,
+                character.corp.as_ref().unwrap().id,
+                character.last_logon.to_string(),
+                character.location,
+                character.id
+            ]
+        } else {
+            rusqlite::params![
+                character.name,
+                character.alliance.as_ref().unwrap().id,
+                character.corp.as_ref().unwrap().id,
+                character.last_logon.to_string(),
+                character.location,
+                character.id
+            ]
+        };
+        let rows:usize = statement.execute(params)?;
         //PlayerDatabase::update_auth(conn, character.id, character.auth.as_ref().unwrap())?;
         Ok(rows)
     }

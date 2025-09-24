@@ -545,20 +545,24 @@ impl TelescopeApp {
                                             let mut index = 0;
                                             let mut vec_id = vec![];
                                             for char in &self.esi.characters {
-                                                if self.esi.active_character.unwrap() == char.id {
-                                                    if let Some(sender) = &self.char_msg {
-                                                        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-                                                        let _result = runtime.block_on(async{sender.send(CharacterSync::Remove(char.id as usize)).await});
+                                                if let Some(active_char) = self.esi.active_character {
+                                                    if active_char == char.id {
+                                                        if let Some(sender) = &self.char_msg {
+                                                            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                                                            let _result = runtime.block_on(async{sender.send(CharacterSync::Remove(char.id as usize)).await});
+                                                        }
+                                                        vec_id.push(char.id);
+                                                        break;
                                                     }
-                                                    vec_id.push(char.id);
-                                                    break;
+                                                    index += 1;
                                                 }
-                                                index += 1;
                                             }
-                                            self.esi.characters.remove(index);
-                                            self.esi.active_character = None;
-                                            if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
-                                                self.task_msg.spawn(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string())));
+                                            if self.esi.active_character.is_some() {
+                                                self.esi.characters.remove(index);
+                                                self.esi.active_character = None;
+                                                if let Err(t_error) = self.esi.remove_characters(Some(vec_id)) {
+                                                    self.task_msg.spawn(Message::GenericNotification((Type::Error,String::from("EsiManager"),String::from("remove_characters"),t_error.to_string())));
+                                                }
                                             }
                                         }
                                     });
