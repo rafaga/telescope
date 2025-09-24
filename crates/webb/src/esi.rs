@@ -80,7 +80,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let result = if let Some(id_ally) = alliance_vec {
             PlayerDatabase::select_alliance(&conn, id_ally)?
@@ -94,7 +101,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let result = if let Some(id_ally) = alliance_vec {
             PlayerDatabase::delete_alliance(&conn, id_ally)?
@@ -109,7 +123,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let corps = PlayerDatabase::select_corporation(&conn, vec![corp.id])?;
         let rows = if !corps.is_empty() {
@@ -127,7 +148,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let result = if let Some(id_corp) = corporation_vec {
             PlayerDatabase::select_corporation(&conn, id_corp)?
@@ -144,7 +172,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let result = if let Some(id_ally) = corporation_vec {
             PlayerDatabase::delete_corporation(&conn, id_ally)?
@@ -159,7 +194,16 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };      
+        //let conn = self.get_standard_connection().unwrap();
 
         // first we need to assure that Corporation and alliance exists on database
         if let Some(corp) = &char.corp {
@@ -183,7 +227,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let result;
         if let Some(id_chars) = char_vec {
@@ -198,7 +249,14 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let conn = self.get_standard_connection().unwrap();
+        let conn = match self.get_standard_connection() {
+            Ok(connection) => {
+                connection
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        };
 
         let result = if let Some(id_chars) = char_vec {
             PlayerDatabase::delete_characters(&conn, id_chars)?
