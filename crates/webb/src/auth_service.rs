@@ -5,7 +5,7 @@ use tokio::sync::mpsc::Sender;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::service::Service;
-use hyper::{body::Incoming as IncomingBody, Request, Response};
+use hyper::{Request, Response, body::Incoming as IncomingBody};
 
 use std::future::Future;
 use std::pin::Pin;

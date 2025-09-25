@@ -1,8 +1,8 @@
 use crate::esi::Error;
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, ToSql,params};
 use rusqlite::vtab::array;
+use rusqlite::{Connection, ToSql, params};
 use std::rc::Rc;
 
 pub(crate) struct PlayerDatabase {}
@@ -57,7 +57,10 @@ impl PlayerDatabase {
         );
         if !ids.is_empty() {
             let vars = PlayerDatabase::repeat_vars(ids.len());
-            query = format!("SELECT id, name, corporation, alliance, portrait, lastLogon, location FROM char WHERE id IN ({})", vars);
+            query = format!(
+                "SELECT id, name, corporation, alliance, portrait, lastLogon, location FROM char WHERE id IN ({})",
+                vars
+            );
         }
         let mut statement = conn.prepare(&query)?;
         let mut rows = statement.query(rusqlite::params_from_iter(ids))?;
@@ -120,7 +123,7 @@ impl PlayerDatabase {
                 character.id
             ]
         };
-        let rows:usize = statement.execute(params)?;
+        let rows: usize = statement.execute(params)?;
         //PlayerDatabase::update_auth(conn, character.id, character.auth.as_ref().unwrap())?;
         Ok(rows)
     }
@@ -129,11 +132,13 @@ impl PlayerDatabase {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let values = vec![String::from("token"),String::from("expiration"),String::from("refresh_token")];
+        let values = vec![
+            String::from("token"),
+            String::from("expiration"),
+            String::from("refresh_token"),
+        ];
         let mut result = AuthData::new();
-        let query = String::from(
-            "SELECT id, value FROM metadata WHERE id IN rarray(?1)",
-        );
+        let query = String::from("SELECT id, value FROM metadata WHERE id IN rarray(?1)");
 
         let mut statement = conn.prepare(&query)?;
         let id_list: array::Array = Rc::new(
@@ -144,65 +149,71 @@ impl PlayerDatabase {
         );
         let mut rows = statement.query([id_list])?;
         while let Some(row) = rows.next()? {
-            let field:String = row.get(0)?;
+            let field: String = row.get(0)?;
             if field.as_str() == "token" {
-                result.token =  row.get(1)?;
+                result.token = row.get(1)?;
             }
             if field.as_str() == "expiration" {
-                let date_as_string = row.get::<usize,String>(1)?;
-                
-                if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&date_as_string){
-                    result.expiration =  Some(utc_dt.to_utc());
+                let date_as_string = row.get::<usize, String>(1)?;
+
+                if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&date_as_string) {
+                    result.expiration = Some(utc_dt.to_utc());
                 }
             }
             if field.as_str() == "refresh_token" {
-                result.refresh_token =  row.get(1)?;
+                result.refresh_token = row.get(1)?;
             }
         }
         Ok(result)
     }
 
-    pub(crate) fn insert_auth(conn: &Connection, auth_data:&AuthData) -> Result<usize, Error> {
+    pub(crate) fn insert_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut data: Vec<(String,String)> = Vec::new();
+        let mut data: Vec<(String, String)> = Vec::new();
         let mut query = String::from("INSERT INTO metadata (id,value)");
         query += " VALUES (?1,?2)";
-        data.push((String::from("token"),auth_data.token.clone()));
-        data.push((String::from("refresh_token"),auth_data.refresh_token.clone()));
+        data.push((String::from("token"), auth_data.token.clone()));
+        data.push((
+            String::from("refresh_token"),
+            auth_data.refresh_token.clone(),
+        ));
         if let Some(expiration_date) = auth_data.expiration {
-            data.push((String::from("expiration"),expiration_date.to_rfc3339()));
+            data.push((String::from("expiration"), expiration_date.to_rfc3339()));
         } else {
-            data.push((String::from("expiration"),String::new()));
+            data.push((String::from("expiration"), String::new()));
         }
-        
+
         let mut rows = 0;
         for item in data {
             let mut statement = conn.prepare(&query)?;
-            let affected_rows = statement.execute(params![item.0,item.1])?;
+            let affected_rows = statement.execute(params![item.0, item.1])?;
             rows += affected_rows;
         }
         Ok(rows)
     }
 
-    pub(crate) fn update_auth(conn: &Connection, auth_data:&AuthData) -> Result<usize, Error> {
+    pub(crate) fn update_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
         let query = String::from("UPDATE metadata SET value = ?1 WHERE id = ?2;");
-        let mut data:Vec<(String,String)> = Vec::new();
-        data.push((String::from("token"),auth_data.token.clone()));
-        data.push((String::from("refresh_token"),auth_data.refresh_token.clone()));
+        let mut data: Vec<(String, String)> = Vec::new();
+        data.push((String::from("token"), auth_data.token.clone()));
+        data.push((
+            String::from("refresh_token"),
+            auth_data.refresh_token.clone(),
+        ));
         if let Some(expiration_date) = auth_data.expiration {
-            data.push((String::from("expiration"),expiration_date.to_rfc3339()));
+            data.push((String::from("expiration"), expiration_date.to_rfc3339()));
         } else {
-            data.push((String::from("expiration"),String::new()));
+            data.push((String::from("expiration"), String::new()));
         }
         let mut rows = 0;
         for item in data {
             let mut statement = conn.prepare(&query).unwrap();
-            let affected_rows = statement.execute(params![item.1,item.0])?;
+            let affected_rows = statement.execute(params![item.1, item.0])?;
             statement.finalize()?;
             rows += affected_rows;
         }

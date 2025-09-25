@@ -1,13 +1,13 @@
+use crate::objects::AuthData;
 use crate::objects::{Alliance, Character, Corporation};
 use chrono::DateTime;
+use http_body_util::{BodyExt, Empty};
 use hyper::body::Body;
 use hyper_tls::HttpsConnector;
 use rfesi::prelude::*;
 use rusqlite::vtab::array;
 use rusqlite::*;
 use std::path::Path;
-use http_body_util::{BodyExt, Empty};
-use crate::objects::AuthData;
 //use hyper::body::Bytes;
 use bytes::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
@@ -43,7 +43,6 @@ impl EsiManager {
         let query = "PRAGMA journey_mode=WAL;";
         let mut statement = connection.prepare(query)?;
         let _ = statement.execute([])?;
-        
 
         #[cfg(feature = "crypted-db")]
         {
@@ -81,9 +80,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -102,9 +99,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -124,9 +119,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -149,9 +142,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -173,9 +164,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -194,15 +183,12 @@ impl EsiManager {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
-        };      
+        };
         //let conn = self.get_standard_connection().unwrap();
 
         // first we need to assure that Corporation and alliance exists on database
@@ -228,9 +214,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -250,9 +234,7 @@ impl EsiManager {
         puffin::profile_function!();
 
         let conn = match self.get_standard_connection() {
-            Ok(connection) => {
-                connection
-            }
+            Ok(connection) => connection,
             Err(error) => {
                 return Err(error);
             }
@@ -309,20 +291,20 @@ impl EsiManager {
         let temp_path = Path::new(&obj.path);
         if !temp_path.exists() || !temp_path.is_file() {
             let conn = obj.get_standard_connection().unwrap();
-            if let Ok(true) = PlayerDatabase::create_database(&conn){
+            if let Ok(true) = PlayerDatabase::create_database(&conn) {
                 let _ = PlayerDatabase::migrate_database();
             }
             let _ = conn.close();
         }
-        if let Ok(conn) = obj.get_standard_connection(){
+        if let Ok(conn) = obj.get_standard_connection() {
             // load existing players
             if let Ok(chars) = PlayerDatabase::select_characters(&conn, vec![]) {
                 obj.characters = chars;
                 if !obj.characters.is_empty() {
-                    obj.auth = PlayerDatabase::select_auth(&conn).expect("Invalid Authetication data");
-                } 
+                    obj.auth =
+                        PlayerDatabase::select_auth(&conn).expect("Invalid Authetication data");
+                }
             }
-            
         }
         obj
     }
@@ -339,10 +321,8 @@ impl EsiManager {
             Ok(location) => {
                 let player_location = location.solar_system_id;
                 Ok(player_location)
-            },
-            Err(t_error) => {
-                Err(t_error.to_string())
             }
+            Err(t_error) => Err(t_error.to_string()),
         }
     }
 
@@ -351,35 +331,47 @@ impl EsiManager {
         puffin::profile_function!();
 
         let mut result = false;
-        if self.esi.access_expiration.is_none() || self.esi.access_token.is_none() || self.esi.refresh_token.is_none() {
+        if self.esi.access_expiration.is_none()
+            || self.esi.access_token.is_none()
+            || self.esi.refresh_token.is_none()
+        {
             return result;
         }
-        if !self.auth.token.is_empty() && self.auth.expiration.is_some() && !self.auth.refresh_token.is_empty() {
+        if !self.auth.token.is_empty()
+            && self.auth.expiration.is_some()
+            && !self.auth.refresh_token.is_empty()
+        {
             let current_datetime = chrono::Utc::now();
             //if auth.expiration =
-            let offset =  self.auth.expiration.unwrap() - current_datetime;
-            if offset.num_seconds()>= 20 {
+            let offset = self.auth.expiration.unwrap() - current_datetime;
+            if offset.num_seconds() >= 20 {
                 result = true;
             }
         }
         result
     }
 
-    pub async fn refresh_token(&mut self) -> Result<usize,String> {
+    pub async fn refresh_token(&mut self) -> Result<usize, String> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        if let Err(t_error) = self.esi.refresh_access_token(Some(&self.auth.refresh_token)).await {
+        if let Err(t_error) = self
+            .esi
+            .refresh_access_token(Some(&self.auth.refresh_token))
+            .await
+        {
             return Err(t_error.to_string());
         }
         self.auth.token = self.esi.access_token.as_ref().unwrap().clone();
-        self.auth.expiration = chrono::DateTime::from_timestamp_millis(self.esi.access_expiration.unwrap());
+        self.auth.expiration =
+            chrono::DateTime::from_timestamp_millis(self.esi.access_expiration.unwrap());
         self.auth.refresh_token = self.esi.refresh_token.as_ref().unwrap().clone();
-        if let Ok(conn) = self.get_standard_connection() && let Err(t_error) = PlayerDatabase::update_auth(&conn, &self.auth){
+        if let Ok(conn) = self.get_standard_connection()
+            && let Err(t_error) = PlayerDatabase::update_auth(&conn, &self.auth)
+        {
             return Err(t_error.to_string());
         }
         Ok(0)
-        
     }
 
     #[tokio::main(flavor = "current_thread")]
@@ -389,13 +381,20 @@ impl EsiManager {
 
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new()).build::<_, Empty<Bytes>>(https);
-    
+
         let mut res = client.get(url.parse()?).await?;
         //assert_eq!(res.status(), 200);
-        let mut photo:Vec<u8> = vec![];
+        let mut photo: Vec<u8> = vec![];
         if res.status() == 200 {
             while !res.is_end_stream() {
-                if let Some(data) = res.body_mut().frame().await.unwrap().expect("No data").data_mut() {
+                if let Some(data) = res
+                    .body_mut()
+                    .frame()
+                    .await
+                    .unwrap()
+                    .expect("No data")
+                    .data_mut()
+                {
                     photo.extend_from_slice(data.as_ref());
                 }
             }
@@ -422,7 +421,6 @@ impl EsiManager {
             .authenticate(oauth_data.0.as_str(), verifier)
             .await?;
         if let Some(claims) = claims_option {
-            
             let mut player = Character::new();
             //let data = claims.unwrap();
             //character name
@@ -435,9 +433,10 @@ impl EsiManager {
                 self.auth.refresh_token = self.esi.refresh_token.as_ref().unwrap().to_string();
 
                 //expiration Date
-                self.auth.expiration = DateTime::from_timestamp_millis(self.esi.access_expiration.unwrap());
-                if let Ok(conn) =  self.get_standard_connection() {
-                    let _ =PlayerDatabase::update_auth(&conn, &self.auth);
+                self.auth.expiration =
+                    DateTime::from_timestamp_millis(self.esi.access_expiration.unwrap());
+                if let Ok(conn) = self.get_standard_connection() {
+                    let _ = PlayerDatabase::update_auth(&conn, &self.auth);
                 }
             }
             self.esi.update_spec().await?;
@@ -468,7 +467,7 @@ impl EsiManager {
             player.photo = Some(player_portraits.px128x128.unwrap());
             let player_location = self.esi.group_location().get_location(player.id).await?;
             player.location = player_location.solar_system_id;
-            
+
             self.write_character(&player)?;
             Ok(Some(player))
         } else {

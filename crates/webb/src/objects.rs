@@ -13,10 +13,10 @@ pub enum TelescopeDbError {
 pub struct AuthData {
     pub token: String,
     pub expiration: Option<DateTime<Utc>>,
-    pub refresh_token:String,
+    pub refresh_token: String,
 }
 
-impl AuthData{
+impl AuthData {
     pub fn new() -> Self {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
@@ -24,14 +24,14 @@ impl AuthData{
         AuthData {
             token: String::new(),
             expiration: None,
-            refresh_token: String::new()
+            refresh_token: String::new(),
         }
     }
 }
 
 impl Default for AuthData {
     fn default() -> Self {
-         Self::new()
+        Self::new()
     }
 }
 

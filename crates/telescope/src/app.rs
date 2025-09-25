@@ -1,19 +1,18 @@
 use crate::app::file::IntelEventHandler;
-use crate::app::messages::{
-    CharacterSync, MapSync, Message, SettingsPage, Target, Type,
-};
+use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use chrono::Utc;
 use data::AppData;
 use eframe::egui::{
-    self, epaint::text::LayoutJob, Button, Color32, FontFamily, FontId, Margin, RichText,
-    TextFormat, Vec2
+    self, Button, Color32, FontFamily, FontId, Margin, RichText, TextFormat, Vec2,
+    epaint::text::LayoutJob,
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::RegexBuilder;
-use sde::{objects::Universe, SdeManager};
+use sde::{SdeManager, objects::Universe};
 use settings::Manager;
 use std::thread;
 use std::{
@@ -23,10 +22,9 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
-use tokio::sync::mpsc::{self, error::TryRecvError, Receiver, Sender};
-use tokio::time::{sleep, Duration};
+use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
+use tokio::time::{Duration, sleep};
 use webb::esi::EsiManager;
-use notify::{Config, RecommendedWatcher, Watcher, RecursiveMode};
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -101,11 +99,16 @@ impl Default for TelescopeApp {
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
-        let intel_event_handler = IntelEventHandler::new(settings.channels.monitored.clone(),Arc::clone(&arc_msg_sender));
-        let mut watcher = RecommendedWatcher::new(intel_event_handler,Config::default()).unwrap();
+        let intel_event_handler = IntelEventHandler::new(
+            settings.channels.monitored.clone(),
+            Arc::clone(&arc_msg_sender),
+        );
+        let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
 
         if let Some(intel_path) = &settings.paths.intel {
-            watcher.watch(intel_path, RecursiveMode::NonRecursive).expect("Error monitoring intel file path");
+            watcher
+                .watch(intel_path, RecursiveMode::NonRecursive)
+                .expect("Error monitoring intel file path");
         }
 
         Self {
@@ -221,7 +224,7 @@ impl eframe::App for TelescopeApp {
                 }
                 self.start_watchdog(ids);
             }
-            
+
             self.initialized = true;
         }
 
@@ -350,7 +353,8 @@ impl TelescopeApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(
-                        egui::Image::new(egui::include_image!("../../../assets/icon.png")).fit_to_exact_size(Vec2{x:200.0,y:200.0}),
+                        egui::Image::new(egui::include_image!("../../../assets/icon.png"))
+                            .fit_to_exact_size(Vec2 { x: 200.0, y: 200.0 }),
                     );
                     ui.vertical_centered(|ui| {
                         ui.add_space(10.0);
@@ -942,7 +946,9 @@ impl TelescopeApp {
         let mut fonts = eframe::egui::FontDefinitions::default();
         fonts.font_data.insert(
             "Noto Sans Regular".to_owned(),
-            Arc::new(eframe::egui::FontData::from_static(include_bytes!("../../../assets/NotoSansTC-Regular.otf"))),
+            Arc::new(eframe::egui::FontData::from_static(include_bytes!(
+                "../../../assets/NotoSansTC-Regular.otf"
+            ))),
         );
         fonts
             .families
@@ -1235,9 +1241,10 @@ impl TelescopeApp {
                                 body.row(18.00, |mut row| {
                                     row.set_selected(false);
                                     if let Some(selected_row) = self.search_selected_row
-                                        && row_index == selected_row {
-                                            row.set_selected(true);
-                                        }
+                                        && row_index == selected_row
+                                    {
+                                        row.set_selected(true);
+                                    }
                                     let col_data = row.col(|ui| {
                                         if ui.label(&self.search_results[row_index].1).clicked() {
                                             self.search_selected_row = Some(row_index);

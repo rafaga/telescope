@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{remove_file, File};
+use std::fs::{File, remove_file};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,13 +100,14 @@ impl Manager {
         }
     }
 
-    pub fn scan_for_files(&mut self) -> Result< bool, String> {
+    pub fn scan_for_files(&mut self) -> Result<bool, String> {
         self.channels.available.clear();
         match &self.paths.intel {
             Some(path) => {
                 if let Ok(mut directory) = path.as_path().read_dir() {
                     while let Some(Ok(entry)) = directory.next() {
-                        if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
+                        if let Some((name, file_date)) =
+                            entry.file_name().to_string_lossy().split_once('_')
                         {
                             self.channels
                                 .available
@@ -126,10 +127,8 @@ impl Manager {
                 } else {
                     Err(String::from("Error on Intel path setup"))
                 }
-            },
-            None => {
-                Ok(false)
-            },
+            }
+            None => Ok(false),
         }
     }
 }
@@ -142,11 +141,11 @@ impl Default for Manager {
 
         if let Some(os_dirs) = directories::BaseDirs::new() {
             let t_path = os_dirs
-                    .home_dir()
-                    .join("Documents")
-                    .join("EVE")
-                    .join("logs")
-                    .join("ChatLogs");
+                .home_dir()
+                .join("Documents")
+                .join("EVE")
+                .join("logs")
+                .join("ChatLogs");
             if t_path.exists() {
                 path = Some(t_path)
             }

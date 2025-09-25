@@ -1,15 +1,14 @@
 use crate::app::messages::{Message, Type};
-use notify::event::{CreateKind, ModifyKind};
 use notify::EventHandler;
+use notify::event::{CreateKind, ModifyKind};
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 use std::thread;
+use tokio::sync::mpsc::Sender;
 
 pub struct IntelEventHandler {
     app_msg: Arc<Sender<Message>>,
     channels: Arc<Vec<String>>,
 }
-
 
 impl EventHandler for IntelEventHandler {
     fn handle_event(&mut self, event: Result<notify::Event, notify::Error>) {
@@ -19,13 +18,12 @@ impl EventHandler for IntelEventHandler {
         if let Ok(event) = event {
             let app_sender_file = Arc::clone(&self.app_msg);
             match event.kind {
-                notify::EventKind::Modify(ModifyKind::Data(
-                    notify::event::DataChange::Content,
-                )) => {
+                notify::EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)) => {
                     if let Some(path) = event.paths[0].file_name() {
                         let file_name = path.to_string_lossy().to_string();
                         let splitted_file_name = file_name.split_once('_').unwrap();
-                        if self.channels
+                        if self
+                            .channels
                             .binary_search(&splitted_file_name.0.to_string())
                             .is_ok()
                         {
@@ -37,7 +35,7 @@ impl EventHandler for IntelEventHandler {
                                 runtime.block_on(async {
                                     #[cfg(feature = "puffin")]
                                     puffin::profile_scope!("spawned Auth success message");
-            
+
                                     let _ = app_sender_file
                                         .send(Message::IntelFileChanged(file_name.clone()))
                                         .await;
@@ -63,13 +61,19 @@ impl EventHandler for IntelEventHandler {
                             .unwrap();
                         runtime.block_on(async {
                             let _ = app_sender_file
-                            .send(Message::GenericNotification((
-                                Type::Debug,
-                                String::from("Telescope"),
-                                String::from("IntelWatcher"),
-                                event.paths[0].file_name().unwrap().to_str().unwrap().to_owned() + " Created",
-                            )))
-                            .await;
+                                .send(Message::GenericNotification((
+                                    Type::Debug,
+                                    String::from("Telescope"),
+                                    String::from("IntelWatcher"),
+                                    event.paths[0]
+                                        .file_name()
+                                        .unwrap()
+                                        .to_str()
+                                        .unwrap()
+                                        .to_owned()
+                                        + " Created",
+                                )))
+                                .await;
                         });
                     });
                 }
@@ -78,9 +82,8 @@ impl EventHandler for IntelEventHandler {
     }
 }
 
-
 impl IntelEventHandler {
-    pub fn new(channels:Arc<Vec<String>>, app_sender: Arc<Sender<Message>>) -> Self {
+    pub fn new(channels: Arc<Vec<String>>, app_sender: Arc<Sender<Message>>) -> Self {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
         Self {

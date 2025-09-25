@@ -156,7 +156,10 @@ impl TryInto<[f32; 2]> for SdePoint {
         } else if self.z == 0 {
             Ok([self.x as f32, self.y as f32])
         } else {
-            Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
+            Err(GenericError::new(
+                ErrorKind::NotFound,
+                "projection pivot value not found, it is not possible to determine wich values to return.",
+            ))
         }
     }
 }
@@ -204,7 +207,10 @@ impl TryInto<[i64; 2]> for SdePoint {
         } else if self.z == 0 {
             Ok([self.x, self.y])
         } else {
-            Err(GenericError::new(ErrorKind::NotFound,"projection pivot value not found, it is not possible to determine wich values to return."))
+            Err(GenericError::new(
+                ErrorKind::NotFound,
+                "projection pivot value not found, it is not possible to determine wich values to return.",
+            ))
         }
     }
 }

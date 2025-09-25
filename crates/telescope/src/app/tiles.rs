@@ -1,13 +1,14 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, vec2
+    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style,
+    TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, vec2,
 };
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
+    Map,
     objects::{
         ContextMenuManager, MapLabel, MapPoint, MapSettings, NodeTemplate, VisibilitySetting,
     },
-    Map,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 //use futures::executor::ThreadPool;
@@ -490,7 +491,13 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         if ui.is_rect_visible(rect) && !tab_state.is_being_dragged {
             let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
-            ui.painter().rect(rect.shrink(0.5), 0.0, bg_color, stroke,egui::StrokeKind::Middle);
+            ui.painter().rect(
+                rect.shrink(0.5),
+                0.0,
+                bg_color,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
 
             if tab_state.active {
                 // Make the tab name area connect with the tab ui area:
@@ -512,8 +519,13 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         if let Some(tr_close) = rect_close {
             let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
-            ui.painter()
-                .rect(tr_close.shrink(0.5), 0.0, bg_color, stroke, egui::StrokeKind::Middle);
+            ui.painter().rect(
+                tr_close.shrink(0.5),
+                0.0,
+                bg_color,
+                stroke,
+                egui::StrokeKind::Middle,
+            );
             if ui.is_rect_visible(tr_close) {
                 let a = WidgetText::from(String::from("×")).into_galley(
                     ui,
@@ -683,7 +695,7 @@ impl NodeTemplate for Template {
             rect,
             CornerRadius::same((10.0 * zoom).round() as u8),
             Stroke::new(4.0 * zoom, colors.1),
-            egui::StrokeKind::Middle
+            egui::StrokeKind::Middle,
         ));
         shapes.push(Shape::rect_filled(
             rect,
@@ -718,7 +730,7 @@ impl NodeTemplate for Template {
             rect,
             CornerRadius::same((10.0 * zoom).round() as u8),
             Stroke::new(3.0 * zoom, color),
-            egui::StrokeKind::Middle
+            egui::StrokeKind::Middle,
         ));
         ui.painter().extend(shapes);
     }
@@ -797,7 +809,7 @@ impl NodeTemplate for Template {
             rect,
             CornerRadius::same((10.0 * zoom).round() as u8),
             Stroke::new((4.00 + (25.00 * secs_played)) * zoom, corrected_color),
-            egui::StrokeKind::Middle
+            egui::StrokeKind::Middle,
         ));
         ui.painter().extend(shapes);
         ui.ctx().request_repaint();

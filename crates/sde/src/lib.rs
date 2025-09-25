@@ -10,7 +10,7 @@ use crate::objects::{Constellation, Moon, Planet, Region, SdePoint, SolarSystem,
 use egui_map::map::objects::{MapLine, MapPoint, RawPoint};
 use objects::EveRegionArea;
 use rusqlite::ToSql;
-use rusqlite::{params, vtab::array, Connection, Error, OpenFlags};
+use rusqlite::{Connection, Error, OpenFlags, params, vtab::array};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
