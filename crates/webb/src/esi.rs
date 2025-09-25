@@ -307,19 +307,22 @@ impl EsiManager {
 
         // Path needs to be checked before invoking rusqlite to be effective
         let temp_path = Path::new(&obj.path);
-        if let Ok(conn) = obj.get_standard_connection(){
-            if !temp_path.exists() || !temp_path.is_file() {
-                let _ = PlayerDatabase::create_database(&conn);
+        if !temp_path.exists() || !temp_path.is_file() {
+            let conn = obj.get_standard_connection().unwrap();
+            if let Ok(true) = PlayerDatabase::create_database(&conn){
                 let _ = PlayerDatabase::migrate_database();
-            } else {
-                // load existing players
-                if let Ok(chars) = PlayerDatabase::select_characters(&conn, vec![]) {
-                    obj.characters = chars;
-                    if !obj.characters.is_empty() {
-                        obj.auth = PlayerDatabase::select_auth(&conn).expect("Invalid Authetication data");
-                    } 
-                }
             }
+            let _ = conn.close();
+        }
+        if let Ok(conn) = obj.get_standard_connection(){
+            // load existing players
+            if let Ok(chars) = PlayerDatabase::select_characters(&conn, vec![]) {
+                obj.characters = chars;
+                if !obj.characters.is_empty() {
+                    obj.auth = PlayerDatabase::select_auth(&conn).expect("Invalid Authetication data");
+                } 
+            }
+            
         }
         obj
     }

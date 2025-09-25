@@ -435,7 +435,7 @@ impl<'a> SdeManager<'a> {
         // we add the carray module disguised as rarray in rusqlite
         array::load_module(&connection)?;
 
-        let query = ["PRAGMA journey_mode=WAL;"].concat();
+        let query = ["PRAGMA journey_mode=WAL2;"].concat();
         let mut statement = connection.prepare(query.as_str())?;
         let _ = statement.execute([])?;
         statement.finalize()?;
