@@ -360,7 +360,7 @@ impl TelescopeApp {
                         ui.add_space(10.0);
                         ui.heading("Telescope");
                         ui.strong("v ".to_owned() + env!("CARGO_PKG_VERSION"));
-                        ui.label("Author: Rafael Amador Galván");
+                        ui.label("Author: Rafael Amador");
                         ui.label("Licensed under MIT");
                         if ui.link("https://github.com/rafaga/telescope").clicked() {
                             let _a = open::that("https://github.com/rafaga/telescope");
