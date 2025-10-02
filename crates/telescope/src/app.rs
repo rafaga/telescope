@@ -7,6 +7,7 @@ use eframe::egui::{
     self, Button, Color32, FontFamily, FontId, Margin, RichText, TextFormat, Vec2,
     epaint::text::LayoutJob,
 };
+use eframe::egui::{IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
@@ -659,15 +660,15 @@ impl TelescopeApp {
                                     });
                                     ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
+                                        let atoms= ().into_atoms();
+                                        ui.checkbox(&mut self.settings.paths.enable_custom_intel, atoms);
                                         ui.label("EVE Channel logs:");
-                                        //TODO: Enable Config setting for intel logs
-                                        if self.settings.paths.intel.is_some() {
-                                            //let intel_path = self.settings.paths.intel.unwrap().as_mut_os_string().to_str().unwrap().as_mut();
-                                            /*if ui.text_edit_singleline(intel_path).changed() {
-                                                self.settings.saved = false;
-                                            }*/
-                                        } else {
-                                            ui.label("");
+                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, TextEdit::singleline(&mut self.settings.paths.custom_intel)).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                        let atoms2= ("Select").into_atoms();
+                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, Button::new(atoms2)).clicked(){
+
                                         }
                                     });
                                     ui.horizontal(|ui|{
