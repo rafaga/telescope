@@ -12,6 +12,8 @@ pub(crate) struct FilePaths {
     pub settings: String,
     #[serde(skip)]
     pub intel: Option<PathBuf>,
+    pub enable_custom_intel: bool,
+    pub custom_intel: String,
     pub sde_db: String,
     pub local_db: String,
 }
@@ -84,6 +86,8 @@ impl Manager {
             self.channels.monitored = toml_formatted_data.channels.monitored;
             self.paths.local_db = toml_formatted_data.paths.local_db;
             self.paths.sde_db = toml_formatted_data.paths.sde_db;
+            self.paths.enable_custom_intel = toml_formatted_data.paths.enable_custom_intel;
+            self.paths.custom_intel = toml_formatted_data.paths.custom_intel;
             self.scan_for_files()?;
             if self.mapping.warning_area.parse::<i8>().is_err() {
                 self.mapping.warning_area = String::from("1");
@@ -155,6 +159,8 @@ impl Default for Manager {
             paths: FilePaths {
                 intel: path,
                 settings: settings_file.clone(),
+                enable_custom_intel: false,
+                custom_intel: String::new(),
                 sde_db: String::from("assets/sde.db"),
                 local_db: String::from("telescope.db"),
             },

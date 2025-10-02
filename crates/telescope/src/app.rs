@@ -657,15 +657,27 @@ impl TelescopeApp {
                                             });
                                         }
                                     });
-                                    ui.label(RichText::new("Static data").font(FontId::proportional(20.0)));
+                                    ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
-                                        ui.label("SDE database path:");
+                                        ui.label("EVE Channel logs:");
+                                        //TODO: Enable Config setting for intel logs
+                                        if self.settings.paths.intel.is_some() {
+                                            //let intel_path = self.settings.paths.intel.unwrap().as_mut_os_string().to_str().unwrap().as_mut();
+                                            /*if ui.text_edit_singleline(intel_path).changed() {
+                                                self.settings.saved = false;
+                                            }*/
+                                        } else {
+                                            ui.label("");
+                                        }
+                                    });
+                                    ui.horizontal(|ui|{
+                                        ui.label("SDE database:");
                                         if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
                                             self.settings.saved = false;
                                         }
                                     });
                                     ui.horizontal(|ui|{
-                                        ui.label("private data:");
+                                        ui.label("private database:");
                                         if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
                                             self.settings.saved = false;
                                         }
