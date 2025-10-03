@@ -5,11 +5,12 @@
 *.db
 .DS_Store
 src/app/data.rs
-/Cargo.lock
+Cargo.lock
 /.cargo
 /.cargo-packager
 Cargo.lock
 *.db.old
 telescope.toml
-/crates/sde/target/
 /crates/webb/target/
+/crates/sde/target/
+/crates/telescope/target/

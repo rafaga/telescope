@@ -26,6 +26,8 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
 use tokio::time::{Duration, sleep};
 use webb::esi::EsiManager;
+use egui_file_dialog::FileDialog;
+//use std::path::PathBuf;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
@@ -69,6 +71,7 @@ pub struct TelescopeApp {
     task_auth: AuthSpawner,
     settings: Manager,
     watcher: RecommendedWatcher,
+    open_dialog:FileDialog,
 }
 
 impl Default for TelescopeApp {
@@ -105,6 +108,7 @@ impl Default for TelescopeApp {
             Arc::clone(&arc_msg_sender),
         );
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
+        let open_dialog = FileDialog::new();
 
         if let Some(intel_path) = &settings.paths.intel {
             watcher
@@ -138,6 +142,7 @@ impl Default for TelescopeApp {
             task_auth: authmon,
             settings,
             watcher,
+            open_dialog,
         }
     }
 }
@@ -175,6 +180,7 @@ impl eframe::App for TelescopeApp {
             task_auth: _,
             settings: _,
             watcher: _,
+            open_dialog: _,
         } = self;
 
         if !self.initialized {
@@ -339,6 +345,9 @@ impl TelescopeApp {
                 }
                 Message::IntelFileChanged(file_name) => {
                     self.load_intel_file(file_name);
+                },
+                Message::ShowSelectDirDialog() => {
+                    self.open_directory_selector();
                 }
             };
         }
@@ -386,7 +395,7 @@ impl TelescopeApp {
             ui.horizontal(|ui|{
                 ui.vertical(|ui|{
                     let row_height = 25.0;
-                    let labels = ["Intelligence","Data Sources"];
+                    let labels = ["Intelligence","Data Sources","Characters"];
                     ui.push_id("settings_menu", |ui|{
                         TableBuilder::new(ui)
                         .column(Column::resizable(Column::exact(150.0),false))
@@ -398,7 +407,8 @@ impl TelescopeApp {
                                 let current_page = match row.index(){
                                     0 => SettingsPage::Intelligence,
                                     1 => SettingsPage::DataSources,
-                                    _ => SettingsPage::DataSources,
+                                    2 => SettingsPage::Characters,
+                                    _ => SettingsPage::Characters,
                                 };
                                 row.col(|ui: &mut egui::Ui|{
                                     let option_selected = || -> bool {
@@ -441,7 +451,32 @@ impl TelescopeApp {
                                             });
                                         ui.end_row();
                                     });
-
+                                    ui.horizontal(|ui|{
+                                        let atoms= ().into_atoms();
+                                        ui.checkbox(&mut self.settings.paths.enable_custom_intel, atoms);
+                                        ui.label("EVE Channel logs:");
+                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, TextEdit::singleline(&mut self.settings.paths.custom_intel)).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                        let atoms2= ("Select").into_atoms();
+                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, Button::new(atoms2)).clicked(){
+                                            //let dir = Path::new(self.settings.paths.custom_intel.as_str()).to_path_buf();
+                                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                                .enable_all()
+                                                .build()
+                                                .unwrap();
+                                            let app_msg_tx = Arc::clone(&self.app_msg.0);
+                                            thread::spawn(move || {
+                                                runtime.block_on(async {
+                                                    #[cfg(feature = "puffin")]
+                                                    puffin::profile_scope!("spawned intel message data");
+                                                    let _ = app_msg_tx
+                                                        .send(Message::ShowSelectDirDialog())
+                                                        .await;
+                                                });
+                                            });
+                                        }
+                                    });
                                     let row_height = 18.0;
                                     let mut channels:Vec<String> = self
                                         .settings
@@ -484,7 +519,6 @@ impl TelescopeApp {
                                             }
                                         });
                                     });
-
                                     ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     ui.push_id("rgn_tbl",|ui|{
@@ -531,6 +565,21 @@ impl TelescopeApp {
                                 },
                                 // Linked Characters
                                 SettingsPage::DataSources => {
+                                    ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
+                                    ui.horizontal(|ui|{
+                                        ui.label("SDE database:");
+                                        if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                    });
+                                    ui.horizontal(|ui|{
+                                        ui.label("private database:");
+                                        if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                    });
+                                },
+                                SettingsPage::Characters => {
                                     ui.label(RichText::new("Linked characters").font(FontId::proportional(20.0)));
                                     ui.label("These are used to emit notifications when something it is close to your location.");
                                     ui.horizontal(|ui|{
@@ -658,31 +707,6 @@ impl TelescopeApp {
                                             });
                                         }
                                     });
-                                    ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
-                                    ui.horizontal(|ui|{
-                                        let atoms= ().into_atoms();
-                                        ui.checkbox(&mut self.settings.paths.enable_custom_intel, atoms);
-                                        ui.label("EVE Channel logs:");
-                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, TextEdit::singleline(&mut self.settings.paths.custom_intel)).changed() {
-                                            self.settings.saved = false;
-                                        }
-                                        let atoms2= ("Select").into_atoms();
-                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, Button::new(atoms2)).clicked(){
-
-                                        }
-                                    });
-                                    ui.horizontal(|ui|{
-                                        ui.label("SDE database:");
-                                        if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
-                                            self.settings.saved = false;
-                                        }
-                                    });
-                                    ui.horizontal(|ui|{
-                                        ui.label("private database:");
-                                        if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
-                                            self.settings.saved = false;
-                                        }
-                                    });
                                 },
                             }
                         });
@@ -797,6 +821,11 @@ impl TelescopeApp {
         } else {
             Err(String::from("Error Building Regex"))
         }
+    }
+
+    fn open_directory_selector(&mut self){
+        self.open_dialog
+            .pick_directory();
     }
 
     fn update_character_into_database(&mut self, response_data: (String, String)) {

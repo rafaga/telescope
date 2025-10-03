@@ -34,6 +34,7 @@ hyper-util = { version = "0.1.17", features = ["full"] }
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 directories = "6.0.0"
 regex = "1.11.2"
+egui-file-dialog = "0.11.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
