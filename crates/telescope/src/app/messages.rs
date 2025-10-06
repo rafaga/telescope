@@ -9,7 +9,6 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{Duration, Instant, timeout_at};
 use webb::auth_service::AuthService2;
-//use std::path::PathBuf;
 
 #[derive(Clone)]
 pub enum MapSync {
@@ -46,7 +45,7 @@ pub enum Message {
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
     IntelFileChanged(String),
-    ShowSelectDirDialog(),
+    UpdateIntelDirectory(String),
 }
 
 pub enum CharacterSync {

@@ -9,6 +9,7 @@ use eframe::egui::{
 };
 use eframe::egui::{IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
+use egui_file_dialog::FileDialog;
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -26,7 +27,6 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
 use tokio::time::{Duration, sleep};
 use webb::esi::EsiManager;
-use egui_file_dialog::FileDialog;
 //use std::path::PathBuf;
 
 use self::messages::{AuthSpawner, MessageSpawner};
@@ -71,7 +71,7 @@ pub struct TelescopeApp {
     task_auth: AuthSpawner,
     settings: Manager,
     watcher: RecommendedWatcher,
-    open_dialog:FileDialog,
+    open_dialog: FileDialog,
 }
 
 impl Default for TelescopeApp {
@@ -108,9 +108,16 @@ impl Default for TelescopeApp {
             Arc::clone(&arc_msg_sender),
         );
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
-        let open_dialog = FileDialog::new();
+        let mut open_dialog = FileDialog::default()
+            .as_modal(true)
+            .show_devices(false)
+            .opening_mode(egui_file_dialog::OpeningMode::LastPickedDir);
 
-        if let Some(intel_path) = &settings.paths.intel {
+        if let Ok(Some(directory)) = settings.check_intel_directory() {
+            open_dialog = open_dialog.initial_directory(directory);
+        }
+
+        if let Some(intel_path) = &settings.paths.internal_intel {
             watcher
                 .watch(intel_path, RecursiveMode::NonRecursive)
                 .expect("Error monitoring intel file path");
@@ -190,7 +197,6 @@ impl eframe::App for TelescopeApp {
             egui_extras::install_image_loaders(ctx);
 
             self.tree = Some(self.create_tree());
-
             let mut vec_chars = Vec::new();
             for pchar in self.esi.characters.iter() {
                 vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
@@ -345,9 +351,9 @@ impl TelescopeApp {
                 }
                 Message::IntelFileChanged(file_name) => {
                     self.load_intel_file(file_name);
-                },
-                Message::ShowSelectDirDialog() => {
-                    self.open_directory_selector();
+                }
+                Message::UpdateIntelDirectory(picked_path) => {
+                    self.open_directory_selector(picked_path);
                 }
             };
         }
@@ -453,28 +459,33 @@ impl TelescopeApp {
                                     });
                                     ui.horizontal(|ui|{
                                         let atoms= ().into_atoms();
-                                        ui.checkbox(&mut self.settings.paths.enable_custom_intel, atoms);
+                                        ui.checkbox(&mut self.settings.paths.default_behavior, atoms);
                                         ui.label("EVE Channel logs:");
-                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, TextEdit::singleline(&mut self.settings.paths.custom_intel)).changed() {
+                                        if ui.add_enabled(self.settings.paths.default_behavior, TextEdit::singleline(&mut self.settings.paths.intel)).changed() {
                                             self.settings.saved = false;
                                         }
                                         let atoms2= ("Select").into_atoms();
-                                        if ui.add_enabled(self.settings.paths.enable_custom_intel, Button::new(atoms2)).clicked(){
-                                            //let dir = Path::new(self.settings.paths.custom_intel.as_str()).to_path_buf();
-                                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                        if ui.add_enabled(self.settings.paths.default_behavior, Button::new(atoms2)).clicked(){
+
+                                            self.open_dialog.pick_directory();
+                                            
+                                            if let Some(path) = self.open_dialog.update(ctx).picked() {
+                                                let runtime = tokio::runtime::Builder::new_current_thread()
                                                 .enable_all()
                                                 .build()
                                                 .unwrap();
-                                            let app_msg_tx = Arc::clone(&self.app_msg.0);
-                                            thread::spawn(move || {
-                                                runtime.block_on(async {
-                                                    #[cfg(feature = "puffin")]
-                                                    puffin::profile_scope!("spawned intel message data");
-                                                    let _ = app_msg_tx
-                                                        .send(Message::ShowSelectDirDialog())
-                                                        .await;
+                                                let app_msg_tx = Arc::clone(&self.app_msg.0);
+                                                let dir = path.to_string_lossy().to_string();
+                                                thread::spawn(move || {
+                                                    runtime.block_on(async {
+                                                        #[cfg(feature = "puffin")]
+                                                        puffin::profile_scope!("spawned intel message data");
+                                                        let _ = app_msg_tx
+                                                            .send(Message::UpdateIntelDirectory(dir))
+                                                            .await;
+                                                    });
                                                 });
-                                            });
+                                            }
                                         }
                                     });
                                     let row_height = 18.0;
@@ -724,7 +735,7 @@ impl TelescopeApp {
                             self.settings.mapping.startup_regions.push(*region.0);
                         }
                     }
-                    if let Some(intel_path) = &self.settings.paths.intel {
+                    if let Some(intel_path) = &self.settings.paths.internal_intel {
                         let _ = self.watcher.unwatch(intel_path);
                     }
                     let mut monitored_channels = Vec::new();
@@ -734,7 +745,7 @@ impl TelescopeApp {
                         }
                     }
                     monitored_channels.sort_unstable();
-                    if let Some(intel_path) = &self.settings.paths.intel {
+                    if let Some(intel_path) = &self.settings.paths.internal_intel {
                         let _ = self.watcher.watch(intel_path, RecursiveMode::NonRecursive);
                     }
                     self.settings.channels.monitored = Arc::new(monitored_channels);
@@ -751,7 +762,7 @@ impl TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut path = self.settings.paths.intel.as_ref().unwrap().clone();
+        let mut path = self.settings.paths.internal_intel.as_ref().unwrap().clone();
         path = path.join(file_name.as_str());
 
         //getting the first byte to read from ythe last recorded file lenght
@@ -823,9 +834,16 @@ impl TelescopeApp {
         }
     }
 
-    fn open_directory_selector(&mut self){
-        self.open_dialog
-            .pick_directory();
+    fn open_directory_selector(&mut self, picked_directory: String) {
+        let path = Path::new(&picked_directory);
+        self.settings.paths.internal_intel = Some(path.to_path_buf());
+        self.settings.paths.intel = picked_directory;
+        self.task_msg.spawn(Message::GenericNotification((
+            Type::Info,
+            String::from("EsiManager"),
+            String::from("intel_path"),
+            String::from("directory updated"),
+        )));
     }
 
     fn update_character_into_database(&mut self, response_data: (String, String)) {
