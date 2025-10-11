@@ -702,7 +702,7 @@ impl NodeTemplate for Template {
             CornerRadius::same((10.0 * zoom).round() as u8),
             colors.0,
         ));
-        ui.ctx().fonts(|fonts| {
+        ui.ctx().fonts_mut(|fonts| {
             shapes.push(Shape::text(
                 fonts,
                 viewport_point,
