@@ -241,7 +241,7 @@ impl eframe::App for TelescopeApp {
             self.initialized = true;
         }
 
-        self.event_manager();
+        self.event_manager(ctx);
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -333,7 +333,7 @@ impl eframe::App for TelescopeApp {
 }
 
 impl TelescopeApp {
-    fn event_manager(&mut self) {
+    fn event_manager(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -352,8 +352,8 @@ impl TelescopeApp {
                 Message::IntelFileChanged(file_name) => {
                     self.load_intel_file(file_name);
                 }
-                Message::UpdateIntelDirectory(picked_path) => {
-                    self.open_directory_selector(picked_path);
+                Message::UpdateIntelDirectory() => {
+                    self.open_directory_selector(ctx);
                 }
             };
         }
@@ -466,26 +466,20 @@ impl TelescopeApp {
                                         }
                                         let atoms2= ("Select").into_atoms();
                                         if ui.add_enabled(self.settings.paths.default_behavior, Button::new(atoms2)).clicked(){
-
-                                            self.open_dialog.pick_directory();
-                                            
-                                            if let Some(path) = self.open_dialog.update(ctx).picked() {
-                                                let runtime = tokio::runtime::Builder::new_current_thread()
-                                                .enable_all()
-                                                .build()
-                                                .unwrap();
-                                                let app_msg_tx = Arc::clone(&self.app_msg.0);
-                                                let dir = path.to_string_lossy().to_string();
-                                                thread::spawn(move || {
-                                                    runtime.block_on(async {
-                                                        #[cfg(feature = "puffin")]
-                                                        puffin::profile_scope!("spawned intel message data");
-                                                        let _ = app_msg_tx
-                                                            .send(Message::UpdateIntelDirectory(dir))
-                                                            .await;
-                                                    });
+                                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                            .enable_all()
+                                            .build()
+                                            .unwrap();
+                                            let app_msg_tx = Arc::clone(&self.app_msg.0);
+                                            thread::spawn(move || {
+                                                runtime.block_on(async {
+                                                    #[cfg(feature = "puffin")]
+                                                    puffin::profile_scope!("spawned intel message data");
+                                                    let _ = app_msg_tx
+                                                        .send(Message::UpdateIntelDirectory())
+                                                        .await;
                                                 });
-                                            }
+                                            });
                                         }
                                     });
                                     let row_height = 18.0;
@@ -834,16 +828,21 @@ impl TelescopeApp {
         }
     }
 
-    fn open_directory_selector(&mut self, picked_directory: String) {
-        let path = Path::new(&picked_directory);
-        self.settings.paths.internal_intel = Some(path.to_path_buf());
-        self.settings.paths.intel = picked_directory;
-        self.task_msg.spawn(Message::GenericNotification((
-            Type::Info,
-            String::from("EsiManager"),
-            String::from("intel_path"),
-            String::from("directory updated"),
-        )));
+    fn open_directory_selector(&mut self, ctx: &Context) {
+        self.open_dialog.pick_directory();
+        if let Some(path) = self.open_dialog.update(ctx).picked() {
+            let dir = path.to_string_lossy().to_string();
+            let path = Path::new(&dir);
+            self.settings.paths.internal_intel = Some(path.to_path_buf());
+            self.settings.paths.intel = dir;
+            self.task_msg.spawn(Message::GenericNotification((
+                Type::Info,
+                String::from("EsiManager"),
+                String::from("intel_path"),
+                String::from("directory updated"),
+            )));
+        }
+        
     }
 
     fn update_character_into_database(&mut self, response_data: (String, String)) {
