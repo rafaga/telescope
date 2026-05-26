@@ -22,7 +22,6 @@ chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.32.3", features = ["all_loaders"] }
 image = { version = "0.25.8", features = ["jpeg","png"] }
-wgpu = "25.0.2"
 puffin = {version = "0.19.1", optional = true, default-features = false}
 puffin_http = {version = "0.16.1", optional = true, default-features = false}
 egui_tiles = { version = "0.13.0" }
@@ -44,8 +43,11 @@ env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.53"
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+wgpu = { version="25.0.2" }
 
-
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version="25.0.2", features = ["dx12"], default-features = false }
 
 
 
