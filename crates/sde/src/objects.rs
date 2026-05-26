@@ -6,7 +6,7 @@ use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 pub struct EveRegionArea {
-    pub region_id: u32,
+    pub region_id: i64,
     pub name: String,
     pub min: SdePoint,
     pub max: SdePoint,
