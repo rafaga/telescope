@@ -15,8 +15,16 @@ use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 #[cfg(feature = "crypted-db")]
 use uuid::Uuid;
 
+#[cfg(target_os = "windows")]
+use windows::{
+    System::Profile::{SystemIdentification},
+    Storage::Streams::DataReader,
+};
+
 use self::player_database::PlayerDatabase;
 pub mod player_database;
+
+const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
 
 #[derive(Clone)]
 pub struct EsiManager {
@@ -46,14 +54,58 @@ impl EsiManager {
 
         #[cfg(feature = "crypted-db")]
         {
-            let uuid = Uuid::new_v5(&Uuid::NAMESPACE_OID, "telescope".as_bytes());
+            #[cfg(target_os = "windows")]
+                let value_txt = self.get_windows_unique_id().unwrap();
+            #[cfg(target_os = "macos")]
+                let value_txt = self.get_macos_unique_id().unwrap();
+            #[cfg(target_os = "linux")]
+                let value_txt = self.get_linux_unique_id().unwrap();
+            let uuid = Uuid::new_v5(&Uuid::NAMESPACE_OID, value_txt.as_bytes());
             let query = ["PRAGMA key = '", uuid.to_string().as_str(), "'"].concat();
             let mut statement = connection.prepare(query.as_str())?;
-            let _ = statement.execute([])?;
+
+            let _ = statement.query([])?;
         }
 
         statement.finalize()?;
         Ok(connection)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn get_macos_unique_id(&self) -> Result<String, String> {
+        // Placeholder implementation for macOS unique ID
+        Ok(String::from(FALLBACK_UNIQUE_ID))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_linux_unique_id(&self) -> Result<String, String> {
+        // Placeholder implementation for Linux unique ID
+        Ok(String::from(FALLBACK_UNIQUE_ID))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_windows_unique_id(&self) ->Result<String,String> {
+         // this get a unique ID for the user, and its used to generate a unique key
+         // for the database encryption
+        match SystemIdentification::GetSystemIdForPublisher(){
+            Ok(info) => {
+                if let Ok(id_buffer) = info.Id(){
+                    if let Ok(reader) = DataReader::FromBuffer(&id_buffer){
+                        // reading bytes from ID IBuffer
+                        if let Ok(length) = id_buffer.Length(){
+                            let mut bytes = vec![0u8; length as usize];
+                            if let Ok(()) = reader.ReadBytes(&mut bytes){
+                                return Ok(String::from_utf8_lossy(&bytes).into_owned());
+                            }
+                        } 
+                    } 
+                }
+                Err(String::from(FALLBACK_UNIQUE_ID))
+            },
+            Err(_) => {
+                Err(String::from(FALLBACK_UNIQUE_ID))
+            }
+        }
     }
 
     // Alliance
@@ -290,7 +342,7 @@ impl EsiManager {
         // Path needs to be checked before invoking rusqlite to be effective
         let temp_path = Path::new(&obj.path);
         if !temp_path.exists() || !temp_path.is_file() {
-            let conn = obj.get_standard_connection().unwrap();
+            let conn = obj.get_standard_connection().expect("Error on ESIManager new() -> get_standard_connection()");
             if let Ok(true) = PlayerDatabase::create_database(&conn) {
                 let _ = PlayerDatabase::migrate_database();
             }

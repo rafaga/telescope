@@ -25,7 +25,6 @@ bytes = "1.11.1"
 http-body-util = "0.1.3"
 hyper-util = { version = "0.1.17", features = ["full"] }
 
-
 # Not Windows:
 [target.'cfg(not(windows))'.dependencies]
 rusqlite = { version = "0.40.0", features = ["bundled-sqlcipher", "backup", "blob", "array"] }
@@ -33,6 +32,7 @@ rusqlite = { version = "0.40.0", features = ["bundled-sqlcipher", "backup", "blo
 # Windows:
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.40.0", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"] }
+windows = { version = "0.62.2", features = ["System_Profile","Storage_Streams"] }
 
 #Not compiling WASM
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

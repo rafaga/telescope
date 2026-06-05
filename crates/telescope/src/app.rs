@@ -948,16 +948,16 @@ impl TelescopeApp {
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
         let mut fonts = eframe::egui::FontDefinitions::default();
         fonts.font_data.insert(
-            "Noto Sans Regular".to_owned(),
+            "Noto Sans TC".to_owned(),
             Arc::new(eframe::egui::FontData::from_static(include_bytes!(
-                "../../../assets/NotoSansTC-Regular.otf"
+                "../../../assets/NotoSansTC-VariableFont_wght.ttf"
             ))),
         );
         fonts
             .families
             .get_mut(&eframe::egui::FontFamily::Proportional)
             .unwrap()
-            .insert(0, "Noto Sans Regular".to_owned());
+            .insert(0, "Noto Sans TC".to_owned());
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
