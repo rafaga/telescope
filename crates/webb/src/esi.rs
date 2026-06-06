@@ -16,10 +16,7 @@ use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use uuid::Uuid;
 
 #[cfg(target_os = "windows")]
-use windows::{
-    System::Profile::{SystemIdentification},
-    Storage::Streams::DataReader,
-};
+use windows::{Storage::Streams::DataReader, System::Profile::SystemIdentification};
 
 use self::player_database::PlayerDatabase;
 pub mod player_database;
@@ -55,11 +52,11 @@ impl EsiManager {
         #[cfg(feature = "crypted-db")]
         {
             #[cfg(target_os = "windows")]
-                let value_txt = self.get_windows_unique_id().unwrap();
+            let value_txt = self.get_windows_unique_id().unwrap();
             #[cfg(target_os = "macos")]
-                let value_txt = self.get_macos_unique_id().unwrap();
+            let value_txt = self.get_macos_unique_id().unwrap();
             #[cfg(target_os = "linux")]
-                let value_txt = self.get_linux_unique_id().unwrap();
+            let value_txt = self.get_linux_unique_id().unwrap();
             let uuid = Uuid::new_v5(&Uuid::NAMESPACE_OID, value_txt.as_bytes());
             let query = ["PRAGMA key = '", uuid.to_string().as_str(), "'"].concat();
             let mut statement = connection.prepare(query.as_str())?;
@@ -84,27 +81,25 @@ impl EsiManager {
     }
 
     #[cfg(target_os = "windows")]
-    fn get_windows_unique_id(&self) ->Result<String,String> {
-         // this get a unique ID for the user, and its used to generate a unique key
-         // for the database encryption
-        match SystemIdentification::GetSystemIdForPublisher(){
+    fn get_windows_unique_id(&self) -> Result<String, String> {
+        // this get a unique ID for the user, and its used to generate a unique key
+        // for the database encryption
+        match SystemIdentification::GetSystemIdForPublisher() {
             Ok(info) => {
-                if let Ok(id_buffer) = info.Id(){
-                    if let Ok(reader) = DataReader::FromBuffer(&id_buffer){
-                        // reading bytes from ID IBuffer
-                        if let Ok(length) = id_buffer.Length(){
-                            let mut bytes = vec![0u8; length as usize];
-                            if let Ok(()) = reader.ReadBytes(&mut bytes){
-                                return Ok(String::from_utf8_lossy(&bytes).into_owned());
-                            }
-                        } 
-                    } 
+                if let Ok(id_buffer) = info.Id()
+                    && let Ok(reader) = DataReader::FromBuffer(&id_buffer)
+                {
+                    // reading bytes from ID IBuffer
+                    if let Ok(length) = id_buffer.Length() {
+                        let mut bytes = vec![0u8; length as usize];
+                        if let Ok(()) = reader.ReadBytes(&mut bytes) {
+                            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+                        }
+                    }
                 }
                 Err(String::from(FALLBACK_UNIQUE_ID))
-            },
-            Err(_) => {
-                Err(String::from(FALLBACK_UNIQUE_ID))
             }
+            Err(_) => Err(String::from(FALLBACK_UNIQUE_ID)),
         }
     }
 
@@ -342,7 +337,9 @@ impl EsiManager {
         // Path needs to be checked before invoking rusqlite to be effective
         let temp_path = Path::new(&obj.path);
         if !temp_path.exists() || !temp_path.is_file() {
-            let conn = obj.get_standard_connection().expect("Error on ESIManager new() -> get_standard_connection()");
+            let conn = obj
+                .get_standard_connection()
+                .expect("Error on ESIManager new() -> get_standard_connection()");
             if let Ok(true) = PlayerDatabase::create_database(&conn) {
                 let _ = PlayerDatabase::migrate_database();
             }
@@ -389,15 +386,15 @@ impl EsiManager {
         {
             return result;
         }
-        if !self.auth.token.is_empty()
-            && self.auth.expiration.is_some()
-            && !self.auth.refresh_token.is_empty()
-        {
+
+        if !self.auth.token.is_empty() && !self.auth.refresh_token.is_empty() {
             let current_datetime = chrono::Utc::now();
             //if auth.expiration =
-            let offset = self.auth.expiration.unwrap() - current_datetime;
-            if offset.num_seconds() >= 20 {
-                result = true;
+            if let Some(expire) = self.auth.expiration {
+                let offset = expire - current_datetime;
+                if offset.num_seconds() >= 20 {
+                    result = true;
+                }
             }
         }
         result

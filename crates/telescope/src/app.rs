@@ -149,7 +149,7 @@ impl eframe::App for TelescopeApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-    /// fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        /// fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         //let mut rt = tokio::runtime::Runtime::new().unwrap();
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
@@ -237,7 +237,7 @@ impl eframe::App for TelescopeApp {
 
         #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
         egui::Panel::top("top_panel").show_inside(ui, |ui| {
-        //egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            //egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -262,7 +262,7 @@ impl eframe::App for TelescopeApp {
 
         // Bottom menu
         egui::Panel::bottom("bottom_panel").show_inside(ui, |ui| {
-        //egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+            //egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.separator();
@@ -1269,12 +1269,16 @@ impl TelescopeApp {
                                     if col_data.1.clicked() {
                                         let tx_map = Arc::clone(&self.map_msg.0);
                                         let system_id = self.search_results[row_index].0;
-                                        let _result = tx_map
-                                            .send(MapSync::CenterOn((system_id.try_into().unwrap(), Target::System)));
+                                        let _result = tx_map.send(MapSync::CenterOn((
+                                            system_id.try_into().unwrap(),
+                                            Target::System,
+                                        )));
                                         if self.emit_notification {
-                                            let _result = tx_map.send(MapSync::SystemNotification(
-                                                (system_id.try_into().unwrap(), tokio::time::Instant::now()),
-                                            ));
+                                            let _result =
+                                                tx_map.send(MapSync::SystemNotification((
+                                                    system_id.try_into().unwrap(),
+                                                    tokio::time::Instant::now(),
+                                                )));
                                         }
                                     }
                                     let col_data = row.col(|ui| {
@@ -1291,8 +1295,10 @@ impl TelescopeApp {
                                     if col_data.1.clicked() {
                                         let tx_map = Arc::clone(&self.map_msg.0);
                                         let region_id = self.search_results[row_index].2;
-                                        let _result = tx_map
-                                            .send(MapSync::CenterOn((region_id.try_into().unwrap(), Target::Region)));
+                                        let _result = tx_map.send(MapSync::CenterOn((
+                                            region_id.try_into().unwrap(),
+                                            Target::Region,
+                                        )));
                                     }
                                     if row.response().clicked() {
                                         self.search_selected_row = Some(row_index);

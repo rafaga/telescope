@@ -129,13 +129,17 @@ impl<'a> SdeManager<'a> {
 
             //we compare the current system with the first, if not the same then we add the coordinates to hashmap
 
-            hash_map.entry(system_a.cast_unsigned()).and_modify(|point| {
-                point.connections.push(id.clone());
-            });
+            hash_map
+                .entry(system_a.cast_unsigned())
+                .and_modify(|point| {
+                    point.connections.push(id.clone());
+                });
 
-            hash_map.entry(system_b.cast_unsigned()).and_modify(|point| {
-                point.connections.push(id);
-            });
+            hash_map
+                .entry(system_b.cast_unsigned())
+                .and_modify(|point| {
+                    point.connections.push(id);
+                });
         }
         Ok(hash_map)
     }
