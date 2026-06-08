@@ -78,7 +78,7 @@ impl<'a> SdeManager<'a> {
         query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN ?1 AND ?2;";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query(params![30000000, 30999999])?;
-        let mut min_id = usize::MAX;
+        let mut min_id = isize::MAX;
         while let Some(row) = rows.next()? {
             let id = row.get(0)?;
             if id < min_id {
@@ -98,9 +98,9 @@ impl<'a> SdeManager<'a> {
             if self.invert_coordinates {
                 coord *= -1;
             }
-            let mut point = MapPoint::new(id, coord.to_rawpoint());
+            let mut point = MapPoint::new(id.try_into().unwrap(), coord.to_rawpoint());
             point.set_name(row.get::<usize, String>(4)?);
-            hash_map.insert(id, point);
+            hash_map.insert(id.try_into().unwrap(), point);
         }
         Ok(hash_map)
     }
@@ -124,18 +124,22 @@ impl<'a> SdeManager<'a> {
             // for SolarSystems that has an Id less than the current one printed. with the exception
             // of the lowest ID
             let id = row.get::<usize, String>(0)?;
-            let system_a = row.get::<usize, usize>(1)?;
-            let system_b = row.get::<usize, usize>(2)?;
+            let system_a = row.get::<usize, isize>(1)?;
+            let system_b = row.get::<usize, isize>(2)?;
 
             //we compare the current system with the first, if not the same then we add the coordinates to hashmap
 
-            hash_map.entry(system_a).and_modify(|point| {
-                point.connections.push(id.clone());
-            });
+            hash_map
+                .entry(system_a.cast_unsigned())
+                .and_modify(|point| {
+                    point.connections.push(id.clone());
+                });
 
-            hash_map.entry(system_b).and_modify(|point| {
-                point.connections.push(id);
-            });
+            hash_map
+                .entry(system_b.cast_unsigned())
+                .and_modify(|point| {
+                    point.connections.push(id);
+                });
         }
         Ok(hash_map)
     }
@@ -188,7 +192,7 @@ impl<'a> SdeManager<'a> {
     pub fn get_system_id(
         &self,
         name: String,
-    ) -> Result<Vec<(usize, String, usize, String)>, Error> {
+    ) -> Result<Vec<(isize, String, isize, String)>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
         let connection = self.get_standart_connection()?;
@@ -320,8 +324,8 @@ impl<'a> SdeManager<'a> {
             } else if self.factor < -1 {
                 raw_point *= self.factor.abs();
             }
-            let point = MapPoint::new(row.get::<usize, usize>(0)?, raw_point);
-            hash_map.insert(row.get::<usize, usize>(0)?, point);
+            let point = MapPoint::new(row.get::<usize, isize>(0)?.try_into().unwrap(), raw_point);
+            hash_map.insert(row.get::<usize, isize>(0)?.try_into().unwrap(), point);
         }
         Ok(hash_map)
     }
@@ -361,7 +365,7 @@ impl<'a> SdeManager<'a> {
         }
         while let Some(row) = rows.next()? {
             hash_map
-                .entry(row.get::<usize, usize>(0)?)
+                .entry(row.get::<usize, isize>(0)?.try_into().unwrap())
                 .and_modify(|map_point| {
                     map_point.set_name(row.get::<usize, String>(3).unwrap());
                     if let Ok(hash) = row.get::<usize, String>(2) {

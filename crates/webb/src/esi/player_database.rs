@@ -97,33 +97,26 @@ impl PlayerDatabase {
     ) -> Result<usize, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
-
-        let mut query = if character.alliance.is_none() {
-            String::from("UPDATE char SET name = ?, corporation = ?, ")
-        } else {
-            String::from("UPDATE char SET name = ?, alliance = ?, corporation = ?, ")
-        };
-        query += "lastlogon = ?, location = ? WHERE id = ?;";
+        let mut query = String::from("UPDATE char SET name = :name, corporation = :corp,");
+        if character.alliance.is_some() {
+            query += " alliance = :alliance,";
+        }
+        query += "lastlogon = :last_logon, location = :location WHERE id = :id;";
         let mut statement = conn.prepare(query.as_str()).unwrap();
-        let params = if character.alliance.is_none() {
-            rusqlite::params![
-                character.name,
-                character.corp.as_ref().unwrap().id,
-                character.last_logon.to_string(),
-                character.location,
-                character.id
-            ]
-        } else {
-            rusqlite::params![
-                character.name,
-                character.alliance.as_ref().unwrap().id,
-                character.corp.as_ref().unwrap().id,
-                character.last_logon.to_string(),
-                character.location,
-                character.id
-            ]
-        };
-        let rows: usize = statement.execute(params)?;
+
+        let fecha = character.last_logon.to_rfc3339();
+        let mut params: Vec<(&str, &dyn ToSql)> = vec![
+            (":name", &character.name),
+            (":corp", &character.corp.as_ref().unwrap().id),
+            (":last_logon", &fecha),
+            (":location", &character.location),
+            (":id", &character.id),
+        ];
+
+        if let Some(alliance) = character.alliance.as_ref() {
+            params.push((":alliance", &alliance.id));
+        }
+        let rows: usize = statement.execute(params.as_slice())?;
         //PlayerDatabase::update_auth(conn, character.id, character.auth.as_ref().unwrap())?;
         Ok(rows)
     }
@@ -224,7 +217,7 @@ impl PlayerDatabase {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut query = String::from("INSERT INTO char (id,");
+        /*let mut query = String::from("INSERT INTO char (id,");
         query += "name,corporation,alliance,portrait,lastLogon,location) VALUES (?,?,?,?,?,?,?)";
         let mut statement = conn.prepare(query.as_str())?;
         let dt = player.last_logon.to_rfc3339();
@@ -241,7 +234,45 @@ impl PlayerDatabase {
         }
         statement.raw_bind_parameter(6, dt)?;
         statement.raw_bind_parameter(7, player.location)?;
-        let rows = statement.raw_execute()?;
+        let rows = statement.raw_execute()?;*/
+
+        let fecha = player.last_logon.to_rfc3339();
+        let mut query = [
+            String::from("INSERT INTO char (id,name,lastLogon,location"),
+            String::from(" VALUES (:id,:name,:last_logon,:location)"),
+        ];
+        let mut params: Vec<(&str, &dyn ToSql)> = vec![
+            (":name", &player.name),
+            (":last_logon", &fecha),
+            (":location", &player.location),
+            (":id", &player.id),
+        ];
+
+        if let Some(corp) = player.corp.as_ref() {
+            query[0] += ",corporation";
+            query[1] += ",:corp";
+            params.push((":corp", &corp.id));
+        }
+
+        if let Some(alliance) = player.alliance.as_ref() {
+            query[0] += ",alliance";
+            query[1] += ",:alliance";
+            params.push((":alliance", &alliance.id));
+        }
+
+        if let Some(photo) = player.photo.as_ref() {
+            query[0] += ",portrait";
+            query[1] += ",:portrait";
+            params.push((":portrait", photo));
+        }
+
+        query[0] += ")";
+        query[1] += ")";
+        let mut statement = conn
+            .prepare((query[0].clone() + &query[1]).as_str())
+            .unwrap();
+        let rows: usize = statement.execute(params.as_slice())?;
+
         //PlayerDatabase::insert_auth(conn,player.id,player.auth.as_ref().unwrap())?;
         Ok(rows)
     }

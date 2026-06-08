@@ -61,7 +61,7 @@ pub struct TelescopeApp {
     search_text: String,
     emit_notification: bool,
     search_selected_row: Option<usize>,
-    search_results: Vec<(usize, String, usize, String)>,
+    search_results: Vec<(isize, String, isize, String)>,
     universe: Universe,
     selected_settings_page: SettingsPage,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -161,7 +161,8 @@ impl eframe::App for TelescopeApp {
     }*/
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        /// fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         //let mut rt = tokio::runtime::Runtime::new().unwrap();
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
@@ -194,7 +195,7 @@ impl eframe::App for TelescopeApp {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("telescope_init");
 
-            egui_extras::install_image_loaders(ctx);
+            egui_extras::install_image_loaders(ui.ctx());
 
             self.tree = Some(self.create_tree());
             let mut vec_chars = Vec::new();
@@ -248,7 +249,8 @@ impl eframe::App for TelescopeApp {
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
         #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+        egui::Panel::top("top_panel").show_inside(ui, |ui| {
+            //egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -260,7 +262,7 @@ impl eframe::App for TelescopeApp {
                     }
                     ui.separator();
                     if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Help", |ui| {
@@ -272,7 +274,8 @@ impl eframe::App for TelescopeApp {
         });
 
         // Bottom menu
-        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+        egui::Panel::bottom("bottom_panel").show_inside(ui, |ui| {
+            //egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.separator();
@@ -280,19 +283,19 @@ impl eframe::App for TelescopeApp {
         });
 
         if self.open[0] {
-            self.open_about_window(ctx);
+            self.open_about_window(ui.ctx());
         }
 
         // Debug menu
         if self.open[1] {
-            self.open_debug_menu(ctx);
+            self.open_debug_menu(ui.ctx());
         }
 
         if self.open[2] {
-            self.open_settings_window(ctx);
+            self.open_settings_window(ui.ctx());
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
             if let Some(tree) = &mut self.tree {
@@ -1004,16 +1007,16 @@ impl TelescopeApp {
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
         let mut fonts = eframe::egui::FontDefinitions::default();
         fonts.font_data.insert(
-            "Noto Sans Regular".to_owned(),
+            "Noto Sans TC".to_owned(),
             Arc::new(eframe::egui::FontData::from_static(include_bytes!(
-                "../../../assets/NotoSansTC-Regular.otf"
+                "../../../assets/NotoSansTC-VariableFont_wght.ttf"
             ))),
         );
         fonts
             .families
             .get_mut(&eframe::egui::FontFamily::Proportional)
             .unwrap()
-            .insert(0, "Noto Sans Regular".to_owned());
+            .insert(0, "Noto Sans TC".to_owned());
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -1310,13 +1313,13 @@ impl TelescopeApp {
                                             let tx_map = Arc::clone(&self.map_msg.0);
                                             let system_id = self.search_results[row_index].0;
                                             let _result = tx_map.send(MapSync::CenterOn((
-                                                system_id,
+                                                system_id.try_into().unwrap(),
                                                 Target::System,
                                             )));
                                             if self.emit_notification {
                                                 let _result =
                                                     tx_map.send(MapSync::SystemNotification((
-                                                        system_id,
+                                                        system_id.try_into().unwrap(),
                                                         tokio::time::Instant::now(),
                                                     )));
                                             }
@@ -1325,12 +1328,16 @@ impl TelescopeApp {
                                     if col_data.1.clicked() {
                                         let tx_map = Arc::clone(&self.map_msg.0);
                                         let system_id = self.search_results[row_index].0;
-                                        let _result = tx_map
-                                            .send(MapSync::CenterOn((system_id, Target::System)));
+                                        let _result = tx_map.send(MapSync::CenterOn((
+                                            system_id.try_into().unwrap(),
+                                            Target::System,
+                                        )));
                                         if self.emit_notification {
-                                            let _result = tx_map.send(MapSync::SystemNotification(
-                                                (system_id, tokio::time::Instant::now()),
-                                            ));
+                                            let _result =
+                                                tx_map.send(MapSync::SystemNotification((
+                                                    system_id.try_into().unwrap(),
+                                                    tokio::time::Instant::now(),
+                                                )));
                                         }
                                     }
                                     let col_data = row.col(|ui| {
@@ -1339,7 +1346,7 @@ impl TelescopeApp {
                                             let tx_map = Arc::clone(&self.map_msg.0);
                                             let region_id = self.search_results[row_index].2;
                                             let _result = tx_map.send(MapSync::CenterOn((
-                                                region_id,
+                                                region_id.try_into().unwrap(),
                                                 Target::Region,
                                             )));
                                         }
@@ -1347,8 +1354,10 @@ impl TelescopeApp {
                                     if col_data.1.clicked() {
                                         let tx_map = Arc::clone(&self.map_msg.0);
                                         let region_id = self.search_results[row_index].2;
-                                        let _result = tx_map
-                                            .send(MapSync::CenterOn((region_id, Target::Region)));
+                                        let _result = tx_map.send(MapSync::CenterOn((
+                                            region_id.try_into().unwrap(),
+                                            Target::Region,
+                                        )));
                                     }
                                     if row.response().clicked() {
                                         self.search_selected_row = Some(row_index);
