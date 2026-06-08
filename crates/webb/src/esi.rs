@@ -12,15 +12,25 @@ use std::path::Path;
 use bytes::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 
-#[cfg(feature = "crypted-db")]
-use uuid::Uuid;
+//#[cfg(feature = "crypted-db")]
+//use uuid::Uuid;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "crypted-db"))]
 use windows::{Storage::Streams::DataReader, System::Profile::SystemIdentification};
+
+#[cfg(all(target_os = "macos", feature = "crypted-db"))]
+use objc2_core_foundation::{CFAllocator, CFString};
+
+#[cfg(all(target_os = "macos", feature = "crypted-db"))]
+use objc2_io_kit::{
+    IOObjectRelease, IORegistryEntryCreateCFProperty, IOServiceGetMatchingService,
+    IOServiceMatching, kIOMainPortDefault,
+};
 
 use self::player_database::PlayerDatabase;
 pub mod player_database;
 
+#[cfg(feature = "crypted-db")]
 const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
 
 #[derive(Clone)]
@@ -57,8 +67,9 @@ impl EsiManager {
             let value_txt = self.get_macos_unique_id().unwrap();
             #[cfg(target_os = "linux")]
             let value_txt = self.get_linux_unique_id().unwrap();
-            let uuid = Uuid::new_v5(&Uuid::NAMESPACE_OID, value_txt.as_bytes());
-            let query = ["PRAGMA key = '", uuid.to_string().as_str(), "'"].concat();
+            //let uuid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, value_txt.as_bytes());
+            //let query = ["PRAGMA key = '", uuid.to_string().as_str(), "'"].concat();
+            let query = ["PRAGMA key = '", value_txt.as_str(), "'"].concat();
             let mut statement = connection.prepare(query.as_str())?;
 
             let _ = statement.query([])?;
@@ -68,19 +79,48 @@ impl EsiManager {
         Ok(connection)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "crypted-db"))]
     fn get_macos_unique_id(&self) -> Result<String, String> {
-        // Placeholder implementation for macOS unique ID
-        Ok(String::from(FALLBACK_UNIQUE_ID))
+        // macOS unique ID
+        unsafe {
+            // 1. Obtener el entry del IORegistry para la plataforma
+            let matching = IOServiceMatching(c"IOPlatformExpertDevice".as_ptr())
+                .map(|matching| (&matching).into());
+            let entry = IOServiceGetMatchingService(kIOMainPortDefault, matching);
+
+            if entry != 0 {
+                // 2. Construir la clave como CFString
+                let key = CFString::from_str("IOPlatformSerialNumber");
+
+                // 3. Llamar a IORegistryEntryCreateCFProperty
+                let cf_value = IORegistryEntryCreateCFProperty(
+                    entry,
+                    Some(&key),
+                    None::<&CFAllocator>, // usar el allocator por defecto
+                    0,                    // options = 0
+                );
+
+                // 4. Liberar el entry
+                IOObjectRelease(entry);
+
+                // 5. Convertir el CFType resultante a CFString y luego a String de Rust
+                if let Some(retained) = cf_value
+                    && let Ok(cf_str) = retained.downcast::<CFString>()
+                {
+                    return Ok(cf_str.to_string());
+                }
+            }
+        }
+        Err(String::from(FALLBACK_UNIQUE_ID))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "crypted-db"))]
     fn get_linux_unique_id(&self) -> Result<String, String> {
         // Placeholder implementation for Linux unique ID
         Ok(String::from(FALLBACK_UNIQUE_ID))
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "crypted-db"))]
     fn get_windows_unique_id(&self) -> Result<String, String> {
         // this get a unique ID for the user, and its used to generate a unique key
         // for the database encryption
