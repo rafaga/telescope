@@ -5,9 +5,9 @@ use chrono::Utc;
 use data::AppData;
 use eframe::egui::{
     self, Button, Color32, FontFamily, FontId, Margin, RichText, TextFormat, Vec2,
-    epaint::text::LayoutJob
+    epaint::text::LayoutJob,
 };
-use eframe::egui::{IntoAtoms, TextEdit, Context};
+use eframe::egui::{Context, IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
 use egui_file_dialog::FileDialog;
 use egui_map::map::objects::*;
@@ -845,7 +845,6 @@ impl TelescopeApp {
                 String::from("directory updated"),
             )));
         }
-        
     }
 
     fn update_character_into_database(&mut self, response_data: (String, String)) {
