@@ -5,9 +5,9 @@ use chrono::Utc;
 use data::AppData;
 use eframe::egui::{
     self, Button, Color32, FontFamily, FontId, Margin, RichText, TextFormat, Vec2,
-    epaint::text::LayoutJob,
+    epaint::text::LayoutJob
 };
-use eframe::egui::{IntoAtoms, TextEdit};
+use eframe::egui::{IntoAtoms, TextEdit, Context};
 use egui_extras::{Column, TableBuilder};
 use egui_file_dialog::FileDialog;
 use egui_map::map::objects::*;
@@ -242,7 +242,7 @@ impl eframe::App for TelescopeApp {
             self.initialized = true;
         }
 
-        self.event_manager(ctx);
+        self.event_manager(ui.ctx());
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
