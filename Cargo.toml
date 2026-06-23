@@ -4,6 +4,7 @@ members = [
     "crates/telescope",
     "crates/sde",
     "crates/webb",
+    "crates/native_tools",
     # "tests/*",
 ]
 
@@ -12,11 +13,6 @@ edition = "2024"
 license = "MIT"
 rust-version = "1.89"
 version = "0.1.0"
-
-[workspace.dependencies]
-telescope = { version = "0.1.0", path = "crates/telescope", default-features = false }
-sde = { version = "0.1.0", path = "crates/sde", default-features = false }
-webb = { version = "0.1.0", path = "crates/webb", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

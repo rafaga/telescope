@@ -34,7 +34,7 @@ hyper-util = { version = "0.1.17", features = ["full"] }
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 directories = "6.0.0"
 regex = "1.12.1"
-egui-file-dialog = "0.13.0"
+native_tools = { path = "../native_tools/"}
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -50,6 +50,4 @@ wgpu = { version="29.0.3" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu = { version="29.0.3", features = ["dx12"], default-features = false }
-
-
-
+windows = { version = "0.62.2", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation",] }

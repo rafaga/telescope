@@ -7,9 +7,9 @@ use eframe::egui::{
     self, Button, Color32, FontFamily, FontId, Margin, RichText, TextFormat, Vec2,
     epaint::text::LayoutJob,
 };
-use eframe::egui::{Context, IntoAtoms, TextEdit};
+use eframe::egui::{IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
-use egui_file_dialog::FileDialog;
+//use egui_file_dialog::FileDialog;
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -27,10 +27,10 @@ use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
 use tokio::time::{Duration, sleep};
 use webb::esi::EsiManager;
-//use std::path::PathBuf;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
+use native_tools::dialog::*;
 
 mod data;
 mod file;
@@ -53,7 +53,8 @@ pub struct TelescopeApp {
     // 0 - About Window
     // 1 - Character Window
     // 2 - Preferences Window
-    open: [bool; 3],
+    // 3 - Change Intel File directory dialog
+    open: [bool; 4],
 
     // the ESI Manager
     esi: EsiManager,
@@ -71,7 +72,7 @@ pub struct TelescopeApp {
     task_auth: AuthSpawner,
     settings: Manager,
     watcher: RecommendedWatcher,
-    open_dialog: FileDialog,
+    dlg_intel_dir: Dialog,
 }
 
 impl Default for TelescopeApp {
@@ -108,13 +109,11 @@ impl Default for TelescopeApp {
             Arc::clone(&arc_msg_sender),
         );
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
-        let mut open_dialog = FileDialog::default()
-            .as_modal(true)
-            .show_devices(false)
-            .opening_mode(egui_file_dialog::OpeningMode::LastPickedDir);
+        let mut dlg_intel_dir = Dialog::default();
+        dlg_intel_dir.dialog_type = DialogType::Directory;
 
         if let Ok(Some(directory)) = settings.check_intel_directory() {
-            open_dialog = open_dialog.initial_directory(directory);
+            dlg_intel_dir.set_directory(directory.clone());
         }
 
         if let Some(intel_path) = &settings.paths.internal_intel {
@@ -130,7 +129,7 @@ impl Default for TelescopeApp {
             app_msg: (arc_msg_sender, grx),
             map_msg: (arc_map_sender, mrx),
             char_msg: None,
-            open: [false; 3],
+            open: [false; 4],
             esi,
             app_messages: Vec::new(),
             search_text: String::new(),
@@ -149,7 +148,7 @@ impl Default for TelescopeApp {
             task_auth: authmon,
             settings,
             watcher,
-            open_dialog,
+            dlg_intel_dir,
         }
     }
 }
@@ -188,7 +187,7 @@ impl eframe::App for TelescopeApp {
             task_auth: _,
             settings: _,
             watcher: _,
-            open_dialog: _,
+            dlg_intel_dir: _,
         } = self;
 
         if !self.initialized {
@@ -242,7 +241,7 @@ impl eframe::App for TelescopeApp {
             self.initialized = true;
         }
 
-        self.event_manager(ui.ctx());
+        self.event_manager();
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -295,6 +294,10 @@ impl eframe::App for TelescopeApp {
             self.open_settings_window(ui.ctx());
         }
 
+        if self.open[3] {
+            self.dlg_intel_dir.open_dialog();
+        }
+
         egui::CentralPanel::default().show_inside(ui, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
@@ -336,7 +339,7 @@ impl eframe::App for TelescopeApp {
 }
 
 impl TelescopeApp {
-    fn event_manager(&mut self, ctx: &egui::Context) {
+    fn event_manager(&mut self) {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -356,7 +359,7 @@ impl TelescopeApp {
                     self.load_intel_file(file_name);
                 }
                 Message::UpdateIntelDirectory() => {
-                    self.open_directory_selector(ctx);
+                    self.open[3] = true;
                 }
             };
         }
@@ -791,7 +794,7 @@ impl TelescopeApp {
         }
     }
 
-    fn parse_intel_data(&mut self, data: String) -> Result<(), String> {
+    fn parse_intel_data(&mut self, data: String) -> std::result::Result<(), String> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -831,21 +834,66 @@ impl TelescopeApp {
         }
     }
 
-    fn open_directory_selector(&mut self, ctx: &Context) {
-        self.open_dialog.pick_directory();
-        if let Some(path) = self.open_dialog.update(ctx).picked() {
-            let dir = path.to_string_lossy().to_string();
-            let path = Path::new(&dir);
-            self.settings.paths.internal_intel = Some(path.to_path_buf());
-            self.settings.paths.intel = dir;
-            self.task_msg.spawn(Message::GenericNotification((
-                Type::Info,
-                String::from("EsiManager"),
-                String::from("intel_path"),
-                String::from("directory updated"),
-            )));
+    /*fn open_directory_selector(&mut self, _ctx: &Context) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            unsafe {
+                if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() {
+                    let dialog: IFileOpenDialog =
+                        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+
+                    let mut flags = dialog.GetOptions()?;
+                    // FOS_PICKFOLDERS: mostrar solo carpetas
+                    // FOS_FORCEFILESYSTEM: solo rutas reales del sistema de archivos
+                    flags |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM;
+                    dialog.SetOptions(flags)?;
+
+                    // Con FOS_PICKFOLDERS los filtros de archivo no aplican,
+                    // así que omitimos SetFileTypes / SetFileTypeIndex / SetDefaultExtension
+                    match dialog.Show(None) {
+                        Ok(()) => {
+                            let result: IShellItem = dialog.GetResult()?;
+                            let path = result.GetDisplayName(SIGDN_FILESYSPATH)?;
+                            let path_str = path.to_string()?;
+                            println!("Carpeta seleccionada: {}", path_str);
+
+                            // Guardar la ruta en la configuración
+                            self.settings.paths.intel = path_str.clone();
+                            self.settings.paths.internal_intel =
+                                Some(std::path::PathBuf::from(&path_str));
+
+                            CoTaskMemFree(Some(path.as_ptr() as _));
+
+                            // Notificación de éxito
+                            self.task_msg.spawn(Message::GenericNotification((
+                                Type::Info,
+                                String::from("EsiManager"),
+                                String::from("intel_path"),
+                                String::from("directory updated"),
+                            )));
+
+                            self.open[3] = false;
+                        }
+                        Err(e) if e.code() == HRESULT::from_win32(0x4C7) => {
+                            // ERROR_CANCELLED — el usuario cerró el diálogo sin elegir
+                            self.open[3] = false;
+                        }
+                        Err(e) => {
+                            CoUninitialize();
+                            return Err(e.into());
+                        }
+                    }
+                    CoUninitialize();
+                }
+                Ok(())
+            }
         }
-    }
+
+        #[cfg(target_os = "macos")]
+        {
+            Ok(())
+        }
+    }*/
 
     fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
