@@ -10,7 +10,7 @@ env:
 
 jobs:
   check:
-    name: Check
+    name: check on MacOS
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -50,7 +50,7 @@ jobs:
   #         args: --lib
 
   fmt:
-    name: Rustfmt
+    name: fmt on MacOS
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -58,7 +58,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: Clippy
+    name: clippy on MacOS
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7

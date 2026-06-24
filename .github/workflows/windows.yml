@@ -10,7 +10,7 @@ env:
 
 jobs:
   check_windows:
-    name: Check
+    name: check on Windows
     runs-on: windows-latest
     env:
       CARGO_HTTP_MULTIPLEXING: false
@@ -52,15 +52,15 @@ jobs:
   #         args: --lib
 
   fmt:
-    name: Rustfmt
-    runs-on: macos-latest
+    name: fmt on Windows
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: Clippy
+    name: clippy on Windows
     runs-on: windows-latest
     env:
       CARGO_HTTP_MULTIPLEXING: false
