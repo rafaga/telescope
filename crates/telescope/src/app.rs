@@ -834,67 +834,6 @@ impl TelescopeApp {
         }
     }
 
-    /*fn open_directory_selector(&mut self, _ctx: &Context) -> Result<()> {
-        #[cfg(target_os = "windows")]
-        {
-            unsafe {
-                if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() {
-                    let dialog: IFileOpenDialog =
-                        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-
-                    let mut flags = dialog.GetOptions()?;
-                    // FOS_PICKFOLDERS: mostrar solo carpetas
-                    // FOS_FORCEFILESYSTEM: solo rutas reales del sistema de archivos
-                    flags |= FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM;
-                    dialog.SetOptions(flags)?;
-
-                    // Con FOS_PICKFOLDERS los filtros de archivo no aplican,
-                    // así que omitimos SetFileTypes / SetFileTypeIndex / SetDefaultExtension
-                    match dialog.Show(None) {
-                        Ok(()) => {
-                            let result: IShellItem = dialog.GetResult()?;
-                            let path = result.GetDisplayName(SIGDN_FILESYSPATH)?;
-                            let path_str = path.to_string()?;
-                            println!("Carpeta seleccionada: {}", path_str);
-
-                            // Guardar la ruta en la configuración
-                            self.settings.paths.intel = path_str.clone();
-                            self.settings.paths.internal_intel =
-                                Some(std::path::PathBuf::from(&path_str));
-
-                            CoTaskMemFree(Some(path.as_ptr() as _));
-
-                            // Notificación de éxito
-                            self.task_msg.spawn(Message::GenericNotification((
-                                Type::Info,
-                                String::from("EsiManager"),
-                                String::from("intel_path"),
-                                String::from("directory updated"),
-                            )));
-
-                            self.open[3] = false;
-                        }
-                        Err(e) if e.code() == HRESULT::from_win32(0x4C7) => {
-                            // ERROR_CANCELLED — el usuario cerró el diálogo sin elegir
-                            self.open[3] = false;
-                        }
-                        Err(e) => {
-                            CoUninitialize();
-                            return Err(e.into());
-                        }
-                    }
-                    CoUninitialize();
-                }
-                Ok(())
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            Ok(())
-        }
-    }*/
-
     fn update_character_into_database(&mut self, response_data: (String, String)) {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
