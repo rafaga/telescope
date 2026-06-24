@@ -1,0 +1,27 @@
+[package]
+name = "native_tools"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation",] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-io-kit = { version = "0.3.2", features = ["libc"], default-features = false}
+objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+objc2-foundation = "0.3.2"
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSOpenPanel",
+    "NSSavePanel",
+    "NSPanel",
+    "NSWindow",
+    "NSResponder",
+] }
+block2 = "0.6.2"
