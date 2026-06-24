@@ -20,6 +20,8 @@ jobs:
   check_windows:
     name: Check on Windows
     runs-on: windows-latest
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -76,11 +78,13 @@ jobs:
   clippy_windows:
     name: Clippy on Windows
     runs-on: windows-latest
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo clippy -- -D warnings
-      
+
   # trunk:
   #   name: trunk
   #   runs-on: macos-latest
