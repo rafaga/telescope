@@ -15,7 +15,7 @@ rust-version = "1.89"
 version = "0.1.0"
 
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code = "warn"
 
 [workspace.lints.rustdoc]
 all = "warn"

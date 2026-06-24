@@ -13,7 +13,7 @@ use block2::RcBlock;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
 #[cfg(target_os = "macos")]
-use objc2_foundation::MainThreadMarker;
+use objc2_foundation::{MainThreadMarker,ns_string};
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum DialogType {
@@ -189,12 +189,13 @@ impl Dialog {
     }
 
     #[cfg(target_os = "macos")]
+    #[allow(unsafe_code)]
     fn open_dialog_macos(self) -> DialogResult<PathBuf> {
         let result;
 
         if self.main_thread_marker.is_none() {
             self.main_thread_marker = MainThreadMarker::new();
-            if main_thread_marker.is_none() {
+            if self.main_thread_marker.is_none() {
                 return DialogResult::Err(String::from("Error creating Main Thread Marker"));
             }
         }
@@ -211,7 +212,7 @@ impl Dialog {
             }
             panel.setAllowsMultipleSelection(false);
             panel.setResolvesAliases(true);
-            panel.setMessage(ns_string!("Select a folder"));
+            panel.setMessage(Some(ns_string!("Select a folder")));
             //panel.setPrompt(ns_string!("Choose"));
         }
 
@@ -219,18 +220,17 @@ impl Dialog {
             if response == NSModalResponseOK as isize {
                 // URLs() returns the selected items; take the first one
                 let urls = panel.URLs();
-                urls.first()
-                    .and_then(|url| url.path().map(|p| std::path::PathBuf::from(p.to_string())));
-                result = DialogResult::Ok(url)
+                let result = urls.first()
+                    .and_then(|url| url.path().map(|p| DialogResult::Ok(std::path::PathBuf::from(p.to_string()))));
             } else {
-                result = DialogResult::Cancelled()
+                result = DialogResult::Cancelled
             }
         });
 
         unsafe {
             panel.beginSheetModalForWindow_completionHandler(&parent_window, &block);
         }
-        return (result);
+        return result;
     }
 
     #[cfg(target_os = "linux")]
@@ -243,7 +243,7 @@ impl Dialog {
         return self.open_dialog_windows();
 
         #[cfg(target_os = "macos")]
-        return self.open_dialog_macos(_main_ref);
+        return self.clone().open_dialog_macos();
 
         #[cfg(target_os = "linux")]
         return self.linux_directory_selector();
