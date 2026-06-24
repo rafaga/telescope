@@ -1,6 +1,7 @@
 # Telescope
 
-[![CI](https://github.com/rafaga/telescope/actions/workflows/rust.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/rust.yml)
+[![Windows](https://github.com/rafaga/telescope/actions/workflows/windows.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/windows.yml)
+[![MacOS](https://github.com/rafaga/telescope/actions/workflows/macos.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/macos.yml)
 
 This is an application to gather Intel in Eve Online and present alerts to the player. This application its similar to others intel gatherers, but it has some key differences.
 
