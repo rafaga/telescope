@@ -9,20 +9,21 @@ env:
   RUSTFLAGS: --cfg=web_sys_unstable_apis
 
 jobs:
-  check:
-    name: Check
+  check_macos:
+    name: Check on MacOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all-features
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --all-features
+
+  check_windows:
+    name: Check on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --all-features
 
   # check_wasm:
   #   name: Check wasm32
@@ -60,34 +61,26 @@ jobs:
     name: Rustfmt
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt
-      - uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all -- --check
 
-  clippy:
-    name: Clippy
+  clippy_macos:
+    name: Clippy on MacOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: clippy
-      - uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy -- -D warnings
 
+  clippy_windows:
+    name: Clippy on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy -- -D warnings
+      
   # trunk:
   #   name: trunk
   #   runs-on: macos-latest
