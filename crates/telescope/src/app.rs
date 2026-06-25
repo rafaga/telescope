@@ -292,10 +292,6 @@ impl eframe::App for TelescopeApp {
             self.open_settings_window(ui.ctx());
         }
 
-        if self.open[3] {
-            self.dlg_intel_dir.open_dialog();
-        }
-
         egui::CentralPanel::default().show_inside(ui, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
@@ -356,8 +352,14 @@ impl TelescopeApp {
                 Message::IntelFileChanged(file_name) => {
                     self.load_intel_file(file_name);
                 }
-                Message::UpdateIntelDirectory() => {
-                    self.open[3] = true;
+                Message::UpdateIntelDirectory(directory_path) => {
+                    let directory_string = directory_path
+                        .clone()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string();
+                    self.settings.paths.internal_intel = directory_path;
+                    self.settings.paths.intel = directory_string;
                 }
             };
         }
@@ -471,18 +473,20 @@ impl TelescopeApp {
                                         let atoms2= ("Select").into_atoms();
                                         if ui.add_enabled(self.settings.paths.default_behavior, Button::new(atoms2)).clicked(){
                                             let runtime = tokio::runtime::Builder::new_current_thread()
-                                            .enable_all()
-                                            .build()
-                                            .unwrap();
-                                            let app_msg_tx = Arc::clone(&self.app_msg.0);
-                                            thread::spawn(move || {
-                                                runtime.block_on(async {
-                                                    #[cfg(feature = "puffin")]
-                                                    puffin::profile_scope!("spawned intel message data");
-                                                    let _ = app_msg_tx
-                                                        .send(Message::UpdateIntelDirectory())
-                                                        .await;
-                                                });
+                                                .enable_all()
+                                                .build()
+                                                .unwrap();
+                                                let app_msg_tx = Arc::clone(&self.app_msg.0);
+                                            self.dlg_intel_dir.open_file_dialog(move |result| {
+                                                if let DialogResult::Ok(path) = result {
+                                                    runtime.block_on(async {
+                                                        #[cfg(feature = "puffin")]
+                                                        puffin::profile_scope!("spawned intel message data");
+                                                        let _ = app_msg_tx
+                                                            .send(Message::UpdateIntelDirectory(Some(path)))
+                                                            .await;
+                                                    });
+                                                }
                                             });
                                         }
                                     });

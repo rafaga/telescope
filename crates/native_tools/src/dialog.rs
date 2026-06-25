@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+//use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
@@ -14,8 +15,6 @@ use block2::RcBlock;
 use objc2_app_kit::{NSApplication, NSModalResponse, NSModalResponseOK, NSOpenPanel};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{MainThreadMarker, ns_string};
-#[cfg(target_os = "macos")]
-use std::sync::{Arc, Mutex};
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum DialogType {
@@ -76,8 +75,7 @@ pub struct Dialog {
     directory_path: Option<PathBuf>, // para recordar la última carpeta abierta
     #[cfg(target_os = "macos")]
     main_thread_marker: Option<MainThreadMarker>,
-    #[cfg(target_os = "macos")]
-    dialog_result: Option<Arc<Mutex<Option<DialogResult<PathBuf>>>>>,
+    //dialog_result: Option<Arc<Mutex<Option<DialogResult<PathBuf>>>>>,
 }
 
 impl Default for Dialog {
@@ -93,8 +91,7 @@ impl Dialog {
             directory_path: None,
             #[cfg(target_os = "macos")]
             main_thread_marker: None,
-            #[cfg(target_os = "macos")]
-            dialog_result: None,
+            //dialog_result: None,
         }
     }
 
@@ -109,7 +106,10 @@ impl Dialog {
 
     #[cfg(target_os = "windows")]
     #[allow(unsafe_code)]
-    fn open_dialog_windows(&self) -> DialogResult<PathBuf> {
+    pub fn open_file_dialog(
+        &mut self,
+        on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
+    ) {
         unsafe {
             if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() {
                 let dialog: IFileOpenDialog =
@@ -151,52 +151,60 @@ impl Dialog {
                                             println!("Carpeta seleccionada: {}", path_str);
                                             CoTaskMemFree(Some(path.as_ptr() as _));
                                             CoUninitialize();
-                                            DialogResult::Ok(PathBuf::from(path_str))
+                                            on_result(DialogResult::Ok(PathBuf::from(path_str)));
                                         } else {
                                             CoUninitialize();
-                                            DialogResult::Err(String::from(
+                                            on_result(DialogResult::Err(String::from(
                                                 "Failed to convert path to string",
-                                            ))
+                                            )));
                                         }
                                     } else {
                                         CoUninitialize();
-                                        DialogResult::Err(String::from(
+                                        on_result(DialogResult::Err(String::from(
                                             "Failed to get selected path",
-                                        ))
+                                        )));
                                     }
                                 } else {
                                     CoUninitialize();
-                                    DialogResult::Err(String::from("Failed to get dialog result"))
+                                    on_result(DialogResult::Err(String::from(
+                                        "Failed to get dialog result",
+                                    )));
                                 }
                             }
                             Err(e) if e.code() == HRESULT::from_win32(0x4C7) => {
                                 // ERROR_CANCELLED — el usuario cerró el diálogo sin elegir
-                                DialogResult::Cancelled
+                                on_result(DialogResult::Cancelled);
                             }
                             Err(e) => {
                                 CoUninitialize();
-                                DialogResult::Err(e.to_string())
+                                on_result(DialogResult::Err(e.to_string()))
                             }
                         }
                     } else {
                         CoUninitialize();
-                        DialogResult::Err(String::from("Failed to set dialog options"))
+                        on_result(DialogResult::Err(String::from(
+                            "Failed to set dialog options",
+                        )))
                     }
                 } else {
                     CoUninitialize();
-                    DialogResult::Err(String::from("Failed to get dialog options"))
+                    on_result(DialogResult::Err(String::from(
+                        "Failed to get dialog options",
+                    )))
                 }
 
                 //CoUninitialize();
             } else {
-                DialogResult::Err(String::from("Failed to initialize COM library"))
+                on_result(DialogResult::Err(String::from(
+                    "Failed to initialize COM library",
+                )))
             }
         }
     }
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    pub fn open_dialog_macos(
+    pub fn open_file_dialog(
         &mut self,
         on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
@@ -255,30 +263,10 @@ impl Dialog {
     }
 
     #[cfg(target_os = "linux")]
-    fn linux_directory_selector(self) -> DialogResult<PathBuf> {
-        DialogResult::Err(String::from("pending to implement"))
-    }
-
-    pub fn open_dialog(&mut self) {
-        // sin frame
-        #[cfg(target_os = "windows")]
-        {
-            let result = self.file_dialog.open_dialog_windows();
-            *self.dialog_result.lock().unwrap() = Some(result);
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            let slot = Arc::clone(self.dialog_result.as_ref().unwrap());
-            self.open_dialog_macos(move |result| {
-                *slot.lock().unwrap() = Some(result);
-            });
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let result = self.file_dialog.open_dialog_linux();
-            *self.dialog_result.lock().unwrap() = Some(result);
-        }
+    pub fn open_file_dialog(
+        &mut self,
+        on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
+    ) {
+        on_result(DialogResult::Err(String::from("pending to implement")));
     }
 }
