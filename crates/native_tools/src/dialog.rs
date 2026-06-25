@@ -14,6 +14,8 @@ use block2::RcBlock;
 use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{MainThreadMarker,ns_string};
+#[cfg(target_os = "macos")]
+use raw_window_handle::RawWindowHandle;
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum DialogType {
@@ -257,9 +259,24 @@ impl Dialog {
         #[cfg(target_os = "windows")]
         return self.open_dialog_windows();
 
-        #[cfg(target_os = "macos")]
-        return self.clone().open_dialog_macos();
+        #[cfg(target_os = "macos")]{
+            let handle = frame.window_handle().ok()?;
 
+            if let Some(window) = match handle.as_raw() {
+                RawWindowHandle::AppKit(appkit_handle) => {
+                    let ptr = appkit_handle.ns_window.as_ptr()
+                        as *mut objc2_app_kit::NSWindow;
+                    // retain() incrementa el refcount — seguro pasar al closure
+                    unsafe { ptr.as_ref().map(|w| w.retain()) }
+                }
+                _ => None,
+            }{
+                let slot = Arc::clone(&self.dialog_result);
+                self.file_dialog.open_dialog_macos(window, move |result| {
+                    *slot.lock().unwrap() = Some(result);
+                });
+            }
+        }
         #[cfg(target_os = "linux")]
         return self.linux_directory_selector();
     }
