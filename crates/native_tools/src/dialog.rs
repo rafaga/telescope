@@ -190,47 +190,62 @@ impl Dialog {
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    fn open_dialog_macos(self) -> DialogResult<PathBuf> {
-        let result;
-
-        if self.main_thread_marker.is_none() {
-            self.main_thread_marker = MainThreadMarker::new();
-            if self.main_thread_marker.is_none() {
-                return DialogResult::Err(String::from("Error creating Main Thread Marker"));
+    fn open_dialog_macos(
+        &mut self,
+        parent_window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+        on_result: impl FnOnce(DialogResult<PathBuf>) + Send + 'static,
+    ) {
+        // Obtener o crear el marker
+        let mtm = match self.main_thread_marker
+            .or_else(|| MainThreadMarker::new())
+        {
+            Some(m) => m,
+            None => {
+                on_result(DialogResult::Err("Error creating Main Thread Marker".into()));
+                return;
             }
-        }
+        };
+        self.main_thread_marker = Some(mtm);
 
-        let panel = unsafe { NSOpenPanel::openPanel(self.main_thread_marker.unwrap()) };
+        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+
         unsafe {
-            if self.dialog_type == DialogType::File {
-                panel.setCanChooseFiles(true);
-                panel.setCanChooseDirectories(false);
-            }
-            if self.dialog_type == DialogType::Directory {
-                panel.setCanChooseFiles(false);
-                panel.setCanChooseDirectories(true);
+            match self.dialog_type {
+                DialogType::File => {
+                    panel.setCanChooseFiles(true);
+                    panel.setCanChooseDirectories(false);
+                }
+                DialogType::Directory => {
+                    panel.setCanChooseFiles(false);
+                    panel.setCanChooseDirectories(true);
+                }
             }
             panel.setAllowsMultipleSelection(false);
             panel.setResolvesAliases(true);
             panel.setMessage(Some(ns_string!("Select a folder")));
-            //panel.setPrompt(ns_string!("Choose"));
         }
 
-        let block = RcBlock::new(move |response: isize| {
-            if response == NSModalResponseOK as isize {
-                // URLs() returns the selected items; take the first one
-                let urls = panel.URLs();
-                let result = urls.first()
-                    .and_then(|url| url.path().map(|p| DialogResult::Ok(std::path::PathBuf::from(p.to_string()))));
+        // panel necesita vivir hasta que el closure se ejecute
+        // retain() incrementa el refcount de ObjC para evitar que se libere
+        let panel_retained = panel.retain();
+
+        let block = RcBlock::new(move |response: NSModalResponse| {
+            let result = if response == NSModalResponseOK {
+                let urls = unsafe { panel_retained.URLs() };
+                urls.first()
+                    .and_then(|url| unsafe { url.path() })
+                    .map(|p| DialogResult::Ok(PathBuf::from(p.to_string())))
+                    .unwrap_or_else(|| DialogResult::Err("No path returned".into()))
             } else {
-                result = DialogResult::Cancelled
-            }
+                DialogResult::Cancelled
+            };
+            on_result(result);
         });
 
         unsafe {
+            // beginSheetModalForWindow acepta &NSWindow, Retained implementa Deref
             panel.beginSheetModalForWindow_completionHandler(&parent_window, &block);
         }
-        return result;
     }
 
     #[cfg(target_os = "linux")]
