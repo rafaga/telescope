@@ -11,9 +11,9 @@ use windows::{
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSOpenPanel, NSModalResponse, NSModalResponseOK};
+use objc2_app_kit::{NSApplication, NSModalResponse, NSModalResponseOK, NSOpenPanel};
 #[cfg(target_os = "macos")]
-use objc2_foundation::{MainThreadMarker,ns_string};
+use objc2_foundation::{MainThreadMarker, ns_string};
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
 
@@ -201,12 +201,12 @@ impl Dialog {
         on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
         let on_result = Arc::new(on_result);
-        let mtm = match self.main_thread_marker
-            .or_else(|| MainThreadMarker::new())
-        {
+        let mtm = match self.main_thread_marker.or_else(MainThreadMarker::new) {
             Some(m) => m,
             None => {
-                on_result(DialogResult::Err("Error creating Main Thread Marker".into()));
+                on_result(DialogResult::Err(
+                    "Error creating Main Thread Marker".into(),
+                ));
                 return;
             }
         };
@@ -220,7 +220,7 @@ impl Dialog {
             return;
         };
 
-        let panel = NSOpenPanel::openPanel(mtm) ;
+        let panel = NSOpenPanel::openPanel(mtm);
 
         match self.dialog_type {
             DialogType::File => {
@@ -235,14 +235,14 @@ impl Dialog {
         panel.setAllowsMultipleSelection(false);
         panel.setResolvesAliases(true);
         panel.setMessage(Some(ns_string!("Select a folder")));
-        
+
         let panel_retained = panel.clone();
 
         let block = RcBlock::new(move |response: NSModalResponse| {
             let result = if response == NSModalResponseOK {
                 let urls = panel_retained.URLs();
                 urls.firstObject()
-                    .and_then(|url| url.path() )
+                    .and_then(|url| url.path())
                     .map(|p| DialogResult::Ok(PathBuf::from(p.to_string())))
                     .unwrap_or_else(|| DialogResult::Err("No path returned".into()))
             } else {
@@ -251,16 +251,16 @@ impl Dialog {
             on_result(result);
         });
 
-        let _ = panel.beginSheetModalForWindow_completionHandler(&parent_window, &block);
-        
+        panel.beginSheetModalForWindow_completionHandler(&parent_window, &block);
     }
 
     #[cfg(target_os = "linux")]
     fn linux_directory_selector(self) -> DialogResult<PathBuf> {
         DialogResult::Err(String::from("pending to implement"))
     }
-    
-    pub fn open_dialog(&mut self) {  // sin frame
+
+    pub fn open_dialog(&mut self) {
+        // sin frame
         #[cfg(target_os = "windows")]
         {
             let result = self.file_dialog.open_dialog_windows();
