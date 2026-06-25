@@ -15,6 +15,7 @@ use objc2_io_kit::{
 const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
 
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 pub fn get_macos_unique_id() -> Result<String, String> {
     // macOS unique ID
     unsafe {

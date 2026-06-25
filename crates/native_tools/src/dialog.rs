@@ -11,11 +11,11 @@ use windows::{
 #[cfg(target_os = "macos")]
 use block2::RcBlock;
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+use objc2_app_kit::{NSApplication, NSOpenPanel, NSModalResponse, NSModalResponseOK};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{MainThreadMarker,ns_string};
 #[cfg(target_os = "macos")]
-use raw_window_handle::RawWindowHandle;
+use std::sync::{Arc, Mutex};
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum DialogType {
@@ -76,6 +76,8 @@ pub struct Dialog {
     directory_path: Option<PathBuf>, // para recordar la última carpeta abierta
     #[cfg(target_os = "macos")]
     main_thread_marker: Option<MainThreadMarker>,
+    #[cfg(target_os = "macos")]
+    dialog_result: Option<Arc<Mutex<Option<DialogResult<PathBuf>>>>>,
 }
 
 impl Default for Dialog {
@@ -91,6 +93,8 @@ impl Dialog {
             directory_path: None,
             #[cfg(target_os = "macos")]
             main_thread_marker: None,
+            #[cfg(target_os = "macos")]
+            dialog_result: None,
         }
     }
 
@@ -192,12 +196,11 @@ impl Dialog {
 
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
-    fn open_dialog_macos(
+    pub fn open_dialog_macos(
         &mut self,
-        parent_window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
-        on_result: impl FnOnce(DialogResult<PathBuf>) + Send + 'static,
+        on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
-        // Obtener o crear el marker
+        let on_result = Arc::new(on_result);
         let mtm = match self.main_thread_marker
             .or_else(|| MainThreadMarker::new())
         {
@@ -209,33 +212,37 @@ impl Dialog {
         };
         self.main_thread_marker = Some(mtm);
 
-        let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+        // Obtener NSWindow desde NSApplication — sin raw-window-handle
+        let parent_window = NSApplication::sharedApplication(mtm).mainWindow();
 
-        unsafe {
-            match self.dialog_type {
-                DialogType::File => {
-                    panel.setCanChooseFiles(true);
-                    panel.setCanChooseDirectories(false);
-                }
-                DialogType::Directory => {
-                    panel.setCanChooseFiles(false);
-                    panel.setCanChooseDirectories(true);
-                }
+        let Some(parent_window) = parent_window else {
+            on_result(DialogResult::Err("No main window available".into()));
+            return;
+        };
+
+        let panel = NSOpenPanel::openPanel(mtm) ;
+
+        match self.dialog_type {
+            DialogType::File => {
+                panel.setCanChooseFiles(true);
+                panel.setCanChooseDirectories(false);
             }
-            panel.setAllowsMultipleSelection(false);
-            panel.setResolvesAliases(true);
-            panel.setMessage(Some(ns_string!("Select a folder")));
+            DialogType::Directory => {
+                panel.setCanChooseFiles(false);
+                panel.setCanChooseDirectories(true);
+            }
         }
-
-        // panel necesita vivir hasta que el closure se ejecute
-        // retain() incrementa el refcount de ObjC para evitar que se libere
-        let panel_retained = panel.retain();
+        panel.setAllowsMultipleSelection(false);
+        panel.setResolvesAliases(true);
+        panel.setMessage(Some(ns_string!("Select a folder")));
+        
+        let panel_retained = panel.clone();
 
         let block = RcBlock::new(move |response: NSModalResponse| {
             let result = if response == NSModalResponseOK {
-                let urls = unsafe { panel_retained.URLs() };
-                urls.first()
-                    .and_then(|url| unsafe { url.path() })
+                let urls = panel_retained.URLs();
+                urls.firstObject()
+                    .and_then(|url| url.path() )
                     .map(|p| DialogResult::Ok(PathBuf::from(p.to_string())))
                     .unwrap_or_else(|| DialogResult::Err("No path returned".into()))
             } else {
@@ -244,40 +251,34 @@ impl Dialog {
             on_result(result);
         });
 
-        unsafe {
-            // beginSheetModalForWindow acepta &NSWindow, Retained implementa Deref
-            panel.beginSheetModalForWindow_completionHandler(&parent_window, &block);
-        }
+        let _ = panel.beginSheetModalForWindow_completionHandler(&parent_window, &block);
+        
     }
 
     #[cfg(target_os = "linux")]
     fn linux_directory_selector(self) -> DialogResult<PathBuf> {
         DialogResult::Err(String::from("pending to implement"))
     }
-
-    pub fn open_dialog(&self) -> DialogResult<PathBuf> {
+    
+    pub fn open_dialog(&mut self) {  // sin frame
         #[cfg(target_os = "windows")]
-        return self.open_dialog_windows();
-
-        #[cfg(target_os = "macos")]{
-            let handle = frame.window_handle().ok()?;
-
-            if let Some(window) = match handle.as_raw() {
-                RawWindowHandle::AppKit(appkit_handle) => {
-                    let ptr = appkit_handle.ns_window.as_ptr()
-                        as *mut objc2_app_kit::NSWindow;
-                    // retain() incrementa el refcount — seguro pasar al closure
-                    unsafe { ptr.as_ref().map(|w| w.retain()) }
-                }
-                _ => None,
-            }{
-                let slot = Arc::clone(&self.dialog_result);
-                self.file_dialog.open_dialog_macos(window, move |result| {
-                    *slot.lock().unwrap() = Some(result);
-                });
-            }
+        {
+            let result = self.file_dialog.open_dialog_windows();
+            *self.dialog_result.lock().unwrap() = Some(result);
         }
+
+        #[cfg(target_os = "macos")]
+        {
+            let slot = Arc::clone(self.dialog_result.as_ref().unwrap());
+            self.open_dialog_macos(move |result| {
+                *slot.lock().unwrap() = Some(result);
+            });
+        }
+
         #[cfg(target_os = "linux")]
-        return self.linux_directory_selector();
+        {
+            let result = self.file_dialog.open_dialog_linux();
+            *self.dialog_result.lock().unwrap() = Some(result);
+        }
     }
 }

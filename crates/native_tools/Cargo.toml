@@ -25,3 +25,4 @@ objc2-app-kit = { version = "0.3.2", features = [
     "NSResponder",
 ] }
 block2 = "0.6.2"
+objc2 = { version = "0.6.4", features = ["objc2-proc-macros"] }
