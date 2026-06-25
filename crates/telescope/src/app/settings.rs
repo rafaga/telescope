@@ -11,7 +11,9 @@ pub(crate) struct FilePaths {
     #[serde(skip)]
     pub settings: String,
     #[serde(skip)]
-    pub intel: Option<PathBuf>,
+    pub internal_intel: Option<PathBuf>,
+    pub default_behavior: bool,
+    pub intel: String,
     pub sde_db: String,
     pub local_db: String,
 }
@@ -72,6 +74,27 @@ impl Manager {
         self.saved = true;
     }
 
+    pub(crate) fn check_intel_directory(&self) -> Result<Option<PathBuf>, String> {
+        let intel_path = Path::new(&self.paths.intel);
+        if intel_path.exists() {
+            Ok(Some(intel_path.to_path_buf()))
+        } else if let Some(os_dirs) = directories::BaseDirs::new() {
+            let t_path = os_dirs
+                .home_dir()
+                .join("Documents")
+                .join("EVE")
+                .join("logs")
+                .join("ChatLogs");
+            if t_path.exists() {
+                Ok(Some(t_path))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn load(&mut self) -> Result<(), String> {
         let file_path = Path::new(&self.paths.settings);
         let mut toml_data = String::new();
@@ -84,6 +107,8 @@ impl Manager {
             self.channels.monitored = toml_formatted_data.channels.monitored;
             self.paths.local_db = toml_formatted_data.paths.local_db;
             self.paths.sde_db = toml_formatted_data.paths.sde_db;
+            self.paths.default_behavior = toml_formatted_data.paths.default_behavior;
+            self.paths.intel = toml_formatted_data.paths.intel;
             self.scan_for_files()?;
             if self.mapping.warning_area.parse::<i8>().is_err() {
                 self.mapping.warning_area = String::from("1");
@@ -102,7 +127,7 @@ impl Manager {
 
     pub fn scan_for_files(&mut self) -> Result<bool, String> {
         self.channels.available.clear();
-        match &self.paths.intel {
+        match &self.paths.internal_intel {
             Some(path) => {
                 if let Ok(mut directory) = path.as_path().read_dir() {
                     while let Some(Ok(entry)) = directory.next() {
@@ -153,8 +178,10 @@ impl Default for Manager {
 
         let mut config = Self {
             paths: FilePaths {
-                intel: path,
+                internal_intel: path,
                 settings: settings_file.clone(),
+                default_behavior: false,
+                intel: String::new(),
                 sde_db: String::from("assets/sde.db"),
                 local_db: String::from("telescope.db"),
             },

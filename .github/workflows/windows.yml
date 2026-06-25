@@ -1,6 +1,6 @@
 on: [push, pull_request]
 
-name: CI
+name: Windows
 
 env:
   # This is required to enable the web_sys clipboard API which egui_web uses
@@ -9,27 +9,15 @@ env:
   RUSTFLAGS: --cfg=web_sys_unstable_apis
 
 jobs:
-  no_op:
-    if: false
-    runs-on: linux-latest
-
-  # check_macos:
-  #   name: Check on MacOS
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo check --all-features
-
-  # check_windows:
-  #   name: Check on Windows
-  #   runs-on: windows-latest
-  #   env:
-  #     CARGO_HTTP_MULTIPLEXING: false
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo check --all-features
+  check_windows:
+    name: check on Windows
+    runs-on: windows-latest
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --all-features
 
   # check_wasm:
   #   name: Check wasm32
@@ -63,31 +51,23 @@ jobs:
   #         command: test
   #         args: --lib
 
-  # fmt:
-  #   name: Rustfmt
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo fmt --all -- --check
+  fmt:
+    name: fmt on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --all -- --check
 
-  # clippy_macos:
-  #   name: Clippy on MacOS
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo clippy -- -D warnings
-
-  # clippy_windows:
-  #   name: Clippy on Windows
-  #   runs-on: windows-latest
-  #   env:
-  #     CARGO_HTTP_MULTIPLEXING: false
-  #   steps:
-  #     - uses: actions/checkout@v7
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo clippy -- -D warnings
+  clippy:
+    name: clippy on Windows
+    runs-on: windows-latest
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo clippy -- -D warnings
 
   # trunk:
   #   name: trunk

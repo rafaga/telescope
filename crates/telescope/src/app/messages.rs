@@ -1,5 +1,6 @@
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::{future::IntoFuture, net::SocketAddr};
@@ -34,6 +35,7 @@ pub enum Target {
 pub enum SettingsPage {
     Intelligence,
     DataSources,
+    Characters,
 }
 
 pub enum Message {
@@ -44,6 +46,7 @@ pub enum Message {
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
     IntelFileChanged(String),
+    UpdateIntelDirectory(Option<PathBuf>),
 }
 
 pub enum CharacterSync {

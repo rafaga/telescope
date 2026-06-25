@@ -7,7 +7,9 @@ use eframe::egui::{
     self, Button, Color32, FontFamily, FontId, Margin, RichText, TextFormat, Vec2,
     epaint::text::LayoutJob,
 };
+use eframe::egui::{IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
+//use egui_file_dialog::FileDialog;
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -28,6 +30,7 @@ use webb::esi::EsiManager;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
+use native_tools::dialog::*;
 
 mod data;
 mod file;
@@ -50,7 +53,8 @@ pub struct TelescopeApp {
     // 0 - About Window
     // 1 - Character Window
     // 2 - Preferences Window
-    open: [bool; 3],
+    // 3 - Change Intel File directory dialog
+    open: [bool; 4],
 
     // the ESI Manager
     esi: EsiManager,
@@ -68,6 +72,7 @@ pub struct TelescopeApp {
     task_auth: AuthSpawner,
     settings: Manager,
     watcher: RecommendedWatcher,
+    dlg_intel_dir: Dialog,
 }
 
 impl Default for TelescopeApp {
@@ -104,8 +109,14 @@ impl Default for TelescopeApp {
             Arc::clone(&arc_msg_sender),
         );
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
+        let mut dlg_intel_dir = Dialog::default();
+        dlg_intel_dir.dialog_type = DialogType::Directory;
 
-        if let Some(intel_path) = &settings.paths.intel {
+        if let Ok(Some(directory)) = settings.check_intel_directory() {
+            dlg_intel_dir.set_directory(directory.clone());
+        }
+
+        if let Some(intel_path) = &settings.paths.internal_intel {
             watcher
                 .watch(intel_path, RecursiveMode::NonRecursive)
                 .expect("Error monitoring intel file path");
@@ -118,7 +129,7 @@ impl Default for TelescopeApp {
             app_msg: (arc_msg_sender, grx),
             map_msg: (arc_map_sender, mrx),
             char_msg: None,
-            open: [false; 3],
+            open: [false; 4],
             esi,
             app_messages: Vec::new(),
             search_text: String::new(),
@@ -137,6 +148,7 @@ impl Default for TelescopeApp {
             task_auth: authmon,
             settings,
             watcher,
+            dlg_intel_dir,
         }
     }
 }
@@ -149,8 +161,6 @@ impl eframe::App for TelescopeApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        /// fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        //let mut rt = tokio::runtime::Runtime::new().unwrap();
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -175,6 +185,7 @@ impl eframe::App for TelescopeApp {
             task_auth: _,
             settings: _,
             watcher: _,
+            dlg_intel_dir: _,
         } = self;
 
         if !self.initialized {
@@ -184,7 +195,6 @@ impl eframe::App for TelescopeApp {
             egui_extras::install_image_loaders(ui.ctx());
 
             self.tree = Some(self.create_tree());
-
             let mut vec_chars = Vec::new();
             for pchar in self.esi.characters.iter() {
                 vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
@@ -342,6 +352,15 @@ impl TelescopeApp {
                 Message::IntelFileChanged(file_name) => {
                     self.load_intel_file(file_name);
                 }
+                Message::UpdateIntelDirectory(directory_path) => {
+                    let directory_string = directory_path
+                        .clone()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string();
+                    self.settings.paths.internal_intel = directory_path;
+                    self.settings.paths.intel = directory_string;
+                }
             };
         }
     }
@@ -388,7 +407,7 @@ impl TelescopeApp {
             ui.horizontal(|ui|{
                 ui.vertical(|ui|{
                     let row_height = 25.0;
-                    let labels = ["Intelligence","Data Sources"];
+                    let labels = ["Intelligence","Data Sources","Characters"];
                     ui.push_id("settings_menu", |ui|{
                         TableBuilder::new(ui)
                         .column(Column::resizable(Column::exact(150.0),false))
@@ -400,7 +419,8 @@ impl TelescopeApp {
                                 let current_page = match row.index(){
                                     0 => SettingsPage::Intelligence,
                                     1 => SettingsPage::DataSources,
-                                    _ => SettingsPage::DataSources,
+                                    2 => SettingsPage::Characters,
+                                    _ => SettingsPage::Characters,
                                 };
                                 row.col(|ui: &mut egui::Ui|{
                                     let option_selected = || -> bool {
@@ -443,7 +463,33 @@ impl TelescopeApp {
                                             });
                                         ui.end_row();
                                     });
-
+                                    ui.horizontal(|ui|{
+                                        let atoms= ().into_atoms();
+                                        ui.checkbox(&mut self.settings.paths.default_behavior, atoms);
+                                        ui.label("EVE Channel logs:");
+                                        if ui.add_enabled(self.settings.paths.default_behavior, TextEdit::singleline(&mut self.settings.paths.intel)).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                        let atoms2= ("Select").into_atoms();
+                                        if ui.add_enabled(self.settings.paths.default_behavior, Button::new(atoms2)).clicked(){
+                                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                                .enable_all()
+                                                .build()
+                                                .unwrap();
+                                                let app_msg_tx = Arc::clone(&self.app_msg.0);
+                                            self.dlg_intel_dir.open_file_dialog(move |result| {
+                                                if let DialogResult::Ok(path) = result {
+                                                    runtime.block_on(async {
+                                                        #[cfg(feature = "puffin")]
+                                                        puffin::profile_scope!("spawned intel message data");
+                                                        let _ = app_msg_tx
+                                                            .send(Message::UpdateIntelDirectory(Some(path)))
+                                                            .await;
+                                                    });
+                                                }
+                                            });
+                                        }
+                                    });
                                     let row_height = 18.0;
                                     let mut channels:Vec<String> = self
                                         .settings
@@ -486,7 +532,6 @@ impl TelescopeApp {
                                             }
                                         });
                                     });
-
                                     ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     ui.push_id("rgn_tbl",|ui|{
@@ -533,6 +578,21 @@ impl TelescopeApp {
                                 },
                                 // Linked Characters
                                 SettingsPage::DataSources => {
+                                    ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
+                                    ui.horizontal(|ui|{
+                                        ui.label("SDE database:");
+                                        if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                    });
+                                    ui.horizontal(|ui|{
+                                        ui.label("private database:");
+                                        if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
+                                            self.settings.saved = false;
+                                        }
+                                    });
+                                },
+                                SettingsPage::Characters => {
                                     ui.label(RichText::new("Linked characters").font(FontId::proportional(20.0)));
                                     ui.label("These are used to emit notifications when something it is close to your location.");
                                     ui.horizontal(|ui|{
@@ -660,19 +720,6 @@ impl TelescopeApp {
                                             });
                                         }
                                     });
-                                    ui.label(RichText::new("Static data").font(FontId::proportional(20.0)));
-                                    ui.horizontal(|ui|{
-                                        ui.label("SDE database path:");
-                                        if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
-                                            self.settings.saved = false;
-                                        }
-                                    });
-                                    ui.horizontal(|ui|{
-                                        ui.label("private data:");
-                                        if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
-                                            self.settings.saved = false;
-                                        }
-                                    });
                                 },
                             }
                         });
@@ -690,7 +737,7 @@ impl TelescopeApp {
                             self.settings.mapping.startup_regions.push(*region.0);
                         }
                     }
-                    if let Some(intel_path) = &self.settings.paths.intel {
+                    if let Some(intel_path) = &self.settings.paths.internal_intel {
                         let _ = self.watcher.unwatch(intel_path);
                     }
                     let mut monitored_channels = Vec::new();
@@ -700,7 +747,7 @@ impl TelescopeApp {
                         }
                     }
                     monitored_channels.sort_unstable();
-                    if let Some(intel_path) = &self.settings.paths.intel {
+                    if let Some(intel_path) = &self.settings.paths.internal_intel {
                         let _ = self.watcher.watch(intel_path, RecursiveMode::NonRecursive);
                     }
                     self.settings.channels.monitored = Arc::new(monitored_channels);
@@ -717,7 +764,7 @@ impl TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut path = self.settings.paths.intel.as_ref().unwrap().clone();
+        let mut path = self.settings.paths.internal_intel.as_ref().unwrap().clone();
         path = path.join(file_name.as_str());
 
         //getting the first byte to read from ythe last recorded file lenght
@@ -749,7 +796,7 @@ impl TelescopeApp {
         }
     }
 
-    fn parse_intel_data(&mut self, data: String) -> Result<(), String> {
+    fn parse_intel_data(&mut self, data: String) -> std::result::Result<(), String> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
