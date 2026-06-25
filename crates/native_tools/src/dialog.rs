@@ -15,6 +15,8 @@ use block2::RcBlock;
 use objc2_app_kit::{NSApplication, NSModalResponse, NSModalResponseOK, NSOpenPanel};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{MainThreadMarker, ns_string};
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 
 #[derive(PartialEq, Copy, Clone)]
 pub enum DialogType {
