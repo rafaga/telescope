@@ -80,7 +80,8 @@ impl Default for TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let settings = Manager::new();
+        let mut settings = Manager::new();
+        let _ = settings.load();
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
@@ -112,13 +113,10 @@ impl Default for TelescopeApp {
         let mut dlg_intel_dir = Dialog::default();
         dlg_intel_dir.dialog_type = DialogType::Directory;
 
-        if let Ok(Some(directory)) = settings.check_intel_directory() {
-            dlg_intel_dir.set_directory(directory.clone());
-        }
-
-        if let Some(intel_path) = &settings.paths.internal_intel {
+        if let Some(ref path) = settings.paths.internal_intel {
+            dlg_intel_dir.set_directory(path.clone());
             watcher
-                .watch(intel_path, RecursiveMode::NonRecursive)
+                .watch(&path, RecursiveMode::NonRecursive)
                 .expect("Error monitoring intel file path");
         }
 

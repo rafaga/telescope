@@ -74,7 +74,7 @@ impl Manager {
         self.saved = true;
     }
 
-    pub(crate) fn check_intel_directory(&self) -> Result<Option<PathBuf>, String> {
+    /*pub(crate) fn check_intel_directory(&self) -> Result<Option<PathBuf>, String> {
         let intel_path = Path::new(&self.paths.intel);
         if intel_path.exists() {
             Ok(Some(intel_path.to_path_buf()))
@@ -88,12 +88,12 @@ impl Manager {
             if t_path.exists() {
                 Ok(Some(t_path))
             } else {
-                Ok(None)
+                Err(String::from("Default intel directory doesn't exists. Verify if the game its installed on the system."))
             }
         } else {
-            Ok(None)
+            Err(String::from("Error obtaning default configuration file"))
         }
-    }
+    }*/
 
     pub(crate) fn load(&mut self) -> Result<(), String> {
         let file_path = Path::new(&self.paths.settings);
@@ -162,7 +162,8 @@ impl Default for Manager {
     fn default() -> Self {
         let settings_file = String::from("telescope.toml");
         let file_path = Path::new(&settings_file);
-        let mut path = None;
+
+        /*let mut path = None;
 
         if let Some(os_dirs) = directories::BaseDirs::new() {
             let t_path = os_dirs
@@ -174,11 +175,11 @@ impl Default for Manager {
             if t_path.exists() {
                 path = Some(t_path)
             }
-        }
+        }*/
 
         let mut config = Self {
             paths: FilePaths {
-                internal_intel: path,
+                internal_intel: None,
                 settings: settings_file.clone(),
                 default_behavior: false,
                 intel: String::new(),
