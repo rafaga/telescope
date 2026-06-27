@@ -1,15 +1,20 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{File, remove_file};
+use std::error::Error;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{
+    error,
+    fmt::{Display, Formatter},
+};
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FilePaths {
     #[serde(skip)]
-    pub settings: String,
+    pub settings: PathBuf,
     #[serde(skip)]
     pub internal_intel: Option<PathBuf>,
     pub default_behavior: bool,
@@ -18,7 +23,7 @@ pub(crate) struct FilePaths {
     pub local_db: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Mapping {
     pub startup_regions: Vec<usize>,
     pub warning_area: String,
@@ -46,141 +51,52 @@ pub(crate) struct Manager {
     pub saved: bool,
 }
 
-impl Manager {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
+impl TryFrom<PathBuf> for Manager {
+    type Error = ManagerError;
 
-    pub(crate) fn save(&mut self) {
-        let file_path = Path::new(&self.paths.settings);
-        let mut toml_file = File::options()
-            .write(true)
-            .open(file_path)
-            .expect("Unable to create settings file.");
-        let toml_data = toml::to_string(self).unwrap();
-        toml_file
-            .write_all(toml_data.as_bytes())
-            .expect("Unable to write settings on file.");
-        self.saved = true;
-    }
-
-    pub(crate) fn create(&mut self) {
-        let file_path = Path::new(&self.paths.settings);
-        let toml_data = toml::to_string(self).unwrap();
-        let mut toml_file = File::create_new(file_path).expect("Unable to create settings file.");
-        toml_file
-            .write_all(toml_data.as_bytes())
-            .expect("Unable to write settings on new file.");
-        self.saved = true;
-    }
-
-    /*pub(crate) fn check_intel_directory(&self) -> Result<Option<PathBuf>, String> {
-        let intel_path = Path::new(&self.paths.intel);
-        if intel_path.exists() {
-            Ok(Some(intel_path.to_path_buf()))
-        } else if let Some(os_dirs) = directories::BaseDirs::new() {
-            let t_path = os_dirs
-                .home_dir()
-                .join("Documents")
-                .join("EVE")
-                .join("logs")
-                .join("ChatLogs");
-            if t_path.exists() {
-                Ok(Some(t_path))
-            } else {
-                Err(String::from("Default intel directory doesn't exists. Verify if the game its installed on the system."))
-            }
-        } else {
-            Err(String::from("Error obtaning default configuration file"))
-        }
-    }*/
-
-    pub(crate) fn load(&mut self) -> Result<(), String> {
-        let file_path = Path::new(&self.paths.settings);
+    fn try_from(path: PathBuf) -> std::result::Result<Self, <Self as TryFrom<PathBuf>>::Error> {
         let mut toml_data = String::new();
-        let mut toml_file = File::open(file_path).expect("Unable to create settings file.");
-        toml_file
-            .read_to_string(&mut toml_data)
-            .expect("Unable to write settings on new file.");
-        if let Ok(toml_formatted_data) = toml::from_str::<Manager>(&toml_data) {
-            self.mapping = toml_formatted_data.mapping;
-            self.channels.monitored = toml_formatted_data.channels.monitored;
-            self.paths.local_db = toml_formatted_data.paths.local_db;
-            self.paths.sde_db = toml_formatted_data.paths.sde_db;
-            self.paths.default_behavior = toml_formatted_data.paths.default_behavior;
-            self.paths.intel = toml_formatted_data.paths.intel;
-            self.scan_for_files()?;
-            if self.mapping.warning_area.parse::<i8>().is_err() {
-                self.mapping.warning_area = String::from("1");
-            }
-            for channel in self.channels.monitored.iter() {
-                self.channels
-                    .available
-                    .entry(channel.to_string())
-                    .and_modify(|val| *val = true);
-            }
-            Ok(())
-        } else {
-            Err(String::from("Invalid Data"))
-        }
-    }
-
-    pub fn scan_for_files(&mut self) -> Result<bool, String> {
-        self.channels.available.clear();
-        match &self.paths.internal_intel {
-            Some(path) => {
-                if let Ok(mut directory) = path.as_path().read_dir() {
-                    while let Some(Ok(entry)) = directory.next() {
-                        if let Some((name, file_date)) =
-                            entry.file_name().to_string_lossy().split_once('_')
-                        {
-                            self.channels
-                                .available
-                                .entry(String::from(name))
-                                .or_insert(false);
-                            self.channels
-                                .log_files
-                                .entry(String::from(name) + "_" + file_date)
-                                .and_modify(|hash_entry| {
-                                    hash_entry.1 = Utc::now();
-                                    hash_entry.0 = entry.metadata().unwrap().len();
-                                })
-                                .or_insert((entry.metadata().unwrap().len(), Utc::now()));
-                        }
+        if path.exists() {
+            if let Ok(mut toml_file) = File::open(path)
+                && toml_file.read_to_string(&mut toml_data).is_ok()
+            {
+                if let Ok(mut toml_manager) = toml::from_str::<Manager>(&toml_data) {
+                    toml_manager.saved = false;
+                    toml_manager.factor = 50000000000000;
+                    toml_manager.region_factor = -2;
+                    if !toml_manager.paths.intel.is_empty()
+                        && let Ok(pbuf) = toml_manager.verify_intel_path()
+                    {
+                        toml_manager.paths.internal_intel = Some(pbuf.clone());
+                        toml_manager.paths.intel = pbuf.to_string_lossy().to_string();
                     }
-                    Ok(true)
+                    if toml_manager.scan_channels_logs().is_ok() {
+                        Ok(toml_manager)
+                    } else {
+                        Err(ManagerError::ReadError)
+                    }
                 } else {
-                    Err(String::from("Error on Intel path setup"))
+                    Err(ManagerError::InvalidState)
                 }
+            } else {
+                Err(ManagerError::ReadError)
             }
-            None => Ok(false),
+        } else {
+            Err(ManagerError::FileNotFound(
+                path.to_string_lossy().to_string(),
+            ))
         }
     }
 }
 
-impl Default for Manager {
-    fn default() -> Self {
+impl Manager {
+    pub(crate) fn new() -> Self {
         let settings_file = String::from("telescope.toml");
         let file_path = Path::new(&settings_file);
-
-        /*let mut path = None;
-
-        if let Some(os_dirs) = directories::BaseDirs::new() {
-            let t_path = os_dirs
-                .home_dir()
-                .join("Documents")
-                .join("EVE")
-                .join("logs")
-                .join("ChatLogs");
-            if t_path.exists() {
-                path = Some(t_path)
-            }
-        }*/
-
         let mut config = Self {
             paths: FilePaths {
                 internal_intel: None,
-                settings: settings_file.clone(),
+                settings: file_path.to_path_buf(),
                 default_behavior: false,
                 intel: String::new(),
                 sde_db: String::from("assets/sde.db"),
@@ -200,11 +116,125 @@ impl Default for Manager {
             },
         };
 
-        if !file_path.is_file() || (config.load().is_err() && remove_file(file_path).is_ok()) {
-            config.create();
-            let _result = config.scan_for_files();
-        }
-        config.saved = true;
+        let _ = config.verify_intel_path();
         config
     }
+
+    pub(crate) fn write(&mut self) -> Result<()> {
+        let file_path = Path::new(&self.paths.settings);
+        match File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(file_path)
+        {
+            Ok(mut toml_file) => {
+                let toml_data = toml::to_string(self).unwrap();
+                toml_file
+                    .write_all(toml_data.as_bytes())
+                    .expect("Unable to write settings on file.");
+                self.saved = true;
+                Ok(())
+            }
+            Err(_) => Err(ManagerError::WriteError),
+        }
+    }
+
+    fn verify_intel_path(&mut self) -> Result<PathBuf> {
+        let k_path = if let Some(t_path) = self.paths.internal_intel.clone() {
+            t_path
+        } else {
+            if let Some(os_dirs) = directories::BaseDirs::new() {
+                os_dirs
+                    .home_dir()
+                    .join("Documents")
+                    .join("EVE")
+                    .join("logs")
+                    .join("ChatLogs")
+            } else {
+                return Err(ManagerError::ReadError);
+            }
+        };
+        if k_path.exists() {
+            let _ = self.scan_channels_logs();
+            Ok(k_path.to_path_buf())
+        } else {
+            Err(ManagerError::InvalidDirectory(
+                k_path.to_string_lossy().to_string(),
+            ))
+        }
+    }
+
+    fn scan_channels_logs(&mut self) -> Result<()> {
+        self.channels.available.clear();
+        if self.paths.internal_intel.is_none() {
+            return Err(ManagerError::InvalidDirectory(String::new()));
+        }
+        let path = &self.paths.internal_intel.clone().unwrap();
+        if let Ok(mut directory) = path.read_dir() {
+            while let Some(Ok(entry)) = directory.next() {
+                if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
+                {
+                    self.channels
+                        .available
+                        .entry(String::from(name))
+                        .or_insert(false);
+                    self.channels
+                        .log_files
+                        .entry(String::from(name) + "_" + file_date)
+                        .and_modify(|hash_entry| {
+                            hash_entry.1 = Utc::now();
+                            hash_entry.0 = entry.metadata().unwrap().len();
+                        })
+                        .or_insert((entry.metadata().unwrap().len(), Utc::now()));
+                }
+            }
+            Ok(())
+        } else {
+            Err(ManagerError::ReadError)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ManagerError {
+    FileNotFound(String),
+    InvalidDirectory(String),
+    InvalidState,
+    ReadError,
+    WriteError,
+}
+
+impl Display for ManagerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileNotFound(path) => write!(f, "File not found: {path}"),
+            Self::InvalidState => f.write_str("invalid state"),
+            Self::ReadError => f.write_str("read error"),
+            Self::WriteError => f.write_str("write error"),
+            Self::InvalidDirectory(path) => write!(f, "Path not found: {path}"),
+        }
+    }
+}
+
+impl error::Error for ManagerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+}
+
+pub type Result<T> = std::result::Result<T, ManagerError>;
+
+/*impl From<std::io::Error> for ManagerError {
+    fn from(e: std::io::Error) -> Self { Self::Io(e.to_string()) }
+}
+impl From<String> for ManagerError {
+    fn from(s: String) -> Self { Self::Other(s) }
+}
+impl From<&str> for ManagerError {
+    fn from(s: &str) -> Self { Self::Other(s.to_string()) }
+}*/
+
+impl ManagerError {
+    //pub fn not_found(name: impl Into<String>) -> Self { Self::NotFound(name.into()) }
 }

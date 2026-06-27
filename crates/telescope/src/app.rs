@@ -53,8 +53,7 @@ pub struct TelescopeApp {
     // 0 - About Window
     // 1 - Character Window
     // 2 - Preferences Window
-    // 3 - Change Intel File directory dialog
-    open: [bool; 4],
+    open: [bool; 3],
 
     // the ESI Manager
     esi: EsiManager,
@@ -80,8 +79,12 @@ impl Default for TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut settings = Manager::new();
-        let _ = settings.load();
+        //let mut settings = Manager::new();
+        let toml_path = Path::new("./telescope.toml");
+        let settings = match Manager::try_from(toml_path.to_path_buf()) {
+            Ok(mon) => mon,
+            Err(_) => Manager::new(),
+        };
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
@@ -116,7 +119,7 @@ impl Default for TelescopeApp {
         if let Some(ref path) = settings.paths.internal_intel {
             dlg_intel_dir.set_directory(path.clone());
             watcher
-                .watch(&path, RecursiveMode::NonRecursive)
+                .watch(path, RecursiveMode::NonRecursive)
                 .expect("Error monitoring intel file path");
         }
 
@@ -127,7 +130,7 @@ impl Default for TelescopeApp {
             app_msg: (arc_msg_sender, grx),
             map_msg: (arc_map_sender, mrx),
             char_msg: None,
-            open: [false; 4],
+            open: [false; 3],
             esi,
             app_messages: Vec::new(),
             search_text: String::new(),
@@ -749,7 +752,7 @@ impl TelescopeApp {
                         let _ = self.watcher.watch(intel_path, RecursiveMode::NonRecursive);
                     }
                     self.settings.channels.monitored = Arc::new(monitored_channels);
-                    self.settings.save();
+                    let _ = self.settings.write();
                 }
                 if !self.settings.saved {
                     ui.colored_label(Color32::YELLOW, "⚠ unsaved changes");
