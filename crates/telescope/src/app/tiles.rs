@@ -15,7 +15,11 @@ use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiRes
 use sde::SdeManager;
 use std::collections::HashMap;
 use std::time::Instant;
-use std::{path::Path, rc::Rc, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 use tokio::sync::broadcast::Receiver;
 
 use super::messages::MessageSpawner;
@@ -32,7 +36,7 @@ pub struct UniversePane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
     //generic_sender: Arc<Sender<Message>>,
-    path: String,
+    path: PathBuf,
     factor: i64,
     task_msg: Arc<MessageSpawner>,
     //tpool: Rc<ThreadPool>,
@@ -41,7 +45,7 @@ pub struct UniversePane {
 impl UniversePane {
     pub fn new(
         receiver: Receiver<MapSync>,
-        path: String,
+        path: PathBuf,
         factor: i64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
@@ -55,18 +59,18 @@ impl UniversePane {
             factor,
             task_msg,
         };
-        object.generate_data(object.path.clone(), object.factor);
+        object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
     }
 
-    fn generate_data(&mut self, path: String, factor: i64) {
+    fn generate_data(&mut self) {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
+        let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(points) = t_sde.get_systempoints() {
             //we get connections
             if let Ok(hashmap) = t_sde.get_system_connections(points) {
@@ -77,15 +81,15 @@ impl UniversePane {
                 self.map.add_lines(hash_conns);
             }
         }
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
+        let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(region_areas) = t_sde.get_region_coordinates() {
             let mut labels = Vec::new();
             for region in region_areas {
                 let mut label = MapLabel::new();
                 label.text = region.name;
                 label.center = Pos2::new(
-                    (region.min.x / factor) as f32,
-                    (region.min.y / factor) as f32,
+                    (region.min.x / self.factor) as f32,
+                    (region.min.y / self.factor) as f32,
                 );
                 labels.push(label);
             }
@@ -177,7 +181,7 @@ impl TabPane for UniversePane {
 pub struct RegionPane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
-    path: String,
+    path: PathBuf,
     factor: i64,
     region_id: usize,
     tab_name: String,
@@ -187,7 +191,7 @@ pub struct RegionPane {
 impl RegionPane {
     pub fn new(
         receiver: Receiver<MapSync>,
-        path: String,
+        path: PathBuf,
         factor: i64,
         region_id: usize,
         task_msg: Arc<MessageSpawner>,
@@ -204,7 +208,7 @@ impl RegionPane {
             tab_name: String::from("Region"),
             task_msg,
         };
-        object.generate_data(object.path.clone(), object.factor, object.region_id);
+        object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
@@ -212,20 +216,20 @@ impl RegionPane {
         object
     }
 
-    fn generate_data(&mut self, path: String, factor: i64, region_id: usize) {
+    fn generate_data(&mut self) {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let t_sde = SdeManager::new(Path::new(path.as_str()), factor);
+        let t_sde = SdeManager::new(&self.path, self.factor);
 
-        match t_sde.get_abstract_systems(vec![region_id as u32]) {
+        match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
             Ok(points) => {
                 if let Ok(points) =
-                    t_sde.get_abstract_system_connections(points, vec![region_id as u32])
+                    t_sde.get_abstract_system_connections(points, vec![self.region_id as u32])
                 {
                     self.map.add_hashmap_points(points);
                 }
-                if let Ok(lines) = t_sde.get_abstract_connections(vec![region_id as u32]) {
+                if let Ok(lines) = t_sde.get_abstract_connections(vec![self.region_id as u32]) {
                     self.map.add_lines(lines);
                 }
             }
@@ -367,13 +371,13 @@ pub struct TreeBehavior {
     task_msg: Arc<MessageSpawner>,
     search_text: String,
     factor: i64,
-    path: String,
+    path: PathBuf,
     search_regions: Vec<usize>,
     pub tile_data: HashMap<usize, TileData>,
 }
 
 impl TreeBehavior {
-    pub fn new(task_msg: Arc<MessageSpawner>, factor: i64, path: String) -> Self {
+    pub fn new(task_msg: Arc<MessageSpawner>, factor: i64, path: PathBuf) -> Self {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 

@@ -15,12 +15,13 @@ use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::RegexBuilder;
 use sde::{SdeManager, objects::Universe};
-use settings::Manager;
+use settings::Settings;
 use std::thread;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
+    path::PathBuf,
     sync::Arc,
 };
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
@@ -69,7 +70,7 @@ pub struct TelescopeApp {
     behavior: TreeBehavior,
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
-    settings: Manager,
+    settings: Settings,
     watcher: RecommendedWatcher,
     dlg_intel_dir: Dialog,
 }
@@ -80,11 +81,13 @@ impl Default for TelescopeApp {
         puffin::profile_function!();
 
         //let mut settings = Manager::new();
-        let toml_path = Path::new("./telescope.toml");
-        let settings = match Manager::try_from(toml_path.to_path_buf()) {
-            Ok(mon) => mon,
-            Err(_) => Manager::new(),
+        let mut settings = Settings::default();
+        settings = if settings.get_settings().exists() {
+            Settings::try_from(settings.get_settings().to_path_buf()).unwrap_or_default()
+        } else {
+            Settings::default()
         };
+
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
@@ -97,10 +100,10 @@ impl Default for TelescopeApp {
             app_data.secret_key,
             app_data.url.as_str(),
             app_data.scope,
-            settings.paths.local_db.clone(),
+            settings.get_db(),
         );
 
-        let mut sde = SdeManager::new(Path::new(&settings.paths.sde_db), settings.factor);
+        let mut sde = SdeManager::new(settings.get_sde(), settings.get_factor());
         let _ = sde.get_universe();
 
         let arc_map_sender = Arc::new(mtx);
@@ -109,17 +112,17 @@ impl Default for TelescopeApp {
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
         let intel_event_handler = IntelEventHandler::new(
-            settings.channels.monitored.clone(),
+            settings.get_cloned_monitored_channels(),
             Arc::clone(&arc_msg_sender),
         );
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
         let mut dlg_intel_dir = Dialog::default();
         dlg_intel_dir.dialog_type = DialogType::Directory;
 
-        if let Some(ref path) = settings.paths.internal_intel {
-            dlg_intel_dir.set_directory(path.clone());
+        if settings.get_intel().exists() {
+            dlg_intel_dir.set_directory(settings.get_intel());
             watcher
-                .watch(path, RecursiveMode::NonRecursive)
+                .watch(settings.get_intel(), RecursiveMode::NonRecursive)
                 .expect("Error monitoring intel file path");
         }
 
@@ -138,8 +141,8 @@ impl Default for TelescopeApp {
             emit_notification: false,
             behavior: TreeBehavior::new(
                 Arc::clone(&msgmon),
-                settings.factor,
-                settings.paths.sde_db.clone(),
+                settings.get_factor(),
+                settings.get_db().to_path_buf(),
             ),
             search_results: Vec::new(),
             tree: None,
@@ -217,15 +220,16 @@ impl eframe::App for TelescopeApp {
                 );
             }
 
-            for counter in 0..self.settings.mapping.startup_regions.len() {
-                if regions.contains(&(self.settings.mapping.startup_regions[counter] as u32)) {
+            let startup_regions = self.settings.get_startup_regions().clone();
+            for counter in &startup_regions {
+                if regions.contains(&(startup_regions[*counter] as u32)) {
                     self.behavior
                         .tile_data
-                        .entry(self.settings.mapping.startup_regions[counter])
+                        .entry(startup_regions[*counter])
                         .and_modify(|z_region| {
                             z_region.show_on_startup = true;
                         });
-                    self.create_new_regional_pane(self.settings.mapping.startup_regions[counter]);
+                    self.create_new_regional_pane(startup_regions[*counter]);
                 }
             }
 
@@ -354,13 +358,10 @@ impl TelescopeApp {
                     self.load_intel_file(file_name);
                 }
                 Message::UpdateIntelDirectory(directory_path) => {
-                    let directory_string = directory_path
-                        .clone()
-                        .unwrap()
-                        .to_string_lossy()
-                        .to_string();
-                    self.settings.paths.internal_intel = directory_path;
-                    self.settings.paths.intel = directory_string;
+                    if let Some(directory_path) = directory_path {
+                        let _ = self.settings.set_intel(directory_path.as_path());
+                        let _ = self.settings.scan_channels_logs();
+                    }
                 }
             };
         }
@@ -452,13 +453,14 @@ impl TelescopeApp {
                                     let num_rows = keys.len().div_ceil(3);
                                     ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
+                                        let mut data = self.settings.get_warning_area();
                                         ui.label("Warn me when an enemy is within");
                                         egui::ComboBox::from_label("systems close to me")
-                                            .selected_text(self.settings.mapping.warning_area.clone())
+                                            .selected_text(data.to_string())
                                             .show_ui(ui, |ui| {
                                                 for i in 1u8..8 {
-                                                    if ui.selectable_value(&mut self.settings.mapping.warning_area, i.to_string(), i.to_string()).changed() {
-                                                        self.settings.saved = false;
+                                                    if ui.selectable_value(&mut data, i, i.to_string()).changed() {
+                                                        self.settings.set_warning_area(i);
                                                     }
                                                 }
                                             });
@@ -466,13 +468,15 @@ impl TelescopeApp {
                                     });
                                     ui.horizontal(|ui|{
                                         let atoms= ().into_atoms();
-                                        ui.checkbox(&mut self.settings.paths.default_behavior, atoms);
+                                        let mut enabled = true;
+                                        ui.checkbox(&mut enabled, atoms);
                                         ui.label("EVE Channel logs:");
-                                        if ui.add_enabled(self.settings.paths.default_behavior, TextEdit::singleline(&mut self.settings.paths.intel)).changed() {
-                                            self.settings.saved = false;
+                                        let mut str_intel = self.settings.get_intel().to_string_lossy().to_string();
+                                        if ui.add_enabled(enabled, TextEdit::singleline(&mut str_intel)).changed() {
+                                            let _ = self.settings.set_intel(Path::new(&str_intel));
                                         }
                                         let atoms2= ("Select").into_atoms();
-                                        if ui.add_enabled(self.settings.paths.default_behavior, Button::new(atoms2)).clicked(){
+                                        if ui.add_enabled(enabled, Button::new(atoms2)).clicked(){
                                             let runtime = tokio::runtime::Builder::new_current_thread()
                                                 .enable_all()
                                                 .build()
@@ -492,11 +496,9 @@ impl TelescopeApp {
                                         }
                                     });
                                     let row_height = 18.0;
-                                    let mut channels:Vec<String> = self
-                                        .settings
-                                        .channels
-                                        .available
-                                        .keys().cloned().collect();
+                                    let mut available_channels = self.settings.get_available_channels();
+                                    // clone keys to avoid borrowing available_channels while we later mutably borrow it
+                                    let mut channels: Vec<String> = available_channels.keys().cloned().collect();
                                     channels.sort_unstable();
                                     ui.label(RichText::new("Monitored channels").font(FontId::proportional(20.0)));
                                     ui.label("Select all the Intel Channels to monitor.");
@@ -510,17 +512,15 @@ impl TelescopeApp {
                                                 body.rows(row_height, channels.len().div_ceil(2), |mut row| {
                                                     let index = row.index() * 2;
                                                     row.col(|ui: &mut egui::Ui| {
-                                                        let chan = self.settings.channels.available.get_mut(&channels[index]).unwrap();
-                                                        if ui.checkbox(chan, &channels[index]).changed() {
-                                                            self.settings.saved = false;
-                                                        }
+                                                        let key = &channels[index];
+                                                        let chan = available_channels.get_mut(key).unwrap();
+                                                        ui.checkbox(chan, key);
                                                     });
                                                     if index < channels.len()-1 {
                                                         row.col(|ui: &mut egui::Ui| {
-                                                            let chan = self.settings.channels.available.get_mut(&channels[index + 1]).unwrap();
-                                                            if ui.checkbox(chan, &channels[index + 1]).changed() {
-                                                                self.settings.saved = false;
-                                                            }
+                                                            let key = &channels[index + 1];
+                                                            let chan = available_channels.get_mut(key).unwrap();
+                                                            ui.checkbox(chan, key);
                                                         });
                                                     }
                                                 });
@@ -533,6 +533,7 @@ impl TelescopeApp {
                                             }
                                         });
                                     });
+                                    self.settings.set_available_channels(available_channels);
                                     ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
                                     ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
                                     ui.push_id("rgn_tbl",|ui|{
@@ -549,18 +550,14 @@ impl TelescopeApp {
                                                     let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
                                                     let name = region.get_name();
                                                     //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
-                                                    if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                        self.settings.saved = false;
-                                                    }
+                                                    ui.checkbox(&mut region.show_on_startup, name);
                                                 });
                                                 let mut t_key_index = key_index + 1;
                                                 if t_key_index < keys.len() {
                                                     row.col(|ui: &mut egui::Ui| {
                                                         let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
                                                         let name = region.get_name();
-                                                        if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                            self.settings.saved = false;
-                                                        }
+                                                        ui.checkbox(&mut region.show_on_startup, name);
                                                     });
                                                 }
                                                 t_key_index += 1;
@@ -568,9 +565,7 @@ impl TelescopeApp {
                                                     row.col(|ui: &mut egui::Ui| {
                                                         let region = self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
                                                         let name = region.get_name();
-                                                        if ui.checkbox(&mut region.show_on_startup, name).changed() {
-                                                            self.settings.saved = false;
-                                                        }
+                                                        ui.checkbox(&mut region.show_on_startup, name);
                                                     });
                                                 }
                                             });
@@ -582,14 +577,16 @@ impl TelescopeApp {
                                     ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
                                     ui.horizontal(|ui|{
                                         ui.label("SDE database:");
-                                        if ui.text_edit_singleline(&mut self.settings.paths.sde_db).changed() {
-                                            self.settings.saved = false;
+                                        let mut str_sde = self.settings.get_sde().to_string_lossy().to_string();
+                                        if ui.text_edit_singleline(&mut str_sde).changed() {
+                                            let _ = self.settings.set_sde(Path::new(&str_sde));
                                         }
                                     });
                                     ui.horizontal(|ui|{
                                         ui.label("private database:");
-                                        if ui.text_edit_singleline(&mut self.settings.paths.local_db).changed() {
-                                            self.settings.saved = false;
+                                        let mut str_db = self.settings.get_db().to_string_lossy().to_string();
+                                        if ui.text_edit_singleline(&mut str_db).changed() {
+                                            let _ = self.settings.set_db(Path::new(&str_db));
                                         }
                                     });
                                 },
@@ -732,29 +729,32 @@ impl TelescopeApp {
             });
             ui.horizontal(|ui|{
                 if ui.add(Button::new("Save")).clicked() {
-                    self.settings.mapping.startup_regions.clear();
+                    //self.settings.mapping.startup_regions.clear();
+                    let mut startup_regions = vec![];
                     for region in self.behavior.tile_data.iter() {
                         if region.1.show_on_startup {
-                            self.settings.mapping.startup_regions.push(*region.0);
+                            startup_regions.push(*region.0);
                         }
                     }
-                    if let Some(intel_path) = &self.settings.paths.internal_intel {
-                        let _ = self.watcher.unwatch(intel_path);
+                    if !startup_regions.is_empty() {
+                        self.settings.set_startup_regions(startup_regions);
                     }
-                    let mut monitored_channels = Vec::new();
-                    for channel_data in self.settings.channels.available.iter() {
-                        if *channel_data.1 {
-                            monitored_channels.push(channel_data.0.to_string());
+                    if self.settings.get_intel().exists() {
+                        let _ = self.watcher.unwatch(self.settings.get_intel());
+                        let mut monitored_channels = Vec::new();
+                        let channels = self.settings.get_available_channels();
+                        for channel_data in channels.iter() {
+                            if *channel_data.1 {
+                                monitored_channels.push(channel_data.0.to_string());
+                            }
                         }
+                        monitored_channels.sort_unstable();
+                        let _ = self.watcher.watch(self.settings.get_intel(), RecursiveMode::NonRecursive);
+                        self.settings.set_monitored_channels(monitored_channels);
                     }
-                    monitored_channels.sort_unstable();
-                    if let Some(intel_path) = &self.settings.paths.internal_intel {
-                        let _ = self.watcher.watch(intel_path, RecursiveMode::NonRecursive);
-                    }
-                    self.settings.channels.monitored = Arc::new(monitored_channels);
-                    let _ = self.settings.write();
+                    let _ = self.settings.save();
                 }
-                if !self.settings.saved {
+                if !self.settings.its_saved() {
                     ui.colored_label(Color32::YELLOW, "⚠ unsaved changes");
                 }
             });
@@ -765,12 +765,13 @@ impl TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let mut path = self.settings.paths.internal_intel.as_ref().unwrap().clone();
-        path = path.join(file_name.as_str());
+        let path = self.settings.get_intel();
+        let path = &path.join(file_name.as_str());
+        let mut log_files_map = self.settings.get_log_files_channels();
 
-        //getting the first byte to read from ythe last recorded file lenght
+        //getting the first byte to read from the last recorded file lenght
         let mut start = 0;
-        if let Some(log_entry) = self.settings.channels.log_files.get(&file_name) {
+        if let Some(log_entry) = log_files_map.get(&file_name) {
             start = log_entry.0;
         }
         let mut _length = 0;
@@ -784,17 +785,14 @@ impl TelescopeApp {
                 let mut new_data = String::new();
                 if let Ok(bytes_read) = chunk.read_to_string(&mut new_data) {
                     let _ = self.parse_intel_data(new_data);
-                    self.settings
-                        .channels
-                        .log_files
-                        .entry(file_name)
-                        .and_modify(|hash_entry| {
-                            hash_entry.0 = start + bytes_read as u64;
-                            hash_entry.1 = Utc::now();
-                        });
+                    log_files_map.entry(file_name).and_modify(|hash_entry| {
+                        hash_entry.0 = start + bytes_read as u64;
+                        hash_entry.1 = Utc::now();
+                    });
                 }
             }
         }
+        self.settings.set_log_files_channels(log_files_map);
     }
 
     fn parse_intel_data(&mut self, data: String) -> std::result::Result<(), String> {
@@ -952,8 +950,8 @@ impl TelescopeApp {
 
         let pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
-            self.settings.paths.sde_db.clone(),
-            self.settings.region_factor,
+            self.settings.get_sde().to_path_buf(),
+            self.settings.get_region_factor(),
             Some(region_id),
             Arc::clone(&self.task_msg),
         );
@@ -1020,7 +1018,7 @@ impl TelescopeApp {
 
     fn generate_pane(
         receiver: BCReceiver<MapSync>,
-        path: String,
+        path: PathBuf,
         factor: i64,
         region_id: Option<usize>,
         task_msg: Arc<MessageSpawner>,
@@ -1064,8 +1062,8 @@ impl TelescopeApp {
         let mut tiles = Tiles::default();
         let id = tiles.insert_pane(Self::generate_pane(
             self.map_msg.0.subscribe(),
-            self.settings.paths.sde_db.clone(),
-            self.settings.factor,
+            self.settings.get_sde().to_path_buf(),
+            self.settings.get_factor(),
             None,
             Arc::clone(&self.task_msg),
         ));
@@ -1238,8 +1236,8 @@ impl TelescopeApp {
                     if response.changed() {
                         if self.search_text.len() >= 3 {
                             let sde = SdeManager::new(
-                                Path::new(&self.settings.paths.sde_db),
-                                self.settings.factor,
+                                self.settings.get_sde(),
+                                self.settings.get_factor(),
                             );
                             match sde.get_system_id(self.search_text.clone().to_lowercase()) {
                                 Ok(system_results) => self.search_results = system_results,

@@ -7,7 +7,7 @@ use hyper_tls::HttpsConnector;
 use rfesi::prelude::*;
 use rusqlite::vtab::array;
 use rusqlite::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 //use hyper::body::Bytes;
 use bytes::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
@@ -38,7 +38,7 @@ pub struct EsiManager {
     pub esi: Esi,
     pub auth: AuthData,
     pub characters: Vec<Character>,
-    pub path: String,
+    pub path: PathBuf,
     pub active_character: Option<i32>,
 }
 
@@ -341,7 +341,7 @@ impl EsiManager {
         _client_secret: &str,
         callback_url: &str,
         scope: Vec<&str>,
-        database_path: String,
+        database_path: &Path,
     ) -> Self {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
@@ -370,7 +370,7 @@ impl EsiManager {
             esi,
             auth: AuthData::new(),
             characters: Vec::new(),
-            path: database_path,
+            path: database_path.to_path_buf(),
             active_character: None,
         };
 

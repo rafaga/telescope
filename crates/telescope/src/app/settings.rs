@@ -11,48 +11,76 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-#[derive(Serialize, Deserialize)]
-pub(crate) struct FilePaths {
+#[derive(Serialize, Deserialize, Clone)]
+struct FilePaths {
     #[serde(skip)]
-    pub settings: PathBuf,
-    #[serde(skip)]
-    pub internal_intel: Option<PathBuf>,
-    pub default_behavior: bool,
-    pub intel: String,
-    pub sde_db: String,
-    pub local_db: String,
+    settings: PathBuf,
+    intel: PathBuf,
+    sde: PathBuf,
+    db: PathBuf,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct Mapping {
-    pub startup_regions: Vec<usize>,
-    pub warning_area: String,
+impl Default for FilePaths {
+    fn default() -> Self {
+        let os_dirs = directories::BaseDirs::new().unwrap();
+        let tpath = os_dirs
+            .home_dir()
+            .join("Documents")
+            .join("EVE")
+            .join("logs")
+            .join("ChatLogs");
+        Self {
+            settings: Path::new("./telescope.toml").to_path_buf(),
+            intel: tpath,
+            sde: PathBuf::new(),
+            db: PathBuf::new(),
+        }
+    }
 }
+
+impl FilePaths {}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Mapping {
+    pub startup_regions: Vec<usize>,
+    pub warning_area: u8,
+}
+
+impl Default for Mapping {
+    fn default() -> Self {
+        Self {
+            startup_regions: vec![],
+            warning_area: 4,
+        }
+    }
+}
+
+impl Mapping {}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Channels {
     #[serde(skip)]
-    pub available: HashMap<String, bool>,
+    available: HashMap<String, bool>,
     #[serde(skip)]
-    pub log_files: HashMap<String, (u64, DateTime<Utc>)>,
-    pub monitored: Arc<Vec<String>>,
+    log_files: HashMap<String, (u64, DateTime<Utc>)>,
+    monitored: Arc<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Manager {
-    pub paths: FilePaths,
-    pub mapping: Mapping,
-    pub channels: Channels,
+pub(crate) struct Settings {
+    paths: FilePaths,
+    mapping: Mapping,
+    channels: Channels,
     #[serde(skip)]
-    pub factor: i64,
+    factor: i64,
     #[serde(skip)]
-    pub region_factor: i64,
+    region_factor: i64,
     #[serde(skip)]
-    pub saved: bool,
+    saved: bool,
 }
 
-impl TryFrom<PathBuf> for Manager {
-    type Error = ManagerError;
+impl TryFrom<PathBuf> for Settings {
+    type Error = SettingsError;
 
     fn try_from(path: PathBuf) -> std::result::Result<Self, <Self as TryFrom<PathBuf>>::Error> {
         let mut toml_data = String::new();
@@ -60,67 +88,49 @@ impl TryFrom<PathBuf> for Manager {
             if let Ok(mut toml_file) = File::open(path)
                 && toml_file.read_to_string(&mut toml_data).is_ok()
             {
-                if let Ok(mut toml_manager) = toml::from_str::<Manager>(&toml_data) {
+                if let Ok(mut toml_manager) = toml::from_str::<Settings>(&toml_data) {
                     toml_manager.saved = false;
                     toml_manager.factor = 50000000000000;
                     toml_manager.region_factor = -2;
-                    if !toml_manager.paths.intel.is_empty()
-                        && let Ok(pbuf) = toml_manager.verify_intel_path()
-                    {
-                        toml_manager.paths.internal_intel = Some(pbuf.clone());
-                        toml_manager.paths.intel = pbuf.to_string_lossy().to_string();
-                    }
-                    if toml_manager.scan_channels_logs().is_ok() {
-                        Ok(toml_manager)
-                    } else {
-                        Err(ManagerError::ReadError)
-                    }
+                    Ok(toml_manager)
                 } else {
-                    Err(ManagerError::InvalidState)
+                    Err(SettingsError::InvalidState)
                 }
             } else {
-                Err(ManagerError::ReadError)
+                Err(SettingsError::ReadError)
             }
         } else {
-            Err(ManagerError::FileNotFound(
+            Err(SettingsError::FileNotFound(
                 path.to_string_lossy().to_string(),
             ))
         }
     }
 }
 
-impl Manager {
-    pub(crate) fn new() -> Self {
-        let settings_file = String::from("telescope.toml");
-        let file_path = Path::new(&settings_file);
+impl Default for Settings {
+    fn default() -> Self {
         let mut config = Self {
-            paths: FilePaths {
-                internal_intel: None,
-                settings: file_path.to_path_buf(),
-                default_behavior: false,
-                intel: String::new(),
-                sde_db: String::from("assets/sde.db"),
-                local_db: String::from("telescope.db"),
-            },
-            mapping: Mapping {
-                startup_regions: vec![],
-                warning_area: 4.to_string(),
-            },
+            paths: FilePaths::default(),
+            mapping: Mapping::default(),
             factor: 50000000000000,
             region_factor: -2,
-            saved: true,
+            saved: false,
             channels: Channels {
                 available: HashMap::new(),
                 log_files: HashMap::new(),
                 monitored: Arc::new(Vec::new()),
             },
         };
-
-        let _ = config.verify_intel_path();
+        let _ = config.scan_channels_logs();
         config
     }
+}
 
-    pub(crate) fn write(&mut self) -> Result<()> {
+impl Settings {
+    pub(crate) fn save(&mut self) -> Result<bool> {
+        if self.saved {
+            return Ok(false);
+        }
         let file_path = Path::new(&self.paths.settings);
         match File::options()
             .write(true)
@@ -129,49 +139,34 @@ impl Manager {
             .open(file_path)
         {
             Ok(mut toml_file) => {
-                let toml_data = toml::to_string(self).unwrap();
-                toml_file
-                    .write_all(toml_data.as_bytes())
-                    .expect("Unable to write settings on file.");
-                self.saved = true;
-                Ok(())
+                if let Ok(toml_data) = toml::to_string(self)
+                    && toml_file.write_all(toml_data.as_bytes()).is_ok()
+                {
+                    self.saved = true;
+                    Ok(true)
+                } else {
+                    Err(SettingsError::WriteError)
+                }
             }
-            Err(_) => Err(ManagerError::WriteError),
+            Err(_) => Err(SettingsError::WriteError),
         }
     }
 
-    fn verify_intel_path(&mut self) -> Result<PathBuf> {
-        let k_path = if let Some(t_path) = self.paths.internal_intel.clone() {
-            t_path
-        } else {
-            if let Some(os_dirs) = directories::BaseDirs::new() {
-                os_dirs
-                    .home_dir()
-                    .join("Documents")
-                    .join("EVE")
-                    .join("logs")
-                    .join("ChatLogs")
-            } else {
-                return Err(ManagerError::ReadError);
-            }
-        };
-        if k_path.exists() {
-            let _ = self.scan_channels_logs();
-            Ok(k_path.to_path_buf())
-        } else {
-            Err(ManagerError::InvalidDirectory(
-                k_path.to_string_lossy().to_string(),
-            ))
-        }
+    pub(crate) fn get_cloned_monitored_channels(&self) -> Arc<Vec<String>> {
+        self.channels.monitored.clone()
     }
 
-    fn scan_channels_logs(&mut self) -> Result<()> {
+    pub(crate) fn set_monitored_channels(&mut self, monitored_channels: Vec<String>) {
+        self.channels.monitored = Arc::new(monitored_channels);
+        self.saved = false;
+    }
+
+    pub(crate) fn scan_channels_logs(&mut self) -> Result<()> {
         self.channels.available.clear();
-        if self.paths.internal_intel.is_none() {
-            return Err(ManagerError::InvalidDirectory(String::new()));
+        if self.get_intel().exists() {
+            return Err(SettingsError::InvalidDirectory(String::new()));
         }
-        let path = &self.paths.internal_intel.clone().unwrap();
-        if let Ok(mut directory) = path.read_dir() {
+        if let Ok(mut directory) = self.get_intel().read_dir() {
             while let Some(Ok(entry)) = directory.next() {
                 if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
                 {
@@ -191,13 +186,127 @@ impl Manager {
             }
             Ok(())
         } else {
-            Err(ManagerError::ReadError)
+            Err(SettingsError::ReadError)
+        }
+    }
+
+    pub fn set_intel(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.intel = path.to_path_buf();
+        self.saved = false;
+        Ok(())
+    }
+
+    pub fn get_intel(&self) -> &Path {
+        self.paths.intel.as_path()
+    }
+
+    pub fn get_settings(&self) -> &Path {
+        self.paths.settings.as_path()
+    }
+
+    pub fn get_sde(&self) -> &Path {
+        self.paths.sde.as_path()
+    }
+
+    pub fn get_db(&self) -> &Path {
+        self.paths.db.as_path()
+    }
+
+    /*pub fn set_settings(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.settings = path.to_path_buf();
+        Ok(())
+    }*/
+
+    pub fn set_db(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.db = path.to_path_buf();
+        self.saved = false;
+        Ok(())
+    }
+
+    pub fn set_sde(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.sde = path.to_path_buf();
+        self.saved = false;
+        Ok(())
+    }
+
+    pub fn its_saved(&self) -> bool {
+        self.saved
+    }
+
+    pub(crate) fn get_warning_area(&self) -> u8 {
+        self.mapping.warning_area
+    }
+
+    pub(crate) fn set_warning_area(&mut self, new_limit: u8) {
+        self.mapping.warning_area = new_limit;
+        self.saved = false;
+    }
+
+    pub(crate) fn get_startup_regions(&self) -> &Vec<usize> {
+        self.mapping.startup_regions.as_ref()
+    }
+
+    pub(crate) fn set_startup_regions(&mut self, startup_regions: Vec<usize>) {
+        self.mapping.startup_regions = startup_regions;
+        self.saved = false;
+    }
+
+    pub(crate) fn get_factor(&self) -> i64 {
+        self.factor
+    }
+
+    pub(crate) fn get_region_factor(&self) -> i64 {
+        self.region_factor
+    }
+
+    pub(crate) fn get_log_files_channels(&self) -> HashMap<String, (u64, DateTime<Utc>)> {
+        self.channels.log_files.clone()
+    }
+
+    pub(crate) fn get_available_channels(&self) -> HashMap<String, bool> {
+        self.channels.available.clone()
+    }
+
+    pub(crate) fn set_available_channels(&mut self, new_available_channels: HashMap<String, bool>) {
+        if self.channels.available != new_available_channels {
+            self.channels.available = new_available_channels;
+            self.saved = false;
+        }
+    }
+
+    pub(crate) fn set_log_files_channels(
+        &mut self,
+        new_log_channels: HashMap<String, (u64, DateTime<Utc>)>,
+    ) {
+        if self.channels.log_files != new_log_channels {
+            self.channels.log_files = new_log_channels;
+            self.saved = false;
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ManagerError {
+pub enum SettingsError {
     FileNotFound(String),
     InvalidDirectory(String),
     InvalidState,
@@ -205,7 +314,7 @@ pub enum ManagerError {
     WriteError,
 }
 
-impl Display for ManagerError {
+impl Display for SettingsError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::FileNotFound(path) => write!(f, "File not found: {path}"),
@@ -217,24 +326,11 @@ impl Display for ManagerError {
     }
 }
 
-impl error::Error for ManagerError {
+impl error::Error for SettingsError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
     }
 }
 
-pub type Result<T> = std::result::Result<T, ManagerError>;
-
-/*impl From<std::io::Error> for ManagerError {
-    fn from(e: std::io::Error) -> Self { Self::Io(e.to_string()) }
-}
-impl From<String> for ManagerError {
-    fn from(s: String) -> Self { Self::Other(s) }
-}
-impl From<&str> for ManagerError {
-    fn from(s: &str) -> Self { Self::Other(s.to_string()) }
-}*/
-
-impl ManagerError {
-    //pub fn not_found(name: impl Into<String>) -> Self { Self::NotFound(name.into()) }
-}
+pub type Result<T> = std::result::Result<T, SettingsError>;
+impl SettingsError {}

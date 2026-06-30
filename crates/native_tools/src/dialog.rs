@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 //use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
@@ -97,13 +97,13 @@ impl Dialog {
         }
     }
 
-    pub fn set_directory(&mut self, _path: PathBuf) {
+    pub fn set_directory(&mut self, path: &Path) {
         // Implementar si es necesario para recordar la última carpeta abierta
-        self.directory_path = Some(_path);
+        self.directory_path = Some(path.to_path_buf());
     }
 
-    pub fn get_directory(&self) -> Option<&PathBuf> {
-        self.directory_path.as_ref()
+    pub fn get_directory(&self) -> Option<PathBuf> {
+        self.directory_path.clone()
     }
 
     #[cfg(target_os = "windows")]
