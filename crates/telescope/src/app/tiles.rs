@@ -574,8 +574,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 self.search_regions.clear();
                 if self.search_text.len() > 3 {
                     let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
-                    if let Ok(regions) = t_sde
-                        .get_region(vec![], Some(self.search_text.clone())) {
+                    if let Ok(regions) = t_sde.get_region(vec![], Some(self.search_text.clone())) {
                         self.search_regions = regions.keys().copied().map(|x| x as usize).collect();
                     }
                 }

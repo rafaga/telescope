@@ -95,10 +95,8 @@ impl TryFrom<PathBuf> for Settings {
                         toml_manager.region_factor = -2;
                         toml_manager.saved = false;
                         Ok(toml_manager)
-                    },
-                    Err(e) => {
-                        Err(SettingsError::Other(e.to_string()))
-                    }                 
+                    }
+                    Err(e) => Err(SettingsError::Other(e.to_string())),
                 }
             } else {
                 Err(SettingsError::ReadError)
@@ -137,12 +135,13 @@ impl Settings {
         }
         let file_path = Path::new(&self.paths.settings);
         let mut ancestors = file_path.ancestors();
-        if let None = ancestors.next(){
+        if ancestors.next().is_none() {
             return Err(SettingsError::FileNotFound(String::new()));
         }
         match File::options()
             .write(true)
             .create(true)
+            .truncate(true)
             .read(true)
             .open(file_path)
         {
@@ -329,7 +328,7 @@ impl Display for SettingsError {
             Self::ReadError => f.write_str("read error"),
             Self::WriteError => f.write_str("write error"),
             Self::InvalidDirectory(path) => write!(f, "Path not found: {path}"),
-            Self::Other(message) => write!(f, "Other Error: {message}")
+            Self::Other(message) => write!(f, "Other Error: {message}"),
         }
     }
 }

@@ -86,7 +86,7 @@ impl Default for TelescopeApp {
         }
 
         let _ = settings.save();
-        
+
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
@@ -361,7 +361,7 @@ impl TelescopeApp {
                     let _ = self.settings.scan_channels_logs();
                 }
                 Message::DefaultIntelDirectory => {
-                    if let Some(os_dirs) = directories::BaseDirs::new(){
+                    if let Some(os_dirs) = directories::BaseDirs::new() {
                         let tpath = os_dirs
                             .home_dir()
                             .join("Documents")
@@ -479,9 +479,7 @@ impl TelescopeApp {
                                         let enabled = true;
                                         ui.label("EVE Channel logs:");
                                         let mut str_intel = self.settings.get_intel().to_string_lossy().to_string();
-                                        if ui.add_enabled(enabled, TextEdit::singleline(&mut str_intel)).changed() {
-                                            
-                                        }
+                                        ui.add_enabled(enabled, TextEdit::singleline(&mut str_intel));
                                         let atoms2= ("Select").into_atoms();
                                         if ui.add_enabled(enabled, Button::new(atoms2)).clicked(){
                                             let runtime = tokio::runtime::Builder::new_current_thread()
