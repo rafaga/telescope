@@ -80,14 +80,13 @@ impl Default for TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        //let mut settings = Manager::new();
         let mut settings = Settings::default();
-        settings = if settings.get_settings().exists() {
-            Settings::try_from(settings.get_settings().to_path_buf()).unwrap_or_default()
-        } else {
-            Settings::default()
-        };
+        if settings.get_settings().exists() {
+            settings = Settings::try_from(settings.get_settings().to_path_buf()).unwrap_or_default()
+        }
 
+        let _ = settings.save();
+        
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
@@ -402,7 +401,7 @@ impl TelescopeApp {
         egui::Window::new("Settings")
         .movable(true)
         .resizable(false)
-        .fixed_size([650.0,510.0])
+        .fixed_size([700.0,510.0])
         .movable(true)
         .open(&mut self.open[2])
         .show(ctx, |ui| {
@@ -467,9 +466,7 @@ impl TelescopeApp {
                                         ui.end_row();
                                     });
                                     ui.horizontal(|ui|{
-                                        let atoms= ().into_atoms();
-                                        let mut enabled = true;
-                                        ui.checkbox(&mut enabled, atoms);
+                                        let enabled = true;
                                         ui.label("EVE Channel logs:");
                                         let mut str_intel = self.settings.get_intel().to_string_lossy().to_string();
                                         if ui.add_enabled(enabled, TextEdit::singleline(&mut str_intel)).changed() {
@@ -492,6 +489,26 @@ impl TelescopeApp {
                                                             .await;
                                                     });
                                                 }
+                                            });
+                                        }
+                                        let atoms = ("Default").into_atoms();
+                                        if ui.add_enabled(enabled, Button::new(atoms)).clicked(){
+                                            let os_dirs = directories::BaseDirs::new().unwrap();
+                                            let tpath = os_dirs
+                                                .home_dir()
+                                                .join("Documents")
+                                                .join("EVE")
+                                                .join("logs")
+                                                .join("ChatLogs");
+                                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                                .enable_all()
+                                                .build()
+                                                .unwrap();
+                                            let app_msg_tx = Arc::clone(&self.app_msg.0);
+                                            runtime.block_on(async move {
+                                                let _ = app_msg_tx
+                                                    .send(Message::UpdateIntelDirectory(Some(tpath)))
+                                                    .await;
                                             });
                                         }
                                     });
@@ -752,7 +769,20 @@ impl TelescopeApp {
                         let _ = self.watcher.watch(self.settings.get_intel(), RecursiveMode::NonRecursive);
                         self.settings.set_monitored_channels(monitored_channels);
                     }
-                    let _ = self.settings.save();
+                    if let Err(e) = self.settings.save() {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                        let app_msg_tx = Arc::clone(&self.app_msg.0);
+                        runtime.block_on(async {
+                            #[cfg(feature = "puffin")]
+                            puffin::profile_scope!("spawned intel message data");
+                            let _ = app_msg_tx
+                                .send(Message::GenericNotification((Type::Error,String::from("TelescopeApp"),String::from("open_settings_window"),e.to_string())))
+                                .await;
+                        });
+                    }
                 }
                 if !self.settings.its_saved() {
                     ui.colored_label(Color32::YELLOW, "⚠ unsaved changes");

@@ -30,7 +30,7 @@ impl Default for FilePaths {
             .join("logs")
             .join("ChatLogs");
         Self {
-            settings: Path::new("./telescope.toml").to_path_buf(),
+            settings: Path::new("telescope.toml").to_path_buf(),
             intel: tpath,
             sde: PathBuf::new(),
             db: PathBuf::new(),
@@ -85,16 +85,20 @@ impl TryFrom<PathBuf> for Settings {
     fn try_from(path: PathBuf) -> std::result::Result<Self, <Self as TryFrom<PathBuf>>::Error> {
         let mut toml_data = String::new();
         if path.exists() {
-            if let Ok(mut toml_file) = File::open(path)
+            if let Ok(mut toml_file) = File::open(&path)
                 && toml_file.read_to_string(&mut toml_data).is_ok()
             {
-                if let Ok(mut toml_manager) = toml::from_str::<Settings>(&toml_data) {
-                    toml_manager.saved = false;
-                    toml_manager.factor = 50000000000000;
-                    toml_manager.region_factor = -2;
-                    Ok(toml_manager)
-                } else {
-                    Err(SettingsError::InvalidState)
+                match toml::from_str::<Settings>(&toml_data) {
+                    Ok(mut toml_manager) => {
+                        toml_manager.paths.settings = path.to_path_buf();
+                        toml_manager.factor = 50000000000000;
+                        toml_manager.region_factor = -2;
+                        toml_manager.saved = false;
+                        Ok(toml_manager)
+                    },
+                    Err(e) => {
+                        Err(SettingsError::Other(e.to_string()))
+                    }                 
                 }
             } else {
                 Err(SettingsError::ReadError)
@@ -132,10 +136,14 @@ impl Settings {
             return Ok(false);
         }
         let file_path = Path::new(&self.paths.settings);
+        let mut ancestors = file_path.ancestors();
+        if let None = ancestors.next(){
+            return Err(SettingsError::FileNotFound(String::new()));
+        }
         match File::options()
             .write(true)
             .create(true)
-            .truncate(true)
+            .read(true)
             .open(file_path)
         {
             Ok(mut toml_file) => {
@@ -148,7 +156,7 @@ impl Settings {
                     Err(SettingsError::WriteError)
                 }
             }
-            Err(_) => Err(SettingsError::WriteError),
+            Err(e) => Err(SettingsError::Other(e.to_string())),
         }
     }
 
@@ -309,19 +317,19 @@ impl Settings {
 pub enum SettingsError {
     FileNotFound(String),
     InvalidDirectory(String),
-    InvalidState,
     ReadError,
     WriteError,
+    Other(String),
 }
 
 impl Display for SettingsError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::FileNotFound(path) => write!(f, "File not found: {path}"),
-            Self::InvalidState => f.write_str("invalid state"),
             Self::ReadError => f.write_str("read error"),
             Self::WriteError => f.write_str("write error"),
             Self::InvalidDirectory(path) => write!(f, "Path not found: {path}"),
+            Self::Other(message) => write!(f, "Other Error: {message}")
         }
     }
 }
