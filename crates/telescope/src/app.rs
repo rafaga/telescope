@@ -357,8 +357,18 @@ impl TelescopeApp {
                     self.load_intel_file(file_name);
                 }
                 Message::UpdateIntelDirectory(directory_path) => {
-                    if let Some(directory_path) = directory_path {
-                        let _ = self.settings.set_intel(directory_path.as_path());
+                    let _ = self.settings.set_intel(directory_path.as_path());
+                    let _ = self.settings.scan_channels_logs();
+                }
+                Message::DefaultIntelDirectory => {
+                    if let Some(os_dirs) = directories::BaseDirs::new(){
+                        let tpath = os_dirs
+                            .home_dir()
+                            .join("Documents")
+                            .join("EVE")
+                            .join("logs")
+                            .join("ChatLogs");
+                        let _ = self.settings.set_intel(tpath.as_path());
                         let _ = self.settings.scan_channels_logs();
                     }
                 }
@@ -470,7 +480,7 @@ impl TelescopeApp {
                                         ui.label("EVE Channel logs:");
                                         let mut str_intel = self.settings.get_intel().to_string_lossy().to_string();
                                         if ui.add_enabled(enabled, TextEdit::singleline(&mut str_intel)).changed() {
-                                            let _ = self.settings.set_intel(Path::new(&str_intel));
+                                            
                                         }
                                         let atoms2= ("Select").into_atoms();
                                         if ui.add_enabled(enabled, Button::new(atoms2)).clicked(){
@@ -485,7 +495,7 @@ impl TelescopeApp {
                                                         #[cfg(feature = "puffin")]
                                                         puffin::profile_scope!("spawned intel message data");
                                                         let _ = app_msg_tx
-                                                            .send(Message::UpdateIntelDirectory(Some(path)))
+                                                            .send(Message::UpdateIntelDirectory(path))
                                                             .await;
                                                     });
                                                 }
@@ -493,21 +503,14 @@ impl TelescopeApp {
                                         }
                                         let atoms = ("Default").into_atoms();
                                         if ui.add_enabled(enabled, Button::new(atoms)).clicked(){
-                                            let os_dirs = directories::BaseDirs::new().unwrap();
-                                            let tpath = os_dirs
-                                                .home_dir()
-                                                .join("Documents")
-                                                .join("EVE")
-                                                .join("logs")
-                                                .join("ChatLogs");
                                             let runtime = tokio::runtime::Builder::new_current_thread()
                                                 .enable_all()
                                                 .build()
                                                 .unwrap();
                                             let app_msg_tx = Arc::clone(&self.app_msg.0);
-                                            runtime.block_on(async move {
+                                            runtime.block_on(async {
                                                 let _ = app_msg_tx
-                                                    .send(Message::UpdateIntelDirectory(Some(tpath)))
+                                                    .send(Message::DefaultIntelDirectory)
                                                     .await;
                                             });
                                         }

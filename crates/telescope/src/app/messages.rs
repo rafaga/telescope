@@ -46,7 +46,8 @@ pub enum Message {
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
     IntelFileChanged(String),
-    UpdateIntelDirectory(Option<PathBuf>),
+    UpdateIntelDirectory(PathBuf),
+    DefaultIntelDirectory,
 }
 
 pub enum CharacterSync {
