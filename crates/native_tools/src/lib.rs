@@ -1,4 +1,6 @@
 pub mod dialog;
+#[cfg(target_os = "linux")]
+pub mod zbus;
 
 #[cfg(target_os = "windows")]
 use windows::{Storage::Streams::DataReader, System::Profile::SystemIdentification};
@@ -51,9 +53,29 @@ pub fn get_macos_unique_id() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_linux_unique_id() -> Result<String, String> {
-    // Placeholder implementation for Linux unique ID
-    Ok(String::from(FALLBACK_UNIQUE_ID))
+pub fn get_linux_unique_id() -> Result<String, String> {
+    // zbus usa el reactor de Tokio (feature "tokio"), así que la cadena
+    // de fallback se conduce dentro de un runtime current-thread creado
+    // en un hilo aparte (igual que en dialog.rs). El hilo evita pánico
+    // si el llamador ya está dentro de un runtime Tokio existente.
+    let outcome = std::thread::spawn(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        runtime
+            .block_on(zbus::get_persistent_hardware_id())
+            .map(|result| result.value)
+            .map_err(|e| e.to_string())
+    })
+    .join();
+
+    match outcome {
+        Ok(Ok(id)) => Ok(id),
+        // Contrato Windows/macOS: cualquier fallo devuelve el ID de respaldo
+        _ => Err(String::from(FALLBACK_UNIQUE_ID)),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -76,5 +98,26 @@ pub fn get_windows_unique_id() -> Result<String, String> {
             Err(String::from(FALLBACK_UNIQUE_ID))
         }
         Err(_) => Err(String::from(FALLBACK_UNIQUE_ID)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_unique_id_is_not_empty() {
+        assert!(!FALLBACK_UNIQUE_ID.is_empty());
+    }
+
+    // Contrato igual que en Windows/macOS: Ok(id no vacío) si alguna
+    // fuente funcionó, o Err(FALLBACK_UNIQUE_ID) si todas fallaron.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_unique_id_respects_fallback_contract() {
+        match get_linux_unique_id() {
+            Ok(id) => assert!(!id.is_empty()),
+            Err(id) => assert_eq!(id, FALLBACK_UNIQUE_ID),
+        }
     }
 }

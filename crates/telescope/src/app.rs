@@ -118,11 +118,13 @@ impl Default for TelescopeApp {
         let mut dlg_intel_dir = Dialog::default();
         dlg_intel_dir.dialog_type = DialogType::Directory;
 
-        if settings.get_intel().exists() {
+        if settings.get_intel().exists()  {
             dlg_intel_dir.set_directory(settings.get_intel());
-            watcher
-                .watch(settings.get_intel(), RecursiveMode::NonRecursive)
-                .expect("Error monitoring intel file path");
+            if !settings.get_cloned_monitored_channels().is_empty() {
+                watcher
+                    .watch(settings.get_intel(), RecursiveMode::NonRecursive)
+                    .expect("Error monitoring intel file path");
+            }
         }
 
         Self {
@@ -357,8 +359,9 @@ impl TelescopeApp {
                     self.load_intel_file(file_name);
                 }
                 Message::UpdateIntelDirectory(directory_path) => {
-                    let _ = self.settings.set_intel(directory_path.as_path());
-                    let _ = self.settings.scan_channels_logs();
+                    if self.settings.set_intel(directory_path.as_path()).is_ok() {
+                        let _ = self.settings.scan_channels_logs();
+                    }
                 }
                 Message::DefaultIntelDirectory => {
                     if let Some(os_dirs) = directories::BaseDirs::new() {
@@ -368,8 +371,22 @@ impl TelescopeApp {
                             .join("EVE")
                             .join("logs")
                             .join("ChatLogs");
-                        let _ = self.settings.set_intel(tpath.as_path());
-                        let _ = self.settings.scan_channels_logs();
+                        if let Err(e) = self.settings.set_intel(tpath.as_path()){
+                            let runtime = tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                                .unwrap();
+                            let app_msg_tx = Arc::clone(&self.app_msg.0);
+                            runtime.block_on(async {
+                                #[cfg(feature = "puffin")]
+                                puffin::profile_scope!("spawned intel message data");
+                                let _ = app_msg_tx
+                                    .send(Message::GenericNotification((Type::Error,String::from("TelescopeApp"),String::from("DefaultIntelDirectory"),e.to_string())))
+                                    .await;
+                            });
+                        } else {
+                            let _ = self.settings.scan_channels_logs();
+                        }
                     }
                 }
             };
@@ -758,7 +775,6 @@ impl TelescopeApp {
                         self.settings.set_startup_regions(startup_regions);
                     }
                     if self.settings.get_intel().exists() {
-                        let _ = self.watcher.unwatch(self.settings.get_intel());
                         let mut monitored_channels = Vec::new();
                         let channels = self.settings.get_available_channels();
                         for channel_data in channels.iter() {
@@ -767,7 +783,11 @@ impl TelescopeApp {
                             }
                         }
                         monitored_channels.sort_unstable();
-                        let _ = self.watcher.watch(self.settings.get_intel(), RecursiveMode::NonRecursive);
+                        if monitored_channels.is_empty() && self.settings.get_intel().exists() {
+                            let _ = self.watcher.unwatch(self.settings.get_intel());
+                        } else {
+                            let _ = self.watcher.watch(self.settings.get_intel(),RecursiveMode::NonRecursive);
+                        }
                         self.settings.set_monitored_channels(monitored_channels);
                     }
                     if let Err(e) = self.settings.save() {
