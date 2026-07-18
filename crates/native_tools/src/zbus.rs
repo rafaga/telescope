@@ -30,13 +30,19 @@ pub enum HwIdError {
         source: std::io::Error,
     },
 
-    EmptyOrPlaceholder { path: String },
+    EmptyOrPlaceholder {
+        path: String,
+    },
 
-    PermissionDenied { path: String },
+    PermissionDenied {
+        path: String,
+    },
 
     DbusUnavailable(DbusError),
 
-    AllSourcesExhausted { sources_tried: Vec<String> },
+    AllSourcesExhausted {
+        sources_tried: Vec<String>,
+    },
 }
 
 #[cfg(target_os = "linux")]
@@ -44,10 +50,16 @@ impl fmt::Display for HwIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HwIdError::FileRead { path, source } => {
-                write!(f, "no se pudo leer el archivo de identificador: {path}: {source}")
+                write!(
+                    f,
+                    "no se pudo leer el archivo de identificador: {path}: {source}"
+                )
             }
             HwIdError::EmptyOrPlaceholder { path } => {
-                write!(f, "el valor leído en {path} está vacío o es un placeholder inválido")
+                write!(
+                    f,
+                    "el valor leído en {path} está vacío o es un placeholder inválido"
+                )
             }
             HwIdError::PermissionDenied { path } => {
                 write!(
@@ -104,7 +116,7 @@ pub enum DbusError {
     PolicyDenied(String),
 }
 
-#[cfg(target_os = "linux")] 
+#[cfg(target_os = "linux")]
 impl fmt::Display for DbusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -123,10 +135,16 @@ impl fmt::Display for DbusError {
                 method,
                 detail,
             } => {
-                write!(f, "el método D-Bus '{method}' en '{interface}' falló: {detail}")
+                write!(
+                    f,
+                    "el método D-Bus '{method}' en '{interface}' falló: {detail}"
+                )
             }
             DbusError::PolicyDenied(method) => {
-                write!(f, "acceso denegado por policy de D-Bus/polkit al llamar '{method}'")
+                write!(
+                    f,
+                    "acceso denegado por policy de D-Bus/polkit al llamar '{method}'"
+                )
             }
         }
     }
@@ -217,8 +235,7 @@ pub fn detect_dbus_static() -> DbusAvailability {
         session_bus_available,
         system_bus_available,
         session_bus_address,
-        system_bus_socket_path: system_bus_available
-            .then(|| system_bus_socket_path.to_string()),
+        system_bus_socket_path: system_bus_available.then(|| system_bus_socket_path.to_string()),
     }
 }
 
@@ -230,7 +247,6 @@ fn dbus_address_socket_exists(addr: &str) -> bool {
         .map(|p| Path::new(p).exists())
         .unwrap_or(false)
 }
-
 
 /// Detección *dinámica*: intenta abrir una conexión real al system bus y
 /// hacer una llamada de bajo costo (`Peer.Ping`) para confirmar que no solo
@@ -382,9 +398,9 @@ pub fn try_product_serial() -> Result<HwIdResult<String>, HwIdError> {
 /// lectura a usuarios normales dependiendo de la configuración del sistema.
 #[cfg(target_os = "linux")]
 pub async fn try_dbus_hostname1_uuid() -> Result<HwIdResult<String>, HwIdError> {
-    let conn = zbus::Connection::system().await.map_err(|e| {
-        HwIdError::DbusUnavailable(DbusError::ConnectionFailed(e.to_string()))
-    })?;
+    let conn = zbus::Connection::system()
+        .await
+        .map_err(|e| HwIdError::DbusUnavailable(DbusError::ConnectionFailed(e.to_string())))?;
 
     let reply = conn
         .call_method(
@@ -437,11 +453,22 @@ fn uuid_bytes_to_string(bytes: &[u8]) -> String {
     }
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     )
 }
 

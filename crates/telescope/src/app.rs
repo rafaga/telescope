@@ -118,7 +118,7 @@ impl Default for TelescopeApp {
         let mut dlg_intel_dir = Dialog::default();
         dlg_intel_dir.dialog_type = DialogType::Directory;
 
-        if settings.get_intel().exists()  {
+        if settings.get_intel().exists() {
             dlg_intel_dir.set_directory(settings.get_intel());
             if !settings.get_cloned_monitored_channels().is_empty() {
                 watcher
@@ -371,7 +371,7 @@ impl TelescopeApp {
                             .join("EVE")
                             .join("logs")
                             .join("ChatLogs");
-                        if let Err(e) = self.settings.set_intel(tpath.as_path()){
+                        if let Err(e) = self.settings.set_intel(tpath.as_path()) {
                             let runtime = tokio::runtime::Builder::new_current_thread()
                                 .enable_all()
                                 .build()
@@ -381,7 +381,12 @@ impl TelescopeApp {
                                 #[cfg(feature = "puffin")]
                                 puffin::profile_scope!("spawned intel message data");
                                 let _ = app_msg_tx
-                                    .send(Message::GenericNotification((Type::Error,String::from("TelescopeApp"),String::from("DefaultIntelDirectory"),e.to_string())))
+                                    .send(Message::GenericNotification((
+                                        Type::Error,
+                                        String::from("TelescopeApp"),
+                                        String::from("DefaultIntelDirectory"),
+                                        e.to_string(),
+                                    )))
                                     .await;
                             });
                         } else {
