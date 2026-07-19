@@ -252,7 +252,7 @@ impl eframe::App for TelescopeApp {
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
         #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
-        egui::Panel::top("top_panel").show_inside(ui, |ui| {
+        egui::Panel::top("top_panel").show(ui, |ui| {
             //egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::MenuBar::new().ui(ui, |ui| {
@@ -277,7 +277,7 @@ impl eframe::App for TelescopeApp {
         });
 
         // Bottom menu
-        egui::Panel::bottom("bottom_panel").show_inside(ui, |ui| {
+        egui::Panel::bottom("bottom_panel").show(ui, |ui| {
             //egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
@@ -298,7 +298,7 @@ impl eframe::App for TelescopeApp {
             self.open_settings_window(ui.ctx());
         }
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             #[cfg(feature = "puffin")]
             puffin::profile_scope!("inserting map");
             if let Some(tree) = &mut self.tree {

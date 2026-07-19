@@ -239,7 +239,7 @@ impl PlayerDatabase {
         let fecha = player.last_logon.to_rfc3339();
         let mut query = [
             String::from("INSERT INTO char (id,name,lastLogon,location"),
-            String::from(" VALUES (:id,:name,:last_logon,:location)"),
+            String::from(" VALUES (:id,:name,:last_logon,:location"),
         ];
         let mut params: Vec<(&str, &dyn ToSql)> = vec![
             (":name", &player.name),
@@ -456,5 +456,375 @@ impl PlayerDatabase {
         let params = rusqlite::params![obj.name(), obj.id()];
         let rows = statement.execute(params)?;
         Ok(rows)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn memory_connection() -> Connection {
+        let conn = Connection::open_in_memory().expect("cannot open in-memory database");
+        array::load_module(&conn).expect("cannot load rarray module");
+        conn
+    }
+
+    fn table_names(conn: &Connection) -> Vec<String> {
+        let mut statement = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<usize, String>(0))
+            .unwrap();
+        rows.map(|name| name.unwrap()).collect()
+    }
+
+    fn sample_alliance() -> Alliance {
+        Alliance {
+            id: 99000001,
+            name: String::from("Acme Alliance"),
+        }
+    }
+
+    fn sample_corporation() -> Corporation {
+        Corporation {
+            id: 98000001,
+            name: String::from("Acme Corp"),
+        }
+    }
+
+    fn sample_character() -> Character {
+        let mut character = Character::new();
+        character.id = 90000001;
+        character.name = String::from("Test Pilot");
+        character.corp = Some(sample_corporation());
+        character.alliance = Some(sample_alliance());
+        character.photo = Some(String::from(
+            "https://images.evetech.net/characters/90000001/portrait",
+        ));
+        character.last_logon = DateTime::from_timestamp(1750000000, 0).unwrap();
+        character.location = 30000001;
+        character
+    }
+
+    // ---------------------------------------------------------------------
+    // Schema
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn create_database_creates_all_tables() {
+        let conn = memory_connection();
+        assert!(PlayerDatabase::create_database(&conn).unwrap());
+
+        let tables = table_names(&conn);
+        assert!(tables.contains(&String::from("char")));
+        assert!(tables.contains(&String::from("corp")));
+        assert!(tables.contains(&String::from("alliance")));
+        assert!(tables.contains(&String::from("metadata")));
+    }
+
+    #[test]
+    fn create_database_seeds_metadata_and_empty_auth() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        let db_version: String = conn
+            .query_row("SELECT value FROM metadata WHERE id = 'db'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(db_version, "0");
+
+        let auth = PlayerDatabase::select_auth(&conn).unwrap();
+        assert_eq!(auth.token, "");
+        assert_eq!(auth.refresh_token, "");
+        assert_eq!(auth.expiration, None);
+    }
+
+    #[test]
+    fn migrate_database_returns_true() {
+        assert!(PlayerDatabase::migrate_database().unwrap());
+    }
+
+    // ---------------------------------------------------------------------
+    // repeat_vars
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn repeat_vars_generates_placeholders() {
+        assert_eq!(PlayerDatabase::repeat_vars(1), "?");
+        assert_eq!(PlayerDatabase::repeat_vars(3), "?,?,?");
+    }
+
+    #[test]
+    #[should_panic]
+    fn repeat_vars_panics_with_zero() {
+        PlayerDatabase::repeat_vars(0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Alliance
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn alliance_crud_roundtrip() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        let alliance = sample_alliance();
+
+        // insert
+        assert_eq!(
+            PlayerDatabase::insert_alliance(&conn, &alliance).unwrap(),
+            1
+        );
+        let stored = PlayerDatabase::select_alliance(&conn, vec![]).unwrap();
+        assert_eq!(stored, vec![alliance.clone()]);
+
+        // select by id
+        let stored = PlayerDatabase::select_alliance(&conn, vec![alliance.id]).unwrap();
+        assert_eq!(stored, vec![alliance.clone()]);
+
+        // unknown id selects nothing
+        let stored = PlayerDatabase::select_alliance(&conn, vec![12345]).unwrap();
+        assert!(stored.is_empty());
+
+        // update
+        let renamed = Alliance {
+            id: alliance.id,
+            name: String::from("Renamed Alliance"),
+        };
+        assert_eq!(PlayerDatabase::update_alliance(&conn, &renamed).unwrap(), 1);
+        let stored = PlayerDatabase::select_alliance(&conn, vec![alliance.id]).unwrap();
+        assert_eq!(stored, vec![renamed]);
+
+        // delete
+        assert_eq!(
+            PlayerDatabase::delete_alliance(&conn, vec![alliance.id]).unwrap(),
+            1
+        );
+        let stored = PlayerDatabase::select_alliance(&conn, vec![]).unwrap();
+        assert!(stored.is_empty());
+    }
+
+    #[test]
+    fn delete_alliance_with_empty_ids_deletes_nothing() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        PlayerDatabase::insert_alliance(&conn, &sample_alliance()).unwrap();
+
+        assert_eq!(PlayerDatabase::delete_alliance(&conn, vec![]).unwrap(), 0);
+        assert_eq!(
+            PlayerDatabase::select_alliance(&conn, vec![])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Corporation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn corporation_crud_roundtrip() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        let corp = sample_corporation();
+
+        // insert
+        assert_eq!(PlayerDatabase::insert_corporation(&conn, &corp).unwrap(), 1);
+        let stored = PlayerDatabase::select_corporation(&conn, vec![]).unwrap();
+        assert_eq!(stored, vec![corp.clone()]);
+
+        // select by id
+        let stored = PlayerDatabase::select_corporation(&conn, vec![corp.id]).unwrap();
+        assert_eq!(stored, vec![corp.clone()]);
+
+        // update
+        let renamed = Corporation {
+            id: corp.id,
+            name: String::from("Renamed Corp"),
+        };
+        assert_eq!(
+            PlayerDatabase::update_corporation(&conn, &renamed).unwrap(),
+            1
+        );
+        let stored = PlayerDatabase::select_corporation(&conn, vec![corp.id]).unwrap();
+        assert_eq!(stored, vec![renamed]);
+
+        // delete
+        assert_eq!(
+            PlayerDatabase::delete_corporation(&conn, vec![corp.id]).unwrap(),
+            1
+        );
+        let stored = PlayerDatabase::select_corporation(&conn, vec![]).unwrap();
+        assert!(stored.is_empty());
+    }
+
+    #[test]
+    fn delete_corporation_with_empty_ids_deletes_nothing() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        PlayerDatabase::insert_corporation(&conn, &sample_corporation()).unwrap();
+
+        assert_eq!(
+            PlayerDatabase::delete_corporation(&conn, vec![]).unwrap(),
+            0
+        );
+        assert_eq!(
+            PlayerDatabase::select_corporation(&conn, vec![])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Character
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn character_insert_and_select_roundtrip() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        // select_characters resolves corp and alliance with subqueries, so
+        // they must exist in their tables first.
+        PlayerDatabase::insert_corporation(&conn, &sample_corporation()).unwrap();
+        PlayerDatabase::insert_alliance(&conn, &sample_alliance()).unwrap();
+
+        let character = sample_character();
+        assert_eq!(
+            PlayerDatabase::insert_character(&conn, &character).unwrap(),
+            1
+        );
+
+        let stored = PlayerDatabase::select_characters(&conn, vec![]).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0], character);
+
+        let stored = PlayerDatabase::select_characters(&conn, vec![character.id]).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].name, "Test Pilot");
+    }
+
+    #[test]
+    fn character_without_relations_stores_nulls() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        let mut character = sample_character();
+        character.corp = None;
+        character.alliance = None;
+        character.photo = None;
+        PlayerDatabase::insert_character(&conn, &character).unwrap();
+
+        let stored = PlayerDatabase::select_characters(&conn, vec![]).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0], character);
+    }
+
+    #[test]
+    fn character_update_changes_fields() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        PlayerDatabase::insert_corporation(&conn, &sample_corporation()).unwrap();
+        PlayerDatabase::insert_alliance(&conn, &sample_alliance()).unwrap();
+
+        let character = sample_character();
+        PlayerDatabase::insert_character(&conn, &character).unwrap();
+
+        let mut updated = character.clone();
+        updated.name = String::from("Renamed Pilot");
+        updated.location = 30000002;
+        assert_eq!(
+            PlayerDatabase::update_character(&conn, &updated).unwrap(),
+            1
+        );
+
+        let stored = PlayerDatabase::select_characters(&conn, vec![character.id]).unwrap();
+        assert_eq!(stored, vec![updated]);
+    }
+
+    #[test]
+    fn character_delete_removes_rows() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        // foreign keys are enforced, so the parents must exist first
+        PlayerDatabase::insert_corporation(&conn, &sample_corporation()).unwrap();
+        PlayerDatabase::insert_alliance(&conn, &sample_alliance()).unwrap();
+        PlayerDatabase::insert_character(&conn, &sample_character()).unwrap();
+
+        assert_eq!(PlayerDatabase::delete_characters(&conn, vec![]).unwrap(), 0);
+        assert_eq!(
+            PlayerDatabase::delete_characters(&conn, vec![90000001]).unwrap(),
+            1
+        );
+        assert!(
+            PlayerDatabase::select_characters(&conn, vec![])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Auth
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn auth_insert_and_select_roundtrip() {
+        let conn = memory_connection();
+        array::load_module(&conn).unwrap();
+        conn.execute(
+            "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY, value VARCHAR(255) NOT NULL);",
+            [],
+        )
+        .unwrap();
+
+        let mut auth = AuthData::new();
+        auth.token = String::from("access-token");
+        auth.refresh_token = String::from("refresh-token");
+        auth.expiration = Some(DateTime::from_timestamp(1760000000, 0).unwrap());
+
+        // one row per field: token, refresh_token, expiration
+        assert_eq!(PlayerDatabase::insert_auth(&conn, &auth).unwrap(), 3);
+
+        let stored = PlayerDatabase::select_auth(&conn).unwrap();
+        assert_eq!(stored, auth);
+    }
+
+    #[test]
+    fn auth_insert_without_expiration_stores_none() {
+        let conn = memory_connection();
+        conn.execute(
+            "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY, value VARCHAR(255) NOT NULL);",
+            [],
+        )
+        .unwrap();
+
+        let mut auth = AuthData::new();
+        auth.token = String::from("access-token");
+        auth.refresh_token = String::from("refresh-token");
+        PlayerDatabase::insert_auth(&conn, &auth).unwrap();
+
+        let stored = PlayerDatabase::select_auth(&conn).unwrap();
+        assert_eq!(stored.token, "access-token");
+        assert_eq!(stored.refresh_token, "refresh-token");
+        assert_eq!(stored.expiration, None);
+    }
+
+    #[test]
+    fn auth_update_persists_new_values() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        let mut auth = AuthData::new();
+        auth.token = String::from("new-access-token");
+        auth.refresh_token = String::from("new-refresh-token");
+        auth.expiration = Some(DateTime::from_timestamp(1760000000, 0).unwrap());
+
+        assert_eq!(PlayerDatabase::update_auth(&conn, &auth).unwrap(), 3);
+
+        let stored = PlayerDatabase::select_auth(&conn).unwrap();
+        assert_eq!(stored, auth);
     }
 }

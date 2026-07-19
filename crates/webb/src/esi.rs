@@ -564,3 +564,198 @@ impl EsiManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Returns a unique temporary database path for the given test.
+    fn temp_db_path(test_name: &str) -> PathBuf {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "webb_test_{}_{}_{}.db",
+            test_name,
+            std::process::id(),
+            id
+        ))
+    }
+
+    /// Builds an EsiManager backed by a fresh temporary database.
+    fn test_manager(test_name: &str) -> (EsiManager, PathBuf) {
+        let path = temp_db_path(test_name);
+        let manager = EsiManager::new(
+            "telescope-test (test@example.com)",
+            "test-client-id",
+            "test-client-secret",
+            "http://localhost:8000/login",
+            vec!["publicData"],
+            &path,
+        );
+        (manager, path)
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn sample_character() -> Character {
+        let mut character = Character::new();
+        character.id = 90000001;
+        character.name = String::from("Test Pilot");
+        character.corp = Some(Corporation {
+            id: 98000001,
+            name: String::from("Acme Corp"),
+        });
+        character.alliance = Some(Alliance {
+            id: 99000001,
+            name: String::from("Acme Alliance"),
+        });
+        character.photo = Some(String::from(
+            "https://images.evetech.net/characters/90000001/portrait",
+        ));
+        character.last_logon = chrono::DateTime::from_timestamp(1750000000, 0).unwrap();
+        character.location = 30000001;
+        character
+    }
+
+    #[test]
+    fn new_creates_database_and_starts_empty() {
+        let (mut manager, path) = test_manager("new");
+
+        assert!(path.exists());
+        assert!(manager.characters.is_empty());
+        assert_eq!(manager.active_character, None);
+        assert!(manager.read_characters(None).unwrap().is_empty());
+        assert!(manager.read_corporation(None).unwrap().is_empty());
+        assert!(manager.read_alliance(None).unwrap().is_empty());
+
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn valid_token_is_false_without_authentication() {
+        let (manager, path) = test_manager("valid_token");
+        assert!(!manager.valid_token().await);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn corporation_write_read_update_remove() {
+        let (mut manager, path) = test_manager("corporation");
+        let corp = Corporation {
+            id: 98000001,
+            name: String::from("Acme Corp"),
+        };
+
+        // insert
+        assert_eq!(manager.write_corporation(&corp).unwrap(), 1);
+        assert_eq!(manager.read_corporation(None).unwrap(), vec![corp.clone()]);
+        assert_eq!(
+            manager.read_corporation(Some(vec![corp.id])).unwrap(),
+            vec![corp.clone()]
+        );
+
+        // update (writing an existing id keeps a single row)
+        let renamed = Corporation {
+            id: corp.id,
+            name: String::from("Renamed Corp"),
+        };
+        assert_eq!(manager.write_corporation(&renamed).unwrap(), 1);
+        assert_eq!(manager.read_corporation(None).unwrap(), vec![renamed]);
+
+        // remove
+        assert_eq!(manager.remove_corporation(Some(vec![corp.id])).unwrap(), 1);
+        assert!(manager.read_corporation(None).unwrap().is_empty());
+        assert_eq!(manager.remove_corporation(None).unwrap(), 0);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn alliance_write_read_update_remove() {
+        let (mut manager, path) = test_manager("alliance");
+        let alliance = Alliance {
+            id: 99000001,
+            name: String::from("Acme Alliance"),
+        };
+
+        // insert
+        assert_eq!(manager.write_alliance(&alliance).unwrap(), 1);
+        assert_eq!(manager.read_alliance(None).unwrap(), vec![alliance.clone()]);
+        assert_eq!(
+            manager.read_alliance(Some(vec![alliance.id])).unwrap(),
+            vec![alliance.clone()]
+        );
+
+        // update
+        let renamed = Alliance {
+            id: alliance.id,
+            name: String::from("Renamed Alliance"),
+        };
+        assert_eq!(manager.write_alliance(&renamed).unwrap(), 1);
+        assert_eq!(manager.read_alliance(None).unwrap(), vec![renamed]);
+
+        // remove
+        assert_eq!(manager.remove_alliance(Some(vec![alliance.id])).unwrap(), 1);
+        assert!(manager.read_alliance(None).unwrap().is_empty());
+        assert_eq!(manager.remove_alliance(None).unwrap(), 0);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn character_write_read_update_remove() {
+        let (mut manager, path) = test_manager("character");
+        let character = sample_character();
+
+        // insert (also persists its corporation and alliance)
+        assert_eq!(manager.write_character(&character).unwrap(), 1);
+        assert_eq!(
+            manager.read_characters(None).unwrap(),
+            vec![character.clone()]
+        );
+        assert_eq!(manager.characters.len(), 0); // read from database, not memory
+        assert_eq!(manager.read_corporation(None).unwrap().len(), 1);
+        assert_eq!(manager.read_alliance(None).unwrap().len(), 1);
+
+        // update
+        let mut renamed = character.clone();
+        renamed.name = String::from("Renamed Pilot");
+        renamed.location = 30000002;
+        assert_eq!(manager.write_character(&renamed).unwrap(), 1);
+        assert_eq!(manager.read_characters(None).unwrap(), vec![renamed]);
+
+        // remove
+        assert_eq!(
+            manager.remove_characters(Some(vec![character.id])).unwrap(),
+            1
+        );
+        assert!(manager.read_characters(None).unwrap().is_empty());
+        assert_eq!(manager.remove_characters(None).unwrap(), 0);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn character_read_by_ids_filters_results() {
+        let (mut manager, path) = test_manager("character_filter");
+        let character = sample_character();
+        manager.write_character(&character).unwrap();
+
+        assert_eq!(
+            manager.read_characters(Some(vec![character.id])).unwrap(),
+            vec![character]
+        );
+        assert!(
+            manager
+                .read_characters(Some(vec![12345]))
+                .unwrap()
+                .is_empty()
+        );
+
+        cleanup(&path);
+    }
+}

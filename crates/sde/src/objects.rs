@@ -4,7 +4,7 @@ use std::convert::{From, TryInto};
 use std::io::{Error as GenericError, ErrorKind};
 use std::ops::{Add, Div, DivAssign, Mul, MulAssign, Sub};
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct EveRegionArea {
     pub region_id: i64,
     pub name: String,
@@ -35,7 +35,7 @@ impl EveRegionArea {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct SdeLine {
     points: [SdePoint; 2],
 }
@@ -70,7 +70,7 @@ impl SdeLine {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 // This can by any object or point with its associated metadata
 /// Struct that contains coordinates to help calculate nearest point in space
 /// 3d point coordinates that it is used in:
@@ -423,7 +423,7 @@ impl Sub<&SdePoint> for SdePoint {
 }
 
 /// Abstraction for a Planet Moons. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Moon {
     /// Moon Identifier
     pub id: u32,
@@ -460,7 +460,7 @@ impl Default for Moon {
 }
 
 /// Abstraction for a Planet. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Planet {
     /// Planet identifier
     pub id: u32,
@@ -494,7 +494,7 @@ impl Default for Planet {
 }
 
 /// Abstraction for a Solar System. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct SolarSystem {
     /// Solar System identifier
     pub id: u32,
@@ -569,7 +569,7 @@ impl Default for SolarSystem {
 }
 
 /// Abstraction for a Constellation. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Constellation {
     /// Constellation Identifier
     pub id: u32,
@@ -609,7 +609,7 @@ impl Default for Constellation {
 }
 
 /// Abstraction for a Region. It store data relevant to this entity
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub struct Region {
     /// Region Identifier
     pub id: u32,
@@ -695,5 +695,363 @@ impl Default for Universe {
         puffin::profile_function!();
 
         Self::new(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------
+    // SdePoint
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn sdepoint_new_sets_coordinates() {
+        let point = SdePoint::new(10, -20, 30);
+        assert_eq!(point.x, 10);
+        assert_eq!(point.y, -20);
+        assert_eq!(point.z, 30);
+    }
+
+    #[test]
+    fn sdepoint_default_is_origin() {
+        let point = SdePoint::default();
+        assert_eq!(point.x, 0);
+        assert_eq!(point.y, 0);
+        assert_eq!(point.z, 0);
+        assert_eq!(point, SdePoint::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sdepoint_from_i64_array() {
+        let point = SdePoint::from([1, 2, 3]);
+        assert_eq!(point, SdePoint::new(1, 2, 3));
+    }
+
+    #[test]
+    fn sdepoint_from_f32_array_rounds_values() {
+        let point = SdePoint::from([1.4, 1.5, -1.5]);
+        // f32::round rounds half away from zero
+        assert_eq!(point, SdePoint::new(1, 2, -2));
+    }
+
+    #[test]
+    fn sdepoint_into_i64_array() {
+        let values: [i64; 3] = SdePoint::new(7, 8, 9).into();
+        assert_eq!(values, [7, 8, 9]);
+    }
+
+    #[test]
+    fn sdepoint_into_f64_array() {
+        let values: [f64; 3] = SdePoint::new(7, 8, 9).into();
+        assert_eq!(values, [7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn sdepoint_to_rawpoint_uses_x_and_z() {
+        let raw = SdePoint::new(11, 22, 33).to_rawpoint();
+        assert_eq!(raw.components, [11.0, 33.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_pivot_on_x() {
+        let result: [f32; 2] = SdePoint::new(0, 20, 30).try_into().unwrap();
+        assert_eq!(result, [20.0, 30.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_pivot_on_y() {
+        let result: [f32; 2] = SdePoint::new(10, 0, 30).try_into().unwrap();
+        assert_eq!(result, [10.0, 30.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_pivot_on_z() {
+        let result: [f32; 2] = SdePoint::new(10, 20, 0).try_into().unwrap();
+        assert_eq!(result, [10.0, 20.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_pair_fails_without_pivot() {
+        let result: Result<[f32; 2], GenericError> = SdePoint::new(10, 20, 30).try_into();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_trio_converts_values() {
+        let result: [f32; 3] = SdePoint::new(10, -20, 30).try_into().unwrap();
+        assert_eq!(result, [10.0, -20.0, 30.0]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_f32_trio_never_overflows() {
+        // The guard compares against `f32::MAX as i64`, and float-to-int casts
+        // saturate in Rust, so the check can never trigger: even the most
+        // extreme i64 values convert successfully.
+        let result: Result<[f32; 3], GenericError> =
+            SdePoint::new(i64::MAX, i64::MIN, 0).try_into();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_pivot_on_x() {
+        let result: [i64; 2] = SdePoint::new(0, 20, 30).try_into().unwrap();
+        assert_eq!(result, [20, 30]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_pivot_on_y() {
+        let result: [i64; 2] = SdePoint::new(10, 0, 30).try_into().unwrap();
+        assert_eq!(result, [10, 30]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_pivot_on_z() {
+        let result: [i64; 2] = SdePoint::new(10, 20, 0).try_into().unwrap();
+        assert_eq!(result, [10, 20]);
+    }
+
+    #[test]
+    fn sdepoint_try_into_i64_pair_fails_without_pivot() {
+        let result: Result<[i64; 2], GenericError> = SdePoint::new(10, 20, 30).try_into();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn sdepoint_add_owned() {
+        let sum = SdePoint::new(1, 2, 3) + SdePoint::new(10, 20, 30);
+        assert_eq!(sum, SdePoint::new(11, 22, 33));
+    }
+
+    #[test]
+    fn sdepoint_add_reference() {
+        let sum = SdePoint::new(1, 2, 3) + &SdePoint::new(-1, -2, -3);
+        assert_eq!(sum, SdePoint::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sdepoint_sub_owned() {
+        let diff = SdePoint::new(10, 20, 30) - SdePoint::new(1, 2, 3);
+        assert_eq!(diff, SdePoint::new(9, 18, 27));
+    }
+
+    #[test]
+    fn sdepoint_sub_reference() {
+        let diff = SdePoint::new(10, 20, 30) - &SdePoint::new(10, 20, 30);
+        assert_eq!(diff, SdePoint::new(0, 0, 0));
+    }
+
+    #[test]
+    fn sdepoint_mul_isize() {
+        let product = SdePoint::new(1, -2, 3) * 3isize;
+        assert_eq!(product, SdePoint::new(3, -6, 9));
+    }
+
+    #[test]
+    fn sdepoint_div_isize_truncates() {
+        let quotient = SdePoint::new(7, -7, 10) / 2isize;
+        assert_eq!(quotient, SdePoint::new(3, -3, 5));
+    }
+
+    #[test]
+    fn sdepoint_mul_assign_variants() {
+        let mut point = SdePoint::new(1, 2, 3);
+        point *= 2isize;
+        assert_eq!(point, SdePoint::new(2, 4, 6));
+        point *= 2u64;
+        assert_eq!(point, SdePoint::new(4, 8, 12));
+        point *= -1i64;
+        assert_eq!(point, SdePoint::new(-4, -8, -12));
+        point *= -1i32;
+        assert_eq!(point, SdePoint::new(4, 8, 12));
+    }
+
+    #[test]
+    fn sdepoint_mul_assign_f32_rounds_factor() {
+        let mut point = SdePoint::new(1, 1, 1);
+        point *= 2.5f32; // rounds to 3
+        assert_eq!(point, SdePoint::new(3, 3, 3));
+    }
+
+    #[test]
+    fn sdepoint_div_assign_variants() {
+        let mut point = SdePoint::new(24, 48, 96);
+        point /= 2isize;
+        assert_eq!(point, SdePoint::new(12, 24, 48));
+        point /= 2u64;
+        assert_eq!(point, SdePoint::new(6, 12, 24));
+        point /= 2i64;
+        assert_eq!(point, SdePoint::new(3, 6, 12));
+        point /= 3i32;
+        assert_eq!(point, SdePoint::new(1, 2, 4));
+    }
+
+    #[test]
+    fn sdepoint_div_assign_f32_rounds_divisor() {
+        let mut point = SdePoint::new(10, 20, 30);
+        point /= 2.4f32; // rounds to 2
+        assert_eq!(point, SdePoint::new(5, 10, 15));
+    }
+
+    // ---------------------------------------------------------------------
+    // SdeLine
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn sdeline_distance_345_triangle() {
+        let line = SdeLine::new(SdePoint::new(0, 0, 0), SdePoint::new(3, 4, 0));
+        assert_eq!(line.distance(), 5.0);
+    }
+
+    #[test]
+    fn sdeline_distance_zero_for_same_point() {
+        let line = SdeLine::new(SdePoint::new(5, 5, 5), SdePoint::new(5, 5, 5));
+        assert_eq!(line.distance(), 0.0);
+    }
+
+    #[test]
+    fn sdeline_midpoint() {
+        let line = SdeLine::new(SdePoint::new(0, 0, 0), SdePoint::new(4, 6, 8));
+        assert_eq!(line.midpoint(), SdePoint::new(2, 3, 4));
+    }
+
+    #[test]
+    fn sdeline_midpoint_truncates_odd_values() {
+        let line = SdeLine::new(SdePoint::new(0, 0, 0), SdePoint::new(3, 3, 3));
+        assert_eq!(line.midpoint(), SdePoint::new(1, 1, 1));
+    }
+
+    // ---------------------------------------------------------------------
+    // EveRegionArea
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn everegionarea_new_is_empty() {
+        let area = EveRegionArea::new();
+        assert_eq!(area.region_id, 0);
+        assert_eq!(area.name, String::new());
+        assert_eq!(area.min, SdePoint::default());
+        assert_eq!(area.max, SdePoint::default());
+        assert_eq!(area, EveRegionArea::default());
+    }
+
+    // ---------------------------------------------------------------------
+    // Moon / Planet
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn moon_new_is_zeroed() {
+        let moon = Moon::new();
+        assert_eq!(moon.id, 0);
+        assert_eq!(moon.planet, 0);
+        assert_eq!(moon.index, 0);
+        assert_eq!(moon.solar_system, 0);
+        assert_eq!(moon, Moon::default());
+    }
+
+    #[test]
+    fn planet_new_is_zeroed() {
+        let planet = Planet::new();
+        assert_eq!(planet.id, 0);
+        assert_eq!(planet.solar_system, 0);
+        assert_eq!(planet.index, 0);
+        assert_eq!(planet, Planet::default());
+    }
+
+    // ---------------------------------------------------------------------
+    // SolarSystem
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn solarsystem_new_initializes_with_factor() {
+        let system = SolarSystem::new(1000);
+        assert_eq!(system.id, 0);
+        assert_eq!(system.name, String::new());
+        assert_eq!(system.region, 0);
+        assert_eq!(system.constellation, 0);
+        assert!(system.planets.is_empty());
+        assert!(system.connections.is_empty());
+        assert_eq!(system.real_coords, SdePoint::default());
+        assert_eq!(system.projected_coords, SdePoint::default());
+        assert_eq!(system.factor, 1000);
+    }
+
+    #[test]
+    fn solarsystem_default_factor_is_one() {
+        assert_eq!(SolarSystem::default().factor, 1);
+    }
+
+    #[test]
+    fn solarsystem_coord2d_divides_by_factor() {
+        let mut system = SolarSystem::new(1000);
+        system.projected_coords.x = 2000;
+        system.real_coords.y = 4000;
+        assert_eq!(system.coord2d_to_f64(), [2.0, 4.0]);
+    }
+
+    #[test]
+    fn solarsystem_coord3d_divides_by_factor() {
+        let mut system = SolarSystem::new(1000);
+        system.projected_coords.x = 2000;
+        system.real_coords.y = 4000;
+        system.real_coords.z = 6000;
+        assert_eq!(system.coord3d_to_f64(), [2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn solarsystem_coords_use_integer_division() {
+        // Coordinates are divided as integers before being cast to f64,
+        // so any fractional part is truncated.
+        let mut system = SolarSystem::new(1000);
+        system.projected_coords.x = 1500;
+        system.real_coords.y = 2500;
+        system.real_coords.z = 3500;
+        assert_eq!(system.clone().coord2d_to_f64(), [1.0, 2.0]);
+        assert_eq!(system.coord3d_to_f64(), [1.0, 2.0, 3.0]);
+    }
+
+    // ---------------------------------------------------------------------
+    // Constellation / Region / Universe
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn constellation_new_is_empty() {
+        let constellation = Constellation::new();
+        assert_eq!(constellation.id, 0);
+        assert_eq!(constellation.name, String::new());
+        assert_eq!(constellation.region, 0);
+        assert!(constellation.solar_systems.is_empty());
+        assert_eq!(constellation.projected_coords, SdePoint::default());
+        assert_eq!(constellation, Constellation::default());
+    }
+
+    #[test]
+    fn region_new_is_empty() {
+        let region = Region::new();
+        assert_eq!(region.id, 0);
+        assert_eq!(region.name, String::new());
+        assert!(region.constellations.is_empty());
+        assert_eq!(region.projected_coords, SdePoint::default());
+        assert_eq!(region, Region::default());
+    }
+
+    #[test]
+    fn universe_new_initializes_with_factor() {
+        let universe = Universe::new(42);
+        assert!(universe.regions.is_empty());
+        assert!(universe.constellations.is_empty());
+        assert!(universe.solar_systems.is_empty());
+        assert!(universe.planets.is_empty());
+        assert!(universe.moons.is_empty());
+        assert!(universe.connections.is_empty());
+        assert_eq!(universe.factor, 42);
+    }
+
+    #[test]
+    fn universe_default_factor_is_one() {
+        assert_eq!(Universe::default().factor, 1);
     }
 }

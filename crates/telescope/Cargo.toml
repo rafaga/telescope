@@ -12,20 +12,20 @@ default = []
 puffin = ["dep:puffin", "dep:puffin_http", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
 
 [dependencies]
-eframe = { version = "0.34.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+eframe = { version = "0.35.0", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 sde = { path = "../sde/"}
 kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.0.17"}
+egui-map = { version = "0.0.19"}
 open = "5.3.2"
 webb = { path = "../webb/", default-features = false, features = []}
 chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.34.3", features = ["all_loaders"] }
+egui_extras = { version = "0.35.0", features = ["all_loaders"] }
 image = { version = "0.25.8", features = ["jpeg","png"] }
 puffin = {version = "0.20.0", optional = true, default-features = false}
 puffin_http = {version = "0.17.0", optional = true, default-features = false}
-egui_tiles = { version = "0.15.0" }
+egui_tiles = { version = "0.16.0" }
 toml = "1.1.2"
 hyper = { version = "1.7.0", features = ["server", "http1", "client"] }
 rfesi = {version = "0.50.0", default-features = false, features = ["rustls-tls", "random_state", "validate_jwt"] }
@@ -46,8 +46,8 @@ env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
 wasm-bindgen-futures = "0.4.54"
 
 [target.'cfg(not(target_os  = "windows"))'.dependencies]
-wgpu = { version="29.0.3" }
+wgpu = { version="30.0.0" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { version="29.0.3", features = ["dx12"], default-features = false }
+wgpu = { version="30.0.0", features = ["dx12"], default-features = false }
 windows = { version = "0.62.2", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation",] }

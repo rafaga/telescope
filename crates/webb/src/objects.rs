@@ -9,7 +9,7 @@ pub enum TelescopeDbError {
     NoConnection,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct AuthData {
     pub token: String,
     pub expiration: Option<DateTime<Utc>>,
@@ -35,7 +35,7 @@ impl Default for AuthData {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Character {
     pub id: i32,
     pub name: String,
@@ -164,4 +164,98 @@ pub trait BasicCatalog {
 
     fn id(&self) -> Self::Output;
     fn name(&self) -> &str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------
+    // AuthData
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn auth_data_new_is_empty() {
+        let auth = AuthData::new();
+        assert_eq!(auth.token, "");
+        assert_eq!(auth.expiration, None);
+        assert_eq!(auth.refresh_token, "");
+        assert_eq!(auth, AuthData::default());
+    }
+
+    #[test]
+    fn auth_data_clone_and_equality() {
+        let mut auth = AuthData::new();
+        auth.token = String::from("token");
+        auth.refresh_token = String::from("refresh");
+        auth.expiration = Some(Utc::now());
+
+        let cloned = auth.clone();
+        assert_eq!(auth, cloned);
+
+        let mut other = cloned.clone();
+        other.token = String::from("other");
+        assert_ne!(auth, other);
+    }
+
+    // ---------------------------------------------------------------------
+    // Character
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn character_new_is_zeroed() {
+        let character = Character::new();
+        assert_eq!(character.id, 0);
+        assert_eq!(character.name, "");
+        assert_eq!(character.last_logon, DateTime::<Utc>::default());
+        assert_eq!(character.corp, None);
+        assert_eq!(character.alliance, None);
+        assert_eq!(character.photo, None);
+        assert_eq!(character.location, 0);
+        assert_eq!(character, Character::default());
+    }
+
+    // ---------------------------------------------------------------------
+    // Corporation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn corporation_new_is_zeroed() {
+        let corp = Corporation::new();
+        assert_eq!(corp.id, 0);
+        assert_eq!(corp.name, "");
+        assert_eq!(corp, Corporation::default());
+    }
+
+    #[test]
+    fn corporation_implements_basic_catalog() {
+        let corp = Corporation {
+            id: 98000001,
+            name: String::from("Acme Corp"),
+        };
+        assert_eq!(BasicCatalog::id(&corp), 98000001);
+        assert_eq!(BasicCatalog::name(&corp), "Acme Corp");
+    }
+
+    // ---------------------------------------------------------------------
+    // Alliance
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn alliance_new_is_zeroed() {
+        let alliance = Alliance::new();
+        assert_eq!(alliance.id, 0);
+        assert_eq!(alliance.name, "");
+        assert_eq!(alliance, Alliance::default());
+    }
+
+    #[test]
+    fn alliance_implements_basic_catalog() {
+        let alliance = Alliance {
+            id: 99000001,
+            name: String::from("Acme Alliance"),
+        };
+        assert_eq!(BasicCatalog::id(&alliance), 99000001);
+        assert_eq!(BasicCatalog::name(&alliance), "Acme Alliance");
+    }
 }
