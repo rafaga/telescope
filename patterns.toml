@@ -1,0 +1,73 @@
+# Telescope pattern rules.
+#
+# Every rule in [[patterns]] is evaluated against the text payload of each
+# parsed EVE Online chat log line read from the monitored intel files.
+#
+# If this file is missing or corrupted, Telescope regenerates it with the
+# default content below; a corrupted file is backed up as patterns.toml.bak.
+# Invalid individual rules are skipped and reported in the notification log.
+#
+# Rule fields:
+#   id               (required) unique id, allowed chars: [A-Za-z0-9_-], max 64.
+#   pattern          (required) Rust regex (https://docs.rs/regex), max 1024 chars.
+#                    TOML literal strings ('...') are recommended so regex
+#                    backslashes do not need escaping.
+#   case_insensitive (optional) boolean, default false.
+#   channels         (optional) list of channel names; empty = every channel.
+#   enabled          (optional) boolean, default true.
+#   action           (optional) table, default { type = "notify" }.
+#                    - { type = "notify" }
+#                        sends the matched line to the app notification log.
+#                    - { type = "map_alert", system_group = "<group>" }
+#                        resolves the named capture group as a solar system
+#                        and highlights it on the maps. The group must exist
+#                        in the pattern.
+
+# Baseline rule: notifies every parsed intel line.
+[[patterns]]
+id = "intel_line"
+pattern = ".+"
+action = { type = "notify" }
+
+# Highlights on the maps any solar system reported in the monitored channels.
+# The pattern was derived from the 8436 real solarSystemName values in
+# assets/sde.db (mapSolarSystems) and covers 100% of them:
+#   - J\d{6}                          wormhole systems (2602)
+#   - [A-Z0-9]{1,5}-[A-Z0-9]{1,4}     nullsec-style systems: 1DQ1-A, B-R5RB,
+#                                     0IRK-R, Y-1918, J1226-0 (3712)
+#   - [A-Z]{2}\d{3}                   coded systems: AD001 (200)
+#   - [A-Z][a-z]{1,13}( ... ){0,2}    named systems, 1-3 capitalized words:
+#                                     Jita, Old Man Star, Tash-Murkon Prime (1922)
+# Keep case_insensitive = false: lowercase common words typed in chat
+# ("jita", "van") would otherwise produce false map alerts.
+[[patterns]]
+id = "system_reported"
+pattern = '\b(?P<system>J\d{6}|[A-Z0-9]{1,5}-[A-Z0-9]{1,4}|[A-Z]{2}\d{3}|[A-Z][a-z]{1,13}(?:[ -][A-Z][a-z]{1,13}){0,2})\b'
+action = { type = "map_alert", system_group = "system" }
+
+# Notifies when a "clear" report is posted.
+[[patterns]]
+id = "clear_report"
+pattern = '\b(clear|clr)\b'
+case_insensitive = true
+action = { type = "notify" }
+
+# Generic example: notify when hostiles are reported. Use the channels field
+# to restrict a rule to specific intel channels, e.g. channels = ["my-intel"].
+# Uncomment to enable.
+#
+# [[patterns]]
+# id = "hostile_report"
+# pattern = '\b(hostile|hostiles|neut|neuts|red|reds)\b'
+# case_insensitive = true
+# action = { type = "notify" }
+
+# Generic example: notify when capital/supercapital hulls or a cyno are
+# mentioned. Uncomment to enable, or set enabled = false to keep the rule
+# as a reference only.
+#
+# [[patterns]]
+# id = "capital_report"
+# pattern = '\b(titan|titans|super|supers|dread|dreads|dreadnought|carrier|carriers|fax|cyno)\b'
+# case_insensitive = true
+# action = { type = "notify" }

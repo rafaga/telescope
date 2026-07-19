@@ -13,7 +13,7 @@ use egui_extras::{Column, TableBuilder};
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use regex::RegexBuilder;
+use patterns::{ActionConfig, PatternEngine, PatternMatch};
 use sde::{SdeManager, objects::Universe};
 use settings::Settings;
 use std::thread;
@@ -36,6 +36,7 @@ use native_tools::dialog::*;
 mod data;
 mod file;
 mod messages;
+pub mod patterns;
 mod settings;
 mod tiles;
 
@@ -73,6 +74,7 @@ pub struct TelescopeApp {
     settings: Settings,
     watcher: RecommendedWatcher,
     dlg_intel_dir: Dialog,
+    pattern_engine: PatternEngine,
 }
 
 impl Default for TelescopeApp {
@@ -109,6 +111,37 @@ impl Default for TelescopeApp {
         let arc_msg_sender = Arc::new(gtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
+
+        // Compile the pattern matching engine once at startup. Rules that
+        // fail validation are reported and skipped; a missing or corrupted
+        // patterns.toml is regenerated from the embedded template.
+        let pattern_report = PatternEngine::load_or_create(Path::new("patterns.toml"));
+        for error in pattern_report.errors {
+            msgmon.spawn(Message::GenericNotification((
+                Type::Error,
+                String::from("PatternEngine"),
+                String::from("load"),
+                error.to_string(),
+            )));
+        }
+        if pattern_report.regenerated {
+            let detail = match &pattern_report.backup {
+                Some(backup_path) => format!(
+                    "patterns.toml was corrupted and has been regenerated with default content; previous file backed up as {}",
+                    backup_path.display()
+                ),
+                None => String::from(
+                    "patterns.toml was missing and has been created with default content",
+                ),
+            };
+            msgmon.spawn(Message::GenericNotification((
+                Type::Info,
+                String::from("PatternEngine"),
+                String::from("load_or_create"),
+                detail,
+            )));
+        }
+        let pattern_engine = pattern_report.engine;
 
         let intel_event_handler = IntelEventHandler::new(
             settings.get_cloned_monitored_channels(),
@@ -154,6 +187,7 @@ impl Default for TelescopeApp {
             settings,
             watcher,
             dlg_intel_dir,
+            pattern_engine,
         }
     }
 }
@@ -191,6 +225,7 @@ impl eframe::App for TelescopeApp {
             settings: _,
             watcher: _,
             dlg_intel_dir: _,
+            pattern_engine: _,
         } = self;
 
         if !self.initialized {
@@ -830,17 +865,25 @@ impl TelescopeApp {
         if let Some(log_entry) = log_files_map.get(&file_name) {
             start = log_entry.0;
         }
-        let mut _length = 0;
+
+        //the channel name is the file name prefix before the first underscore
+        let channel = file_name
+            .split_once('_')
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_default();
 
         if let Ok(mut intel_file) = File::open(path) {
-            // Seek to the start position
-            _length = start - intel_file.metadata().unwrap().len();
-            if intel_file.seek(SeekFrom::Start(start)).is_ok() {
+            let file_length = intel_file.metadata().map(|meta| meta.len()).unwrap_or(0);
+            //if the file shrank (log rotation), read it from the beginning
+            if file_length < start {
+                start = 0;
+            }
+            if file_length > start && intel_file.seek(SeekFrom::Start(start)).is_ok() {
                 // Create a reader with a fixed length
-                let mut chunk = intel_file.take(_length);
+                let mut chunk = intel_file.take(file_length - start);
                 let mut new_data = String::new();
                 if let Ok(bytes_read) = chunk.read_to_string(&mut new_data) {
-                    let _ = self.parse_intel_data(new_data);
+                    self.parse_intel_data(&channel, &new_data);
                     log_files_map.entry(file_name).and_modify(|hash_entry| {
                         hash_entry.0 = start + bytes_read as u64;
                         hash_entry.1 = Utc::now();
@@ -851,43 +894,71 @@ impl TelescopeApp {
         self.settings.set_log_files_channels(log_files_map);
     }
 
-    fn parse_intel_data(&mut self, data: String) -> std::result::Result<(), String> {
+    fn parse_intel_data(&self, channel: &str, data: &str) {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        if let Ok(set) =
-            RegexBuilder::new(r"(\[\s\d{4}\.\d{2}\.\d{2}\s\d{2}:\d{2}:\d{2}\s\]){1}(.+>)(.+)")
-                .case_insensitive(true)
-                .build()
-        {
-            data.lines()
-                .filter(|line| set.is_match(line))
-                .for_each(|intel_line| {
-                    let data_x = intel_line.to_string().clone();
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    let app_msg_tx = Arc::clone(&self.app_msg.0);
-                    thread::spawn(move || {
-                        runtime.block_on(async {
-                            #[cfg(feature = "puffin")]
-                            puffin::profile_scope!("spawned intel message data");
+        for intel_match in self.pattern_engine.evaluate(channel, data) {
+            match &intel_match.action {
+                ActionConfig::Notify => {
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Info,
+                        String::from("PatternEngine"),
+                        intel_match.rule_id.clone(),
+                        intel_match.line.to_string(),
+                    )));
+                }
+                ActionConfig::MapAlert { system_group } => {
+                    self.dispatch_map_alert(&intel_match, system_group);
+                }
+            }
+        }
+    }
 
-                            let _ = app_msg_tx
-                                .send(Message::GenericNotification((
-                                    Type::Info,
-                                    String::from("TelescopeApp"),
-                                    String::from("parse_intel_data"),
-                                    data_x,
-                                )))
-                                .await;
-                        });
-                    });
-                });
-            Ok(())
-        } else {
-            Err(String::from("Error Building Regex"))
+    fn dispatch_map_alert(&self, intel_match: &PatternMatch, system_group: &str) {
+        #[cfg(feature = "puffin")]
+        puffin::profile_function!();
+
+        let Some(system_name) = intel_match.named.get(system_group) else {
+            return;
+        };
+        //validate the captured text before using it in any query; real
+        //solar system names are at most 17 chars and may contain spaces
+        //and dashes (e.g. "Old Man Star", "Tash-Murkon Prime")
+        if system_name.is_empty()
+            || system_name.len() > 20
+            || !system_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
+        {
+            return;
+        }
+        let sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
+        match sde.get_system_id(system_name.to_lowercase()) {
+            Ok(results) => {
+                //prefer an exact name match over partial (LIKE) results
+                let found = results
+                    .iter()
+                    .find(|entry| entry.1.eq_ignore_ascii_case(system_name))
+                    .or(results.first());
+                if let Some(entry) = found {
+                    let system_id = usize::try_from(entry.0).unwrap_or(0);
+                    if system_id > 0 {
+                        let _ = self.map_msg.0.send(MapSync::SystemNotification((
+                            system_id,
+                            tokio::time::Instant::now(),
+                        )));
+                    }
+                }
+            }
+            Err(t_error) => {
+                self.task_msg.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("PatternEngine"),
+                    String::from("dispatch_map_alert"),
+                    t_error.to_string(),
+                )));
+            }
         }
     }
 
