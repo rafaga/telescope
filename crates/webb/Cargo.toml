@@ -36,5 +36,8 @@ windows = { version = "0.62.2", features = ["System_Profile","Storage_Streams"]}
 objc2-io-kit = { version = "0.3.2", features = ["libc"], default-features = false}
 objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
 
+[dev-dependencies]
+mockall = "0.15.0"
+
 # WASM specific dependencies:
 [target.'cfg(wasm)'.dependencies]

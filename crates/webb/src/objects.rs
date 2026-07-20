@@ -16,6 +16,41 @@ pub struct AuthData {
     pub refresh_token: String,
 }
 
+/// OAuth token set returned by CCP after a successful authentication or
+/// token refresh.
+#[derive(Clone, PartialEq, Debug)]
+pub struct TokenSet {
+    pub token: String,
+    pub refresh_token: String,
+    pub expiration: Option<DateTime<Utc>>,
+}
+
+/// Data needed to complete the requested authentication flow.
+#[derive(Clone, PartialEq, Debug)]
+pub struct AuthorizeInfo {
+    /// URL to open in the browser to initiate the authentication.
+    pub url: String,
+    /// PKCE verifier needed to authenticate the received code, when the
+    /// `native-auth-flow` feature is enabled.
+    pub pkce_verifier: Option<String>,
+}
+
+/// Claims extracted from the JWT issued by CCP after authentication.
+#[derive(Clone, PartialEq, Debug)]
+pub struct AuthClaims {
+    /// Character name.
+    pub name: String,
+    /// Subject claim, with the format `CHARACTER:EVE:<character_id>`.
+    pub sub: String,
+}
+
+/// Public information of a character as reported by ESI.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CharacterPublicInfo {
+    pub corporation_id: i32,
+    pub alliance_id: Option<i32>,
+}
+
 impl AuthData {
     pub fn new() -> Self {
         #[cfg(feature = "puffin")]

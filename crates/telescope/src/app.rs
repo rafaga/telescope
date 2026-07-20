@@ -670,8 +670,8 @@ impl TelescopeApp {
                                     ui.label("These are used to emit notifications when something it is close to your location.");
                                     ui.horizontal(|ui|{
                                         if ui.button("➕ Add").clicked() {
-                                            let auth_info = self.esi.esi.get_authorize_url().unwrap();
-                                            match open::that(auth_info.authorization_url) {
+                                            let auth_info = self.esi.get_authorize_url().unwrap();
+                                            match open::that(auth_info.url) {
                                                 Ok(()) => {
                                                     self.task_auth.spawn();
                                                 }
@@ -966,7 +966,7 @@ impl TelescopeApp {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
-        let auth_info = self.esi.esi.get_authorize_url().unwrap();
+        let auth_info = self.esi.get_authorize_url().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build();
@@ -1217,7 +1217,7 @@ impl TelescopeApp {
                 puffin::profile_scope!("spawned watchdog");
 
                 let mut character_ids = vec![];
-                if let Err(t_error) = t_esi.esi.update_spec().await {
+                if let Err(t_error) = t_esi.update_spec().await {
                     let _ = app_sender
                         .send(Message::GenericNotification((
                             Type::Error,
