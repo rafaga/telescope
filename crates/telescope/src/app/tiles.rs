@@ -123,7 +123,7 @@ impl TabPane for UniversePane {
         if let Ok(msg) = received_data {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
-                    let _result = self.map.notify(system_id, time.into());
+                    self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -260,7 +260,7 @@ impl TabPane for RegionPane {
         if let Ok(msg) = received_data {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
-                    let _result = self.map.notify(system_id, time.into());
+                    self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
