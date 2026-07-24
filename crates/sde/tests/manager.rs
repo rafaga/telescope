@@ -9,10 +9,12 @@
 //! - 3 planets and 1 moon
 //! - 3 abstract systems (2 in Region Alpha, 1 in Region Beta)
 
+use egui_map::map::objects::{MapSegment, RawPoint};
 use rusqlite::Connection;
 use sde::SdeManager;
 use sde::objects::SdePoint;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Factor used by most tests: coordinates are divided by 100.
@@ -187,11 +189,20 @@ fn system_connections_are_added_bidirectionally() {
 fn connections_returns_lines_with_scaled_inverted_coords() {
     let fixture = Fixture::new("connections");
     let manager = fixture.manager();
-    let lines = manager.get_connections().unwrap();
+    let vec_segments = manager.get_connections().unwrap();
+    let rtree_segments = rstar::RTree::bulk_load(vec_segments);
+    let test_segment = MapSegment::new(
+        Rc::from("conn-1-2"),
+        RawPoint::new(-10.0, -30.0),
+        RawPoint::new(10.0, 30.0),
+    );
 
-    assert_eq!(lines.len(), 2);
-    let line = &lines["conn-1-2"];
-    assert_eq!(line.id, Some(String::from("conn-1-2")));
+    assert_eq!(rtree_segments.size(), 2);
+    let line = rtree_segments
+        .iter()
+        .find(|item| item.id == Rc::from("conn-1-2"))
+        .expect("conn-1-2 not found");
+    assert_eq!(line.id, test_segment.id);
     // point1 = system A (30000001): (x, z) scaled and inverted
     assert_eq!(line.raw_line.points[0].components, [-10.0, -30.0]);
     // point2 = system B (30000002)
@@ -426,16 +437,21 @@ fn abstract_system_connections_respect_region_filter() {
 fn abstract_connections_without_filter_returns_all_lines() {
     let fixture = Fixture::new("abstract_conn_all");
     let manager = fixture.manager();
-    let lines = manager.get_abstract_connections(vec![]).unwrap();
-
-    assert_eq!(lines.len(), 2);
-    let line = &lines["conn-1-2"];
-    assert_eq!(line.id, Some(String::from("conn-1-2")));
-    assert_eq!(line.raw_line.points[0].components, [0.1, 0.2]);
-    assert_eq!(line.raw_line.points[1].components, [0.3, 0.4]);
-    let line = &lines["conn-2-3"];
-    assert_eq!(line.raw_line.points[0].components, [0.3, 0.4]);
-    assert_eq!(line.raw_line.points[1].components, [0.5, 0.6]);
+    let vec_lines = manager.get_abstract_connections(vec![]).unwrap();
+    let lines = rstar::RTree::bulk_load(vec_lines);
+    assert_eq!(lines.size(), 2);
+    let found = lines
+        .iter()
+        .find(|item| item.id == Rc::from("conn-1-2"))
+        .expect("conn-1-2 not found");
+    assert_eq!(found.raw_line.points[0], RawPoint::new(0.1, 0.2));
+    assert_eq!(found.raw_line.points[1], RawPoint::new(0.3, 0.4));
+    let found = lines
+        .iter()
+        .find(|item| item.id == Rc::from("conn-2-3"))
+        .expect("conn-2-3 not found");
+    assert_eq!(found.raw_line.points[0], RawPoint::new(0.3, 0.4));
+    assert_eq!(found.raw_line.points[1], RawPoint::new(0.5, 0.6));
 }
 
 #[test]
@@ -443,10 +459,16 @@ fn abstract_connections_filtered_by_region_requires_both_ends_inside() {
     let fixture = Fixture::new("abstract_conn_region");
     let manager = fixture.manager();
     let lines = manager.get_abstract_connections(vec![10000001]).unwrap();
-
     // conn-2-3 spans Region Alpha and Region Beta, so it is excluded
     assert_eq!(lines.len(), 1);
-    assert!(lines.contains_key("conn-1-2"));
+    let segment_test = MapSegment::new(
+        Rc::from("conn-1-2"),
+        RawPoint::new(0.1, 0.2),
+        RawPoint::new(0.3, 0.4),
+    );
+    assert!(lines.iter().any(|line| line.id == segment_test.id
+        && line.raw_line.points[0].components == segment_test.raw_line.points[0].components
+        && line.raw_line.points[1].components == segment_test.raw_line.points[1].components));
 }
 
 // -------------------------------------------------------------------------

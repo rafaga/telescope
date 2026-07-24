@@ -7,7 +7,7 @@
 //!
 //!
 use crate::objects::{Constellation, Moon, Planet, Region, SdePoint, SolarSystem, Universe};
-use egui_map::map::objects::{MapLine, MapPoint, RawPoint};
+use egui_map::map::objects::{MapPoint, MapSegment, RawPoint};
 use objects::EveRegionArea;
 use rusqlite::ToSql;
 use rusqlite::{Connection, Error, OpenFlags, params, vtab::array};
@@ -246,7 +246,7 @@ impl<'a> SdeManager<'a> {
         Ok(None)
     }
 
-    pub fn get_connections(&self) -> Result<HashMap<String, MapLine>, Error> {
+    pub fn get_connections(&self) -> Result<Vec<MapSegment>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -260,7 +260,7 @@ impl<'a> SdeManager<'a> {
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query([])?;
-        let mut hmap: HashMap<String, MapLine> = HashMap::new();
+        let mut results = vec![];
         while let Some(row) = rows.next()? {
             let mut point1 = RawPoint::from([
                 row.get::<usize, f32>(1)? as i64,
@@ -281,12 +281,11 @@ impl<'a> SdeManager<'a> {
                 point1 *= -1;
                 point2 *= -1;
             }
-            let mut line = MapLine::new(point1, point2);
-            line.id = Some(row.get::<usize, String>(0)?);
             let id = row.get::<usize, String>(0)?;
-            hmap.entry(id).or_insert(line);
+            let segment = MapSegment::new(Rc::from(id), point1, point2);
+            results.push(segment);
         }
-        Ok(hmap)
+        Ok(results)
     }
 
     pub fn get_abstract_systems(
@@ -376,10 +375,7 @@ impl<'a> SdeManager<'a> {
         Ok(hash_map)
     }
 
-    pub fn get_abstract_connections(
-        &self,
-        regions: Vec<u32>,
-    ) -> Result<HashMap<String, MapLine>, Error> {
+    pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<Vec<MapSegment>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -408,7 +404,7 @@ impl<'a> SdeManager<'a> {
             rows = statement.query([id_list.clone(), id_list])?;
         }
 
-        let mut hash_map: HashMap<String, MapLine> = HashMap::new();
+        let mut results = vec![];
         while let Some(row) = rows.next()? {
             let mut point1 = RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
             let mut point2 = RawPoint::new(row.get::<usize, f32>(3)?, row.get::<usize, f32>(4)?);
@@ -419,12 +415,11 @@ impl<'a> SdeManager<'a> {
                 point1 *= self.factor.abs();
                 point2 *= self.factor.abs();
             }
-            let mut line = MapLine::new(point1, point2);
-            line.id = Some(row.get::<usize, String>(0)?);
-            hash_map.entry(row.get::<usize, String>(0)?).or_insert(line);
+            let name = row.get::<usize, String>(0)?;
+            let line = MapSegment::new(Rc::from(name), point1, point2);
+            results.push(line);
         }
-
-        Ok(hash_map)
+        Ok(results)
     }
 
     fn get_standart_connection(&self) -> Result<Connection, Error> {
