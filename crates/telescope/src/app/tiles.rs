@@ -72,14 +72,10 @@ impl UniversePane {
 
         let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(points) = t_sde.get_systempoints() {
-            //we get connections
-            if let Ok(hashmap) = t_sde.get_system_connections(points) {
-                self.map.add_hashmap_points(hashmap);
-            }
-
-            if let Ok(hash_conns) = t_sde.get_connections() {
-                self.map.add_lines(hash_conns);
-            }
+            self.map.add_points(points);
+        }
+        if let Ok(hash_conns) = t_sde.get_connections() {
+            self.map.add_lines(hash_conns);
         }
         let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(region_areas) = t_sde.get_region_coordinates() {
@@ -224,11 +220,7 @@ impl RegionPane {
 
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
             Ok(points) => {
-                if let Ok(points) =
-                    t_sde.get_abstract_system_connections(points, vec![self.region_id as u32])
-                {
-                    self.map.add_hashmap_points(points);
-                }
+                self.map.add_points(points);
                 if let Ok(lines) = t_sde.get_abstract_connections(vec![self.region_id as u32]) {
                     self.map.add_lines(lines);
                 }

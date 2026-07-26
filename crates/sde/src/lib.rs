@@ -67,81 +67,57 @@ impl<'a> SdeManager<'a> {
 
     /// Function to get all the K-Space solar systems coordinates from the SDE including data to build a map
     /// and search for basic stuff
-    pub fn get_systempoints(&self) -> Result<HashMap<usize, MapPoint>, Error> {
+    pub fn get_systempoints(&self) -> Result<Vec<MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
-        let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
+        //let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
+        let mut results = Vec::new();
         // centerX, centerY, centerZ,
-        let mut query = String::from("SELECT SolarSystemId, projX, projY, projZ, SolarSystemName ");
-        query += " FROM mapSolarSystems WHERE SolarSystemId BETWEEN ?1 AND ?2;";
+        let mut query = String::from(
+            "SELECT sos.SolarSystemId, sos.projX, sos.projY, sos.projZ, sos.SolarSystemName, msc.systemConnectionId ",
+        );
+        query += " FROM mapSolarSystems AS sos RIGHT OUTER JOIN mapSystemConnections AS msc";
+        query += " ON (msc.systemA = sos.SolarSystemId OR msc.systemB = sos.SolarSystemId)";
+        query += " WHERE sos.SolarSystemId BETWEEN ?1 AND ?2 ORDER BY sos.SolarSystemId ASC";
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows = statement.query(params![30000000, 30999999])?;
-        let mut min_id = isize::MAX;
+        let mut last_id = isize::MIN;
+        let mut point = MapPoint::new(0, RawPoint::default());
         while let Some(row) = rows.next()? {
-            let id = row.get(0)?;
-            if id < min_id {
-                min_id = id;
-            }
-            let x = row.get::<usize, f32>(1)?;
-            let y = row.get::<usize, f32>(2)?;
-            let z = row.get::<usize, f32>(3)?;
+            let id = row.get::<usize, isize>(0)?;
+            if id != last_id {
+                let x = row.get::<usize, f32>(1)?;
+                let y = row.get::<usize, f32>(2)?;
+                let z = row.get::<usize, f32>(3)?;
 
-            //we get the coordinate point and multiply with the adjust factor
-            let mut coord = SdePoint::from([x as i64, y as i64, z as i64]);
-            if self.factor > 1 {
-                coord /= self.factor;
-            } else if self.factor < -1 {
-                coord *= self.factor.abs();
+                //we get the coordinate point and multiply with the adjust factor
+                let mut coord = SdePoint::from([x as i64, y as i64, z as i64]);
+                if self.factor > 1 {
+                    coord /= self.factor;
+                } else if self.factor < -1 {
+                    coord *= self.factor.abs();
+                }
+                if self.invert_coordinates {
+                    coord *= -1;
+                }
+                point = MapPoint::new(id.try_into().unwrap(), coord.to_rawpoint());
+                point.set_name(row.get::<usize, String>(4)?);
+                //hash_map.insert(id.try_into().unwrap(), point);
             }
-            if self.invert_coordinates {
-                coord *= -1;
+            point.connections.push(row.get::<usize, String>(5)?);
+            if id != last_id {
+                if last_id != isize::MIN {
+                    results.push(point.clone());
+                }
+                last_id = id;
             }
-            let mut point = MapPoint::new(id.try_into().unwrap(), coord.to_rawpoint());
-            point.set_name(row.get::<usize, String>(4)?);
-            hash_map.insert(id.try_into().unwrap(), point);
         }
-        Ok(hash_map)
-    }
-
-    pub fn get_system_connections(
-        &self,
-        mut hash_map: HashMap<usize, MapPoint>,
-    ) -> Result<HashMap<usize, MapPoint>, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
-        let connection = self.get_standart_connection()?;
-
-        let mut query = String::from("SELECT systemConnectionId, ");
-        query += "systemA, systemB FROM mapSystemConnections;";
-
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            // Optimization: to avoid printing twice the same line, we are just skipping coordinates
-            // for SolarSystems that has an Id less than the current one printed. with the exception
-            // of the lowest ID
-            let id = row.get::<usize, String>(0)?;
-            let system_a = row.get::<usize, isize>(1)?;
-            let system_b = row.get::<usize, isize>(2)?;
-
-            //we compare the current system with the first, if not the same then we add the coordinates to hashmap
-
-            hash_map
-                .entry(system_a.cast_unsigned())
-                .and_modify(|point| {
-                    point.connections.push(id.clone());
-                });
-
-            hash_map
-                .entry(system_b.cast_unsigned())
-                .and_modify(|point| {
-                    point.connections.push(id);
-                });
+        if last_id != isize::MIN {
+            results.push(point.clone());
         }
-        Ok(hash_map)
+        Ok(results)
     }
 
     pub fn get_region_coordinates(&self) -> Result<Vec<EveRegionArea>, Error> {
@@ -288,69 +264,25 @@ impl<'a> SdeManager<'a> {
         Ok(results)
     }
 
-    pub fn get_abstract_systems(
-        &self,
-        regions: Vec<u32>,
-    ) -> Result<HashMap<usize, MapPoint>, Error> {
+    pub fn get_abstract_systems(&self, regions: Vec<u32>) -> Result<Vec<MapPoint>, Error> {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
         let connection = self.get_standart_connection()?;
 
-        let mut query = String::from("SELECT mas.solarSystemId, ");
-        query += "mas.x, mas.y, mas.regionId FROM mapAbstractSystems AS mas ";
-        if !regions.is_empty() {
-            query += "WHERE regionId IN rarray(?1);";
-        }
-
-        let mut statement = connection.prepare(query.as_str())?;
-        let mut rows;
-        if regions.is_empty() {
-            rows = statement.query([])?;
-        } else {
-            let id_list: array::Array = Rc::new(
-                regions
-                    .into_iter()
-                    .map(rusqlite::types::Value::from)
-                    .collect::<Vec<rusqlite::types::Value>>(),
-            );
-            rows = statement.query([id_list])?;
-        }
-        let mut hash_map: HashMap<usize, MapPoint> = HashMap::new();
-        while let Some(row) = rows.next()? {
-            let mut raw_point = RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
-            if self.factor > 1 {
-                raw_point /= self.factor;
-            } else if self.factor < -1 {
-                raw_point *= self.factor.abs();
-            }
-            let point = MapPoint::new(row.get::<usize, isize>(0)?.try_into().unwrap(), raw_point);
-            hash_map.insert(row.get::<usize, isize>(0)?.try_into().unwrap(), point);
-        }
-        Ok(hash_map)
-    }
-
-    pub fn get_abstract_system_connections(
-        &self,
-        mut hash_map: HashMap<usize, MapPoint>,
-        regions: Vec<u32>,
-    ) -> Result<HashMap<usize, MapPoint>, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
-        let connection = self.get_standart_connection()?;
-
-        let mut query =
-            String::from("SELECT mas.solarSystemId, mas.regionId, msc.systemConnectionId, ");
-        query += " mss.solarSystemName ";
-        query += " FROM mapAbstractSystems AS mas INNER JOIN mapSystemConnections AS msc ";
+        let mut query = String::from("SELECT mas.solarSystemId, mas.x, mas.y, mas.regionId, ");
+        query += "  msc.systemConnectionId, mss.solarSystemName ";
+        query += " FROM mapAbstractSystems AS mas RIGHT OUTER JOIN mapSystemConnections AS msc ";
         query += " ON(msc.systemA = mas.solarSystemId OR msc.systemB = mas.solarSystemId) ";
         query += " INNER JOIN mapSolarSystems AS mss ON (mss.solarSystemId = mas.solarSystemId) ";
         if !regions.is_empty() {
-            query += " WHERE mas.regionId IN rarray(?1);";
+            query += " WHERE mas.regionId IN rarray(?1) ";
         }
+        query += " ORDER BY mas.solarsystemId ASC;";
 
         let mut statement = connection.prepare(query.as_str())?;
         let mut rows;
+        let mut result = Vec::new();
+
         if regions.is_empty() {
             rows = statement.query([])?;
         } else {
@@ -362,17 +294,32 @@ impl<'a> SdeManager<'a> {
             );
             rows = statement.query([id_list])?;
         }
+
+        let mut current_index = isize::MIN;
+        let mut point = MapPoint::new(0usize, RawPoint::default());
         while let Some(row) = rows.next()? {
-            hash_map
-                .entry(row.get::<usize, isize>(0)?.try_into().unwrap())
-                .and_modify(|map_point| {
-                    map_point.set_name(row.get::<usize, String>(3).unwrap());
-                    if let Ok(hash) = row.get::<usize, String>(2) {
-                        map_point.connections.push(hash);
-                    }
-                });
+            let id = row.get::<usize, isize>(0)?;
+            if current_index != id {
+                if current_index != isize::MIN {
+                    result.push(point.clone());
+                }
+                current_index = id;
+                let mut raw_point =
+                    RawPoint::new(row.get::<usize, f32>(1)?, row.get::<usize, f32>(2)?);
+                if self.factor > 1 {
+                    raw_point /= self.factor;
+                } else if self.factor < -1 {
+                    raw_point *= self.factor.abs();
+                }
+                point = MapPoint::new(id.try_into().unwrap(), raw_point);
+                point.set_name(row.get::<usize, String>(5)?);
+            }
+            point.connections.push(row.get::<usize, String>(4)?);
         }
-        Ok(hash_map)
+        if current_index != isize::MIN {
+            result.push(point.clone());
+        }
+        Ok(result)
     }
 
     pub fn get_abstract_connections(&self, regions: Vec<u32>) -> Result<Vec<MapSegment>, Error> {
