@@ -88,6 +88,10 @@ impl<'a> SdeManager<'a> {
         while let Some(row) = rows.next()? {
             let id = row.get::<usize, isize>(0)?;
             if id != last_id {
+                if last_id != isize::MIN {
+                    results.push(point.clone());
+                }
+                last_id = id;
                 let x = row.get::<usize, f32>(1)?;
                 let y = row.get::<usize, f32>(2)?;
                 let z = row.get::<usize, f32>(3)?;
@@ -107,12 +111,7 @@ impl<'a> SdeManager<'a> {
                 //hash_map.insert(id.try_into().unwrap(), point);
             }
             point.connections.push(row.get::<usize, String>(5)?);
-            if id != last_id {
-                if last_id != isize::MIN {
-                    results.push(point.clone());
-                }
-                last_id = id;
-            }
+
         }
         if last_id != isize::MIN {
             results.push(point.clone());
