@@ -7,12 +7,14 @@ use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
     objects::{
-        ContextMenuManager, MapLabel, MapPoint, MapSettings, NodeTemplate, VisibilitySetting,
+        ContextMenuManager, MapLabel, MapPoint, MapSegment, MapSettings, NodeTemplate,
+        VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
+use sde::objects::{ProjectedAxis, SdePoint, SdeSegment};
 use std::collections::HashMap;
 use std::time::Instant;
 use std::{
@@ -23,6 +25,61 @@ use std::{
 use tokio::sync::broadcast::Receiver;
 
 use super::messages::MessageSpawner;
+
+/// Bridges a single `sde` map point (native type, as of the `objects`
+/// rewrite `sde` no longer depends on `egui-map` at all) into `egui-map`'s
+/// own `MapPoint`, which the widget actually renders. Factored out of
+/// [`sde_points_to_map`] so the per-point conversion logic has one home.
+fn sde_point_to_map(id: usize, point: SdePoint) -> MapPoint {
+    // `get_systems`/`get_abstract_systems` only ever fill the first two
+    // components (`coords[2]` stays `0.0`), so dropping Z is the correct
+    // 2D projection here.
+    let coords = point.to_2d(ProjectedAxis::Z);
+    let mut map_point = MapPoint::new(id, coords);
+    if let Some(name) = point.name {
+        map_point.set_name(name);
+    }
+    // `MapPoint::connections` is now `Vec<(usize, usize)>`, matching
+    // `SdePoint::connections` exactly, so this is a plain move — no more
+    // `format!`-based id synthesis needed.
+    map_point.connections = point.connections;
+    map_point
+}
+
+/// `HashMap<usize, SdePoint>` -> `HashMap<usize, MapPoint>`, for
+/// [`Map::add_hashmap_points`] (used by both `UniversePane` and
+/// `RegionPane`). Single pass; `collect()` into a `HashMap` from a
+/// `HashMap`'s `into_iter()` already reserves capacity up front from the
+/// exact `size_hint`, so there's no repeated reallocation as entries are
+/// inserted.
+fn sde_points_to_map(points: HashMap<usize, SdePoint>) -> HashMap<usize, MapPoint> {
+    points
+        .into_iter()
+        .map(|(id, point)| (id, sde_point_to_map(id, point)))
+        .collect()
+}
+
+/// Same idea as [`sde_point_to_map`], for `get_connections`/
+/// `get_abstract_connections`. `MapSegment::id` is now `(usize, usize)`,
+/// same as `SdeSegment::id` and the `HashMap` key itself, so `id` carries
+/// straight across with no `Rc<str>`/`format!` synthesis.
+fn sde_segment_to_map(id: (usize, usize), segment: SdeSegment) -> MapSegment {
+    let point1 = [segment.point1[0] as f32, segment.point1[1] as f32];
+    let point2 = [segment.point2[0] as f32, segment.point2[1] as f32];
+    MapSegment::new(id, point1, point2)
+}
+
+/// `HashMap<(usize, usize), SdeSegment>` -> `HashMap<(usize, usize),
+/// MapSegment>`, for [`Map::add_hashmap_lines`] (used by both
+/// `UniversePane` and `RegionPane`).
+fn sde_segments_to_map(
+    segments: HashMap<(usize, usize), SdeSegment>,
+) -> HashMap<(usize, usize), MapSegment> {
+    segments
+        .into_iter()
+        .map(|(id, segment)| (id, sde_segment_to_map(id, segment)))
+        .collect()
+}
 
 // use eframe::egui::include_image;
 pub trait TabPane {
@@ -72,10 +129,10 @@ impl UniversePane {
 
         let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(points) = t_sde.get_systems() {
-            self.map.add_hashmap_points(points);
+            self.map.add_hashmap_points(sde_points_to_map(points));
         }
         if let Ok(hash_conns) = t_sde.get_connections() {
-            self.map.add_hashmap_lines(hash_conns);
+            self.map.add_hashmap_lines(sde_segments_to_map(hash_conns));
         }
         let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(region_areas) = t_sde.get_region_coordinates() {
@@ -148,7 +205,10 @@ impl TabPane for UniversePane {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
                 match t_sde.get_system_coords(message.0) {
                     Ok(Some(coords)) => {
-                        self.map.set_pos(coords.try_into().unwrap());
+                        // Real 3D coords (centerX/Y/Z); the map plane is X/Z
+                        // (drop Y), matching the projection every other 2D point
+                        // on this map already uses.
+                        self.map.set_pos(coords.to_2d(ProjectedAxis::Y));
                     }
                     Ok(None) => {
                         let mut msg = String::from("System with Id ");
@@ -221,9 +281,9 @@ impl RegionPane {
 
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
             Ok(points) => {
-                self.map.add_points(points);
+                self.map.add_hashmap_points(sde_points_to_map(points));
                 if let Ok(lines) = t_sde.get_abstract_connections(vec![self.region_id as u32]) {
-                    self.map.add_lines(lines);
+                    self.map.add_hashmap_lines(sde_segments_to_map(lines));
                 }
             }
             Err(t_err) => {
