@@ -72,9 +72,9 @@ pub(crate) struct Settings {
     mapping: Mapping,
     channels: Channels,
     #[serde(skip)]
-    factor: i64,
+    factor: f64,
     #[serde(skip)]
-    region_factor: i64,
+    region_factor: f64,
     #[serde(skip)]
     saved: bool,
 }
@@ -91,8 +91,8 @@ impl TryFrom<PathBuf> for Settings {
                 match toml::from_str::<Settings>(&toml_data) {
                     Ok(mut toml_manager) => {
                         toml_manager.paths.settings = path.to_path_buf();
-                        toml_manager.factor = 50000000000000;
-                        toml_manager.region_factor = -2;
+                        toml_manager.factor = 50000000000000.0;
+                        toml_manager.region_factor = -2.0;
                         toml_manager.saved = false;
                         Ok(toml_manager)
                     }
@@ -114,8 +114,8 @@ impl Default for Settings {
         let mut config = Self {
             paths: FilePaths::default(),
             mapping: Mapping::default(),
-            factor: 50000000000000,
-            region_factor: -2,
+            factor: 50000000000000.0,
+            region_factor: -2.0,
             saved: false,
             channels: Channels {
                 available: HashMap::new(),
@@ -278,11 +278,11 @@ impl Settings {
         self.saved = false;
     }
 
-    pub(crate) fn get_factor(&self) -> i64 {
+    pub(crate) fn get_factor(&self) -> f64 {
         self.factor
     }
 
-    pub(crate) fn get_region_factor(&self) -> i64 {
+    pub(crate) fn get_region_factor(&self) -> f64 {
         self.region_factor
     }
 

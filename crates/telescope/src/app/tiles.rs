@@ -37,7 +37,7 @@ pub struct UniversePane {
     mapsync_reciever: Receiver<MapSync>,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
-    factor: i64,
+    factor: f64,
     task_msg: Arc<MessageSpawner>,
     //tpool: Rc<ThreadPool>,
 }
@@ -46,7 +46,7 @@ impl UniversePane {
     pub fn new(
         receiver: Receiver<MapSync>,
         path: PathBuf,
-        factor: i64,
+        factor: f64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
         #[cfg(feature = "puffin")]
@@ -71,11 +71,11 @@ impl UniversePane {
         puffin::profile_function!();
 
         let t_sde = SdeManager::new(&self.path, self.factor);
-        if let Ok(points) = t_sde.get_systempoints() {
-            self.map.add_points(points);
+        if let Ok(points) = t_sde.get_systems() {
+            self.map.add_hashmap_points(points);
         }
         if let Ok(hash_conns) = t_sde.get_connections() {
-            self.map.add_lines(hash_conns);
+            self.map.add_hashmap_lines(hash_conns);
         }
         let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(region_areas) = t_sde.get_region_coordinates() {
@@ -83,9 +83,10 @@ impl UniversePane {
             for region in region_areas {
                 let mut label = MapLabel::new();
                 label.text = region.name;
+                // TODO: Check if there is no overflow risk at this specific cast f64 -> f32
                 label.center = Pos2::new(
-                    (region.min.x / self.factor) as f32,
-                    (region.min.y / self.factor) as f32,
+                    (region.min.x() / self.factor) as f32,
+                    (region.min.y() / self.factor) as f32,
                 );
                 labels.push(label);
             }
@@ -178,7 +179,7 @@ pub struct RegionPane {
     map: Map,
     mapsync_reciever: Receiver<MapSync>,
     path: PathBuf,
-    factor: i64,
+    factor: f64,
     region_id: usize,
     tab_name: String,
     task_msg: Arc<MessageSpawner>,
@@ -188,7 +189,7 @@ impl RegionPane {
     pub fn new(
         receiver: Receiver<MapSync>,
         path: PathBuf,
-        factor: i64,
+        factor: f64,
         region_id: usize,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
@@ -362,14 +363,14 @@ pub struct TreeBehavior {
     gap_width: f32,
     task_msg: Arc<MessageSpawner>,
     search_text: String,
-    factor: i64,
+    factor: f64,
     path: PathBuf,
     search_regions: Vec<usize>,
     pub tile_data: HashMap<usize, TileData>,
 }
 
 impl TreeBehavior {
-    pub fn new(task_msg: Arc<MessageSpawner>, factor: i64, path: PathBuf) -> Self {
+    pub fn new(task_msg: Arc<MessageSpawner>, factor: f64, path: PathBuf) -> Self {
         #[cfg(feature = "puffin")]
         puffin::profile_function!();
 
@@ -381,6 +382,7 @@ impl TreeBehavior {
                 prune_single_child_tabs: false,
                 all_panes_must_have_tabs: false,
                 join_nested_linear_containers: true,
+                flatten_tabs_in_tabs: true,
             },
             tab_bar_height: 24.0,
             gap_width: 2.0,

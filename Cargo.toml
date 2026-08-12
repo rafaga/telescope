@@ -2,10 +2,8 @@
 resolver = "2"
 members = [
     "crates/telescope",
-    "crates/sde",
     "crates/webb",
     "crates/native_tools",
-    # "tests/*",
 ]
 
 [workspace.package]
@@ -38,4 +36,5 @@ opt-level = 0
 # egui = { git = "https://github.com/emilk/egui", branch = "master" }
 # eframe = { git = "https://github.com/emilk/egui", branch = "master" }
 # egui-map = { git = "https://github.com/rafaga/egui-map", branch = "test" }
-# egui-map = { path = "../egui-map" }
+egui-map = { path = "../egui-map" }
+sde = { path = "../sde" }
