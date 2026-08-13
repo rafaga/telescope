@@ -19,6 +19,8 @@ const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub fn get_macos_unique_id() -> Result<String, String> {
+    profiling::function_scope!();
+
     // macOS unique ID
     unsafe {
         // 1. Obtener el entry del IORegistry para la plataforma
@@ -54,6 +56,8 @@ pub fn get_macos_unique_id() -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 pub fn get_linux_unique_id() -> Result<String, String> {
+    profiling::function_scope!();
+
     // zbus usa el reactor de Tokio (feature "tokio"), así que la cadena
     // de fallback se conduce dentro de un runtime current-thread creado
     // en un hilo aparte (igual que en dialog.rs). El hilo evita pánico
@@ -80,6 +84,8 @@ pub fn get_linux_unique_id() -> Result<String, String> {
 
 #[cfg(target_os = "windows")]
 pub fn get_windows_unique_id() -> Result<String, String> {
+    profiling::function_scope!();
+
     // this get a unique ID for the user, and its used to generate a unique key
     // for the database encryption
     match SystemIdentification::GetSystemIdForPublisher() {

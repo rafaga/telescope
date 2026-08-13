@@ -25,6 +25,7 @@ impl Service<Request<IncomingBody>> for AuthService2 {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
+        profiling::function_scope!();
 
         let res = match (req.method(), req.uri().path()) {
             (&Method::GET, "/login") => {
@@ -49,6 +50,7 @@ impl Service<Request<IncomingBody>> for AuthService2 {
                         let atx = Arc::clone(&self.tx);
                         std::thread::spawn(move || {
                             rt.block_on(async {
+                                profiling::scope!("http service request response");
 
                                 let _res = atx.send(message).await;
                             });

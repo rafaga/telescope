@@ -752,6 +752,7 @@ impl PatternEngine {
     /// assert_eq!(matches[0].named["system"], "1DQ1-A");
     /// ```
     pub fn evaluate(&self, channel: &str, data: &str) -> Vec<PatternMatch> {
+        profiling::function_scope!();
 
         let mut results = Vec::new();
         for raw_line in data.lines() {

@@ -53,6 +53,7 @@ pub struct CharacterPublicInfo {
 
 impl AuthData {
     pub fn new() -> Self {
+        profiling::function_scope!();
 
         AuthData {
             token: String::new(),
@@ -81,6 +82,7 @@ pub struct Character {
 
 impl Character {
     pub fn new() -> Self {
+        profiling::function_scope!();
 
         Character {
             id: 0,
@@ -108,6 +110,7 @@ pub struct Corporation {
 
 impl Corporation {
     pub fn new() -> Self {
+        profiling::function_scope!();
 
         Corporation {
             id: 0,
@@ -118,6 +121,7 @@ impl Corporation {
 
 impl Default for Corporation {
     fn default() -> Self {
+        profiling::function_scope!();
 
         Self::new()
     }
@@ -127,11 +131,13 @@ impl BasicCatalog for Corporation {
     type Output = i32;
 
     fn id(&self) -> Self::Output {
+        profiling::function_scope!();
 
         self.id
     }
 
     fn name(&self) -> &str {
+        profiling::function_scope!();
 
         &self.name
     }
@@ -145,6 +151,7 @@ pub struct Alliance {
 
 impl Alliance {
     pub fn new() -> Self {
+        profiling::function_scope!();
 
         Alliance {
             id: 0,
@@ -155,6 +162,7 @@ impl Alliance {
 
 impl Default for Alliance {
     fn default() -> Self {
+        profiling::function_scope!();
 
         Self::new()
     }
@@ -164,11 +172,13 @@ impl BasicCatalog for Alliance {
     type Output = i32;
 
     fn id(&self) -> Self::Output {
+        profiling::function_scope!();
 
         self.id
     }
 
     fn name(&self) -> &str {
+        profiling::function_scope!();
 
         &self.name
     }

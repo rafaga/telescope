@@ -9,6 +9,7 @@ pub struct AppData<'a> {
 
 impl<'a> AppData<'a> {
     pub fn new() -> Self {
+        profiling::function_scope!();
 
         AppData {
             scope: vec![

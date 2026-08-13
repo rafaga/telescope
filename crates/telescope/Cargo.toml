@@ -7,6 +7,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy):
+# `cargo run --features profile-with-tracy`, then open the Tracy desktop app and
+# connect (it auto-discovers the running process on the local network).
+profile-with-tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
+
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 sde = { version = "0.2.0" }
@@ -29,6 +35,8 @@ notify = { version = "8.2.0", default-features = false, features = ["macos_kqueu
 directories = "6.0.0"
 regex = "1.12.1"
 native_tools = { path = "../native_tools/"}
+profiling = "1.0"
+tracy-client = { version = "0.18", optional = true }
 
 
 # native:

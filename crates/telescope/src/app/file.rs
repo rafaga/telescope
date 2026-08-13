@@ -33,6 +33,7 @@ impl EventHandler for IntelEventHandler {
                                     .build()
                                     .unwrap();
                                 runtime.block_on(async {
+                                    profiling::scope!("spawned Auth success message");
 
                                     let _ = app_sender_file
                                         .send(Message::IntelFileChanged(file_name.clone()))
@@ -82,6 +83,7 @@ impl EventHandler for IntelEventHandler {
 
 impl IntelEventHandler {
     pub fn new(channels: Arc<Vec<String>>, app_sender: Arc<Sender<Message>>) -> Self {
+        profiling::function_scope!();
         Self {
             app_msg: app_sender,
             channels,
