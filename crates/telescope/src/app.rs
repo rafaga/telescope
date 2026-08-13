@@ -254,15 +254,15 @@ impl eframe::App for TelescopeApp {
             }
 
             let startup_regions = self.settings.get_startup_regions().clone();
-            for counter in &startup_regions {
-                if regions.contains(&(startup_regions[*counter] as u32)) {
+            for region  in startup_regions {
+                if regions.contains(&(region as u32) ){
                     self.behavior
                         .tile_data
-                        .entry(startup_regions[*counter])
+                        .entry(region)
                         .and_modify(|z_region| {
                             z_region.show_on_startup = true;
                         });
-                    self.create_new_regional_pane(startup_regions[*counter]);
+                    self.create_new_regional_pane(region);
                 }
             }
 
