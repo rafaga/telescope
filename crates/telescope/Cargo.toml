@@ -7,10 +7,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-default = []
-puffin = ["dep:puffin", "dep:puffin_http", "eframe/__screenshot", "egui-map/puffin", "webb/puffin"]
-
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 sde = { version = "0.2.0" }
@@ -23,8 +19,6 @@ chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.36.1", features = ["all_loaders"] }
 image = { version = "0.25.8", features = ["jpeg","png"] }
-puffin = {version = "0.20.0", optional = true, default-features = false}
-puffin_http = {version = "0.17.0", optional = true, default-features = false}
 egui_tiles = { version = "0.17.0" }
 toml = "1.1.2"
 hyper = { version = "1.7.0", features = ["server", "http1", "client"] }

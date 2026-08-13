@@ -79,8 +79,6 @@ pub struct TelescopeApp {
 
 impl Default for TelescopeApp {
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let mut settings = Settings::default();
         if settings.get_settings().exists() {
@@ -200,8 +198,6 @@ impl eframe::App for TelescopeApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let Self {
             initialized: _,
@@ -229,8 +225,6 @@ impl eframe::App for TelescopeApp {
         } = self;
 
         if !self.initialized {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("telescope_init");
 
             egui_extras::install_image_loaders(ui.ctx());
 
@@ -334,8 +328,6 @@ impl eframe::App for TelescopeApp {
         }
 
         egui::CentralPanel::default().show(ui, |ui| {
-            #[cfg(feature = "puffin")]
-            puffin::profile_scope!("inserting map");
             if let Some(tree) = &mut self.tree {
                 let mut rect = ui.available_size_before_wrap();
                 rect.y -= 100.0;
@@ -375,8 +367,6 @@ impl eframe::App for TelescopeApp {
 
 impl TelescopeApp {
     fn event_manager(&mut self) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         while let Ok(message) = self.app_msg.1.try_recv() {
             match message {
@@ -413,8 +403,6 @@ impl TelescopeApp {
                                 .unwrap();
                             let app_msg_tx = Arc::clone(&self.app_msg.0);
                             runtime.block_on(async {
-                                #[cfg(feature = "puffin")]
-                                puffin::profile_scope!("spawned intel message data");
                                 let _ = app_msg_tx
                                     .send(Message::GenericNotification((
                                         Type::Error,
@@ -434,8 +422,6 @@ impl TelescopeApp {
     }
 
     fn open_about_window(&mut self, ctx: &egui::Context) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         egui::Window::new("About Telescope")
             .fixed_size((400.0, 200.0))
@@ -462,8 +448,6 @@ impl TelescopeApp {
     }
 
     fn open_settings_window(&mut self, ctx: &egui::Context) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         egui::Window::new("Settings")
         .movable(true)
@@ -547,8 +531,6 @@ impl TelescopeApp {
                                             self.dlg_intel_dir.open_file_dialog(move |result| {
                                                 if let DialogResult::Ok(path) = result {
                                                     runtime.block_on(async {
-                                                        #[cfg(feature = "puffin")]
-                                                        puffin::profile_scope!("spawned intel message data");
                                                         let _ = app_msg_tx
                                                             .send(Message::UpdateIntelDirectory(path))
                                                             .await;
@@ -837,8 +819,6 @@ impl TelescopeApp {
                             .unwrap();
                         let app_msg_tx = Arc::clone(&self.app_msg.0);
                         runtime.block_on(async {
-                            #[cfg(feature = "puffin")]
-                            puffin::profile_scope!("spawned intel message data");
                             let _ = app_msg_tx
                                 .send(Message::GenericNotification((Type::Error,String::from("TelescopeApp"),String::from("open_settings_window"),e.to_string())))
                                 .await;
@@ -853,8 +833,6 @@ impl TelescopeApp {
     }
 
     fn load_intel_file(&mut self, file_name: String) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let path = self.settings.get_intel();
         let path = &path.join(file_name.as_str());
@@ -895,8 +873,6 @@ impl TelescopeApp {
     }
 
     fn parse_intel_data(&self, channel: &str, data: &str) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         for intel_match in self.pattern_engine.evaluate(channel, data) {
             match &intel_match.action {
@@ -916,8 +892,6 @@ impl TelescopeApp {
     }
 
     fn dispatch_map_alert(&self, intel_match: &PatternMatch, system_group: &str) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let Some(system_name) = intel_match.named.get(system_group) else {
             return;
@@ -963,8 +937,6 @@ impl TelescopeApp {
     }
 
     fn update_character_into_database(&mut self, response_data: (String, String)) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let auth_info = self.esi.get_authorize_url().unwrap();
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1009,8 +981,6 @@ impl TelescopeApp {
     }
 
     fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let full_time = chrono::Local::now().time().to_string();
         let time = full_time.split_at(12);
@@ -1072,8 +1042,6 @@ impl TelescopeApp {
     }
 
     fn create_new_regional_pane(&mut self, region_id: usize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
@@ -1096,8 +1064,6 @@ impl TelescopeApp {
     }
 
     fn show_abstract_map(&mut self, region_id: usize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         self.behavior
             .tile_data
@@ -1113,8 +1079,6 @@ impl TelescopeApp {
 
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
@@ -1150,8 +1114,6 @@ impl TelescopeApp {
         region_id: Option<usize>,
         task_msg: Arc<MessageSpawner>,
     ) -> Box<dyn TabPane> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let pane: Box<dyn TabPane> = if let Some(region) = region_id {
             Box::new(RegionPane::new(receiver, path, factor, region, task_msg))
@@ -1162,8 +1124,6 @@ impl TelescopeApp {
     }
 
     fn hide_abstract_map(&mut self, region_id: usize) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         if let Some(tile_id) = self
             .behavior
@@ -1183,8 +1143,6 @@ impl TelescopeApp {
     }
 
     fn create_tree(&self) -> Tree<Box<dyn TabPane>> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let mut tiles = Tiles::default();
         let id = tiles.insert_pane(Self::generate_pane(
@@ -1200,8 +1158,6 @@ impl TelescopeApp {
     }
 
     pub fn start_watchdog(&mut self, character_id: Vec<usize>) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1213,8 +1169,6 @@ impl TelescopeApp {
         let mut t_esi = self.esi.clone();
         thread::spawn(move || {
             runtime.block_on(async {
-                #[cfg(feature = "puffin")]
-                puffin::profile_scope!("spawned watchdog");
 
                 let mut character_ids = vec![];
                 if let Err(t_error) = t_esi.update_spec().await {
@@ -1348,8 +1302,6 @@ impl TelescopeApp {
     }
 
     fn open_debug_menu(&mut self, ctx: &egui::Context) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         egui::Window::new("Debug Menu")
             .fixed_size((400.0, 600.0))
@@ -1494,8 +1446,6 @@ impl TelescopeApp {
     }
 
     fn update_player_location(&mut self, player_id: i32, solar_system_id: i32) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         for index in 0..self.esi.characters.len() {
             if self.esi.characters[index].id == player_id {

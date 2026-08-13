@@ -9,8 +9,6 @@ pub(crate) struct PlayerDatabase {}
 
 impl PlayerDatabase {
     pub(crate) fn create_database(conn: &Connection) -> Result<bool, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         //Character Public Data
         let mut query =
@@ -48,8 +46,6 @@ impl PlayerDatabase {
         conn: &Connection,
         ids: Vec<i32>,
     ) -> Result<Vec<Character>, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let mut result = Vec::new();
         let mut query = String::from(
@@ -95,8 +91,6 @@ impl PlayerDatabase {
         conn: &Connection,
         character: &Character,
     ) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
         let mut query = String::from("UPDATE char SET name = :name, corporation = :corp,");
         if character.alliance.is_some() {
             query += " alliance = :alliance,";
@@ -122,8 +116,6 @@ impl PlayerDatabase {
     }
 
     pub(crate) fn select_auth(conn: &Connection) -> Result<AuthData, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let values = vec![
             String::from("token"),
@@ -161,8 +153,6 @@ impl PlayerDatabase {
     }
 
     pub(crate) fn insert_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let mut data: Vec<(String, String)> = Vec::new();
         let mut query = String::from("INSERT INTO metadata (id,value)");
@@ -188,8 +178,6 @@ impl PlayerDatabase {
     }
 
     pub(crate) fn update_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let query = String::from("UPDATE metadata SET value = ?1 WHERE id = ?2;");
         let mut data: Vec<(String, String)> = Vec::new();
@@ -214,8 +202,6 @@ impl PlayerDatabase {
     }
 
     pub(crate) fn insert_character(conn: &Connection, player: &Character) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         /*let mut query = String::from("INSERT INTO char (id,");
         query += "name,corporation,alliance,portrait,lastLogon,location) VALUES (?,?,?,?,?,?,?)";
@@ -278,8 +264,6 @@ impl PlayerDatabase {
     }
 
     fn repeat_vars(count: usize) -> String {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         assert_ne!(count, 0);
         let mut s = "?,".repeat(count);
@@ -289,15 +273,11 @@ impl PlayerDatabase {
     }
 
     pub(crate) fn migrate_database() -> Result<bool, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
         // TODO: migration database schema goes here
         Ok(true)
     }
 
     pub(crate) fn delete_characters(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::delete_general(conn, "char", ids)
     }
@@ -307,8 +287,6 @@ impl PlayerDatabase {
         conn: &Connection,
         ids: Vec<i32>,
     ) -> Result<Vec<Corporation>, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let mut result = Vec::new();
         let mut query = String::from("SELECT id,name FROM corp");
@@ -332,8 +310,6 @@ impl PlayerDatabase {
         conn: &Connection,
         corp: &Corporation,
     ) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::update_catalog(conn, "corp", corp)
     }
@@ -342,15 +318,11 @@ impl PlayerDatabase {
         conn: &Connection,
         corp: &Corporation,
     ) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::insert_catalog(conn, "corp", corp)
     }
 
     pub(crate) fn delete_corporation(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::delete_general(conn, "corp", ids)
     }
@@ -360,8 +332,6 @@ impl PlayerDatabase {
         conn: &Connection,
         ids: Vec<i32>,
     ) -> Result<Vec<Alliance>, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         let mut result = Vec::new();
         let mut query = String::from("SELECT id,name FROM alliance");
@@ -382,29 +352,21 @@ impl PlayerDatabase {
     }
 
     pub(crate) fn update_alliance(conn: &Connection, ally: &Alliance) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::update_catalog(conn, "alliance", ally)
     }
 
     pub(crate) fn insert_alliance(conn: &Connection, ally: &Alliance) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::insert_catalog(conn, "alliance", ally)
     }
     pub(crate) fn delete_alliance(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         PlayerDatabase::delete_general(conn, "alliance", ids)
     }
 
     // function to delete values
     fn delete_general(conn: &Connection, table: &str, ids: Vec<i32>) -> Result<usize, Error> {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!(table);
 
         if !ids.is_empty() {
             let vars = PlayerDatabase::repeat_vars(ids.len());
@@ -429,8 +391,6 @@ impl PlayerDatabase {
     where
         <B as BasicCatalog>::Output: ToSql,
     {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!(table);
 
         let query = format!("INSERT INTO {} (id,name) VALUES (?,?);", table);
         let mut statement = conn.prepare(&query)?;
@@ -448,8 +408,6 @@ impl PlayerDatabase {
     where
         <B as BasicCatalog>::Output: ToSql,
     {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!(table);
 
         let query = format!("UPDATE {} SET name = ? WHERE id = ?;", table);
         let mut statement = conn.prepare(&query)?;

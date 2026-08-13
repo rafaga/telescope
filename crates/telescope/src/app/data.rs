@@ -9,8 +9,6 @@ pub struct AppData<'a> {
 
 impl<'a> AppData<'a> {
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
 
         AppData {
             scope: vec![
