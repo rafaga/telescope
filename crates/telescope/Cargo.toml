@@ -39,17 +39,22 @@ directories = "6.0.0"
 regex = "1.12.1"
 native_tools = { path = "../native_tools/"}
 tracing = "0.1"
+# Bridges `log`-based diagnostics from dependencies (hyper, notify, wgpu,
+# rfesi, ...) into `tracing`, so nothing that used to go through `log` is
+# lost now that neither `env_logger` (native) nor `eframe::WebLogger` (web)
+# own the `log` sink anymore.
+tracing-log = "0.2"
 
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing-subscriber = "0.3.20"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tracing-tracy = { version = "0.11", optional = true }
-env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.54"
+tracing-wasm = "0.2"
 
 [target.'cfg(not(target_os  = "windows"))'.dependencies]
 wgpu = { version="30.0.0" }
