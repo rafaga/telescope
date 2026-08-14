@@ -100,14 +100,13 @@ pub struct UniversePane {
 }
 
 impl UniversePane {
+    #[tracing::instrument(skip(receiver, task_msg))]
     pub fn new(
         receiver: Receiver<MapSync>,
         path: PathBuf,
         factor: f64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
-        profiling::function_scope!();
-
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -122,9 +121,8 @@ impl UniversePane {
         object
     }
 
+    #[tracing::instrument(skip(self))]
     fn generate_data(&mut self) {
-        profiling::function_scope!();
-
         let t_sde = SdeManager::new(&self.path, self.factor);
         if let Ok(points) = t_sde.get_systems() {
             self.map.add_hashmap_points(sde_points_to_map(points));
@@ -151,23 +149,20 @@ impl UniversePane {
 }
 
 impl TabPane for UniversePane {
+    #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
-        profiling::function_scope!();
-
         self.event_manager();
         ui.add(&mut self.map);
         UiResponse::None
     }
 
+    #[tracing::instrument(skip(self))]
     fn get_title(&self) -> WidgetText {
-        profiling::function_scope!();
-
         "Universe".into()
     }
 
+    #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
-        profiling::function_scope!();
-
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
@@ -191,9 +186,8 @@ impl TabPane for UniversePane {
         }
     }
 
+    #[tracing::instrument(skip(self, message))]
     fn center_on_target(&mut self, message: (usize, Target)) {
-        profiling::function_scope!();
-
         match message.1 {
             Target::System => {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
@@ -240,6 +234,7 @@ pub struct RegionPane {
 }
 
 impl RegionPane {
+    #[tracing::instrument(skip(receiver, task_msg))]
     pub fn new(
         receiver: Receiver<MapSync>,
         path: PathBuf,
@@ -247,8 +242,6 @@ impl RegionPane {
         region_id: usize,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
-        profiling::function_scope!();
-
         let mut object = Self {
             map: Map::new(),
             mapsync_reciever: receiver,
@@ -266,9 +259,8 @@ impl RegionPane {
         object
     }
 
+    #[tracing::instrument(skip(self))]
     fn generate_data(&mut self) {
-        profiling::function_scope!();
-
         let t_sde = SdeManager::new(&self.path, self.factor);
 
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
@@ -297,9 +289,8 @@ impl RegionPane {
 }
 
 impl TabPane for RegionPane {
+    #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
-        profiling::function_scope!();
-
         let received_data = self.mapsync_reciever.try_recv();
         if let Ok(msg) = received_data {
             match msg {
@@ -323,23 +314,20 @@ impl TabPane for RegionPane {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn get_title(&self) -> WidgetText {
-        profiling::function_scope!();
-
         self.tab_name.clone().into()
     }
 
+    #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
-        profiling::function_scope!();
-
         self.event_manager();
         ui.add(&mut self.map);
         UiResponse::None
     }
 
+    #[tracing::instrument(skip(self, message))]
     fn center_on_target(&mut self, message: (usize, Target)) {
-        profiling::function_scope!();
-
         match message.1 {
             Target::System => {
                 self.map.set_pos_from_nodeid(message.0);
@@ -357,9 +345,8 @@ pub struct TileData {
 }
 
 impl TileData {
+    #[tracing::instrument]
     pub fn new(name: String, show_on_startup: bool) -> Self {
-        profiling::function_scope!();
-
         Self {
             tile_id: None,
             name,
@@ -368,33 +355,28 @@ impl TileData {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn set_visible(&mut self, value: bool) {
-        profiling::function_scope!();
-
         self.visible = value;
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_visible(&self) -> bool {
-        profiling::function_scope!();
-
         self.visible
     }
 
+    #[tracing::instrument(skip(self, value))]
     pub fn set_tile_id(&mut self, value: Option<TileId>) {
-        profiling::function_scope!();
-
         self.tile_id = value;
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_tile_id(&self) -> Option<TileId> {
-        profiling::function_scope!();
-
         self.tile_id
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn get_name(&self) -> String {
-        profiling::function_scope!();
-
         self.name.clone()
     }
 }
@@ -412,9 +394,8 @@ pub struct TreeBehavior {
 }
 
 impl TreeBehavior {
+    #[tracing::instrument(skip(task_msg))]
     pub fn new(task_msg: Arc<MessageSpawner>, factor: f64, path: PathBuf) -> Self {
-        profiling::function_scope!();
-
         Self {
             simplification_options: SimplificationOptions {
                 prune_empty_containers: true,
@@ -436,9 +417,8 @@ impl TreeBehavior {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     fn toggle_regions(&mut self, region_id: usize) {
-        profiling::function_scope!();
-
         let visible = self.tile_data.get_mut(&region_id).unwrap().get_visible();
         let tile_id = self.tile_data.get_mut(&region_id).unwrap().get_tile_id();
         //let ttx = Arc::clone(&self.generic_sender);
@@ -455,9 +435,8 @@ impl TreeBehavior {
 }
 
 impl TreeBehavior {
+    #[tracing::instrument(skip_all)]
     fn on_close_tab(&self, tile_id: TileId, button_response: Response) {
-        profiling::function_scope!();
-
         if button_response.clicked() {
             for tile in self.tile_data.iter() {
                 if tile.1.get_tile_id() == Some(tile_id) {
@@ -484,6 +463,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         view.ui(ui)
     }
 
+    #[tracing::instrument(skip_all)]
     fn tab_ui(
         &mut self,
         tiles: &mut Tiles<Box<dyn TabPane>>,
@@ -492,8 +472,6 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         tile_id: TileId,
         tab_state: &TabState,
     ) -> eframe::egui::Response {
-        profiling::function_scope!();
-
         let text = self.tab_title_for_tile(tiles, tile_id);
         let str_text = text.text().to_string().clone();
         let font_id = TextStyle::Button.resolve(ui.style());
@@ -580,12 +558,12 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         self.on_tab_button(tiles, tile_id, response)
     }
 
+    #[tracing::instrument(skip_all)]
     fn tab_title_for_pane(&mut self, view: &Box<dyn TabPane>) -> WidgetText {
-        profiling::function_scope!();
-
         view.get_title()
     }
 
+    #[tracing::instrument(skip_all)]
     fn top_bar_right_ui(
         &mut self,
         _tiles: &Tiles<Box<dyn TabPane>>,
@@ -594,8 +572,6 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         _tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
-        profiling::function_scope!();
-
         ui.add_space(1.5);
         ui.menu_button("➕", |ui| {
             let mut _data: Vec<usize> = Vec::new();
@@ -652,21 +628,18 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     // ---
     // Settings:
 
+    #[tracing::instrument(skip_all)]
     fn tab_bar_height(&self, _style: &Style) -> f32 {
-        profiling::function_scope!();
-
         self.tab_bar_height
     }
 
+    #[tracing::instrument(skip_all)]
     fn gap_width(&self, _style: &Style) -> f32 {
-        profiling::function_scope!();
-
         self.gap_width
     }
 
+    #[tracing::instrument(skip(self))]
     fn simplification_options(&self) -> SimplificationOptions {
-        profiling::function_scope!();
-
         self.simplification_options
     }
 }
@@ -674,17 +647,15 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
 struct ContextMenu {}
 
 impl ContextMenu {
+    #[tracing::instrument]
     fn new() -> Self {
-        profiling::function_scope!();
-
         Self {}
     }
 }
 
 impl ContextMenuManager for ContextMenu {
+    #[tracing::instrument(skip(self, ui))]
     fn ui(&self, ui: &mut Ui) {
-        profiling::function_scope!();
-
         if ui.button("set beacon").clicked() {
             ui.close();
         }
@@ -698,17 +669,15 @@ impl ContextMenuManager for ContextMenu {
 struct Template {}
 
 impl Template {
+    #[tracing::instrument]
     fn new() -> Self {
-        profiling::function_scope!();
-
         Self {}
     }
 }
 
 impl NodeTemplate for Template {
+    #[tracing::instrument(skip(self, ui))]
     fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
-        profiling::function_scope!();
-
         let mut shapes = Vec::new();
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
         let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
@@ -741,9 +710,8 @@ impl NodeTemplate for Template {
         ui.painter().extend(shapes);
     }
 
+    #[tracing::instrument(skip(self, ui))]
     fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
-        profiling::function_scope!();
-
         let mut shapes = Vec::new();
         let rect = Rect::from_center_size(viewport_point, Vec2::new(94.0 * zoom, 39.0 * zoom));
         let color = if ui.visuals().dark_mode {
@@ -760,9 +728,8 @@ impl NodeTemplate for Template {
         ui.painter().extend(shapes);
     }
 
+    #[tracing::instrument(skip(self, ui))]
     fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
-        profiling::function_scope!();
-
         let mut shapes = Vec::new();
         let led_position = Pos2::new(
             viewport_point.x + (45.0 * zoom),
@@ -803,6 +770,7 @@ impl NodeTemplate for Template {
         ui.painter().extend(shapes);
     }
 
+    #[tracing::instrument(skip(self, ui))]
     fn notification_ui(
         &self,
         ui: &mut Ui,
@@ -811,8 +779,6 @@ impl NodeTemplate for Template {
         initial_time: Instant,
         color: Color32,
     ) -> bool {
-        profiling::function_scope!();
-
         let mut shapes = Vec::new();
         let current_instant = Instant::now();
         let time_diff = current_instant.duration_since(initial_time);

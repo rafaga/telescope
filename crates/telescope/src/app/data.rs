@@ -8,9 +8,8 @@ pub struct AppData<'a> {
 }
 
 impl<'a> AppData<'a> {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        profiling::function_scope!();
-
         AppData {
             scope: vec![
                 "publicData",

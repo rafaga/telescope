@@ -60,9 +60,8 @@ pub struct MessageSpawner {
 }
 
 impl MessageSpawner {
+    #[tracing::instrument(skip(sender))]
     pub fn new(sender: Arc<mpsc::Sender<Message>>) -> Self {
-        profiling::function_scope!();
-
         // Set up a channel for communicating.
         // Build the runtime for the new thread.
         //
@@ -73,9 +72,8 @@ impl MessageSpawner {
         Self { spawn: sender }
     }
 
+    #[tracing::instrument(skip(self, msg))]
     pub fn spawn(&self, msg: Message) {
-        profiling::function_scope!();
-
         if self.spawn.blocking_send(msg).is_err() {
             panic!("The shared runtime has shut down.");
         }
@@ -100,7 +98,7 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         .build()
                         .unwrap();
                     runtime.block_on(async {
-                        profiling::scope!("spawned Auth success message");
+                        let _span = tracing::info_span!("spawned Auth success message").entered();
 
                         while let Some(result) = arx.recv().await {
                             let _send_result = stx.send(Message::EsiAuthSuccess(result)).await;
@@ -142,9 +140,8 @@ pub struct AuthSpawner {
 }
 
 impl AuthSpawner {
+    #[tracing::instrument(skip(msg_tx))]
     pub fn new(msg_tx: Arc<mpsc::Sender<Message>>) -> Self {
-        profiling::function_scope!();
-
         // Set up a channel for communicating.
         let (send, mut recv) = mpsc::channel(3);
         let arc_send = Arc::new(send);
@@ -159,7 +156,7 @@ impl AuthSpawner {
         let cloned_msg_sender = Arc::clone(&msg_tx);
         std::thread::spawn(move || {
             rt.block_on(async move {
-                profiling::scope!("spawned auth handler");
+                let _span = tracing::info_span!("spawned auth handler").entered();
 
                 while let Some(time) = recv.recv().await {
                     let cloned_msg_sender = Arc::clone(&cloned_msg_sender);
@@ -175,9 +172,8 @@ impl AuthSpawner {
         obj
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn spawn(&self) {
-        profiling::function_scope!();
-
         if self.spawn.blocking_send(60).is_err() {
             panic!("The shared runtime has shut down.");
         }
