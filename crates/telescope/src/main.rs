@@ -4,17 +4,28 @@
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    // Start the Tracy client before any `profiling::scope!`/`function_scope!`
-    // call runs anywhere in the process (sde, egui-map, webb, native_tools and
-    // telescope itself all share the same `profiling` instrumentation).
-    // Bound to `_tracy_client` (not `_`) so it stays alive for the whole
-    // process instead of being dropped immediately; open the Tracy desktop
-    // app to connect (it auto-discovers the running process).
+    // Wire up `tracing` for Tracy before any span/event runs anywhere in
+    // the process (sde, egui-map, webb, native_tools and telescope itself
+    // all share this same instrumentation). `TracyLayer::default()` starts
+    // the shared `tracy_client::Client` itself (`Client::start()` is
+    // idempotent); open the Tracy desktop app to connect, it
+    // auto-discovers the running process.
+    //
+    // MIGRATION IN PROGRESS (see Cargo.toml's `profile-with-tracy`
+    // comment): `profiling`'s own tracy backend is still enabled by this
+    // same feature for any `profiling::function_scope!()`/`scope!()` call
+    // not yet migrated to `#[tracing::instrument]`/`tracing::span!` -- it
+    // shares this same Tracy client, so nothing goes dark mid-migration.
     #[cfg(feature = "profile-with-tracy")]
-    let _tracy_client = tracy_client::Client::start();
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
+        )
+        .expect("setting the global tracing subscriber");
+    }
 
     // Log to stdout (if you run with `RUST_LOG=debug`).
-    //tracing_subscriber::fmt::init();
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
     let native_options = eframe::NativeOptions {

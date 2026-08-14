@@ -11,7 +11,20 @@ license.workspace = true
 # Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy):
 # `cargo run --features profile-with-tracy`, then open the Tracy desktop app and
 # connect (it auto-discovers the running process on the local network).
-profile-with-tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
+#
+# MIGRATION IN PROGRESS (profiling -> tracing + tracing-tracy, see the
+# project's numbered `t0N`/`w0N`/`n0N` patches): this still also enables
+# `profiling`'s own tracy backend, for any `profiling::function_scope!()`
+# call site not yet migrated to `#[tracing::instrument]` (here, or in
+# `webb`/`native_tools`/`sde`/`egui-map`). Both mechanisms share the same
+# underlying `tracy_client::Client` (`Client::start()` is idempotent), so
+# nothing stops reporting to Tracy mid-migration. The `profiling`-related
+# entries here will be dropped once every call site is migrated.
+profile-with-tracy = [
+    "profiling/profile-with-tracy",
+    "dep:tracy-client",
+    "dep:tracing-tracy",
+]
 
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
@@ -36,12 +49,14 @@ directories = "6.0.0"
 regex = "1.12.1"
 native_tools = { path = "../native_tools/"}
 profiling = "1.0"
+tracing = "0.1"
 tracy-client = { version = "0.18", optional = true }
 
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-subscriber = "0.3.20"
+tracing-tracy = { version = "0.11", optional = true }
 env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
 
 # web:

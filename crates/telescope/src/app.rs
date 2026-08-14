@@ -283,7 +283,7 @@ impl eframe::App for TelescopeApp {
         // Tip: a good default choice is to just keep the `CentralPanel`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
-        #[cfg(not(target_arch = "wasm32"))] // no File->Quit on web pages!
+        #[cfg(not(target_arch = "wasm32"))] // no top panel on web pages
         egui::Panel::top("top_panel").show(ui, |ui| {
             //egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
