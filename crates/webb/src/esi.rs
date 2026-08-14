@@ -216,9 +216,8 @@ pub struct EsiManagerCore<T: EsiApi> {
 pub type EsiManager = EsiManagerCore<LiveEsiApi>;
 
 impl<T: EsiApi> EsiManagerCore<T> {
+    #[tracing::instrument(skip(self))]
     pub(crate) fn get_standard_connection(&self) -> Result<Connection, Error> {
-        profiling::function_scope!();
-
         let mut flags = OpenFlags::default();
         flags.set(OpenFlags::SQLITE_OPEN_NO_MUTEX, false);
         flags.set(OpenFlags::SQLITE_OPEN_FULL_MUTEX, true);
@@ -316,9 +315,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     // Alliance
+    #[tracing::instrument(skip(self))]
     pub fn write_alliance(&mut self, alliance: &Alliance) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let conn = self.get_standard_connection().unwrap();
 
         let players = PlayerDatabase::select_alliance(&conn, vec![alliance.id])?;
@@ -330,12 +328,11 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(rows)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn read_alliance(
         &mut self,
         alliance_vec: Option<Vec<i32>>,
     ) -> Result<Vec<Alliance>, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -351,9 +348,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(result)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn remove_alliance(&mut self, alliance_vec: Option<Vec<i32>>) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -370,9 +366,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     // Corporation
+    #[tracing::instrument(skip(self))]
     pub fn write_corporation(&mut self, corp: &Corporation) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -389,12 +384,11 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(rows)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn read_corporation(
         &mut self,
         corporation_vec: Option<Vec<i32>>,
     ) -> Result<Vec<Corporation>, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -410,12 +404,11 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(result)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn remove_corporation(
         &mut self,
         corporation_vec: Option<Vec<i32>>,
     ) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -432,9 +425,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     //Characters
+    #[tracing::instrument(skip(self))]
     pub fn write_character(&mut self, char: &Character) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -461,9 +453,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(rows)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn read_characters(&mut self, char_vec: Option<Vec<i32>>) -> Result<Vec<Character>, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -480,9 +471,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(result)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn remove_characters(&mut self, char_vec: Option<Vec<i32>>) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -500,9 +490,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
 
     /// Shared constructor: initializes the local database (creating it when
     /// missing) and loads the stored characters and authentication data.
+    #[tracing::instrument(skip(api))]
     fn build(api: T, database_path: &Path) -> Self {
-        profiling::function_scope!();
-
         let mut obj = EsiManagerCore {
             api,
             auth: AuthData::new(),
@@ -542,22 +531,19 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     /// Returns the SSO authorization URL to start the OAuth flow.
+    #[tracing::instrument(skip(self))]
     pub fn get_authorize_url(&self) -> Result<AuthorizeInfo, String> {
-        profiling::function_scope!();
-
         self.api.authorize_url()
     }
 
     /// Refreshes the OAuth metadata document from the SSO server.
+    #[tracing::instrument(skip(self))]
     pub async fn update_spec(&mut self) -> Result<(), String> {
-        profiling::function_scope!();
-
         self.api.update_spec().await
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn get_location(&mut self, player_id: i32) -> Result<i32, String> {
-        profiling::function_scope!();
-
         if !self.valid_token().await {
             return Err(String::from("Invalid Token"));
         }
@@ -565,9 +551,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
         self.api.get_location(player_id).await
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn valid_token(&self) -> bool {
-        profiling::function_scope!();
-
         let mut result = false;
         if !self.api.has_token_state() {
             return result;
@@ -586,9 +571,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn refresh_token(&mut self) -> Result<usize, String> {
-        profiling::function_scope!();
-
         let tokens = self
             .api
             .refresh_access_token(&self.auth.refresh_token)
@@ -605,9 +589,8 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     #[tokio::main(flavor = "current_thread")]
+    #[tracing::instrument]
     pub async fn get_player_photo(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        profiling::function_scope!();
-
         let https = HttpsConnector::new();
         let client = Client::builder(TokioExecutor::new()).build::<_, Empty<Bytes>>(https);
 
@@ -631,13 +614,12 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(photo)
     }
 
+    #[tracing::instrument(skip_all)]
     pub async fn auth_user(
         &mut self,
         _auth_info: AuthorizeInfo,
         oauth_data: (String, String),
     ) -> Result<Option<Character>, Box<dyn std::error::Error + Send + Sync>> {
-        profiling::function_scope!();
-
         #[cfg(not(feature = "native-auth-flow"))]
         let verifier = None;
 
@@ -692,6 +674,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
 }
 
 impl EsiManagerCore<LiveEsiApi> {
+    #[tracing::instrument(skip(_client_secret))]
     pub fn new(
         useragent: &str,
         client_id: &str,
@@ -700,8 +683,6 @@ impl EsiManagerCore<LiveEsiApi> {
         scope: Vec<&str>,
         database_path: &Path,
     ) -> Self {
-        profiling::function_scope!();
-
         #[cfg(not(feature = "native-auth-flow"))]
         let esi = EsiBuilder::new()
             .user_agent(useragent)

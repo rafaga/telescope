@@ -52,9 +52,8 @@ pub struct CharacterPublicInfo {
 }
 
 impl AuthData {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        profiling::function_scope!();
-
         AuthData {
             token: String::new(),
             expiration: None,
@@ -81,9 +80,8 @@ pub struct Character {
 }
 
 impl Character {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        profiling::function_scope!();
-
         Character {
             id: 0,
             name: String::new(),
@@ -109,9 +107,8 @@ pub struct Corporation {
 }
 
 impl Corporation {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        profiling::function_scope!();
-
         Corporation {
             id: 0,
             name: String::new(),
@@ -120,9 +117,8 @@ impl Corporation {
 }
 
 impl Default for Corporation {
+    #[tracing::instrument]
     fn default() -> Self {
-        profiling::function_scope!();
-
         Self::new()
     }
 }
@@ -130,15 +126,13 @@ impl Default for Corporation {
 impl BasicCatalog for Corporation {
     type Output = i32;
 
+    #[tracing::instrument]
     fn id(&self) -> Self::Output {
-        profiling::function_scope!();
-
         self.id
     }
 
+    #[tracing::instrument]
     fn name(&self) -> &str {
-        profiling::function_scope!();
-
         &self.name
     }
 }
@@ -150,9 +144,8 @@ pub struct Alliance {
 }
 
 impl Alliance {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        profiling::function_scope!();
-
         Alliance {
             id: 0,
             name: String::new(),
@@ -161,9 +154,8 @@ impl Alliance {
 }
 
 impl Default for Alliance {
+    #[tracing::instrument]
     fn default() -> Self {
-        profiling::function_scope!();
-
         Self::new()
     }
 }
@@ -171,15 +163,13 @@ impl Default for Alliance {
 impl BasicCatalog for Alliance {
     type Output = i32;
 
+    #[tracing::instrument]
     fn id(&self) -> Self::Output {
-        profiling::function_scope!();
-
         self.id
     }
 
+    #[tracing::instrument]
     fn name(&self) -> &str {
-        profiling::function_scope!();
-
         &self.name
     }
 }
