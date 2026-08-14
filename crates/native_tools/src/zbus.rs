@@ -214,9 +214,8 @@ impl DbusAvailability {
 /// y existencia de sockets Unix. Es rápida y no dispara alertas de EDR porque
 /// no hace I/O de red ni llamadas D-Bus reales.
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 pub fn detect_dbus_static() -> DbusAvailability {
-    profiling::function_scope!();
-
     let session_bus_address = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok();
 
     let session_bus_available = match &session_bus_address {
@@ -255,9 +254,8 @@ fn dbus_address_socket_exists(addr: &str) -> bool {
 /// existe el socket, sino que hay un daemon respondiendo del otro lado.
 /// Esto es lo que realmente quieres antes de intentar `GetProductUUID`.
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 pub async fn detect_dbus_live() -> Result<DbusAvailability, DbusError> {
-    profiling::function_scope!();
-
     let static_check = detect_dbus_static();
 
     let system_bus_available = if static_check.system_bus_available {
@@ -286,9 +284,8 @@ pub async fn detect_dbus_live() -> Result<DbusAvailability, DbusError> {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 async fn ping_peer(conn: &zbus::Connection, destination: &str) -> zbus::Result<()> {
-    profiling::function_scope!(destination);
-
     let reply = conn
         .call_method(
             Some(destination),
@@ -334,9 +331,8 @@ fn is_placeholder(value: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 fn read_dmi_field(path: &str) -> Result<String, HwIdError> {
-    profiling::function_scope!(path);
-
     let content = fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             HwIdError::PermissionDenied {
@@ -405,9 +401,8 @@ pub fn try_product_serial() -> Result<HwIdResult<String>, HwIdError> {
 /// como root y expone el dato vía policy de polkit, que puede permitir
 /// lectura a usuarios normales dependiendo de la configuración del sistema.
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 pub async fn try_dbus_hostname1_uuid() -> Result<HwIdResult<String>, HwIdError> {
-    profiling::function_scope!();
-
     let conn = zbus::Connection::system()
         .await
         .map_err(|e| HwIdError::DbusUnavailable(DbusError::ConnectionFailed(e.to_string())))?;
@@ -489,9 +484,8 @@ fn uuid_bytes_to_string(bytes: &[u8]) -> String {
 /// Intenta cada fuente en orden de confiabilidad y regresa la primera que
 /// funcione, junto con metadata de qué se intentó y por qué falló lo demás.
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 pub async fn get_persistent_hardware_id() -> Result<HwIdResult<String>, HwIdError> {
-    profiling::function_scope!();
-
     let mut attempts_log: Vec<String> = Vec::new();
 
     // 1. Lectura directa de DMI (requiere root, pero es instantánea sin D-Bus)

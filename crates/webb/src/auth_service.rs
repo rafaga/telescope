@@ -25,7 +25,18 @@ impl Service<Request<IncomingBody>> for AuthService2 {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
-        profiling::function_scope!();
+        // Manual span, not `#[tracing::instrument]`: this fn returns
+        // `Self::Future` (a boxed `dyn Future + Send`, effectively `'static`
+        // and unrelated to `&self`'s borrow), which the `#[instrument]`
+        // macro's future-aware codegen can't reconcile ("lifetime may not
+        // live long enough") -- it tries to tie the span to a borrow that
+        // doesn't actually outlive this synchronous call. A plain guard
+        // covering just the synchronous body (same role the old
+        // `profiling::function_scope!()` had) sidesteps that entirely.
+        // Never logs `req` -- its query string carries the OAuth `code`
+        // and `state` (parsed by hand below), so it must never be captured
+        // into a span/field.
+        let _span = tracing::info_span!("call").entered();
 
         let res = match (req.method(), req.uri().path()) {
             (&Method::GET, "/login") => {
@@ -50,7 +61,14 @@ impl Service<Request<IncomingBody>> for AuthService2 {
                         let atx = Arc::clone(&self.tx);
                         std::thread::spawn(move || {
                             rt.block_on(async {
-                                profiling::scope!("http service request response");
+                                // manual scope, not a whole function -- same
+                                // role as the old `profiling::scope!(...)`.
+                                // Doesn't capture `message` (the OAuth
+                                // code/state) since a bare span has no
+                                // fields unless explicitly added.
+                                let _span =
+                                    tracing::info_span!("http service request response")
+                                        .entered();
 
                                 let _res = atx.send(message).await;
                             });

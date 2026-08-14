@@ -8,9 +8,8 @@ use std::rc::Rc;
 pub(crate) struct PlayerDatabase {}
 
 impl PlayerDatabase {
+    #[tracing::instrument]
     pub(crate) fn create_database(conn: &Connection) -> Result<bool, Error> {
-        profiling::function_scope!();
-
         //Character Public Data
         let mut query =
             String::from("CREATE TABLE char (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL,");
@@ -43,12 +42,11 @@ impl PlayerDatabase {
         Ok(true)
     }
 
+    #[tracing::instrument]
     pub(crate) fn select_characters(
         conn: &Connection,
         ids: Vec<i32>,
     ) -> Result<Vec<Character>, Error> {
-        profiling::function_scope!();
-
         let mut result = Vec::new();
         let mut query = String::from(
             "SELECT id, name, corporation, alliance, portrait, lastLogon, location FROM char",
@@ -89,11 +87,11 @@ impl PlayerDatabase {
     }
 
     // Updated
+    #[tracing::instrument]
     pub(crate) fn update_character(
         conn: &Connection,
         character: &Character,
     ) -> Result<usize, Error> {
-        profiling::function_scope!();
         let mut query = String::from("UPDATE char SET name = :name, corporation = :corp,");
         if character.alliance.is_some() {
             query += " alliance = :alliance,";
@@ -118,9 +116,8 @@ impl PlayerDatabase {
         Ok(rows)
     }
 
+    #[tracing::instrument]
     pub(crate) fn select_auth(conn: &Connection) -> Result<AuthData, Error> {
-        profiling::function_scope!();
-
         let values = vec![
             String::from("token"),
             String::from("expiration"),
@@ -156,9 +153,8 @@ impl PlayerDatabase {
         Ok(result)
     }
 
+    #[tracing::instrument(skip(auth_data))]
     pub(crate) fn insert_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let mut data: Vec<(String, String)> = Vec::new();
         let mut query = String::from("INSERT INTO metadata (id,value)");
         query += " VALUES (?1,?2)";
@@ -182,9 +178,8 @@ impl PlayerDatabase {
         Ok(rows)
     }
 
+    #[tracing::instrument(skip(auth_data))]
     pub(crate) fn update_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         let query = String::from("UPDATE metadata SET value = ?1 WHERE id = ?2;");
         let mut data: Vec<(String, String)> = Vec::new();
         data.push((String::from("token"), auth_data.token.clone()));
@@ -207,9 +202,8 @@ impl PlayerDatabase {
         Ok(rows)
     }
 
+    #[tracing::instrument]
     pub(crate) fn insert_character(conn: &Connection, player: &Character) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         /*let mut query = String::from("INSERT INTO char (id,");
         query += "name,corporation,alliance,portrait,lastLogon,location) VALUES (?,?,?,?,?,?,?)";
         let mut statement = conn.prepare(query.as_str())?;
@@ -270,9 +264,8 @@ impl PlayerDatabase {
         Ok(rows)
     }
 
+    #[tracing::instrument]
     fn repeat_vars(count: usize) -> String {
-        profiling::function_scope!();
-
         assert_ne!(count, 0);
         let mut s = "?,".repeat(count);
         // Remove trailing comma
@@ -280,25 +273,23 @@ impl PlayerDatabase {
         s
     }
 
+    #[tracing::instrument]
     pub(crate) fn migrate_database() -> Result<bool, Error> {
-        profiling::function_scope!();
         // TODO: migration database schema goes here
         Ok(true)
     }
 
+    #[tracing::instrument]
     pub(crate) fn delete_characters(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::delete_general(conn, "char", ids)
     }
 
     // Corporation
+    #[tracing::instrument]
     pub(crate) fn select_corporation(
         conn: &Connection,
         ids: Vec<i32>,
     ) -> Result<Vec<Corporation>, Error> {
-        profiling::function_scope!();
-
         let mut result = Vec::new();
         let mut query = String::from("SELECT id,name FROM corp");
         if !ids.is_empty() {
@@ -317,37 +308,33 @@ impl PlayerDatabase {
         Ok(result)
     }
 
+    #[tracing::instrument]
     pub(crate) fn update_corporation(
         conn: &Connection,
         corp: &Corporation,
     ) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::update_catalog(conn, "corp", corp)
     }
 
+    #[tracing::instrument]
     pub(crate) fn insert_corporation(
         conn: &Connection,
         corp: &Corporation,
     ) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::insert_catalog(conn, "corp", corp)
     }
 
+    #[tracing::instrument]
     pub(crate) fn delete_corporation(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::delete_general(conn, "corp", ids)
     }
 
     // Alliance
+    #[tracing::instrument]
     pub(crate) fn select_alliance(
         conn: &Connection,
         ids: Vec<i32>,
     ) -> Result<Vec<Alliance>, Error> {
-        profiling::function_scope!();
-
         let mut result = Vec::new();
         let mut query = String::from("SELECT id,name FROM alliance");
         if !ids.is_empty() {
@@ -366,27 +353,23 @@ impl PlayerDatabase {
         Ok(result)
     }
 
+    #[tracing::instrument]
     pub(crate) fn update_alliance(conn: &Connection, ally: &Alliance) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::update_catalog(conn, "alliance", ally)
     }
 
+    #[tracing::instrument]
     pub(crate) fn insert_alliance(conn: &Connection, ally: &Alliance) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::insert_catalog(conn, "alliance", ally)
     }
+    #[tracing::instrument]
     pub(crate) fn delete_alliance(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
-        profiling::function_scope!();
-
         PlayerDatabase::delete_general(conn, "alliance", ids)
     }
 
     // function to delete values
+    #[tracing::instrument]
     fn delete_general(conn: &Connection, table: &str, ids: Vec<i32>) -> Result<usize, Error> {
-        profiling::function_scope!(table);
-
         if !ids.is_empty() {
             let vars = PlayerDatabase::repeat_vars(ids.len());
             let query = format!("DELETE FROM {} WHERE id IN ({})", table, vars);
@@ -402,6 +385,7 @@ impl PlayerDatabase {
     }
 
     // generic Function to insert new values on a catalog
+    #[tracing::instrument(skip(obj))]
     fn insert_catalog<B: BasicCatalog>(
         conn: &Connection,
         table: &str,
@@ -410,8 +394,6 @@ impl PlayerDatabase {
     where
         <B as BasicCatalog>::Output: ToSql,
     {
-        profiling::function_scope!(table);
-
         let query = format!("INSERT INTO {} (id,name) VALUES (?,?);", table);
         let mut statement = conn.prepare(&query)?;
         let params = rusqlite::params![obj.id(), obj.name()];
@@ -420,6 +402,7 @@ impl PlayerDatabase {
     }
 
     // generic Function to update values on a catalog
+    #[tracing::instrument(skip(obj))]
     fn update_catalog<B: BasicCatalog>(
         conn: &Connection,
         table: &str,
@@ -428,8 +411,6 @@ impl PlayerDatabase {
     where
         <B as BasicCatalog>::Output: ToSql,
     {
-        profiling::function_scope!(table);
-
         let query = format!("UPDATE {} SET name = ? WHERE id = ?;", table);
         let mut statement = conn.prepare(&query)?;
         let params = rusqlite::params![obj.name(), obj.id()];

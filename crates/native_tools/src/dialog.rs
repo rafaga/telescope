@@ -146,12 +146,11 @@ impl Dialog {
     }
 
     #[cfg(target_os = "macos")]
+    #[tracing::instrument(skip(self, on_result))]
     pub fn open_file_dialog(
         &mut self,
         on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
-        profiling::function_scope!();
-
         let on_result = Arc::new(on_result);
         let mtm = match self.main_thread_marker.or_else(MainThreadMarker::new) {
             Some(m) => m,
@@ -207,12 +206,11 @@ impl Dialog {
     }
 
     #[cfg(target_os = "linux")]
+    #[tracing::instrument(skip(self, on_result))]
     pub fn open_file_dialog(
         &mut self,
         on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
-        profiling::function_scope!();
-
         // El portal es inherentemente asíncrono (la respuesta llega por
         // una señal de D-Bus), así que la petición se ejecuta en un hilo
         // aparte y el callback se invoca ahí, igual que en macOS, sin
@@ -241,12 +239,11 @@ impl Dialog {
     }
 
     #[cfg(target_os = "windows")]
+    #[tracing::instrument(skip(self, on_result))]
     pub fn open_file_dialog(
         &mut self,
         on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
-        profiling::function_scope!();
-
         let dialog_type = self.dialog_type;
 
         let outcome: DialogResult<PathBuf> = (|| {

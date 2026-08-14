@@ -6,7 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-profiling = "1.0"
+tracing = "0.1"
 
 [lints]
 workspace = true
