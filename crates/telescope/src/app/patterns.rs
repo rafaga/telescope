@@ -29,7 +29,7 @@
 //! | `id` | string | *(required)* | Unique rule id. Allowed chars: `[A-Za-z0-9_-]`, max 64. |
 //! | `pattern` | string | *(required)* | [Rust regex](https://docs.rs/regex) evaluated against the text payload of each parsed log line. Max 1024 chars. TOML literal strings (`'...'`) are recommended so backslashes need no escaping. |
 //! | `case_insensitive` | bool | `false` | Match the pattern case-insensitively. |
-//! | `channels` | list of strings | `[]` | Restrict the rule to the given channel names; empty means every monitored channel. |
+//! | `channels` | list of strings | `[]` | Restrict the rule to the given channel names (allowed chars: `[A-Za-z0-9_.+ -]`, max 64 each); empty means every monitored channel. |
 //! | `enabled` | bool | `true` | Disabled rules are skipped silently at load time. |
 //! | `action` | table | `{ type = "notify" }` | What to do when the rule matches; see *Available actions*. |
 //!
@@ -382,7 +382,7 @@ impl Display for PatternError {
             }
             Self::InvalidChannel(name) => write!(
                 f,
-                "invalid channel name '{name}' (use [A-Za-z0-9_-], max {MAX_CHANNEL_LEN} chars)"
+                "invalid channel name '{name}' (use [A-Za-z0-9_.+ -], max {MAX_CHANNEL_LEN} chars)"
             ),
             Self::InvalidSystemGroup { id, group } => write!(
                 f,
@@ -836,11 +836,20 @@ fn is_valid_id(id: &str) -> bool {
 }
 
 fn is_valid_channel(name: &str) -> bool {
+    // Real EVE channel names (as extracted verbatim from the log file name
+    // prefix by `load_intel_file`) commonly contain '.' and '+', e.g. an
+    // alliance channel literally named "wc.Vale+Tribute". A plain
+    // `[A-Za-z0-9_-]` filter, as used for rule/channel *ids*, rejected such
+    // names outright, making `channels` filtering unusable for them. This
+    // stays ASCII-only and excludes characters with structural meaning
+    // elsewhere (quotes, backslashes, path separators, control characters)
+    // since `channels` is only ever used for exact string comparison
+    // (`HashSet<String>::contains`), never as a path or in a query.
     !name.is_empty()
         && name.len() <= MAX_CHANNEL_LEN
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | ' '))
 }
 
 fn is_valid_group_name(name: &str) -> bool {
@@ -994,6 +1003,19 @@ mod tests {
             errors,
             vec![PatternError::InvalidChannel(String::from("bad channel!"))]
         );
+    }
+
+    #[test]
+    fn accepts_real_eve_channel_names_with_dots_plus_and_spaces() {
+        // Real alliance/corp channel names extracted verbatim from EVE log
+        // file names by `load_intel_file` can contain '.', '+' and spaces,
+        // e.g. "wc.Vale+Tribute". These must be usable in `channels`.
+        let mut good = rule("r1", ".+");
+        good.channels = vec![String::from("wc.Vale+Tribute"), String::from("Fleet Ops")];
+        let (engine, errors) = engine_with(vec![good]);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let matches = engine.evaluate("wc.Vale+Tribute", SAMPLE_LINE);
+        assert_eq!(matches.len(), 1);
     }
 
     #[test]

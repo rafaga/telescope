@@ -21,7 +21,35 @@
 #                    - { type = "map_alert", system_group = "<group>" }
 #                        resolves the named capture group as a solar system
 #                        and highlights it on the maps. The group must exist
-#                        in the pattern.
+#                        in the pattern. Resolution is a case-insensitive SQL
+#                        LIKE '%<captured text>%' against solar system names
+#                        (see dispatch_map_alert / SdeManager::get_system_id):
+#                        an exact case-insensitive match wins if present,
+#                        otherwise the first LIKE hit is used, which is not
+#                        guaranteed to be the system you meant if the
+#                        captured text is a short/ambiguous fragment.
+#
+# Rules below marked "data-derived" were built from a corpus of 9011 real
+# chat log exports (196k lines, ~180k of them real chat after dropping the
+# automatic "EVE System >" lines). About 38% of that traffic turned out to
+# be repeated spam (HyperNet Relay lottery ads, PLEX/ISK scam broadcasts,
+# recruitment spam) -- the same (author, text) pair repeated 5+ times -- so
+# every frequency/precision figure quoted below was measured on the
+# remaining ~110k organic, de-duplicated lines. The dedicated intel channel
+# in that corpus is named "wc.Vale+Tribute" (a WinterCo alliance channel for
+# the Vale of the Silent / Tribute regions); it concentrates the vast
+# majority of the real signal for every rule below, while channels like
+# Local also carry the HyperNet/scam spam, so several rules are restricted
+# to it with `channels`. Replace "wc.Vale+Tribute" with your own intel
+# channel's name (same string the EVE client uses as the log file prefix,
+# e.g. `MyIntelChannel_20240101_...txt` -> `"MyIntelChannel"`) if it differs.
+#
+# Note: Telescope currently derives that channel name by splitting the log
+# file name on the *first* underscore (see `load_intel_file` in app.rs), so
+# a channel whose own name contains an underscore (e.g. a channel literally
+# named "WinterCo_Friends") is truncated to the part before it. This did not
+# affect any channel name used below, but it is worth knowing if you add a
+# rule scoped to a channel whose name has an underscore in it.
 
 # Baseline rule: notifies every parsed intel line.
 [[patterns]]
@@ -52,22 +80,184 @@ pattern = '\b(clear|clr)\b'
 case_insensitive = true
 action = { type = "notify" }
 
-# Generic example: notify when hostiles are reported. Use the channels field
-# to restrict a rule to specific intel channels, e.g. channels = ["my-intel"].
-# Uncomment to enable.
+# Data-derived, highest-value rule in this file: "nv" is this alliance's
+# standard shorthand for "a pilot of unknown/neutral standing was seen" --
+# the canonical report format observed thousands of times in the corpus is
+# `<system>[*]  <pilot name(s)>  nv`, e.g. "H-5GUI*  Floris Saucus  nv". It
+# appeared 7358 times in the raw corpus (7343 of those on organic,
+# de-duplicated lines -- essentially none of it is spam), 99.7% of it in
+# "wc.Vale+Tribute", making it ~19x more common than "hostile"/"red"/"neut"
+# combined (811 raw hits). Sampled 175 non-trailing occurrences by hand:
+# still genuine pilot-spotted reports with extra detail appended (e.g. "...
+# nv likely manticore"), not a different meaning. If your community uses a
+# different shorthand (some use "n", "rp", "nrv", ...) grep your own logs
+# for the token that immediately follows a system+pilot-name report instead
+# of assuming this one transfers as-is.
+[[patterns]]
+id = "neutral_spotted"
+pattern = '\bnv\b'
+case_insensitive = true
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# Data-derived: reports of an ESS (Encounter Surveillance System) bank
+# becoming raidable, usually with a countdown, e.g. "L-1HKR* ESS 5:00" or
+# "NJ4X-S ess time?". 1355 raw hits (1346 with a strict \b...\b boundary,
+# i.e. excluding "process"/"success"/... which a plain substring search
+# would have wrongly counted), 96% of it in "wc.Vale+Tribute".
+[[patterns]]
+id = "ess_timer"
+pattern = '\bESS\b'
+case_insensitive = true
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# Data-derived: a shared https://dscan.info/... link, i.e. someone posting a
+# directional scan result for the fleet to read. 816 hits in the organic
+# corpus, 98% of it in "wc.Vale+Tribute", effectively zero false-positive
+# risk since it is a URL shape, not a keyword.
+[[patterns]]
+id = "dscan_link"
+pattern = 'dscan\.info/v/[0-9a-fA-F]+'
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# Data-derived: a structured "Kill: <victim> (<ship>)" report (966 hits in
+# "wc.Vale+Tribute" out of 1431 total in the raw corpus). Deliberately kept
+# case-sensitive ("Kill:", not "kill:") -- the one lowercase "kill:" found
+# in the whole corpus was an unrelated YouTube link ("Music for the
+# kill: ..."), so requiring the capital K removes that false positive for
+# free without losing any real report (every genuine one used "Kill:").
+[[patterns]]
+id = "kill_report"
+pattern = '\bKill:\s'
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# Data-derived: someone asking whether a system/gate is still clear, e.g.
+# "fc gate status?", "H-5GUI status?" (215 hits, 92% in "wc.Vale+Tribute";
+# also matches the full-width "？" used by some CJK IME chat clients in this
+# corpus).
+[[patterns]]
+id = "status_query"
+pattern = '\bstatus\s*[?？]'
+case_insensitive = true
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# Data-derived ship-name detection (part 1/2 -- split across two rules to
+# stay under the 1024-char pattern budget), built from the official CCP SDE
+# (invCategories/invGroups/invTypes, categoryID 6 "Ship", 423 published
+# names) cross-referenced against this corpus.
 #
+# Methodology: a ship name was only included if it appeared inside a
+# structured "Kill: <victim> (<ship>)" report somewhere in the corpus --
+# that field is unambiguous (CCP's own kill-mail formatting), so it rules
+# out names that only coincide with English words or pilot-name fragments.
+# 210 of the 423 official names cleared that bar; 23 of those were variant
+# forms ("Osprey Navy Issue", "Caracal Navy Issue", ...) whose base hull
+# name ("Osprey", "Caracal") is already in the list and already matches
+# inside the variant string, so they were dropped as redundant, leaving 187.
+# Split by frequency into this rule (117 names, >=16 hits each) and
+# ship_report_extended (70 names, 1-15 hits each).
+#
+# Deliberately NOT included, despite being official ship names that do
+# appear in this corpus: Ares, Echo, Sin, Burst, Probe, Ark, and ~130 more
+# -- every one of those failed the Kill:-confirmation test and, on manual
+# inspection, turned out to be dominated by unrelated matches: "Echo"/"Sin"
+# are pilot first names ("Echo 7", "Cold Sin"), "Burst" is a module name
+# ("Command Burst Specialist", "Burst Aerator"), "Ares Skarr" is a pilot's
+# full name, not the Ares interceptor. If you extend this list from the raw
+# official_ship_names.txt, re-check each addition against your own corpus
+# the same way -- the SDE alone cannot tell a ship name from a pilot name.
+#
+# case_insensitive = true because roughly half of genuine mentions in this
+# corpus are lowercase ("sabre", "vedmak", ...); the trade-off is a handful
+# of known collisions with pilot two-word handles ("Ledger Wolf", "Rende
+# Crow", "Darkness Hawk", "Fuxi Legion") and one region name ("Curse", the
+# 0.0 region, vs. the Curse-class ship) -- accepted here because this is
+# `notify`, not `map_alert`, so a stray hit is low-cost, same reasoning as
+# capital_report below.
+[[patterns]]
+id = "ship_report_common"
+pattern = '\b(?:Amarr Shuttle|Anathema|Arazu|Arbitrator|Astero|Barghest|Bifrost|Blackbird|Brutix|Bustard|Buzzard|Caldari Navy Hookbill|Caldari Shuttle|Capsule|Caracal|Catalyst|Celestis|Cerberus|Cheetah|Claw|Coercer|Confessor|Crow|Crusader|Curse|Cyclone|Cynabal|Deimos|Drake|Draugur|Drekavac|Enyo|Eris|Executioner|Exequror|Falcon|Ferox|Flycatcher|Gallente Shuttle|Garmur|Gila|Gnosis|Golem|Griffin|Harpy|Hawk|Hecate|Helios|Heron|Hound|Hulk|Hurricane|Ibis|Ikitursa|Imicus|Ishtar|Jackdaw|Jaguar|Keres|Kestrel|Kikimora|Kitsune|Kronos|Legion|Loki|Malediction|Manticore|Marshal|Minmatar Shuttle|Moa|Muninn|Myrmidon|Nemesis|Nergal|Nidhoggur|Nightmare|Omen|Orca|Orthrus|Osprey|Pacifier|Panther|Phantasm|Phoenix|Praxis|Prospect|Proteus|Purifier|Rapier|Rattlesnake|Raven|Reaper|Redeemer|Retribution|Rorqual|Sabre|Scythe|Sentinel|Slasher|Stabber|Stiletto|Stork|Stratios|Sunesis|Tengu|Thanatos|Thorax|Thrasher|Tristan|Vagabond|Vargur|Vedmak|Venture|Vexor|Viator|Vigil|Wolf)\b'
+case_insensitive = true
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# Data-derived ship-name detection (part 2/2): the remaining 70 Kill:-
+# confirmed, non-redundant official ship names, all with lower corpus
+# frequency (1-15 hits) than ship_report_common. Same methodology and
+# case_insensitive trade-off documented there.
+[[patterns]]
+id = "ship_report_extended"
+pattern = '\b(?:Algos|Apotheosis|Armageddon|Atron|Augoror|Badger|Basilisk|Bellicose|Bhaalgorn|Breacher|Broadsword|Charon|Claymore|Cormorant|Council Diplomatic Shuttle|Crucifier|Damavik|Daredevil|Dominix|Dragoon|Epithal|Federation Navy Comet|Guardian|Harbinger|Huginn|Hyperion|Imperial Navy Slicer|Incursus|Ishkur|Iteron Mark V|Kirin|Kryos|Lachesis|Leshak|Machariel|Maulus Navy Issue|Merlin|Naga|Nereus|Nestor|Nighthawk|Noctis|Obelisk|Occator|Oneiros|Onyx|Oracle|Porpoise|Probe Fleet Issue|Procurer|Prowler|Retriever|Rhea|Rook|Sacrilege|Scalpel|Scimitar|Skiff|Skybreaker|Sleipnir|Squall|Talwar|Tayra|Tempest Fleet Issue|Thalia|Tornado|Velator|Vigilant|Worm|Zealot)\b'
+case_insensitive = true
+channels = ["wc.Vale+Tribute"]
+action = { type = "notify" }
+
+# --- Examples below are disabled (commented out). Uncomment and adjust to
+# --- your own community's jargon/territory before relying on them.
+
+# Example: notifies when hostiles are reported. Data-derived from this
+# corpus: real usage skews heavily towards "red(s)" and
+# "tackle(d)/bubble(d)/camp(ed)" (811 hits) rather than the word "hostile"
+# itself (only 71 hits) -- a naive keyword list built from the word
+# "hostile" alone would have missed the majority of real reports.
+# Restricted to "wc.Vale+Tribute" because, unrestricted, "red"/"camp" also
+# match unrelated chatter and pilot names elsewhere (e.g. a pilot literally
+# named "Eyez Red" accounts for 36 of the 204 "red" hits -- harmless here
+# since it is still a valid spotted-pilot report, but worth knowing about if
+# you tune this further).
 # [[patterns]]
 # id = "hostile_report"
-# pattern = '\b(hostile|hostiles|neut|neuts|red|reds)\b'
+# pattern = '\b(hostile|hostiles|red|reds|neut|neuts|tackle|tackled|tackling|bubble|bubbled|camp|camped|camping)\b'
 # case_insensitive = true
+# channels = ["wc.Vale+Tribute"]
 # action = { type = "notify" }
 
-# Generic example: notify when capital/supercapital hulls or a cyno are
-# mentioned. Uncomment to enable, or set enabled = false to keep the rule
-# as a reference only.
-#
+# Example: notifies when capital/supercapital hulls or a cyno are
+# mentioned. Data-derived: 3977 raw hits, but only 147 of them in
+# "wc.Vale+Tribute" -- unrestricted, this rule is dominated by "Phoenix Navy
+# Issue"/"Dread Guristas ..." HyperNet-lottery and faction-module trade spam
+# in Local, hence the channel restriction. Known remaining false-positive
+# source even inside "wc.Vale+Tribute": EVE faction modules named "Dread
+# Guristas <Module>" (e.g. "Dread Guristas Cruise Missile Launcher") match
+# the "dread" keyword; ~44% of raw "dread" hits were this item name rather
+# than a ship sighting. Requiring the full word "dreadnought" instead would
+# remove that false positive but would also miss 80/89 (90%) of the genuine
+# reports, which almost always use the "dread" shorthand -- kept as-is since
+# a stray notification is low-cost (this is `notify`, not `map_alert`).
 # [[patterns]]
 # id = "capital_report"
-# pattern = '\b(titan|titans|super|supers|dread|dreads|dreadnought|carrier|carriers|fax|cyno)\b'
+# pattern = '\b(titan|titans|super|supers|dread|dreads|dreadnought|dreadnoughts|carrier|carriers|fax|faxes|cyno|cynos)\b'
 # case_insensitive = true
+# channels = ["wc.Vale+Tribute"]
 # action = { type = "notify" }
+
+# Example: informal/abbreviated system nicknames -- this alliance's own
+# pilots write "4-h" for "4-HWWF" (120 raw hits), "h-5" for "H-5GUI" (16
+# hits), "1-g"/"1-gb" for "1-GBBP", or "g5ed-y" as an exact lowercase form
+# of "G5ED-Y". system_reported does not catch any of these: it requires the
+# full code, including the trailing dash-suffix, in its original case.
+#
+# This is deliberately NOT a generic regex over "any short alnum-dash
+# token" -- investigated that shape across the whole corpus and it also
+# matches a market-tool URL domain (janice.e-351.com, 47 hits) and hex GUID
+# fragments (115 lines), which would spam the map with garbage alerts, plus
+# leetspeak pilot handles ("Ki11-Shot"). Listing every real alias by hand
+# avoids all of that, at the cost of having to maintain the list yourself.
+#
+# map_alert resolves the captured text via SQL LIKE '%<text>%' against
+# solar system names (see the field docs at the top of this file), so a
+# short fragment like "4-h" will usually resolve to the right system, but
+# is not guaranteed to if another system elsewhere shares the same
+# fragment and there is no exact match. Replace the aliases below with your
+# own alliance's actual home/staging systems (grep your own logs the same
+# way documented in this file's other rules to find them) before enabling.
+# [[patterns]]
+# id = "system_alias_example"
+# pattern = '\b(?P<system>4-h|h-5|1-g|1-gb|g5ed-y)\b'
+# case_insensitive = true
+# channels = ["wc.Vale+Tribute"]
+# action = { type = "map_alert", system_group = "system" }
