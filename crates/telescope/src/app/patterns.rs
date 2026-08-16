@@ -51,6 +51,40 @@
 //! | `notify` | — | Sends the matched line to the application notification log. |
 //! | `map_alert` | `system_group` | Resolves the named capture group as a solar system and highlights it on the maps. The group must exist in the pattern (validated at load time). |
 //!
+//! # Dictionary rules
+//!
+//! Some rules are naturally a flat list of words rather than a hand-written
+//! regex -- for example ship names in a given language, or a community's
+//! system nicknames. Splitting a large word list into several `[[patterns]]`
+//! entries just to fit under [`MAX_PATTERN_LEN`] hurts readability and
+//! forces an arbitrary split point. `[[dictionaries]]` entries exist for
+//! this shape of rule instead: each is matched by its own
+//! [`aho_corasick::AhoCorasick`] automaton (linear in the total size of its
+//! word list, independent of the combined [`regex::RegexSet`] used for
+//! `[[patterns]]`), so there is no per-entry pattern-length budget. The
+//! trade-off is that a dictionary only matches literal words, whole-word
+//! (like a regex `\b...\b`), never a hand-written pattern.
+//!
+//! | Field | Type | Default | Description |
+//! |-------|------|---------|-------------|
+//! | `id` | string | *(required)* | Unique rule id. Shares its namespace with `[[patterns]]` ids. Allowed chars: `[A-Za-z0-9_-]`, max 64. |
+//! | `words` | list of strings | *(required)* | The words to match, verbatim, whole-word. Max 4096 words, 128 bytes each. |
+//! | `case_insensitive` | bool | `false` | Match ASCII letters case-insensitively (`a`-`z`/`A`-`Z` only; not full Unicode folding like `[[patterns]]`'s `case_insensitive`). |
+//! | `channels` | list of strings | `[]` | Same semantics as `[[patterns]]`'s `channels`. |
+//! | `enabled` | bool | `true` | Disabled dictionaries are skipped silently at load time. |
+//! | `action` | table | `{ type = "notify" }` | `{ type = "notify" }` or `{ type = "map_alert" }`. Unlike `[[patterns]]`'s `map_alert`, no `system_group` is needed: the matched word itself is the resolved solar system name. |
+//!
+//! Unknown fields are rejected at load time (`deny_unknown_fields`).
+//!
+//! ```toml
+//! [[dictionaries]]
+//! id = "ship_report_en"
+//! words = ["Rifter", "Sabre", "Vedmak"]
+//! case_insensitive = true
+//! channels = ["my-intel-channel"]
+//! action = { type = "notify" }
+//! ```
+//!
 //! # Default rules shipped in the template
 //!
 //! The embedded template (the repository's own `patterns.toml`) ships these
@@ -93,6 +127,7 @@
 //! written, the engine falls back to the embedded default rules
 //! ([`PatternEngine::with_defaults`]).
 
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::Deserialize;
@@ -121,6 +156,19 @@ const MAX_LINE_LEN: usize = 2048;
 const MAX_MATCHES_PER_CHUNK: usize = 100;
 /// Maximum length of captured text displayed in notifications.
 const MAX_DISPLAY_LEN: usize = 200;
+/// Maximum number of `[[dictionaries]]` entries allowed in a configuration
+/// file. Kept far lower than [`MAX_RULES`] because, unlike regex rules,
+/// nothing about a dictionary forces it to be split across several entries
+/// -- one per language/topic is the expected shape, not one per chunk.
+const MAX_DICTIONARIES: usize = 16;
+/// Maximum number of words in a single dictionary. An
+/// [`aho_corasick::AhoCorasick`] automaton is linear in total pattern size,
+/// so this exists only as a sanity ceiling against a corrupted or hostile
+/// config file, not a real usage constraint (a few thousand localized ship
+/// names comfortably fit under it).
+const MAX_DICTIONARY_WORDS: usize = 4096;
+/// Maximum length (bytes) of a single dictionary word.
+const MAX_DICTIONARY_WORD_LEN: usize = 128;
 
 /// Regex that parses a standard EVE Online chat log line:
 /// `[ 2021.09.08 22:56:47 ] Character Name > message`
@@ -165,6 +213,27 @@ pub enum ActionConfig {
         /// Name of the capture group holding the solar system name.
         system_group: String,
     },
+}
+
+/// Action executed when a [`DictionaryRuleConfig`] matches.
+///
+/// Unlike [`ActionConfig`], `map_alert` here needs no `system_group`: a
+/// dictionary has no regex capture groups, so the literal word that matched
+/// is itself the reported solar system name.
+///
+/// ```toml
+/// action = { type = "notify" }
+/// action = { type = "map_alert" }
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DictionaryActionConfig {
+    /// Send the matched line to the application notification log.
+    #[default]
+    Notify,
+    /// Resolve the matched word itself as a solar system name and emit a
+    /// map notification for it.
+    MapAlert,
 }
 
 /// Declarative configuration of a single pattern rule.
@@ -241,12 +310,103 @@ impl PatternRuleConfig {
     }
 }
 
+/// Declarative configuration of a single dictionary rule.
+///
+/// Maps one `[[dictionaries]]` table of `patterns.toml`; see the
+/// ["Dictionary rules"](self#dictionary-rules) section of the module docs
+/// for the full field reference. A dictionary matches any of its `words`
+/// verbatim (whole-word, like a regex `\b...\b`), with none of the combined
+/// regex set's per-pattern length budget -- useful for rules whose
+/// alternatives are a plain word list rather than a hand-written regex
+/// (e.g. ship names in a given language), which would otherwise need to be
+/// split across many [`PatternRuleConfig`] entries to fit under
+/// [`MAX_PATTERN_LEN`].
+///
+/// # Examples
+///
+/// ```
+/// use telescope::patterns::{DictionaryActionConfig, DictionaryRuleConfig};
+///
+/// let rule = DictionaryRuleConfig {
+///     id: "ship_names_en".to_string(),
+///     words: vec!["Sabre".to_string(), "Vedmak".to_string()],
+///     case_insensitive: true,
+///     channels: vec!["my-intel-channel".to_string()],
+///     enabled: true,
+///     action: DictionaryActionConfig::Notify,
+/// };
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DictionaryRuleConfig {
+    /// Unique rule identifier (`[A-Za-z0-9_-]`, max 64 chars). Shares its
+    /// namespace with `[[patterns]]` ids: a dictionary cannot reuse a
+    /// pattern rule's id or another dictionary's id.
+    pub id: String,
+    /// The words to match, verbatim, whole-word. Max 4096 words, 128 bytes
+    /// each.
+    pub words: Vec<String>,
+    /// Whether words are matched case-insensitively. Unlike
+    /// [`PatternRuleConfig::case_insensitive`] (backed by the `regex`
+    /// crate's full Unicode case folding), this is ASCII-only folding
+    /// (`a`-`z`/`A`-`Z`); accented or non-Latin letters are matched by exact
+    /// case only. This matches what the shipped dictionaries actually need
+    /// (English ship names typed in lowercase chat) without the byte-offset
+    /// bookkeeping full Unicode folding would add.
+    #[serde(default)]
+    pub case_insensitive: bool,
+    /// Optional channel filter; empty means the rule applies to every channel.
+    #[serde(default)]
+    pub channels: Vec<String>,
+    /// Disabled rules are skipped silently at load time.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Action executed when the rule matches.
+    #[serde(default)]
+    pub action: DictionaryActionConfig,
+}
+
+impl DictionaryRuleConfig {
+    /// Validates all sanitizable fields of the rule.
+    fn validate(&self) -> Result<(), PatternError> {
+        if !is_valid_id(&self.id) {
+            return Err(PatternError::InvalidId(self.id.clone()));
+        }
+        if self.words.is_empty() || self.words.len() > MAX_DICTIONARY_WORDS {
+            return Err(PatternError::InvalidDictionarySize(self.id.clone()));
+        }
+        for word in &self.words {
+            if word.is_empty() || word.len() > MAX_DICTIONARY_WORD_LEN {
+                return Err(PatternError::InvalidDictionaryWord {
+                    id: self.id.clone(),
+                    word: word.clone(),
+                });
+            }
+        }
+        if self.channels.len() > MAX_CHANNELS {
+            return Err(PatternError::TooManyChannels(self.id.clone()));
+        }
+        for channel in &self.channels {
+            if !is_valid_channel(channel) {
+                return Err(PatternError::InvalidChannel(channel.clone()));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Root structure of the `patterns.toml` configuration file.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatternConfig {
-    /// The list of declared rules (max 64; must not be empty).
+    /// The list of declared regex rules (max 64; at least one rule --
+    /// regex or dictionary -- is required).
     pub patterns: Vec<PatternRuleConfig>,
+    /// The list of declared dictionary rules (max 16). Optional: older
+    /// configuration files without a `[[dictionaries]]` section still load,
+    /// with this defaulting to empty.
+    #[serde(default)]
+    pub dictionaries: Vec<DictionaryRuleConfig>,
 }
 
 /// A parsed EVE Online chat log line.
@@ -302,6 +462,15 @@ struct CompiledRule {
     action: ActionConfig,
 }
 
+/// A dictionary rule with its [`AhoCorasick`] automaton already built.
+struct CompiledDictionary {
+    id: String,
+    automaton: AhoCorasick,
+    /// `None` means the rule applies to every channel.
+    channels: Option<HashSet<String>>,
+    action: DictionaryActionConfig,
+}
+
 /// Errors produced while loading or validating pattern rules.
 ///
 /// Structural errors ([`IoError`](Self::IoError),
@@ -347,6 +516,24 @@ pub enum PatternError {
         /// Name of the offending capture group.
         group: String,
     },
+    /// The file defines more dictionaries than allowed (max 16).
+    TooManyDictionaries(usize),
+    /// A dictionary defines no words, or more than allowed (max 4096).
+    InvalidDictionarySize(String),
+    /// A dictionary word is empty or exceeds 128 bytes.
+    InvalidDictionaryWord {
+        /// Id of the offending dictionary.
+        id: String,
+        /// The offending word (truncated for display if very long).
+        word: String,
+    },
+    /// The automaton for a dictionary could not be built.
+    DictionaryBuildFailed {
+        /// Id of the offending dictionary.
+        id: String,
+        /// Builder diagnostic.
+        reason: String,
+    },
 }
 
 impl Display for PatternError {
@@ -388,6 +575,22 @@ impl Display for PatternError {
                 f,
                 "rule '{id}' references the capture group '{group}' which is invalid or missing in its pattern"
             ),
+            Self::TooManyDictionaries(count) => write!(
+                f,
+                "too many dictionary rules ({count}, max {MAX_DICTIONARIES})"
+            ),
+            Self::InvalidDictionarySize(id) => write!(
+                f,
+                "dictionary '{id}' has no words or exceeds {MAX_DICTIONARY_WORDS} words"
+            ),
+            Self::InvalidDictionaryWord { id, word } => write!(
+                f,
+                "dictionary '{id}' has an empty word or a word exceeding {MAX_DICTIONARY_WORD_LEN} bytes ('{}...')",
+                truncate_str(word, 32)
+            ),
+            Self::DictionaryBuildFailed { id, reason } => {
+                write!(f, "dictionary '{id}' could not be built: {reason}")
+            }
         }
     }
 }
@@ -436,6 +639,7 @@ pub struct PatternEngine {
     line_re: Regex,
     set: RegexSet,
     rules: Vec<CompiledRule>,
+    dictionaries: Vec<CompiledDictionary>,
 }
 
 impl PatternEngine {
@@ -569,19 +773,25 @@ impl PatternEngine {
     ///         enabled: true,
     ///         action: ActionConfig::Notify,
     ///     }],
+    ///     dictionaries: vec![],
     /// };
     /// let (engine, errors) = PatternEngine::from_config(&config).unwrap();
     /// assert!(errors.is_empty());
     /// ```
     pub fn from_config(config: &PatternConfig) -> Result<(Self, Vec<PatternError>), PatternError> {
-        if config.patterns.is_empty() {
+        if config.patterns.is_empty() && config.dictionaries.is_empty() {
             return Err(PatternError::EmptyConfig);
         }
         if config.patterns.len() > MAX_RULES {
             return Err(PatternError::TooManyRules(config.patterns.len()));
         }
+        if config.dictionaries.len() > MAX_DICTIONARIES {
+            return Err(PatternError::TooManyDictionaries(config.dictionaries.len()));
+        }
 
         let mut errors = Vec::new();
+        // Shared across patterns and dictionaries: a dictionary cannot reuse
+        // a pattern rule's id, or vice versa.
         let mut seen_ids = HashSet::new();
         let mut rules = Vec::new();
         let mut set_patterns = Vec::new();
@@ -615,10 +825,22 @@ impl PatternEngine {
                 reason: e.to_string(),
             })?;
 
+        let mut dictionaries = Vec::new();
+        for dict_config in &config.dictionaries {
+            if !dict_config.enabled {
+                continue;
+            }
+            match Self::compile_dictionary(dict_config, &mut seen_ids) {
+                Ok(compiled) => dictionaries.push(compiled),
+                Err(error) => errors.push(error),
+            }
+        }
+
         let engine = Self {
             line_re: Regex::new(LINE_PATTERN).expect("hardcoded line regex must compile"),
             set,
             rules,
+            dictionaries,
         };
         Ok((engine, errors))
     }
@@ -664,6 +886,35 @@ impl PatternEngine {
         })
     }
 
+    /// Compiles and fully validates a single dictionary.
+    fn compile_dictionary(
+        dict_config: &DictionaryRuleConfig,
+        seen_ids: &mut HashSet<String>,
+    ) -> Result<CompiledDictionary, PatternError> {
+        dict_config.validate()?;
+        if !seen_ids.insert(dict_config.id.clone()) {
+            return Err(PatternError::DuplicateId(dict_config.id.clone()));
+        }
+        let automaton = AhoCorasickBuilder::new()
+            .ascii_case_insensitive(dict_config.case_insensitive)
+            .match_kind(MatchKind::LeftmostLongest)
+            .build(&dict_config.words)
+            .map_err(|e| PatternError::DictionaryBuildFailed {
+                id: dict_config.id.clone(),
+                reason: e.to_string(),
+            })?;
+        Ok(CompiledDictionary {
+            id: dict_config.id.clone(),
+            automaton,
+            channels: if dict_config.channels.is_empty() {
+                None
+            } else {
+                Some(dict_config.channels.iter().cloned().collect())
+            },
+            action: dict_config.action.clone(),
+        })
+    }
+
     /// Builds an engine with the embedded default rules (notify every parsed
     /// intel line). Used as fallback when the external configuration is
     /// missing or invalid.
@@ -677,6 +928,7 @@ impl PatternEngine {
                 enabled: true,
                 action: ActionConfig::Notify,
             }],
+            dictionaries: Vec::new(),
         };
         Self::from_config(&config)
             .expect("embedded default rules must compile")
@@ -743,6 +995,7 @@ impl PatternEngine {
     ///             system_group: "system".to_string(),
     ///         },
     ///     }],
+    ///     dictionaries: vec![],
     /// };
     /// let (engine, _) = PatternEngine::from_config(&config).unwrap();
     /// let matches = engine.evaluate(
@@ -790,9 +1043,68 @@ impl PatternEngine {
                     });
                 }
             }
+            for dict in &self.dictionaries {
+                if results.len() >= MAX_MATCHES_PER_CHUNK {
+                    break;
+                }
+                if let Some(channels) = &dict.channels
+                    && !channels.contains(channel)
+                {
+                    continue;
+                }
+                for m in dict.automaton.find_iter(&line.text) {
+                    if results.len() >= MAX_MATCHES_PER_CHUNK {
+                        break;
+                    }
+                    if !has_word_boundaries(&line.text, m.start(), m.end()) {
+                        continue;
+                    }
+                    let matched_text = sanitize_display(&line.text[m.start()..m.end()]);
+                    let (named, action) = match dict.action {
+                        DictionaryActionConfig::Notify => (HashMap::new(), ActionConfig::Notify),
+                        DictionaryActionConfig::MapAlert => {
+                            let mut named = HashMap::new();
+                            named.insert("word".to_string(), matched_text);
+                            (
+                                named,
+                                ActionConfig::MapAlert {
+                                    system_group: "word".to_string(),
+                                },
+                            )
+                        }
+                    };
+                    results.push(PatternMatch {
+                        rule_id: dict.id.clone(),
+                        line: line.clone(),
+                        named,
+                        action,
+                    });
+                }
+            }
         }
         results
     }
+}
+
+/// Returns `true` when the byte span `[start, end)` of `text` is bounded on
+/// both sides by a non-word character (or the start/end of the string),
+/// emulating regex's `\b` for [`CompiledDictionary`] matches: [`AhoCorasick`]
+/// finds raw substrings, not whole-word matches, so e.g. a dictionary word
+/// `"Rifter"` must not match inside `"Rifterhampton"`.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn has_word_boundaries(text: &str, start: usize, end: usize) -> bool {
+    let before_ok = match text[..start].chars().next_back() {
+        Some(c) => !is_word_char(c),
+        None => true,
+    };
+    let after_ok = match text[end..].chars().next() {
+        Some(c) => !is_word_char(c),
+        None => true,
+    };
+    before_ok && after_ok
 }
 
 /// Strips control characters (newlines, ANSI escapes, etc.) and truncates the
@@ -874,8 +1186,34 @@ mod tests {
         }
     }
 
+    fn dict(id: &str, words: &[&str]) -> DictionaryRuleConfig {
+        DictionaryRuleConfig {
+            id: id.to_string(),
+            words: words.iter().map(|w| w.to_string()).collect(),
+            case_insensitive: false,
+            channels: Vec::new(),
+            enabled: true,
+            action: DictionaryActionConfig::Notify,
+        }
+    }
+
     fn engine_with(rules: Vec<PatternRuleConfig>) -> (PatternEngine, Vec<PatternError>) {
-        PatternEngine::from_config(&PatternConfig { patterns: rules }).expect("engine should build")
+        PatternEngine::from_config(&PatternConfig {
+            patterns: rules,
+            dictionaries: Vec::new(),
+        })
+        .expect("engine should build")
+    }
+
+    fn engine_with_dicts(
+        rules: Vec<PatternRuleConfig>,
+        dictionaries: Vec<DictionaryRuleConfig>,
+    ) -> (PatternEngine, Vec<PatternError>) {
+        PatternEngine::from_config(&PatternConfig {
+            patterns: rules,
+            dictionaries,
+        })
+        .expect("engine should build")
     }
 
     #[test]
@@ -1047,18 +1385,24 @@ mod tests {
     #[test]
     fn rejects_empty_and_oversized_configs() {
         assert_eq!(
-            PatternEngine::from_config(&PatternConfig { patterns: vec![] })
-                .err()
-                .unwrap(),
+            PatternEngine::from_config(&PatternConfig {
+                patterns: vec![],
+                dictionaries: vec![]
+            })
+            .err()
+            .unwrap(),
             PatternError::EmptyConfig
         );
         let rules = (0..=MAX_RULES)
             .map(|i| rule(&format!("rule_{i}"), ".+"))
             .collect();
         assert!(matches!(
-            PatternEngine::from_config(&PatternConfig { patterns: rules })
-                .err()
-                .unwrap(),
+            PatternEngine::from_config(&PatternConfig {
+                patterns: rules,
+                dictionaries: vec![]
+            })
+            .err()
+            .unwrap(),
             PatternError::TooManyRules(_)
         ));
     }
@@ -1266,5 +1610,142 @@ mod tests {
         let (engine, _) = engine_with(vec![rule("r1", ".+")]);
         let line = engine.parse_line(SAMPLE_LINE).unwrap();
         assert_eq!(line.to_string(), SAMPLE_LINE);
+    }
+
+    #[test]
+    fn dictionary_matches_whole_word() {
+        let (engine, errors) =
+            engine_with_dicts(vec![], vec![dict("ships_en", &["Rifter", "Sabre"])]);
+        assert!(errors.is_empty());
+        let line = "[ 2021.09.08 22:56:47 ] Some Pilot > Rifter incoming";
+        let matches = engine.evaluate("intel", line);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].rule_id, "ships_en");
+        assert_eq!(matches[0].action, ActionConfig::Notify);
+    }
+
+    #[test]
+    fn dictionary_does_not_match_inside_a_longer_word() {
+        let (engine, _) = engine_with_dicts(vec![], vec![dict("ships_en", &["Rifter"])]);
+        let line = "[ 2021.09.08 22:56:47 ] Some Pilot > Rifterhampton is not a ship";
+        assert!(engine.evaluate("intel", line).is_empty());
+    }
+
+    #[test]
+    fn dictionary_is_ascii_case_insensitive_when_configured() {
+        let mut insensitive = dict("ships_en", &["Rifter"]);
+        insensitive.case_insensitive = true;
+        let (engine, _) = engine_with_dicts(vec![], vec![insensitive]);
+        let line = "[ 2021.09.08 22:56:47 ] Some Pilot > rifter spotted";
+        assert_eq!(engine.evaluate("intel", line).len(), 1);
+
+        let (engine, _) = engine_with_dicts(vec![], vec![dict("ships_en_2", &["Rifter"])]);
+        assert!(engine.evaluate("intel", line).is_empty());
+    }
+
+    #[test]
+    fn dictionary_channel_filter_limits_rules() {
+        let mut filtered = dict("ships_en", &["Rifter"]);
+        filtered.channels = vec![String::from("other-channel")];
+        let (engine, _) = engine_with_dicts(vec![], vec![filtered]);
+        let line = "[ 2021.09.08 22:56:47 ] Some Pilot > Rifter spotted";
+        assert!(engine.evaluate("intel", line).is_empty());
+        assert_eq!(engine.evaluate("other-channel", line).len(), 1);
+    }
+
+    #[test]
+    fn disabled_dictionaries_are_skipped() {
+        let mut disabled = dict("ships_en", &["Rifter"]);
+        disabled.enabled = false;
+        let (engine, errors) = engine_with_dicts(vec![], vec![disabled]);
+        assert!(errors.is_empty());
+        let line = "[ 2021.09.08 22:56:47 ] Some Pilot > Rifter spotted";
+        assert!(engine.evaluate("intel", line).is_empty());
+    }
+
+    #[test]
+    fn dictionary_and_pattern_ids_share_namespace() {
+        let (_, errors) =
+            engine_with_dicts(vec![rule("dup", ".+")], vec![dict("dup", &["Rifter"])]);
+        assert_eq!(errors, vec![PatternError::DuplicateId(String::from("dup"))]);
+    }
+
+    #[test]
+    fn rejects_too_many_dictionaries() {
+        let dicts = (0..=MAX_DICTIONARIES)
+            .map(|i| dict(&format!("dict_{i}"), &["Rifter"]))
+            .collect();
+        assert!(matches!(
+            PatternEngine::from_config(&PatternConfig {
+                patterns: vec![],
+                dictionaries: dicts
+            })
+            .err()
+            .unwrap(),
+            PatternError::TooManyDictionaries(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_dictionary_with_no_words_or_too_many() {
+        let (_, errors) = engine_with_dicts(vec![], vec![dict("empty", &[])]);
+        assert_eq!(
+            errors,
+            vec![PatternError::InvalidDictionarySize(String::from("empty"))]
+        );
+
+        let many_words: Vec<String> = (0..=MAX_DICTIONARY_WORDS)
+            .map(|i| format!("w{i}"))
+            .collect();
+        let mut too_many = dict("many", &[]);
+        too_many.words = many_words;
+        let (_, errors) = engine_with_dicts(vec![], vec![too_many]);
+        assert_eq!(
+            errors,
+            vec![PatternError::InvalidDictionarySize(String::from("many"))]
+        );
+    }
+
+    #[test]
+    fn rejects_dictionary_word_too_long() {
+        let long_word = "a".repeat(MAX_DICTIONARY_WORD_LEN + 1);
+        let (_, errors) = engine_with_dicts(vec![], vec![dict("r1", &[long_word.as_str()])]);
+        assert_eq!(
+            errors,
+            vec![PatternError::InvalidDictionaryWord {
+                id: String::from("r1"),
+                word: long_word
+            }]
+        );
+    }
+
+    #[test]
+    fn dictionary_map_alert_synthesizes_word_group() {
+        let mut map_alert = dict("systems", &["1DQ1-A"]);
+        map_alert.action = DictionaryActionConfig::MapAlert;
+        let (engine, errors) = engine_with_dicts(vec![], vec![map_alert]);
+        assert!(errors.is_empty());
+        let matches = engine.evaluate("intel", SAMPLE_LINE);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].named.get("word").unwrap(), "1DQ1-A");
+        assert_eq!(
+            matches[0].action,
+            ActionConfig::MapAlert {
+                system_group: String::from("word")
+            }
+        );
+    }
+
+    #[test]
+    fn patterns_and_dictionaries_both_run_over_the_same_line() {
+        let (engine, _) = engine_with_dicts(
+            vec![rule("clear_report", "clear")],
+            vec![dict("ships_en", &["Rifter"])],
+        );
+        let line = "[ 2021.09.08 22:56:47 ] Some Pilot > Rifter clear";
+        let matches = engine.evaluate("intel", line);
+        let mut ids: Vec<&str> = matches.iter().map(|m| m.rule_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["clear_report", "ships_en"]);
     }
 }

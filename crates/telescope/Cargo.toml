@@ -37,6 +37,13 @@ hyper-util = { version = "0.1.17", features = ["full"] }
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
 directories = "6.0.0"
 regex = "1.12.1"
+# Multi-literal ("dictionary") matching for pattern rules whose alternatives
+# are plain words rather than a hand-written regex (e.g. ship names in
+# several languages) -- already pulled transitively by `regex`, declared
+# directly here so patterns.rs can build its own automaton per dictionary
+# instead of being bound by the single combined RegexSet's pattern-length
+# budget. See the "Dictionary rules" section of patterns.rs's module docs.
+aho-corasick = "1.1"
 native_tools = { path = "../native_tools/"}
 tracing = "0.1"
 # Bridges `log`-based diagnostics from dependencies (hyper, notify, wgpu,
