@@ -67,8 +67,7 @@ impl Service<Request<IncomingBody>> for AuthService2 {
                                 // code/state) since a bare span has no
                                 // fields unless explicitly added.
                                 let _span =
-                                    tracing::info_span!("http service request response")
-                                        .entered();
+                                    tracing::info_span!("http service request response").entered();
 
                                 let _res = atx.send(message).await;
                             });

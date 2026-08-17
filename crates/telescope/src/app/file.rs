@@ -33,7 +33,8 @@ impl EventHandler for IntelEventHandler {
                                     .build()
                                     .unwrap();
                                 runtime.block_on(async {
-                                    let _span = tracing::info_span!("spawned Auth success message").entered();
+                                    let _span = tracing::info_span!("spawned Auth success message")
+                                        .entered();
 
                                     let _ = app_sender_file
                                         .send(Message::IntelFileChanged(file_name.clone()))

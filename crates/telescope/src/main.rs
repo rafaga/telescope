@@ -1,6 +1,9 @@
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+
 // Tracy memory profiling: reports every allocation/deallocation made through
 // the global allocator to Tracy's memory pane (live usage, alloc/free
 // timeline, and allocation-to-zone correlation). `tracing_tracy::client` is
@@ -35,8 +38,7 @@ fn main() -> eframe::Result {
     //     shared `tracy_client::Client` itself (`Client::start()` is
     //     idempotent); open the Tracy desktop app to connect, it
     //     auto-discovers the running process.
-    use tracing_subscriber::Layer as _;
-    use tracing_subscriber::layer::SubscriberExt as _;
+
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env());
 
