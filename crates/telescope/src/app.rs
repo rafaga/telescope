@@ -252,8 +252,8 @@ impl eframe::App for TelescopeApp {
             }
 
             let startup_regions = self.settings.get_startup_regions().clone();
-            for region  in startup_regions {
-                if regions.contains(&(region as u32) ){
+            for region in startup_regions {
+                if regions.contains(&(region as u32)) {
                     self.behavior
                         .tile_data
                         .entry(region)
@@ -405,7 +405,8 @@ impl TelescopeApp {
                                 .unwrap();
                             let app_msg_tx = Arc::clone(&self.app_msg.0);
                             runtime.block_on(async {
-                                let _span = tracing::info_span!("spawned intel message data").entered();
+                                let _span =
+                                    tracing::info_span!("spawned intel message data").entered();
                                 let _ = app_msg_tx
                                     .send(Message::GenericNotification((
                                         Type::Error,
@@ -862,13 +863,18 @@ impl TelescopeApp {
                 start = 0;
             }
             if file_length > start && intel_file.seek(SeekFrom::Start(start)).is_ok() {
-                // Create a reader with a fixed length
+                // EVE Online writes chat logs as UTF-16LE, never UTF-8, so
+                // this cannot use read_to_string (it requires valid UTF-8
+                // and fails on the very first byte of every real log file,
+                // silently, since the caller only checks `is_ok()`). Read
+                // the raw bytes and decode them ourselves.
                 let mut chunk = intel_file.take(file_length - start);
-                let mut new_data = String::new();
-                if let Ok(bytes_read) = chunk.read_to_string(&mut new_data) {
+                let mut raw = Vec::new();
+                if let Ok(bytes_read) = chunk.read_to_end(&mut raw) {
+                    let (new_data, consumed) = decode_utf16le_chunk(&raw[..bytes_read]);
                     self.parse_intel_data(&channel, &new_data);
                     log_files_map.entry(file_name).and_modify(|hash_entry| {
-                        hash_entry.0 = start + bytes_read as u64;
+                        hash_entry.0 = start + consumed as u64;
                         hash_entry.1 = Utc::now();
                     });
                 }
@@ -1467,5 +1473,112 @@ impl TelescopeApp {
                 }
             }
         }
+    }
+}
+
+/// Decodes a raw byte chunk read from an EVE Online chat log as UTF-16LE.
+///
+/// EVE writes chat logs as UTF-16LE and re-emits a byte-order mark (U+FEFF)
+/// not only at the start of the file but at the start of every appended
+/// line (each flush is encoded as its own fragment, BOM included) -- every
+/// occurrence is stripped here, not just a single leading one, since
+/// [`patterns::PatternEngine::parse_line`]'s line regex is anchored on a
+/// literal `[` and would otherwise fail to match every line but the first.
+///
+/// Returns the decoded text and the number of bytes actually consumed from
+/// `raw`. If `raw`'s length is odd, the trailing byte is half of a UTF-16
+/// code unit split across two reads (the writer flushed mid-character); it
+/// is left unconsumed (excluded from the returned count) so the caller
+/// re-reads it, paired with its other half, on the next chunk instead of
+/// corrupting decoding here. Malformed code units (unpaired surrogates)
+/// are replaced with U+FFFD via [`String::from_utf16_lossy`] rather than
+/// failing the whole read.
+fn decode_utf16le_chunk(raw: &[u8]) -> (String, usize) {
+    let usable_len = raw.len() - (raw.len() % 2);
+    let code_units: Vec<u16> = raw[..usable_len]
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    let text = String::from_utf16_lossy(&code_units).replace('\u{feff}', "");
+    (text, usable_len)
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::decode_utf16le_chunk;
+
+    /// Encodes `s` as raw UTF-16LE bytes, the same wire format EVE writes,
+    /// without needing an encoding crate as a test dependency.
+    fn utf16le_bytes(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn decodes_plain_ascii_line() {
+        let raw = utf16le_bytes("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear\r\n");
+        let (text, consumed) = decode_utf16le_chunk(&raw);
+        assert_eq!(
+            text,
+            "[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear\r\n"
+        );
+        assert_eq!(consumed, raw.len());
+    }
+
+    #[test]
+    fn strips_leading_file_bom() {
+        let raw = utf16le_bytes("\u{feff}[ 2021.09.08 22:56:47 ] A > hi\r\n");
+        let (text, _) = decode_utf16le_chunk(&raw);
+        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r\n");
+    }
+
+    #[test]
+    fn strips_every_per_line_bom_not_just_the_first() {
+        // Real EVE logs re-emit U+FEFF at the start of every appended
+        // line, not only once at the top of the file.
+        let raw = utf16le_bytes(
+            "\u{feff}[ 2021.09.08 22:56:47 ] A > line one\r\n\u{feff}[ 2021.09.08 22:56:48 ] B > line two\r\n",
+        );
+        let (text, _) = decode_utf16le_chunk(&raw);
+        assert_eq!(
+            text,
+            "[ 2021.09.08 22:56:47 ] A > line one\r\n[ 2021.09.08 22:56:48 ] B > line two\r\n"
+        );
+        assert!(!text.contains('\u{feff}'));
+    }
+
+    #[test]
+    fn decodes_non_latin_script_correctly() {
+        // The same corpus this fix was validated against has a large
+        // Chinese-speaking population; a naive UTF-8 read does not just
+        // mis-decode this text, it fails to decode the file at all (0xFF,
+        // the first byte of the UTF-16LE BOM, is never a valid UTF-8
+        // start byte).
+        let raw = utf16le_bytes("[ 2023.03.27 02:19:05 ] Alga Roben > 有萨沙甲亢的配置吗\r\n");
+        let (text, consumed) = decode_utf16le_chunk(&raw);
+        assert_eq!(
+            text,
+            "[ 2023.03.27 02:19:05 ] Alga Roben > 有萨沙甲亢的配置吗\r\n"
+        );
+        assert_eq!(consumed, raw.len());
+    }
+
+    #[test]
+    fn holds_back_a_trailing_split_code_unit() {
+        let full = utf16le_bytes("[ 2021.09.08 22:56:47 ] A > hi\r\n");
+        // Simulate a read landing mid-character: drop the last byte,
+        // leaving a dangling first byte of the final code unit ('\n').
+        let raw = &full[..full.len() - 1];
+        let (text, consumed) = decode_utf16le_chunk(raw);
+        // The dangling byte must not be consumed nor corrupt the decoded
+        // text.
+        assert_eq!(consumed, raw.len() - 1);
+        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r");
+    }
+
+    #[test]
+    fn empty_input_decodes_to_empty_output() {
+        let (text, consumed) = decode_utf16le_chunk(&[]);
+        assert_eq!(text, "");
+        assert_eq!(consumed, 0);
     }
 }
