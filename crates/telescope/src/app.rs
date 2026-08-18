@@ -420,6 +420,9 @@ impl TelescopeApp {
                             let _ = self.settings.scan_channels_logs();
                         }
                     }
+                },
+                Message::UpdateIntelChannels() => {
+                    let _ = self.settings.scan_channels_logs();
                 }
             };
         }
@@ -1553,11 +1556,11 @@ mod decode_tests {
         // mis-decode this text, it fails to decode the file at all (0xFF,
         // the first byte of the UTF-16LE BOM, is never a valid UTF-8
         // start byte).
-        let raw = utf16le_bytes("[ 2023.03.27 02:19:05 ] Alga Roben > 有萨沙甲亢的配置吗\r\n");
+        let raw = utf16le_bytes("[ 2023.03.27 02:19:05 ] Algae Roben > 有萨沙甲亢的配置吗\r\n");
         let (text, consumed) = decode_utf16le_chunk(&raw);
         assert_eq!(
             text,
-            "[ 2023.03.27 02:19:05 ] Alga Roben > 有萨沙甲亢的配置吗\r\n"
+            "[ 2023.03.27 02:19:05 ] Algae Roben > 有萨沙甲亢的配置吗\r\n"
         );
         assert_eq!(consumed, raw.len());
     }

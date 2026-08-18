@@ -48,6 +48,7 @@ pub enum Message {
     IntelFileChanged(String),
     UpdateIntelDirectory(PathBuf),
     DefaultIntelDirectory,
+    UpdateIntelChannels(),
 }
 
 pub enum CharacterSync {
