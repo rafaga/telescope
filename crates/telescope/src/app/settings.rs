@@ -29,10 +29,25 @@ impl Default for FilePaths {
             .join("EVE")
             .join("logs")
             .join("ChatLogs");
+        // A real default path (instead of the previous empty `PathBuf`)
+        // so `database_updater::DatabaseUpdater` has somewhere to build
+        // `sde.db` on a first run without the user having to type a path
+        // into Settings -> Data Sources first. Relative and next to
+        // `telescope.toml` (i.e. wherever Telescope is run from) rather
+        // than an OS data/home directory -- `sde.db` is meant to sit
+        // alongside the app, not get tucked away somewhere the user has
+        // to go look for it. `db` (the ESI/player database, managed by
+        // `webb::esi::EsiManager`) deliberately keeps its previous empty
+        // default here -- unlike `DatabaseUpdater`, `EsiManager::new`'s
+        // startup path doesn't create its parent directory before
+        // opening it, so pointing it at a directory that doesn't exist
+        // yet would turn into a startup panic instead of the harmless
+        // (if useless) SQLite private-temp-database behavior an empty
+        // path gets today.
         Self {
             settings: Path::new("telescope.toml").to_path_buf(),
             intel: tpath,
-            sde: PathBuf::new(),
+            sde: Path::new("sde.db").to_path_buf(),
             db: PathBuf::new(),
         }
     }
@@ -170,7 +185,7 @@ impl Settings {
 
     pub(crate) fn scan_channels_logs(&mut self) -> Result<()> {
         self.channels.available.clear();
-        if self.get_intel().exists() {
+        if !self.get_intel().exists() {
             return Err(SettingsError::InvalidDirectory(String::new()));
         }
         if let Ok(mut directory) = self.get_intel().read_dir() {
@@ -254,6 +269,19 @@ impl Settings {
         self.paths.sde = path.to_path_buf();
         self.saved = false;
         Ok(())
+    }
+
+    /// Test-only escape hatch around [`Self::set_sde`]'s existence
+    /// check, for exercising callers (e.g.
+    /// `TelescopeApp::sde_build_cache_dir`) against paths -- like an
+    /// empty one -- that can legitimately show up in a `Settings` loaded
+    /// from an old `telescope.toml` (predating
+    /// `FilePaths::default`'s current, always-non-empty `sde` default)
+    /// but that `set_sde` itself would otherwise refuse to construct in
+    /// a test.
+    #[cfg(test)]
+    pub(crate) fn set_sde_for_test(&mut self, path: &Path) {
+        self.paths.sde = path.to_path_buf();
     }
 
     pub fn its_saved(&self) -> bool {
@@ -341,3 +369,59 @@ impl error::Error for SettingsError {
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 impl SettingsError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Creates (and clears) a scratch directory under the OS temp dir,
+    /// unique to this test process, so parallel test runs don't collide.
+    fn temp_dir(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "telescope-settings-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    // Regression test for the intel-directory-change bug: `set_intel` only
+    // accepts paths that already exist, so `scan_channels_logs` must scan
+    // successfully for exactly the directories it can ever actually be
+    // called with -- an inverted `if self.get_intel().exists()` guard here
+    // used to bail out before scanning in precisely that (only realistic)
+    // case, silently leaving `available` empty and making the Settings UI
+    // report "No intel channels detected" no matter what was in the folder.
+    #[test]
+    fn scan_channels_logs_populates_available_channels_for_an_existing_directory() {
+        let dir = temp_dir("existing");
+        fs::write(dir.join("Local_20230101_000000_12345.txt"), b"").unwrap();
+        fs::write(dir.join("wc.Vale+Tribute_20230101_000000_12345.txt"), b"").unwrap();
+
+        let mut settings = Settings::default();
+        settings.set_intel(&dir).unwrap();
+
+        assert!(settings.scan_channels_logs().is_ok());
+
+        let available = settings.get_available_channels();
+        assert!(available.contains_key("Local"));
+        assert!(available.contains_key("wc.Vale+Tribute"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_channels_logs_errors_when_the_directory_does_not_exist() {
+        let mut settings = Settings::default();
+        // `set_intel` itself rejects nonexistent paths, so the field is set
+        // directly here to reach `scan_channels_logs` with a path that
+        // doesn't exist -- exercising the one branch this guard is actually
+        // meant to cover.
+        settings.paths.intel = PathBuf::from("/nonexistent/telescope-test-path-xyz");
+
+        assert!(settings.scan_channels_logs().is_err());
+    }
+}

@@ -48,7 +48,19 @@ pub enum Message {
     IntelFileChanged(String),
     UpdateIntelDirectory(PathBuf),
     DefaultIntelDirectory,
-    UpdateIntelChannels(),
+    /// Sent by `database_updater::DatabaseUpdater` while its background
+    /// update check/build is running, one per phase -- drives the
+    /// status text in `database_updater::DatabaseUpdater`'s progress
+    /// window (`DatabaseUpdater::set_status`).
+    DatabaseUpdateProgress(String),
+    /// Sent by `database_updater::DatabaseUpdater` once its background
+    /// update check finishes; also hides the progress window
+    /// (`DatabaseUpdater::hide`). `true` means `sde.db` was (re)built
+    /// and should be reloaded (see `TelescopeApp::handle_database_updated`);
+    /// `false` means it was already up to date, or the check/build
+    /// failed (the failure itself was already reported separately via a
+    /// `GenericNotification`).
+    DatabaseUpdated(bool),
 }
 
 pub enum CharacterSync {

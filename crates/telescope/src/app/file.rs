@@ -1,18 +1,27 @@
 use crate::app::messages::{Message, Type};
 use notify::EventHandler;
 use notify::event::{CreateKind, ModifyKind};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::mpsc::Sender;
 
 pub struct IntelEventHandler {
     app_msg: Arc<Sender<Message>>,
-    channels: Arc<Vec<String>>,
+    // Shared with `TelescopeApp` so the monitored-channel list can be
+    // updated in place after the user changes the intel directory or edits
+    // the channel selection in Settings; `IntelEventHandler` is moved into
+    // the `notify::Watcher` at construction time and can never be replaced,
+    // so a plain snapshot here would go stale forever after the first save.
+    channels: Arc<RwLock<Vec<String>>>,
 }
 
 impl EventHandler for IntelEventHandler {
     fn handle_event(&mut self, event: Result<notify::Event, notify::Error>) {
-        if self.channels.is_empty() {
+        let channels = match self.channels.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if channels.is_empty() {
             return;
         }
         if let Ok(event) = event {
@@ -22,8 +31,7 @@ impl EventHandler for IntelEventHandler {
                     if let Some(path) = event.paths[0].file_name() {
                         let file_name = path.to_string_lossy().to_string();
                         let splitted_file_name = file_name.split_once('_').unwrap();
-                        if self
-                            .channels
+                        if channels
                             .binary_search(&splitted_file_name.0.to_string())
                             .is_ok()
                         {
@@ -87,7 +95,7 @@ impl EventHandler for IntelEventHandler {
 
 impl IntelEventHandler {
     #[tracing::instrument(skip(app_sender))]
-    pub fn new(channels: Arc<Vec<String>>, app_sender: Arc<Sender<Message>>) -> Self {
+    pub fn new(channels: Arc<RwLock<Vec<String>>>, app_sender: Arc<Sender<Message>>) -> Self {
         Self {
             app_msg: app_sender,
             channels,

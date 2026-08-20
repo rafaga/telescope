@@ -22,7 +22,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
@@ -34,6 +34,7 @@ use self::tiles::RegionPane;
 use native_tools::dialog::*;
 
 mod data;
+mod database_updater;
 mod file;
 mod messages;
 pub mod patterns;
@@ -73,8 +74,18 @@ pub struct TelescopeApp {
     task_auth: AuthSpawner,
     settings: Settings,
     watcher: RecommendedWatcher,
+    // Live-shared handle for the set of channels the file watcher's event
+    // handler filters on. `IntelEventHandler` is moved into `watcher` at
+    // construction time and can never be swapped out afterwards, so the
+    // monitored-channel list it filters on has to be reachable through
+    // shared, interior-mutable storage; otherwise every channel selected or
+    // saved after startup is silently ignored until the app restarts.
+    intel_channels: Arc<RwLock<Vec<String>>>,
     dlg_intel_dir: Dialog,
     pattern_engine: PatternEngine,
+    // UI state for the "updating the SDE database" progress window --
+    // see `database_updater`'s module docs.
+    database_updater: database_updater::DatabaseUpdater,
 }
 
 impl Default for TelescopeApp {
@@ -91,6 +102,10 @@ impl Default for TelescopeApp {
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
         let (mtx, mrx) = broadcast::channel::<messages::MapSync>(30);
+        // Wrapped in an Arc immediately (rather than after the sde/esi
+        // setup below, as before) so it can be handed to
+        // `database_updater::DatabaseUpdater::spawn` here at startup.
+        let arc_msg_sender = Arc::new(gtx);
 
         let app_data = AppData::new();
         let esi = webb::esi::EsiManager::new(
@@ -102,11 +117,41 @@ impl Default for TelescopeApp {
             settings.get_db(),
         );
 
+        // `sde.get_fingerprint()` is a local, synchronous check (no
+        // network): `Ok(Some((_, true)))` means `sde.db` exists and its
+        // `sdeFingerprint` row's hash still matches its content, so it's
+        // safe to load right away. Anything else -- the file doesn't
+        // exist yet, it predates the `sdeFingerprint` table, or the row
+        // doesn't match (hand-edited, or a build that never finished
+        // writing it) -- leaves `universe` at its empty default rather
+        // than loading data that might not be trustworthy; `universe`
+        // gets populated once `DatabaseUpdater` (spawned unconditionally
+        // below) finishes building a fresh database, via
+        // `Message::DatabaseUpdated`/`Self::handle_database_updated`.
+        //
+        // This is deliberately independent of the background check
+        // below: a self-consistent database can still be for an old SDE
+        // build, which `get_fingerprint` alone can't tell -- that's what
+        // `DatabaseUpdater`'s `sde_index::update_as_needed` call (which
+        // does need the network) is for.
         let mut sde = SdeManager::new(settings.get_sde(), settings.get_factor());
-        let _ = sde.get_universe();
-
+        if let Ok(Some((_fingerprint, true))) = sde.get_fingerprint() {
+            let _ = sde.get_universe();
+        }
+        // Checks CCP's SDE index in the background and (re)builds
+        // `sde.db` if it's missing or a newer build is available. Never
+        // blocks startup -- see `database_updater`'s module docs for why
+        // the old stub here (a synchronous call to a nonexistent
+        // `eframe::run_ui_native`) was replaced.
+        let sde_cache_dir = Self::sde_build_cache_dir(&settings);
+        database_updater::DatabaseUpdater::spawn(
+            settings.get_sde().to_path_buf(),
+            sde_cache_dir.join("data"),
+            sde_cache_dir.join("sde"),
+            Arc::clone(&arc_msg_sender),
+            false,
+        );
         let arc_map_sender = Arc::new(mtx);
-        let arc_msg_sender = Arc::new(gtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
 
@@ -141,10 +186,11 @@ impl Default for TelescopeApp {
         }
         let pattern_engine = pattern_report.engine;
 
-        let intel_event_handler = IntelEventHandler::new(
-            settings.get_cloned_monitored_channels(),
-            Arc::clone(&arc_msg_sender),
-        );
+        let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(
+            (*settings.get_cloned_monitored_channels()).clone(),
+        ));
+        let intel_event_handler =
+            IntelEventHandler::new(Arc::clone(&intel_channels), Arc::clone(&arc_msg_sender));
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
         let mut dlg_intel_dir = Dialog::default();
         dlg_intel_dir.dialog_type = DialogType::Directory;
@@ -184,8 +230,10 @@ impl Default for TelescopeApp {
             task_auth: authmon,
             settings,
             watcher,
+            intel_channels,
             dlg_intel_dir,
             pattern_engine,
+            database_updater: database_updater::DatabaseUpdater::default(),
         }
     }
 }
@@ -220,8 +268,10 @@ impl eframe::App for TelescopeApp {
             task_auth: _,
             settings: _,
             watcher: _,
+            intel_channels: _,
             dlg_intel_dir: _,
             pattern_engine: _,
+            database_updater: _,
         } = self;
 
         if !self.initialized {
@@ -328,6 +378,8 @@ impl eframe::App for TelescopeApp {
             self.open_settings_window(ui.ctx());
         }
 
+        self.database_updater.show(ui.ctx());
+
         egui::CentralPanel::default().show(ui, |ui| {
             let _span = tracing::info_span!("inserting map").entered();
             if let Some(tree) = &mut self.tree {
@@ -388,6 +440,15 @@ impl TelescopeApp {
                 Message::UpdateIntelDirectory(directory_path) => {
                     if self.settings.set_intel(directory_path.as_path()).is_ok() {
                         let _ = self.settings.scan_channels_logs();
+                    }
+                }
+                Message::DatabaseUpdateProgress(status) => {
+                    self.database_updater.set_status(status);
+                }
+                Message::DatabaseUpdated(rebuilt) => {
+                    self.database_updater.hide();
+                    if rebuilt {
+                        self.handle_database_updated();
                     }
                 }
                 Message::DefaultIntelDirectory => {
@@ -654,6 +715,18 @@ impl TelescopeApp {
                                             let _ = self.settings.set_db(Path::new(&str_db));
                                         }
                                     });
+                                    ui.horizontal(|ui|{
+                                        if ui.button("🔄 Check for SDE updates").clicked() {
+                                            let sde_cache_dir = Self::sde_build_cache_dir(&self.settings);
+                                            database_updater::DatabaseUpdater::spawn(
+                                                self.settings.get_sde().to_path_buf(),
+                                                sde_cache_dir.join("data"),
+                                                sde_cache_dir.join("sde"),
+                                                Arc::clone(&self.app_msg.0),
+                                                false,
+                                            );
+                                        }
+                                    });
                                 },
                                 SettingsPage::Characters => {
                                     ui.label(RichText::new("Linked characters").font(FontId::proportional(20.0)));
@@ -813,6 +886,15 @@ impl TelescopeApp {
                             }
                         }
                         monitored_channels.sort_unstable();
+                        // Push the freshly-saved selection into the live
+                        // handle the running watcher's event handler reads
+                        // from, so newly checked/unchecked channels take
+                        // effect immediately instead of only after a
+                        // restart (the watcher's `IntelEventHandler` is
+                        // constructed once and can't be swapped out).
+                        if let Ok(mut guard) = self.intel_channels.write() {
+                            *guard = monitored_channels.clone();
+                        }
                         if monitored_channels.is_empty() && self.settings.get_intel().exists() {
                             let _ = self.watcher.unwatch(self.settings.get_intel());
                         } else {
@@ -992,6 +1074,62 @@ impl TelescopeApp {
                 )));
             }
         };
+    }
+
+    /// Base scratch directory for `database_updater::DatabaseUpdater`'s
+    /// background update/build (see `sde::builder::update::UpdatePaths`):
+    /// callers join `"data"` onto it for the downloaded zip and the
+    /// small `.build` file that avoids re-downloading unchanged data,
+    /// and `"sde"` for the decompressed SDE tree. Kept next to `sde.db`
+    /// itself (falling back to a relative `sde-build-cache` if
+    /// `Settings::get_sde()` isn't configured yet, e.g. on a first run
+    /// before the user has set a path in Settings -> Data Sources) so
+    /// it's obvious, on disk, what it belongs to; it isn't meant to be
+    /// user-facing.
+    fn sde_build_cache_dir(settings: &Settings) -> PathBuf {
+        match settings.get_sde().parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join("sde-build-cache"),
+            _ => PathBuf::from("sde-build-cache"),
+        }
+    }
+
+    /// Reloads `self.universe` from `sde.db` after
+    /// `database_updater::DatabaseUpdater` has (re)built it.
+    ///
+    /// Note this only refreshes the in-memory `universe` data (used e.g.
+    /// to look up region/system names and coordinates); every map pane
+    /// (`RegionPane`/`UniversePane`, see `tiles.rs`) and the search box
+    /// already open their own `SdeManager` against `settings.get_sde()`
+    /// on demand, so they pick up the new database automatically. What
+    /// does *not* happen live is regenerating the region *tile* list
+    /// built once at startup (`create_tree`/the `self.behavior.tile_data`
+    /// entries) -- a region that didn't exist in `sde.db` before this
+    /// update (i.e. this was the very first successful build) won't get
+    /// a tile until Telescope is restarted.
+    #[tracing::instrument(skip(self))]
+    fn handle_database_updated(&mut self) {
+        let mut sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
+        match sde.get_universe() {
+            Ok(_) => {
+                self.universe = sde.universe;
+                self.task_msg.spawn(Message::GenericNotification((
+                    Type::Info,
+                    String::from("TelescopeApp"),
+                    String::from("handle_database_updated"),
+                    String::from(
+                        "SDE data reloaded. Restart Telescope to see newly available regions on the map.",
+                    ),
+                )));
+            }
+            Err(t_error) => {
+                self.task_msg.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("TelescopeApp"),
+                    String::from("handle_database_updated"),
+                    t_error.to_string(),
+                )));
+            }
+        }
     }
 
     #[tracing::instrument(skip(self, message))]
@@ -1583,5 +1721,36 @@ mod decode_tests {
         let (text, consumed) = decode_utf16le_chunk(&[]);
         assert_eq!(text, "");
         assert_eq!(consumed, 0);
+    }
+}
+
+#[cfg(test)]
+mod sde_build_cache_dir_tests {
+    use super::TelescopeApp;
+    use super::settings::Settings;
+    use std::path::Path;
+
+    // `Settings::default()`'s `sde` path is always non-empty now (see
+    // `settings::FilePaths::default`), so this is the realistic case:
+    // the cache dir sits next to `sde.db`, not off on its own.
+    #[test]
+    fn sits_next_to_the_configured_sde_database() {
+        let settings = Settings::default();
+        let cache_dir = TelescopeApp::sde_build_cache_dir(&settings);
+        assert_eq!(cache_dir.file_name(), Some("sde-build-cache".as_ref()));
+        assert_eq!(cache_dir.parent(), settings.get_sde().parent());
+    }
+
+    // Regression test for the empty-path case `DatabaseUpdater::run`
+    // also guards against directly: an unconfigured (or pre-default,
+    // loaded-from-an-old-`telescope.toml`) `sde` path has no parent
+    // directory to sit next to, so this must fall back to a relative
+    // path instead of panicking or joining onto nothing.
+    #[test]
+    fn falls_back_to_a_relative_path_when_sde_is_unconfigured() {
+        let mut settings = Settings::default();
+        settings.set_sde_for_test(Path::new(""));
+        let cache_dir = TelescopeApp::sde_build_cache_dir(&settings);
+        assert_eq!(cache_dir, Path::new("sde-build-cache"));
     }
 }

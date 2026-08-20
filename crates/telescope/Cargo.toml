@@ -18,7 +18,19 @@ profile-with-tracy = ["dep:tracing-tracy"]
 
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-sde = { version = "0.2.1" }
+# `builder` pulls in reqwest/tokio/zip/etc. (see sde's own Cargo.toml) so
+# `database_updater` can drive the same check-for-a-new-build/download/
+# parse steps `sde`'s own `sde-builder` CLI does -- see
+# `crates/telescope/src/app/database_updater.rs`.
+sde = { version = "0.2.2", features = ["builder"] }
+# Only needed here to name the `rusqlite::Connection` handed to
+# `sde::builder::schema::create_schema`/`Parser::build_database` --
+# `database_updater.rs` owns opening/creating the `sde.db` file itself
+# (there's no higher-level entry point in `sde` today that would do this
+# on its own; see that module's docs). Cargo unifies this with the same
+# `rusqlite` version `sde`/`webb` already pull in, so this doesn't
+# duplicate the SQLite build.
+rusqlite = { version = "0.40" }
 kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
 egui-map = { version = "0.3.1" }
