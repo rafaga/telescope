@@ -29,10 +29,25 @@ impl Default for FilePaths {
             .join("EVE")
             .join("logs")
             .join("ChatLogs");
+        // A real default path (instead of the previous empty `PathBuf`)
+        // so `database_updater::DatabaseUpdater` has somewhere to build
+        // `sde.db` on a first run without the user having to type a path
+        // into Settings -> Data Sources first. Relative and next to
+        // `telescope.toml` (i.e. wherever Telescope is run from) rather
+        // than an OS data/home directory -- `sde.db` is meant to sit
+        // alongside the app, not get tucked away somewhere the user has
+        // to go look for it. `db` (the ESI/player database, managed by
+        // `webb::esi::EsiManager`) deliberately keeps its previous empty
+        // default here -- unlike `DatabaseUpdater`, `EsiManager::new`'s
+        // startup path doesn't create its parent directory before
+        // opening it, so pointing it at a directory that doesn't exist
+        // yet would turn into a startup panic instead of the harmless
+        // (if useless) SQLite private-temp-database behavior an empty
+        // path gets today.
         Self {
             settings: Path::new("telescope.toml").to_path_buf(),
             intel: tpath,
-            sde: PathBuf::new(),
+            sde: Path::new("sde.db").to_path_buf(),
             db: PathBuf::new(),
         }
     }
@@ -254,6 +269,19 @@ impl Settings {
         self.paths.sde = path.to_path_buf();
         self.saved = false;
         Ok(())
+    }
+
+    /// Test-only escape hatch around [`Self::set_sde`]'s existence
+    /// check, for exercising callers (e.g.
+    /// `TelescopeApp::sde_build_cache_dir`) against paths -- like an
+    /// empty one -- that can legitimately show up in a `Settings` loaded
+    /// from an old `telescope.toml` (predating
+    /// `FilePaths::default`'s current, always-non-empty `sde` default)
+    /// but that `set_sde` itself would otherwise refuse to construct in
+    /// a test.
+    #[cfg(test)]
+    pub(crate) fn set_sde_for_test(&mut self, path: &Path) {
+        self.paths.sde = path.to_path_buf();
     }
 
     pub fn its_saved(&self) -> bool {
