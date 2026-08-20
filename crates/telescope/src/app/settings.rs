@@ -170,7 +170,7 @@ impl Settings {
 
     pub(crate) fn scan_channels_logs(&mut self) -> Result<()> {
         self.channels.available.clear();
-        if self.get_intel().exists() {
+        if !self.get_intel().exists() {
             return Err(SettingsError::InvalidDirectory(String::new()));
         }
         if let Ok(mut directory) = self.get_intel().read_dir() {
@@ -341,3 +341,59 @@ impl error::Error for SettingsError {
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 impl SettingsError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Creates (and clears) a scratch directory under the OS temp dir,
+    /// unique to this test process, so parallel test runs don't collide.
+    fn temp_dir(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "telescope-settings-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    // Regression test for the intel-directory-change bug: `set_intel` only
+    // accepts paths that already exist, so `scan_channels_logs` must scan
+    // successfully for exactly the directories it can ever actually be
+    // called with -- an inverted `if self.get_intel().exists()` guard here
+    // used to bail out before scanning in precisely that (only realistic)
+    // case, silently leaving `available` empty and making the Settings UI
+    // report "No intel channels detected" no matter what was in the folder.
+    #[test]
+    fn scan_channels_logs_populates_available_channels_for_an_existing_directory() {
+        let dir = temp_dir("existing");
+        fs::write(dir.join("Local_20230101_000000_12345.txt"), b"").unwrap();
+        fs::write(dir.join("wc.Vale+Tribute_20230101_000000_12345.txt"), b"").unwrap();
+
+        let mut settings = Settings::default();
+        settings.set_intel(&dir).unwrap();
+
+        assert!(settings.scan_channels_logs().is_ok());
+
+        let available = settings.get_available_channels();
+        assert!(available.contains_key("Local"));
+        assert!(available.contains_key("wc.Vale+Tribute"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_channels_logs_errors_when_the_directory_does_not_exist() {
+        let mut settings = Settings::default();
+        // `set_intel` itself rejects nonexistent paths, so the field is set
+        // directly here to reach `scan_channels_logs` with a path that
+        // doesn't exist -- exercising the one branch this guard is actually
+        // meant to cover.
+        settings.paths.intel = PathBuf::from("/nonexistent/telescope-test-path-xyz");
+
+        assert!(settings.scan_channels_logs().is_err());
+    }
+}

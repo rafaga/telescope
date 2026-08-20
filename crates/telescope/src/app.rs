@@ -22,7 +22,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender, error::TryRecvError};
@@ -39,6 +39,7 @@ mod messages;
 pub mod patterns;
 mod settings;
 mod tiles;
+mod database_updater;
 
 pub struct TelescopeApp {
     initialized: bool,
@@ -73,6 +74,13 @@ pub struct TelescopeApp {
     task_auth: AuthSpawner,
     settings: Settings,
     watcher: RecommendedWatcher,
+    // Live-shared handle for the set of channels the file watcher's event
+    // handler filters on. `IntelEventHandler` is moved into `watcher` at
+    // construction time and can never be swapped out afterwards, so the
+    // monitored-channel list it filters on has to be reachable through
+    // shared, interior-mutable storage; otherwise every channel selected or
+    // saved after startup is silently ignored until the app restarts.
+    intel_channels: Arc<RwLock<Vec<String>>>,
     dlg_intel_dir: Dialog,
     pattern_engine: PatternEngine,
 }
@@ -103,8 +111,12 @@ impl Default for TelescopeApp {
         );
 
         let mut sde = SdeManager::new(settings.get_sde(), settings.get_factor());
-        let _ = sde.get_universe();
-
+        if let Ok(Some((_fingerprint,true))) = sde.get_fingerprint() {
+            let _ = sde.get_universe();
+        } else {
+            let updater = database_updater::DatabaseUpdater::new();
+            let _ = updater.show();
+        }
         let arc_map_sender = Arc::new(mtx);
         let arc_msg_sender = Arc::new(gtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
@@ -141,10 +153,11 @@ impl Default for TelescopeApp {
         }
         let pattern_engine = pattern_report.engine;
 
-        let intel_event_handler = IntelEventHandler::new(
-            settings.get_cloned_monitored_channels(),
-            Arc::clone(&arc_msg_sender),
-        );
+        let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(
+            (*settings.get_cloned_monitored_channels()).clone(),
+        ));
+        let intel_event_handler =
+            IntelEventHandler::new(Arc::clone(&intel_channels), Arc::clone(&arc_msg_sender));
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
         let mut dlg_intel_dir = Dialog::default();
         dlg_intel_dir.dialog_type = DialogType::Directory;
@@ -184,6 +197,7 @@ impl Default for TelescopeApp {
             task_auth: authmon,
             settings,
             watcher,
+            intel_channels,
             dlg_intel_dir,
             pattern_engine,
         }
@@ -220,6 +234,7 @@ impl eframe::App for TelescopeApp {
             task_auth: _,
             settings: _,
             watcher: _,
+            intel_channels: _,
             dlg_intel_dir: _,
             pattern_engine: _,
         } = self;
@@ -810,6 +825,15 @@ impl TelescopeApp {
                             }
                         }
                         monitored_channels.sort_unstable();
+                        // Push the freshly-saved selection into the live
+                        // handle the running watcher's event handler reads
+                        // from, so newly checked/unchecked channels take
+                        // effect immediately instead of only after a
+                        // restart (the watcher's `IntelEventHandler` is
+                        // constructed once and can't be swapped out).
+                        if let Ok(mut guard) = self.intel_channels.write() {
+                            *guard = monitored_channels.clone();
+                        }
                         if monitored_channels.is_empty() && self.settings.get_intel().exists() {
                             let _ = self.watcher.unwatch(self.settings.get_intel());
                         } else {
