@@ -82,9 +82,6 @@ impl EventHandler for IntelEventHandler {
                                         + " Created",
                                 )))
                                 .await;
-                            let _ = app_sender_file
-                                .send(Message::UpdateIntelChannels())
-                                .await;
                         });
                     });
                 }

@@ -481,9 +481,6 @@ impl TelescopeApp {
                             let _ = self.settings.scan_channels_logs();
                         }
                     }
-                },
-                Message::UpdateIntelChannels() => {
-                    let _ = self.settings.scan_channels_logs();
                 }
             };
         }
