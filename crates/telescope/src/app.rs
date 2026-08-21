@@ -134,9 +134,22 @@ impl Default for TelescopeApp {
         // build, which `get_fingerprint` alone can't tell -- that's what
         // `DatabaseUpdater`'s `sde_index::update_as_needed` call (which
         // does need the network) is for.
-        let mut sde = SdeManager::new(settings.get_sde(), settings.get_factor());
-        if let Ok(Some((_fingerprint, true))) = sde.get_fingerprint() {
-            let _ = sde.get_universe();
+        // `SdeManager::new` now returns a `Result`: it errs when `sde.db`
+        // doesn't exist yet or isn't a valid SQLite database (e.g. on a
+        // first run, before `DatabaseUpdater` below has built it). In
+        // that case `universe` simply stays at its empty default, same
+        // as before this became fallible.
+        let mut universe = Universe::new(settings.get_factor());
+        match SdeManager::new(settings.get_sde(), settings.get_factor()) {
+            Ok(mut sde) => {
+                if let Ok(Some((_fingerprint, true))) = sde.get_fingerprint() {
+                    let _ = sde.get_universe();
+                }
+                universe = sde.universe;
+            }
+            Err(error) => {
+                tracing::warn!("SdeManager::new failed at startup: {error}");
+            }
         }
         // Checks CCP's SDE index in the background and (re)builds
         // `sde.db` if it's missing or a newer build is available. Never
@@ -224,7 +237,7 @@ impl Default for TelescopeApp {
             ),
             search_results: Vec::new(),
             tree: None,
-            universe: sde.universe,
+            universe,
             selected_settings_page: SettingsPage::Intelligence,
             task_msg: msgmon,
             task_auth: authmon,
@@ -1001,7 +1014,7 @@ impl TelescopeApp {
             return;
         }
         let sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
-        match sde.get_system_id(system_name.to_lowercase()) {
+        match sde.and_then(|s| s.get_system_id(system_name.to_lowercase())) {
             Ok(results) => {
                 //prefer an exact name match over partial (LIKE) results
                 let found = results
@@ -1105,19 +1118,28 @@ impl TelescopeApp {
     /// a tile until Telescope is restarted.
     #[tracing::instrument(skip(self))]
     fn handle_database_updated(&mut self) {
-        let mut sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
-        match sde.get_universe() {
-            Ok(_) => {
-                self.universe = sde.universe;
-                self.task_msg.spawn(Message::GenericNotification((
-                    Type::Info,
-                    String::from("TelescopeApp"),
-                    String::from("handle_database_updated"),
-                    String::from(
-                        "SDE data reloaded. Restart Telescope to see newly available regions on the map.",
-                    ),
-                )));
-            }
+        match SdeManager::new(self.settings.get_sde(), self.settings.get_factor()) {
+            Ok(mut sde) => match sde.get_universe() {
+                Ok(_) => {
+                    self.universe = sde.universe;
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Info,
+                        String::from("TelescopeApp"),
+                        String::from("handle_database_updated"),
+                        String::from(
+                            "SDE data reloaded. Restart Telescope to see newly available regions on the map.",
+                        ),
+                    )));
+                }
+                Err(t_error) => {
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Error,
+                        String::from("TelescopeApp"),
+                        String::from("handle_database_updated"),
+                        t_error.to_string(),
+                    )));
+                }
+            },
             Err(t_error) => {
                 self.task_msg.spawn(Message::GenericNotification((
                     Type::Error,
@@ -1468,7 +1490,9 @@ impl TelescopeApp {
                                 self.settings.get_sde(),
                                 self.settings.get_factor(),
                             );
-                            match sde.get_system_id(self.search_text.clone().to_lowercase()) {
+                            match sde.and_then(|s| {
+                                s.get_system_id(self.search_text.clone().to_lowercase())
+                            }) {
                                 Ok(system_results) => self.search_results = system_results,
                                 Err(t_error) => {
                                     self.task_msg.spawn(Message::GenericNotification((

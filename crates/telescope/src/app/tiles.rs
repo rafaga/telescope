@@ -123,15 +123,17 @@ impl UniversePane {
 
     #[tracing::instrument(skip(self))]
     fn generate_data(&mut self) {
-        let t_sde = SdeManager::new(&self.path, self.factor);
-        if let Ok(points) = t_sde.get_systems() {
-            self.map.add_hashmap_points(sde_points_to_map(points));
+        if let Ok(t_sde) = SdeManager::new(&self.path, self.factor) {
+            if let Ok(points) = t_sde.get_systems() {
+                self.map.add_hashmap_points(sde_points_to_map(points));
+            }
+            if let Ok(hash_conns) = t_sde.get_connections() {
+                self.map.add_hashmap_lines(sde_segments_to_map(hash_conns));
+            }
         }
-        if let Ok(hash_conns) = t_sde.get_connections() {
-            self.map.add_hashmap_lines(sde_segments_to_map(hash_conns));
-        }
-        let t_sde = SdeManager::new(&self.path, self.factor);
-        if let Ok(region_areas) = t_sde.get_region_coordinates() {
+        if let Ok(t_sde) = SdeManager::new(&self.path, self.factor)
+            && let Ok(region_areas) = t_sde.get_region_coordinates()
+        {
             let mut labels = Vec::new();
             for region in region_areas {
                 let mut label = MapLabel::new();
@@ -191,7 +193,7 @@ impl TabPane for UniversePane {
         match message.1 {
             Target::System => {
                 let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
-                match t_sde.get_system_coords(message.0) {
+                match t_sde.and_then(|s| s.get_system_coords(message.0)) {
                     Ok(Some(coords)) => {
                         // Real 3D coords (centerX/Y/Z); the map plane is X/Z
                         // (drop Y), matching the projection every other 2D point
@@ -261,7 +263,18 @@ impl RegionPane {
 
     #[tracing::instrument(skip(self))]
     fn generate_data(&mut self) {
-        let t_sde = SdeManager::new(&self.path, self.factor);
+        let t_sde = match SdeManager::new(&self.path, self.factor) {
+            Ok(t_sde) => t_sde,
+            Err(t_err) => {
+                self.task_msg.spawn(Message::GenericNotification((
+                    Type::Error,
+                    "RegionPane".to_string(),
+                    "generate_data".to_string(),
+                    t_err.to_string(),
+                )));
+                return;
+            }
+        };
 
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
             Ok(points) => {
@@ -580,7 +593,9 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 self.search_regions.clear();
                 if self.search_text.len() > 3 {
                     let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
-                    if let Ok(regions) = t_sde.get_region(vec![], Some(self.search_text.clone())) {
+                    if let Ok(regions) =
+                        t_sde.and_then(|s| s.get_region(vec![], Some(self.search_text.clone())))
+                    {
                         self.search_regions = regions.keys().copied().map(|x| x as usize).collect();
                     }
                 }

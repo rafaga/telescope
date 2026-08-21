@@ -37,8 +37,9 @@
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
 use eframe::egui::{self, Align2, Vec2};
+use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, ProjectedAxis};
-use sde::builder::{BuilderError, extract, http, schema, sde_index};
+use sde::builder::{extract, http, schema, sde_index};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -247,7 +248,7 @@ impl DatabaseUpdater {
         sde_dir: &std::path::Path,
         with_third_party: bool,
         app_msg: &Sender<Message>,
-    ) -> Result<bool, BuilderError> {
+    ) -> Result<bool, Error> {
         app_msg
             .send(Message::DatabaseUpdateProgress(String::from(
                 "Checking for a new EVE Online SDE build...",
