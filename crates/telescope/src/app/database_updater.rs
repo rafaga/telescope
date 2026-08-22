@@ -45,6 +45,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tokio::sync::mpsc::Sender;
+use std::fs::File;
+use std::io::Read;
 
 use super::messages::{Message, Type};
 
@@ -139,6 +141,29 @@ impl DatabaseUpdater {
         app_msg: Arc<Sender<Message>>,
         with_third_party: bool,
     ) {
+
+        let force_rebuild = true;
+        // It detetcs if the database has a valid format. 
+        // Its checks the file typoe against the SQlite Magic header
+        if sde_path.exists() { 
+            let mut file = File::open(&sde_path).unwrap();
+            let mut buf = [0u8; 16];
+            if match file.read_exact(&mut buf) {
+                Ok(()) => &buf == b"SQLite format 3\0",
+                Err(_) => false, // file it is too small or doesn't exist, so it is not a valid SQLite database
+            }{
+                return;
+            } else {
+                let _ = app_msg.try_send(Message::GenericNotification((
+                    Type::Warning,
+                    String::from("DatabaseUpdater"),
+                    String::from("spawn"),
+                    String::from(
+                        "The SDE database is corrupted, rebuilding it.",
+                    ),
+                )));
+            }
+        }
         // An empty path means `Settings::get_sde()` isn't configured
         // (shouldn't happen for a fresh `Settings::default()` anymore,
         // see `settings::FilePaths::default`, but an existing
@@ -178,7 +203,7 @@ impl DatabaseUpdater {
             runtime.block_on(async move {
                 let _span = tracing::info_span!("spawned database updater").entered();
                 let result =
-                    Self::run(&sde_path, &data_dir, &sde_dir, with_third_party, &app_msg).await;
+                    Self::run(&sde_path, &data_dir, &sde_dir, with_third_party, &app_msg, force_rebuild).await;
                 match result {
                     Ok(rebuilt) => {
                         if rebuilt {
@@ -248,6 +273,7 @@ impl DatabaseUpdater {
         sde_dir: &std::path::Path,
         with_third_party: bool,
         app_msg: &Sender<Message>,
+        force_rebuild: bool,
     ) -> Result<bool, Error> {
         app_msg
             .send(Message::DatabaseUpdateProgress(String::from(
@@ -260,7 +286,7 @@ impl DatabaseUpdater {
         let changed = sde_index::update_as_needed(&client, data_dir, SDE_URL, SDE_VARIANT).await?;
 
         let db_exists = sde_path.exists();
-        if !changed && db_exists {
+        if !changed && db_exists && !force_rebuild {
             return Ok(false);
         }
 

@@ -144,8 +144,8 @@ impl Default for TelescopeApp {
             Ok(mut sde) => {
                 if let Ok(Some((_fingerprint, true))) = sde.get_fingerprint() {
                     let _ = sde.get_universe();
+                    universe = sde.universe;
                 }
-                universe = sde.universe;
             }
             Err(error) => {
                 tracing::warn!("SdeManager::new failed at startup: {error}");
@@ -162,7 +162,7 @@ impl Default for TelescopeApp {
             sde_cache_dir.join("data"),
             sde_cache_dir.join("sde"),
             Arc::clone(&arc_msg_sender),
-            false,
+            true,
         );
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
