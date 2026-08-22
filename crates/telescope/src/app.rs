@@ -1658,8 +1658,10 @@ impl TelescopeApp {
 fn decode_utf16le_chunk(raw: &[u8]) -> (String, usize) {
     let usable_len = raw.len() - (raw.len() % 2);
     let code_units: Vec<u16> = raw[..usable_len]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
         .collect();
     let text = String::from_utf16_lossy(&code_units).replace('\u{feff}', "");
     (text, usable_len)

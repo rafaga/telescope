@@ -40,13 +40,13 @@ use eframe::egui::{self, Align2, Vec2};
 use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, ProjectedAxis};
 use sde::builder::{extract, http, schema, sde_index};
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tokio::sync::mpsc::Sender;
-use std::fs::File;
-use std::io::Read;
 
 use super::messages::{Message, Type};
 
@@ -141,26 +141,23 @@ impl DatabaseUpdater {
         app_msg: Arc<Sender<Message>>,
         with_third_party: bool,
     ) {
-
         let force_rebuild = true;
-        // It detetcs if the database has a valid format. 
+        // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
-        if sde_path.exists() { 
+        if sde_path.exists() {
             let mut file = File::open(&sde_path).unwrap();
             let mut buf = [0u8; 16];
             if match file.read_exact(&mut buf) {
                 Ok(()) => &buf == b"SQLite format 3\0",
                 Err(_) => false, // file it is too small or doesn't exist, so it is not a valid SQLite database
-            }{
+            } {
                 return;
             } else {
                 let _ = app_msg.try_send(Message::GenericNotification((
                     Type::Warning,
                     String::from("DatabaseUpdater"),
                     String::from("spawn"),
-                    String::from(
-                        "The SDE database is corrupted, rebuilding it.",
-                    ),
+                    String::from("The SDE database is corrupted, rebuilding it."),
                 )));
             }
         }
@@ -202,8 +199,15 @@ impl DatabaseUpdater {
                 .expect("failed to build the database-updater runtime");
             runtime.block_on(async move {
                 let _span = tracing::info_span!("spawned database updater").entered();
-                let result =
-                    Self::run(&sde_path, &data_dir, &sde_dir, with_third_party, &app_msg, force_rebuild).await;
+                let result = Self::run(
+                    &sde_path,
+                    &data_dir,
+                    &sde_dir,
+                    with_third_party,
+                    &app_msg,
+                    force_rebuild,
+                )
+                .await;
                 match result {
                     Ok(rebuilt) => {
                         if rebuilt {
