@@ -141,7 +141,6 @@ impl DatabaseUpdater {
         app_msg: Arc<Sender<Message>>,
         with_third_party: bool,
     ) {
-        let force_rebuild = true;
         // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
         if sde_path.exists() {
@@ -199,15 +198,8 @@ impl DatabaseUpdater {
                 .expect("failed to build the database-updater runtime");
             runtime.block_on(async move {
                 let _span = tracing::info_span!("spawned database updater").entered();
-                let result = Self::run(
-                    &sde_path,
-                    &data_dir,
-                    &sde_dir,
-                    with_third_party,
-                    &app_msg,
-                    force_rebuild,
-                )
-                .await;
+                let result =
+                    Self::run(&sde_path, &data_dir, &sde_dir, with_third_party, &app_msg).await;
                 match result {
                     Ok(rebuilt) => {
                         if rebuilt {
@@ -267,6 +259,12 @@ impl DatabaseUpdater {
     /// [`sde_index::update_as_needed`] -> [`extract::prepare_sde_directory`]
     /// -> [`schema::create_schema`] -> [`Parser::build_database`].
     ///
+    /// Whether to rebuild is decided entirely from observed state -- no
+    /// separate "force" flag: a rebuild happens whenever
+    /// [`sde_index::update_as_needed`] reports a new build (`changed`) or
+    /// `sde_path` doesn't exist yet (`!db_exists`). Skipping only requires
+    /// both "nothing changed" and "the database is already there".
+    ///
     /// Returns `Ok(true)` if the database was (re)built, `Ok(false)` if it
     /// was already up to date (nothing to do). Errors -- no network, a
     /// malformed zip, a SQL failure -- are returned rather than panicking;
@@ -277,7 +275,6 @@ impl DatabaseUpdater {
         sde_dir: &std::path::Path,
         with_third_party: bool,
         app_msg: &Sender<Message>,
-        force_rebuild: bool,
     ) -> Result<bool, Error> {
         app_msg
             .send(Message::DatabaseUpdateProgress(String::from(
@@ -290,7 +287,7 @@ impl DatabaseUpdater {
         let changed = sde_index::update_as_needed(&client, data_dir, SDE_URL, SDE_VARIANT).await?;
 
         let db_exists = sde_path.exists();
-        if !changed && db_exists && !force_rebuild {
+        if !changed && db_exists {
             return Ok(false);
         }
 

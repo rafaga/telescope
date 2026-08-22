@@ -149,6 +149,21 @@ impl Default for TelescopeApp {
             }
             Err(error) => {
                 tracing::warn!("SdeManager::new failed at startup: {error}");
+                // Also surface it in the on-screen log (bottom panel) --
+                // `tracing::warn!` alone only reaches the log
+                // file/console, and this is exactly the kind of thing
+                // (first run, missing/corrupted sde.db) a user watching
+                // the app start up should see, not just find in a log
+                // later. `DatabaseUpdater::spawn` below is what actually
+                // handles it (builds a fresh database in the background).
+                let _ = arc_msg_sender.try_send(Message::GenericNotification((
+                    Type::Warning,
+                    String::from("TelescopeApp"),
+                    String::from("default"),
+                    format!(
+                        "SDE database not found or invalid ({error}); a fresh one will be built in the background."
+                    ),
+                )));
             }
         }
         // Checks CCP's SDE index in the background and (re)builds
