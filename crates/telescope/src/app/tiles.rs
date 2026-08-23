@@ -3,6 +3,8 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style,
     TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, vec2,
 };
+use egui::PopupCloseBehavior;
+use egui::containers::menu::{MenuButton, MenuConfig};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
@@ -169,7 +171,10 @@ impl TabPane for UniversePane {
         if let Ok(msg) = received_data {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
-                    self.map.notify(system_id, time.into());
+                    if let Some(node) = self.map.node(system_id){
+                        node.pulse(time.into());
+                    }
+                    //self.map.notify(system_id, time.into());
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -311,7 +316,9 @@ impl TabPane for RegionPane {
         if let Ok(msg) = received_data {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
-                    self.map.notify(system_id, time.into());
+                    if let Some(node) = self.map.node(system_id) {
+                        node.pulse(time.into());
+                    }
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -589,58 +596,74 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         _scroll_offset: &mut f32,
     ) {
         ui.add_space(1.5);
-        ui.menu_button("➕", |ui| {
-            let mut _data: Vec<usize> = Vec::new();
-            ui.label("Search region:");
-            if ui.text_edit_singleline(&mut self.search_text).changed() {
-                self.search_regions.clear();
-                if self.search_text.len() > 3 {
-                    let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
-                    if let Ok(regions) =
-                        t_sde.and_then(|s| s.get_region(vec![], Some(self.search_text.clone())))
-                    {
-                        self.search_regions = regions.keys().copied().map(|x| x as usize).collect();
+        // `ui.menu_button` defaults to `PopupCloseBehavior::CloseOnClick`, which closes the
+        // popup on *any* click once it has been open for a frame -- including the click used
+        // to place the caret in the search box below. That made the text field appear to lose
+        // focus as soon as it was clicked. Building the menu explicitly lets us ask for
+        // `CloseOnClickOutside` instead, the same behavior egui's own `SubMenuButton` uses so
+        // that interactive widgets inside a popup keep working normally.
+        MenuButton::new("➕")
+            .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| {
+                let mut _data: Vec<usize> = Vec::new();
+                ui.label("Search region:");
+                if ui.text_edit_singleline(&mut self.search_text).changed() {
+                    self.search_regions.clear();
+                    if self.search_text.len() > 3 {
+                        let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
+                        if let Ok(regions) =
+                            t_sde.and_then(|s| s.get_region(vec![], Some(self.search_text.clone())))
+                        {
+                            // The SDE query can match regions (e.g. wormhole space)
+                            // that were filtered out of `tile_data` at startup; keep
+                            // only ids we can actually look up below.
+                            self.search_regions = regions
+                                .keys()
+                                .copied()
+                                .map(|x| x as usize)
+                                .filter(|id| self.tile_data.contains_key(id))
+                                .collect();
+                        }
                     }
                 }
-            }
 
-            if self.search_regions.is_empty() {
-                _data = self.tile_data.keys().copied().collect();
-            } else {
-                _data.clone_from(&self.search_regions);
-            }
-            ui.add_space(7.0);
-            TableBuilder::new(ui)
-                .column(Column::remainder())
-                .striped(true)
-                .vscroll(true)
-                .max_scroll_height(100.00)
-                .body(|body| {
-                    body.rows(25.0, _data.len(), |mut row| {
-                        let key_index = row.index();
-                        let name = self
-                            .tile_data
-                            .get_mut(&(_data[key_index]))
-                            .unwrap()
-                            .get_name();
-                        row.col(|ui: &mut egui::Ui| {
-                            if ui
-                                .checkbox(
-                                    &mut self
-                                        .tile_data
-                                        .get_mut(&(_data[key_index]))
-                                        .unwrap()
-                                        .visible,
-                                    name,
-                                )
-                                .changed()
-                            {
-                                self.toggle_regions(_data[key_index]);
-                            };
+                if self.search_regions.is_empty() {
+                    _data = self.tile_data.keys().copied().collect();
+                } else {
+                    _data.clone_from(&self.search_regions);
+                }
+                ui.add_space(7.0);
+                TableBuilder::new(ui)
+                    .column(Column::remainder())
+                    .striped(true)
+                    .vscroll(true)
+                    .max_scroll_height(100.00)
+                    .body(|body| {
+                        body.rows(25.0, _data.len(), |mut row| {
+                            let key_index = row.index();
+                            let name = self
+                                .tile_data
+                                .get_mut(&(_data[key_index]))
+                                .unwrap()
+                                .get_name();
+                            row.col(|ui: &mut egui::Ui| {
+                                if ui
+                                    .checkbox(
+                                        &mut self
+                                            .tile_data
+                                            .get_mut(&(_data[key_index]))
+                                            .unwrap()
+                                            .visible,
+                                        name,
+                                    )
+                                    .changed()
+                                {
+                                    self.toggle_regions(_data[key_index]);
+                                };
+                            });
                         });
                     });
-                });
-        });
+            });
     }
 
     // ---

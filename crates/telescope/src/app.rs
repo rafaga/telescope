@@ -248,7 +248,7 @@ impl Default for TelescopeApp {
             behavior: TreeBehavior::new(
                 Arc::clone(&msgmon),
                 settings.get_factor(),
-                settings.get_db().to_path_buf(),
+                settings.get_sde().to_path_buf(),
             ),
             search_results: Vec::new(),
             tree: None,
