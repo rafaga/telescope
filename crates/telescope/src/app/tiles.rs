@@ -192,33 +192,36 @@ impl TabPane for UniversePane {
     fn center_on_target(&mut self, message: (usize, Target)) {
         match message.1 {
             Target::System => {
-                let t_sde = SdeManager::new(Path::new(&self.path), self.factor);
-                match t_sde.and_then(|s| s.get_system_coords(message.0)) {
-                    Ok(Some(coords)) => {
-                        // Real 3D coords (centerX/Y/Z); the map plane is X/Z
-                        // (drop Y), matching the projection every other 2D point
-                        // on this map already uses.
-                        self.map.set_pos(coords.to_2d(ProjectedAxis::Y));
-                    }
-                    Ok(None) => {
-                        let mut msg = String::from("System with Id ");
-                        msg += (message.0.to_string() + " could not be located").as_str();
-                        self.task_msg.spawn(Message::GenericNotification((
-                            Type::Warning,
-                            String::from("SdeManager"),
-                            String::from("get_system_coords"),
-                            msg,
-                        )));
-                    }
-                    Err(t_error) => {
-                        self.task_msg.spawn(Message::GenericNotification((
-                            Type::Error,
-                            String::from("SdeManager"),
-                            String::from("get_system_coords"),
-                            t_error.to_string(),
-                        )));
-                    }
-                };
+                // Center through the widget's own node index instead of
+                // re-reading coordinates from the SDE.
+                //
+                // This used to call `get_system_coords()` (which reads
+                // `centerX/centerY/centerZ`) and project it with
+                // `to_2d(ProjectedAxis::Y)` -> `(centerX, centerZ)`. But the
+                // nodes on this map come from `get_systems()`, which reads
+                // `position2DX/position2DY` -- and those are NOT `(centerX,
+                // centerZ)`: the SDE builder computes them with
+                // `isometric_projection_2d()`, which for `ProjectedAxis::Y` is
+                // `(x - y, z + (x + y) / 2)`. A shear, not an axis drop; the
+                // two agree only at the origin. So the view was being moved to
+                // a point in a coordinate space no node lives in, and the
+                // target system ended up off-screen.
+                //
+                // `set_pos_from_nodeid` uses the coordinates already loaded
+                // into the widget, so it cannot disagree with them. It returns
+                // `false` when the id was never loaded -- which is meaningful
+                // here, since this map only carries K-space systems that have
+                // at least one stargate connection.
+                if !self.map.set_pos_from_nodeid(message.0) {
+                    let mut msg = String::from("System with Id ");
+                    msg += (message.0.to_string() + " is not present on this map").as_str();
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Warning,
+                        String::from("UniversePane"),
+                        String::from("center_on_target"),
+                        msg,
+                    )));
+                }
             }
             Target::Region => {}
         }

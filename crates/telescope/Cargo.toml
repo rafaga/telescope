@@ -14,7 +14,7 @@ license.workspace = true
 # consumer of `sde`/`egui-map`/`webb`/`native_tools` that also enables
 # `profile-with-tracy` gets their spans in the same trace for free, via
 # Cargo's feature unification on the shared `tracing` dependency.
-profile-with-tracy = ["dep:tracing-tracy"]
+profile-with-tracy = ["dep:tracing-tracy","egui-map/debug_overlay"]
 
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }

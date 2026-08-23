@@ -11,7 +11,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-static CONFIRM: &[u8] = b"<html><head><title>Telescope login</title><style>body{font-family: monospace;background-color: gray;color: whitesmoke;}</style></head><body><h1>Telescope</h1><p>Logged in!, now you can close this window safely.</p></body></html>";
+// Kept as a standalone asset (rather than inlined here) so it can be
+// designed/previewed as a normal HTML file; `include_str!` pulls it in at
+// compile time, so serving it is still just a static byte slice with no
+// runtime file I/O.
+static CONFIRM: &[u8] = include_str!("../assets/server.html").as_bytes();
 static NOT_VALID: &[u8] = b"Invalid Request";
 
 #[derive(Debug, Clone)]
@@ -150,7 +154,7 @@ mod tests {
 
         let (status, body) = get(addr, "/login?code=auth-code&state=secret-state").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("Logged in!"));
+        assert!(body.contains("You're signed in"));
 
         // the OAuth parameters are forwarded through the channel
         let message = timeout(Duration::from_secs(5), rx.recv())

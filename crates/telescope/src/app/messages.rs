@@ -170,7 +170,6 @@ impl AuthSpawner {
         std::thread::spawn(move || {
             rt.block_on(async move {
                 let _span = tracing::info_span!("spawned auth handler").entered();
-
                 while let Some(time) = recv.recv().await {
                     let cloned_msg_sender = Arc::clone(&cloned_msg_sender);
                     tokio::spawn(handle_auth(time, cloned_msg_sender));
