@@ -13,7 +13,7 @@ use tracing_subscriber::layer::SubscriberExt;
 // capture the allocation site, at a real runtime cost. Native-only and
 // feature-gated to match the target-gated `tracing-tracy` dependency in
 // Cargo.toml.
-#[cfg(all(feature = "profile-with-tracy", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "profile", not(target_arch = "wasm32")))]
 #[global_allocator]
 static GLOBAL: tracing_tracy::client::ProfiledAllocator<std::alloc::System> =
     tracing_tracy::client::ProfiledAllocator::new(std::alloc::System, 0);
@@ -32,7 +32,7 @@ fn main() -> eframe::Result {
     // telescope itself all share this same instrumentation):
     //   - `fmt` prints to stderr, filtered by `RUST_LOG` -- same role and
     //     same env var `env_logger::init()` used to have.
-    //   - Tracy (only wired up under `profile-with-tracy`) is deliberately
+    //   - Tracy (only wired up under `profile`) is deliberately
     //     NOT filtered by `RUST_LOG`, so quieting stderr never hides
     //     anything from the profiler. `TracyLayer::default()` starts the
     //     shared `tracy_client::Client` itself (`Client::start()` is
@@ -42,14 +42,14 @@ fn main() -> eframe::Result {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env());
 
-    #[cfg(feature = "profile-with-tracy")]
+    #[cfg(feature = "profile")]
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(fmt_layer)
             .with(tracing_tracy::TracyLayer::default()),
     )
     .expect("setting the global tracing subscriber");
-    #[cfg(not(feature = "profile-with-tracy"))]
+    #[cfg(not(feature = "profile"))]
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(fmt_layer))
         .expect("setting the global tracing subscriber");
 

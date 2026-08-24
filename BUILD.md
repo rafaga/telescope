@@ -34,12 +34,12 @@ for the full directive grammar (per-target, per-span-field filters, etc.).
 Native builds can stream live profiling data — every `#[tracing::instrument]`d
 span, plus allocation/deallocation tracking — to the
 [Tracy profiler](https://github.com/wolfpld/tracy), behind the
-`profile-with-tracy` feature (off by default, since the allocation tracking
+`profile` feature (off by default, since the allocation tracking
 has a small always-on runtime cost and Tracy broadcasts discovery packets on
 the local network):
 
 ```sh
-cargo run --features profile-with-tracy
+cargo run --features profile
 ```
 
 Then:
@@ -54,7 +54,7 @@ Then:
 
 Notes:
 
-* Not available for the wasm/web build (`profile-with-tracy` is gated to
+* Not available for the wasm/web build (`profile` is gated to
   native targets only).
 * Tracy data is deliberately **not** filtered by `RUST_LOG` — turning stderr
   logging down or off never hides anything from the profiler.

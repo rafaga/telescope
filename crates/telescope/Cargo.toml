@@ -9,12 +9,12 @@ license.workspace = true
 
 [features]
 # Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy):
-# `cargo run --features profile-with-tracy`, then open the Tracy desktop app and
+# `cargo run --features profile`, then open the Tracy desktop app and
 # connect (it auto-discovers the running process on the local network). A
 # consumer of `sde`/`egui-map`/`webb`/`native_tools` that also enables
-# `profile-with-tracy` gets their spans in the same trace for free, via
+# `profile` gets their spans in the same trace for free, via
 # Cargo's feature unification on the shared `tracing` dependency.
-profile-with-tracy = ["dep:tracing-tracy","egui-map/debug_overlay"]
+profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/profile"]
 
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }

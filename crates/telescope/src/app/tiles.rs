@@ -45,6 +45,15 @@ fn sde_point_to_map(id: usize, point: SdePoint) -> MapPoint {
     // `SdePoint::connections` exactly, so this is a plain move — no more
     // `format!`-based id synthesis needed.
     map_point.connections = point.connections;
+    // `SdePoint::color` is the star's raw hex color (`sde` has no
+    // rendering dependency, so it can't hand us a `Color32` directly);
+    // parse it here, where it's actually needed. A missing star, or a
+    // malformed hex value, both just fall back to `MapPoint`'s default
+    // (`None`), which keeps the map's single default node color.
+    map_point.color = point
+        .color
+        .as_deref()
+        .and_then(|hex| Color32::from_hex(hex).ok());
     map_point
 }
 
@@ -140,7 +149,6 @@ impl UniversePane {
             for region in region_areas {
                 let mut label = MapLabel::new();
                 label.text = region.name;
-                // TODO: Check if there is no overflow risk at this specific cast f64 -> f32
                 label.center = Pos2::new(
                     (region.min.x() / self.factor) as f32,
                     (region.min.y() / self.factor) as f32,
