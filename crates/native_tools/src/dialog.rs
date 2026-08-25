@@ -17,6 +17,8 @@ use objc2_app_kit::{NSApplication, NSModalResponse, NSModalResponseOK, NSOpenPan
 use objc2_foundation::{MainThreadMarker, ns_string};
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 use ashpd::desktop::ResponseError;
@@ -54,7 +56,7 @@ macro_rules! try_dialog {
     };
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum DialogType {
     Directory,
     File,
@@ -189,7 +191,27 @@ impl Dialog {
 
         let panel_retained = panel.clone();
 
+        // `#[tracing::instrument]` on this function only covers the
+        // synchronous setup above -- `beginSheetModalForWindow_completionHandler`
+        // returns immediately, and `block` doesn't run until AppKit calls it
+        // back (on this same main-thread run loop) whenever the user
+        // responds, arbitrarily later. A span entered here and exited
+        // inside the block would sit on tracing-tracy's per-thread span
+        // stack across that whole gap, and since ordinary instrumented
+        // calls elsewhere on the main thread (egui's own per-frame spans)
+        // enter/exit in between, exiting it late would pop out of order and
+        // corrupt the stack for every span after it. Recording the actual
+        // wait as an event instead sidesteps that entirely: `start` is
+        // captured by value (`Copy`), and the event's `wait_ms` field is
+        // computed once the block actually fires.
+        let start = Instant::now();
         let block = RcBlock::new(move |response: NSModalResponse| {
+            let cancelled = response != NSModalResponseOK;
+            tracing::info!(
+                wait_ms = start.elapsed().as_millis() as u64,
+                cancelled,
+                "macOS open-panel responded"
+            );
             let result = if response == NSModalResponseOK {
                 let urls = panel_retained.URLs();
                 urls.firstObject()
@@ -356,7 +378,15 @@ impl Dialog {
 
 /// Ejecuta la petición al portal y devuelve el resultado en el
 /// "idioma" de DialogResult.
+///
+/// The instrumented span's duration IS the real wait for the user's
+/// response: this runs to completion on the dedicated thread
+/// `open_file_dialog` (Linux) spawns for it, driven by that thread's own
+/// `current_thread` runtime, so unlike a span held across an opaque
+/// callback (see the equivalent macOS case), there's no other tracing
+/// activity sharing this thread's span stack to get out of order with.
 #[cfg(target_os = "linux")]
+#[tracing::instrument]
 async fn open_portal_dialog(
     dialog_type: DialogType,
     start_dir: Option<PathBuf>,

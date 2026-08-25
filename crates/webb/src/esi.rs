@@ -84,6 +84,7 @@ pub struct LiveEsiApi {
 }
 
 impl EsiApi for LiveEsiApi {
+    #[tracing::instrument(skip(self))]
     fn authorize_url(&self) -> Result<AuthorizeInfo, String> {
         self.esi
             .get_authorize_url()
@@ -94,12 +95,14 @@ impl EsiApi for LiveEsiApi {
             .map_err(|e| e.to_string())
     }
 
+    #[tracing::instrument(skip(self))]
     fn has_token_state(&self) -> bool {
         self.esi.access_expiration.is_some()
             && self.esi.access_token.is_some()
             && self.esi.refresh_token.is_some()
     }
 
+    #[tracing::instrument(skip(self))]
     fn current_tokens(&self) -> Option<TokenSet> {
         Some(TokenSet {
             token: self.esi.access_token.clone()?,
@@ -108,6 +111,11 @@ impl EsiApi for LiveEsiApi {
         })
     }
 
+    // `skip_all`, not just `skip(self)`: `code` is the OAuth authorization
+    // code and `verifier` the PKCE verifier -- same secrecy rule
+    // `EsiManagerCore::auth_user` already applies one level up, for the
+    // same reason.
+    #[tracing::instrument(skip_all)]
     async fn authenticate(
         &mut self,
         code: &str,
@@ -123,6 +131,7 @@ impl EsiApi for LiveEsiApi {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     async fn update_spec(&mut self) -> Result<(), String> {
         self.esi
             .update_spec()
@@ -130,6 +139,9 @@ impl EsiApi for LiveEsiApi {
             .map_err(|t_error| t_error.to_string())
     }
 
+    // `refresh_token` is itself a credential -- never recorded, same as
+    // `code`/`verifier` above.
+    #[tracing::instrument(skip(self, refresh_token))]
     async fn refresh_access_token(&mut self, refresh_token: &str) -> Result<TokenSet, String> {
         self.esi
             .refresh_access_token(Some(refresh_token))
@@ -139,6 +151,7 @@ impl EsiApi for LiveEsiApi {
             .ok_or_else(|| String::from("incomplete token state after refresh"))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_character_public_info(
         &mut self,
         character_id: i32,
@@ -154,6 +167,7 @@ impl EsiApi for LiveEsiApi {
             .map_err(|t_error| t_error.to_string())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_corporation_public_info(
         &mut self,
         corporation_id: i32,
@@ -169,6 +183,7 @@ impl EsiApi for LiveEsiApi {
             .map_err(|t_error| t_error.to_string())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_alliance_info(&mut self, alliance_id: i32) -> Result<Alliance, String> {
         self.esi
             .group_alliance()
@@ -181,6 +196,7 @@ impl EsiApi for LiveEsiApi {
             .map_err(|t_error| t_error.to_string())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_character_portrait_url(&mut self, character_id: i32) -> Result<String, String> {
         self.esi
             .group_character()
@@ -191,6 +207,7 @@ impl EsiApi for LiveEsiApi {
             .ok_or_else(|| String::from("no 128x128 portrait available"))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_location(&mut self, character_id: i32) -> Result<i32, String> {
         self.esi
             .group_location()
