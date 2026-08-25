@@ -35,7 +35,7 @@ opt-level = 0
 # If you want to use the bleeding edge version of egui and eframe:
 # egui = { git = "https://github.com/emilk/egui", branch = "master" }
 # eframe = { git = "https://github.com/emilk/egui", branch = "master" }
-egui-map = { git = "https://github.com/rafaga/egui-map", branch = "dev" }
+# egui-map = { git = "https://github.com/rafaga/egui-map", branch = "dev" }
 # egui-map = { path = "../egui-map" }
 # sde = { path = "../sde" }
-sde = { git = "https://github.com/rafaga/sde", branch = "test" }
+# sde = { git = "https://github.com/rafaga/sde", branch = "test" }
