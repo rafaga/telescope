@@ -9,8 +9,8 @@ use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
     objects::{
-        ContextMenuManager, MapLabel, MapPoint, MapSegment, MapSettings, NodeTemplate,
-        VisibilitySetting,
+        ContextMenuManager, MapLabel, MapPoint, MapSegment, MapSettings, MarkerContext,
+        NodeTemplate, NotificationContext, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
@@ -778,7 +778,9 @@ impl NodeTemplate for Template {
     }
 
     #[tracing::instrument(skip(self, ui))]
-    fn marker_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
+    fn marker_ui(&self, ui: &mut Ui, ctx: MarkerContext) {
+        let viewport_point = ctx.position;
+        let zoom = ctx.zoom;
         let mut shapes = Vec::new();
         let led_position = Pos2::new(
             viewport_point.x + (45.0 * zoom),
@@ -820,14 +822,11 @@ impl NodeTemplate for Template {
     }
 
     #[tracing::instrument(skip(self, ui))]
-    fn notification_ui(
-        &self,
-        ui: &mut Ui,
-        viewport_point: Pos2,
-        zoom: f32,
-        initial_time: Instant,
-        color: Color32,
-    ) -> bool {
+    fn notification_ui(&self, ui: &mut Ui, ctx: NotificationContext) -> bool {
+        let viewport_point = ctx.position;
+        let zoom = ctx.zoom;
+        let initial_time = ctx.initial_time;
+        let color = ctx.color;
         let mut shapes = Vec::new();
         let current_instant = Instant::now();
         let time_diff = current_instant.duration_since(initial_time);
