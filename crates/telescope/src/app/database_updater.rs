@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tokio::sync::mpsc::Sender;
 
-use super::messages::{Message, Type};
+use super::messages::{Message, Type, send_app_message, try_send_app_message};
 
 /// CCP's official SDE index/download root.
 const SDE_URL: &str = "https://developers.eveonline.com/static-data/tranquility/";
@@ -152,12 +152,15 @@ impl DatabaseUpdater {
             } {
                 return;
             } else {
-                let _ = app_msg.try_send(Message::GenericNotification((
-                    Type::Warning,
-                    String::from("DatabaseUpdater"),
-                    String::from("spawn"),
-                    String::from("The SDE database is corrupted, rebuilding it."),
-                )));
+                let _ = try_send_app_message(
+                    &app_msg,
+                    Message::GenericNotification((
+                        Type::Warning,
+                        String::from("DatabaseUpdater"),
+                        String::from("spawn"),
+                        String::from("The SDE database is corrupted, rebuilding it."),
+                    )),
+                );
             }
         }
         // An empty path means `Settings::get_sde()` isn't configured
@@ -171,23 +174,29 @@ impl DatabaseUpdater {
         // build the whole SDE into a database nobody could ever read,
         // instead of either persisting it or failing loudly.
         if sde_path.as_os_str().is_empty() {
-            let _ = app_msg.try_send(Message::GenericNotification((
-                Type::Warning,
-                String::from("DatabaseUpdater"),
-                String::from("spawn"),
-                String::from(
-                    "No SDE database path is configured (Settings -> Data Sources); skipping the update check.",
-                ),
-            )));
+            let _ = try_send_app_message(
+                &app_msg,
+                Message::GenericNotification((
+                    Type::Warning,
+                    String::from("DatabaseUpdater"),
+                    String::from("spawn"),
+                    String::from(
+                        "No SDE database path is configured (Settings -> Data Sources); skipping the update check.",
+                    ),
+                )),
+            );
             return;
         }
         if UPDATE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-            let _ = app_msg.try_send(Message::GenericNotification((
-                Type::Info,
-                String::from("DatabaseUpdater"),
-                String::from("spawn"),
-                String::from("An SDE update check is already running, skipping."),
-            )));
+            let _ = try_send_app_message(
+                &app_msg,
+                Message::GenericNotification((
+                    Type::Info,
+                    String::from("DatabaseUpdater"),
+                    String::from("spawn"),
+                    String::from("An SDE update check is already running, skipping."),
+                )),
+            );
             return;
         }
 
@@ -217,18 +226,20 @@ impl DatabaseUpdater {
                             )
                             .await;
                         }
-                        let _ = app_msg.send(Message::DatabaseUpdated(rebuilt)).await;
+                        let _ = send_app_message(&app_msg, Message::DatabaseUpdated(rebuilt)).await;
                     }
                     Err(err) => {
-                        let _ = app_msg
-                            .send(Message::GenericNotification((
+                        let _ = send_app_message(
+                            &app_msg,
+                            Message::GenericNotification((
                                 Type::Error,
                                 String::from("DatabaseUpdater"),
                                 String::from("run"),
                                 err.to_string(),
-                            )))
-                            .await;
-                        let _ = app_msg.send(Message::DatabaseUpdated(false)).await;
+                            )),
+                        )
+                        .await;
+                        let _ = send_app_message(&app_msg, Message::DatabaseUpdated(false)).await;
                     }
                 }
             });
@@ -243,14 +254,16 @@ impl DatabaseUpdater {
     /// after the window closes; per-phase progress during `Self::run`
     /// only updates the window (see `Self::run`'s own progress sends).
     async fn notify(app_msg: &Sender<Message>, kind: Type, message: &str) {
-        let _ = app_msg
-            .send(Message::GenericNotification((
+        let _ = send_app_message(
+            app_msg,
+            Message::GenericNotification((
                 kind,
                 String::from("DatabaseUpdater"),
                 String::from("run"),
                 message.to_string(),
-            )))
-            .await;
+            )),
+        )
+        .await;
     }
 
     /// Checks CCP's SDE index and, if a newer build is available (or
@@ -276,12 +289,14 @@ impl DatabaseUpdater {
         with_third_party: bool,
         app_msg: &Sender<Message>,
     ) -> Result<bool, Error> {
-        app_msg
-            .send(Message::DatabaseUpdateProgress(String::from(
+        send_app_message(
+            app_msg,
+            Message::DatabaseUpdateProgress(String::from(
                 "Checking for a new EVE Online SDE build...",
-            )))
-            .await
-            .ok();
+            )),
+        )
+        .await
+        .ok();
 
         let client = http::build_client()?;
         let changed = sde_index::update_as_needed(&client, data_dir, SDE_URL, SDE_VARIANT).await?;
@@ -291,12 +306,12 @@ impl DatabaseUpdater {
             return Ok(false);
         }
 
-        app_msg
-            .send(Message::DatabaseUpdateProgress(String::from(
-                "Downloading the new SDE export...",
-            )))
-            .await
-            .ok();
+        send_app_message(
+            app_msg,
+            Message::DatabaseUpdateProgress(String::from("Downloading the new SDE export...")),
+        )
+        .await
+        .ok();
 
         if db_exists {
             std::fs::remove_file(sde_path)?;
@@ -322,12 +337,14 @@ impl DatabaseUpdater {
                 .ok()
                 .map(|s| s.trim().to_string());
 
-        app_msg
-            .send(Message::DatabaseUpdateProgress(String::from(
+        send_app_message(
+            app_msg,
+            Message::DatabaseUpdateProgress(String::from(
                 "Rebuilding the SDE database, this can take a minute...",
-            )))
-            .await
-            .ok();
+            )),
+        )
+        .await
+        .ok();
 
         let mut connection = rusqlite::Connection::open(sde_path)?;
         schema::create_schema(&connection)?;

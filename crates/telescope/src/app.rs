@@ -1,5 +1,8 @@
 use crate::app::file::IntelEventHandler;
-use crate::app::messages::{CharacterSync, MapSync, Message, SettingsPage, Target, Type};
+use crate::app::messages::{
+    CharacterSync, MapSync, Message, SettingsPage, Target, Type, send_app_message,
+    try_send_app_message,
+};
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use chrono::Utc;
 use data::AppData;
@@ -9,7 +12,6 @@ use eframe::egui::{
 };
 use eframe::egui::{IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
-//use egui_file_dialog::FileDialog;
 use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -156,14 +158,17 @@ impl Default for TelescopeApp {
                 // the app start up should see, not just find in a log
                 // later. `DatabaseUpdater::spawn` below is what actually
                 // handles it (builds a fresh database in the background).
-                let _ = arc_msg_sender.try_send(Message::GenericNotification((
-                    Type::Warning,
-                    String::from("TelescopeApp"),
-                    String::from("default"),
-                    format!(
-                        "SDE database not found or invalid ({error}); a fresh one will be built in the background."
-                    ),
-                )));
+                let _ = try_send_app_message(
+                    &arc_msg_sender,
+                    Message::GenericNotification((
+                        Type::Warning,
+                        String::from("TelescopeApp"),
+                        String::from("default"),
+                        format!(
+                            "SDE database not found or invalid ({error}); a fresh one will be built in the background."
+                        ),
+                    )),
+                );
             }
         }
         // Checks CCP's SDE index in the background and (re)builds
@@ -444,6 +449,7 @@ impl eframe::App for TelescopeApp {
 
         }*/
         //ui.label("鑑於對人類家庭所有成員的固有尊嚴及其平等的和不移的權利的承認，乃是世界自由、正義與和平的基礎");
+        tracing::info!(tracy.frame_mark = true);
     }
 }
 
@@ -451,6 +457,8 @@ impl TelescopeApp {
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
         while let Ok(message) = self.app_msg.1.try_recv() {
+            let _span =
+                tracing::info_span!("dispatch app message", kind = message.kind()).entered();
             match message {
                 Message::EsiAuthSuccess(character) => {
                     self.update_character_into_database(character)
@@ -496,14 +504,16 @@ impl TelescopeApp {
                             runtime.block_on(async {
                                 let _span =
                                     tracing::info_span!("spawned intel message data").entered();
-                                let _ = app_msg_tx
-                                    .send(Message::GenericNotification((
+                                let _ = send_app_message(
+                                    &app_msg_tx,
+                                    Message::GenericNotification((
                                         Type::Error,
                                         String::from("TelescopeApp"),
                                         String::from("DefaultIntelDirectory"),
                                         e.to_string(),
-                                    )))
-                                    .await;
+                                    )),
+                                )
+                                .await;
                             });
                         } else {
                             let _ = self.settings.scan_channels_logs();
@@ -625,9 +635,11 @@ impl TelescopeApp {
                                                 if let DialogResult::Ok(path) = result {
                                                     runtime.block_on(async {
                                                         let _span = tracing::info_span!("spawned intel message data").entered();
-                                                        let _ = app_msg_tx
-                                                            .send(Message::UpdateIntelDirectory(path))
-                                                            .await;
+                                                        let _ = send_app_message(
+                                                            &app_msg_tx,
+                                                            Message::UpdateIntelDirectory(path),
+                                                        )
+                                                        .await;
                                                     });
                                                 }
                                             });
@@ -640,9 +652,11 @@ impl TelescopeApp {
                                                 .unwrap();
                                             let app_msg_tx = Arc::clone(&self.app_msg.0);
                                             runtime.block_on(async {
-                                                let _ = app_msg_tx
-                                                    .send(Message::DefaultIntelDirectory)
-                                                    .await;
+                                                let _ = send_app_message(
+                                                    &app_msg_tx,
+                                                    Message::DefaultIntelDirectory,
+                                                )
+                                                .await;
                                             });
                                         }
                                     });
@@ -935,9 +949,16 @@ impl TelescopeApp {
                         let app_msg_tx = Arc::clone(&self.app_msg.0);
                         runtime.block_on(async {
                             let _span = tracing::info_span!("spawned intel message data").entered();
-                            let _ = app_msg_tx
-                                .send(Message::GenericNotification((Type::Error,String::from("TelescopeApp"),String::from("open_settings_window"),e.to_string())))
-                                .await;
+                            let _ = send_app_message(
+                                &app_msg_tx,
+                                Message::GenericNotification((
+                                    Type::Error,
+                                    String::from("TelescopeApp"),
+                                    String::from("open_settings_window"),
+                                    e.to_string(),
+                                )),
+                            )
+                            .await;
                         });
                     }
                 }
@@ -1359,23 +1380,27 @@ impl TelescopeApp {
 
                 let mut character_ids = vec![];
                 if let Err(t_error) = t_esi.update_spec().await {
-                    let _ = app_sender
-                        .send(Message::GenericNotification((
+                    let _ = send_app_message(
+                        &app_sender,
+                        Message::GenericNotification((
                             Type::Error,
                             String::from("Telescope App"),
                             String::from("start_watchdog"),
                             t_error.to_string(),
-                        )))
-                        .await;
+                        )),
+                    )
+                    .await;
                 } else {
-                    let _ = app_sender
-                        .send(Message::GenericNotification((
+                    let _ = send_app_message(
+                        &app_sender,
+                        Message::GenericNotification((
                             Type::Info,
                             String::from("Telescope App"),
                             String::from("start_watchdog"),
                             String::from("Starting watchdog"),
-                        )))
-                        .await;
+                        )),
+                    )
+                    .await;
                 }
                 for char_id in character_id {
                     character_ids.push((char_id, 0))
@@ -1383,24 +1408,28 @@ impl TelescopeApp {
                 while !character_ids.is_empty() {
                     if !t_esi.valid_token().await {
                         if let Err(t_error) = t_esi.refresh_token().await {
-                            let _ = app_sender
-                                .send(Message::GenericNotification((
+                            let _ = send_app_message(
+                                &app_sender,
+                                Message::GenericNotification((
                                     Type::Error,
                                     String::from("Telescope App"),
                                     String::from("start_watchdog"),
                                     t_error.to_string(),
-                                )))
-                                .await;
+                                )),
+                            )
+                            .await;
                             return;
                         } else {
-                            let _ = app_sender
-                                .send(Message::GenericNotification((
+                            let _ = send_app_message(
+                                &app_sender,
+                                Message::GenericNotification((
                                     Type::Debug,
                                     String::from("Telescope App"),
                                     String::from("start_watchdog"),
                                     String::from("token refreshed successfully"),
-                                )))
-                                .await;
+                                )),
+                            )
+                            .await;
                         }
                     }
                     for item in &mut character_ids {
@@ -1409,36 +1438,42 @@ impl TelescopeApp {
                             Ok(new_location) => {
                                 if item.1 != (new_location as usize) {
                                     item.1 = new_location as usize;
-                                    let _ = app_sender
-                                        .send(Message::PlayerNewLocation((
+                                    let _ = send_app_message(
+                                        &app_sender,
+                                        Message::PlayerNewLocation((
                                             item.0.try_into().unwrap(),
                                             new_location,
-                                        )))
-                                        .await;
+                                        )),
+                                    )
+                                    .await;
                                     if let Err(t_error) =
                                         map_sender.send(MapSync::PlayerMoved((item.0, item.1)))
                                     {
-                                        let _ = app_sender
-                                            .send(Message::GenericNotification((
+                                        let _ = send_app_message(
+                                            &app_sender,
+                                            Message::GenericNotification((
                                                 Type::Error,
                                                 String::from("Telescope App"),
                                                 String::from("start_watchdog"),
                                                 t_error.to_string(),
-                                            )))
-                                            .await;
+                                            )),
+                                        )
+                                        .await;
                                     }
                                 }
                             }
                             Err(t_error) => {
-                                let _ = app_sender
-                                    .send(Message::GenericNotification((
+                                let _ = send_app_message(
+                                    &app_sender,
+                                    Message::GenericNotification((
                                         Type::Error,
                                         String::from("Telescope App"),
                                         String::from("start_watchdog - get_location - ")
                                             + item.0.to_string().as_str(),
                                         t_error.to_string(),
-                                    )))
-                                    .await;
+                                    )),
+                                )
+                                .await;
                                 break;
                             }
                         }
@@ -1455,14 +1490,16 @@ impl TelescopeApp {
                                     }
                                 }
                                 if character_ids.is_empty() {
-                                    let _ = app_sender
-                                        .send(Message::GenericNotification((
+                                    let _ = send_app_message(
+                                        &app_sender,
+                                        Message::GenericNotification((
                                             Type::Info,
                                             String::from("Telescope App"),
                                             String::from("start_watchdog"),
                                             String::from("Watchdog ended"),
-                                        )))
-                                        .await;
+                                        )),
+                                    )
+                                    .await;
                                     break;
                                 }
                             }
@@ -1470,14 +1507,16 @@ impl TelescopeApp {
                     }
                     if let Err(TryRecvError::Disconnected) = receiver.try_recv() {
                         character_ids.clear();
-                        let _ = app_sender
-                            .send(Message::GenericNotification((
+                        let _ = send_app_message(
+                            &app_sender,
+                            Message::GenericNotification((
                                 Type::Info,
                                 String::from("Telescope App"),
                                 String::from("start_watchdog"),
                                 String::from("Watchdog ended"),
-                            )))
-                            .await;
+                            )),
+                        )
+                        .await;
                         break;
                     }
                     sleep(Duration::new(25, 0)).await;

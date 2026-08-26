@@ -10,10 +10,17 @@ use tracing_subscriber::layer::SubscriberExt;
 // a re-export of `tracy_client`, so this needs no extra dependency beyond
 // `tracing-tracy` itself. The `0` callstack-depth argument means allocations
 // are NOT tied to a call stack (cheap); passing a non-zero depth would also
-// capture the allocation site, at a real runtime cost. Native-only and
-// feature-gated to match the target-gated `tracing-tracy` dependency in
-// Cargo.toml.
-#[cfg(all(feature = "profile", not(target_arch = "wasm32")))]
+// capture the allocation site, at a real runtime cost.
+//
+// Gated on `profile-memory` rather than plain `profile`: intercepting *every*
+// allocation in the process is by far the most expensive thing Tracy can do
+// here, and it lands hardest on exactly the per-frame code worth measuring
+// (node painting allocates a handful of short-lived `String`s/`Vec`s per node
+// per frame, and each one becomes a Tracy memory event). Keeping it off the
+// default profiling build means `--features profile` measures frame time
+// without the allocator skewing it; turn it on with `--features profile-memory`
+// when the question actually is "where is the memory going".
+#[cfg(all(feature = "profile-memory", not(target_arch = "wasm32")))]
 #[global_allocator]
 static GLOBAL: tracing_tracy::client::ProfiledAllocator<std::alloc::System> =
     tracing_tracy::client::ProfiledAllocator::new(std::alloc::System, 0);
@@ -25,7 +32,24 @@ fn main() -> eframe::Result {
     // rfesi, ...) into `tracing`, so they reach the subscriber(s) set up
     // below instead of being silently dropped now that `env_logger` --
     // which used to own the `log` sink -- is gone.
-    tracing_log::LogTracer::init().expect("installing the log-to-tracing bridge");
+    //
+    // Capped at INFO instead of the `LogTracer::init()` default, which is
+    // `LevelFilter::max()` -- i.e. TRACE, i.e. everything. wgpu/naga log one
+    // line per render-pass command at TRACE (`RenderPass::set_scissor_rect`,
+    // `RenderPass::draw_indexed`, `adjusting naga::ir::Expression handle`,
+    // ...); a Tracy capture of this app measured ~98 such messages *per frame*,
+    // every one of them formatted into a string and shipped to the profiler.
+    // They say nothing about this app's behaviour, so they are dropped at the
+    // bridge rather than filtered downstream -- filtering later would still pay
+    // for building the record. This cap applies only to records originating in
+    // the `log` crate; telescope's own `tracing` spans/events are untouched and
+    // stay fully controllable through `RUST_LOG` below.
+    // (`log` is reached through `tracing_log`'s own re-export, so capping the
+    // bridge needs no new dependency in Cargo.toml.)
+    tracing_log::LogTracer::builder()
+        .with_max_level(tracing_log::log::LevelFilter::Info)
+        .init()
+        .expect("installing the log-to-tracing bridge");
 
     // Wire up `tracing` before any span/event/log-bridged-record runs
     // anywhere in the process (sde, egui-map, webb, native_tools and

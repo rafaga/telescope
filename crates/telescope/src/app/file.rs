@@ -1,4 +1,4 @@
-use crate::app::messages::{Message, Type};
+use crate::app::messages::{Message, Type, send_app_message};
 use notify::EventHandler;
 use notify::event::{CreateKind, ModifyKind};
 use std::sync::{Arc, RwLock};
@@ -44,17 +44,21 @@ impl EventHandler for IntelEventHandler {
                                     let _span = tracing::info_span!("spawned Auth success message")
                                         .entered();
 
-                                    let _ = app_sender_file
-                                        .send(Message::IntelFileChanged(file_name.clone()))
-                                        .await;
-                                    let _ = app_sender_file
-                                        .send(Message::GenericNotification((
+                                    let _ = send_app_message(
+                                        &app_sender_file,
+                                        Message::IntelFileChanged(file_name.clone()),
+                                    )
+                                    .await;
+                                    let _ = send_app_message(
+                                        &app_sender_file,
+                                        Message::GenericNotification((
                                             Type::Debug,
                                             String::from("Telescope"),
                                             String::from("IntelWatcher"),
                                             file_name + " Changed",
-                                        )))
-                                        .await;
+                                        )),
+                                    )
+                                    .await;
                                 });
                             });
                         }
@@ -68,8 +72,9 @@ impl EventHandler for IntelEventHandler {
                             .build()
                             .unwrap();
                         runtime.block_on(async {
-                            let _ = app_sender_file
-                                .send(Message::GenericNotification((
+                            let _ = send_app_message(
+                                &app_sender_file,
+                                Message::GenericNotification((
                                     Type::Debug,
                                     String::from("Telescope"),
                                     String::from("IntelWatcher"),
@@ -80,8 +85,9 @@ impl EventHandler for IntelEventHandler {
                                         .unwrap()
                                         .to_owned()
                                         + " Created",
-                                )))
-                                .await;
+                                )),
+                            )
+                            .await;
                         });
                     });
                 }

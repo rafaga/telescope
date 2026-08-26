@@ -63,6 +63,28 @@ pub enum Message {
     DatabaseUpdated(bool),
 }
 
+impl Message {
+    /// Returns the variant's name, for lightweight tagging of spans/events
+    /// (e.g. in Tracy) without dumping potentially large or arbitrary
+    /// payloads (`GenericNotification`'s error text, `IntelFileChanged`'s
+    /// path, etc.) into every trace.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Message::EsiAuthSuccess(_) => "EsiAuthSuccess",
+            Message::GenericNotification(_) => "GenericNotification",
+            Message::NewRegionalPane(_) => "NewRegionalPane",
+            Message::MapHidden(_) => "MapHidden",
+            Message::MapShown(_) => "MapShown",
+            Message::PlayerNewLocation(_) => "PlayerNewLocation",
+            Message::IntelFileChanged(_) => "IntelFileChanged",
+            Message::UpdateIntelDirectory(_) => "UpdateIntelDirectory",
+            Message::DefaultIntelDirectory => "DefaultIntelDirectory",
+            Message::DatabaseUpdateProgress(_) => "DatabaseUpdateProgress",
+            Message::DatabaseUpdated(_) => "DatabaseUpdated",
+        }
+    }
+}
+
 pub enum CharacterSync {
     Add(usize),
     Remove(usize),
@@ -85,12 +107,35 @@ impl MessageSpawner {
         Self { spawn: sender }
     }
 
-    #[tracing::instrument(skip(self, msg))]
+    #[tracing::instrument(skip(self, msg), fields(kind = msg.kind()))]
     pub fn spawn(&self, msg: Message) {
         if self.spawn.blocking_send(msg).is_err() {
             panic!("The shared runtime has shut down.");
         }
     }
+}
+
+/// Sends `msg` on `tx`, tagging the resulting Tracy zone with the
+/// message's `kind()`. Centralizes instrumentation for the many call
+/// sites that hold their own `Sender<Message>`/`Arc<Sender<Message>>`
+/// clone and send directly, instead of going through `MessageSpawner`.
+/// Never records the payload itself (see `Message::kind`).
+#[tracing::instrument(skip(tx, msg), fields(kind = msg.kind()))]
+pub async fn send_app_message(
+    tx: &Sender<Message>,
+    msg: Message,
+) -> Result<(), mpsc::error::SendError<Message>> {
+    tx.send(msg).await
+}
+
+/// Non-async counterpart of [`send_app_message`], for the `try_send` call
+/// sites.
+#[tracing::instrument(skip(tx, msg), fields(kind = msg.kind()))]
+pub fn try_send_app_message(
+    tx: &Sender<Message>,
+    msg: Message,
+) -> Result<(), mpsc::error::TrySendError<Message>> {
+    tx.try_send(msg)
 }
 
 async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
@@ -114,7 +159,8 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         let _span = tracing::info_span!("spawned Auth success message").entered();
 
                         while let Some(result) = arx.recv().await {
-                            let _send_result = stx.send(Message::EsiAuthSuccess(result)).await;
+                            let _send_result =
+                                send_app_message(&stx, Message::EsiAuthSuccess(result)).await;
                         }
                     });
                 });
@@ -122,28 +168,32 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                 if let Err(t_error) =
                     timeout_at(Instant::now() + Duration::from_secs(time as u64), server).await
                 {
-                    let _ = tx
-                        .send(Message::GenericNotification((
+                    let _ = send_app_message(
+                        &tx,
+                        Message::GenericNotification((
                             Type::Error,
                             String::from("MessageSpawner"),
                             String::from("handle_auth"),
                             t_error.to_string(),
-                        )))
-                        .await;
+                        )),
+                    )
+                    .await;
                 } else {
                     //server.without_shutdown()
                 }
             }
         }
         Err(t_error) => {
-            let _ = tx
-                .send(Message::GenericNotification((
+            let _ = send_app_message(
+                &tx,
+                Message::GenericNotification((
                     Type::Error,
                     String::from("MessageSpawner"),
                     String::from("handle_auth"),
                     t_error.to_string(),
-                )))
-                .await;
+                )),
+            )
+            .await;
         }
     };
 }

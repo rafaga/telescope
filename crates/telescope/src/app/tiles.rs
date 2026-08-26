@@ -10,7 +10,7 @@ use egui_map::map::{
     Map,
     objects::{
         ContextMenuManager, MapLabel, MapPoint, MapSegment, MapSettings, MarkerContext,
-        NodeTemplate, NotificationContext, VisibilitySetting,
+        NodeTemplate, NotificationContext, VisibilitySetting, NodeContext, SelectionContext
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
@@ -386,27 +386,27 @@ impl TileData {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    // Deliberately uninstrumented from here down: these are single-field
+    // accessors called many times per frame (the settings window walks every
+    // region's `TileData` on every repaint). A Tracy zone costs orders of
+    // magnitude more than the field access it would be measuring, so spans
+    // here only bury the zones that matter.
     pub fn set_visible(&mut self, value: bool) {
         self.visible = value;
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get_visible(&self) -> bool {
         self.visible
     }
 
-    #[tracing::instrument(skip(self, value))]
     pub fn set_tile_id(&mut self, value: Option<TileId>) {
         self.tile_id = value;
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get_tile_id(&self) -> Option<TileId> {
         self.tile_id
     }
 
-    #[tracing::instrument(skip(self))]
     pub fn get_name(&self) -> String {
         self.name.clone()
     }
@@ -677,17 +677,17 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
     // ---
     // Settings:
 
-    #[tracing::instrument(skip_all)]
+    // Uninstrumented for the same reason as `TileData`'s accessors: egui_tiles
+    // queries these repeatedly per tile per frame, and a span costs far more
+    // than returning a `f32`.
     fn tab_bar_height(&self, _style: &Style) -> f32 {
         self.tab_bar_height
     }
 
-    #[tracing::instrument(skip_all)]
     fn gap_width(&self, _style: &Style) -> f32 {
         self.gap_width
     }
 
-    #[tracing::instrument(skip(self))]
     fn simplification_options(&self) -> SimplificationOptions {
         self.simplification_options
     }
@@ -725,11 +725,21 @@ impl Template {
 }
 
 impl NodeTemplate for Template {
-    #[tracing::instrument(skip(self, ui))]
-    fn node_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32, system: &MapPoint) {
+    // `skip_all`, not `skip(self, ui)`: this runs once per visible node per
+    // frame, and `tracing-tracy` formats a span's recorded fields into the
+    // Tracy *zone name* (`Config::format_fields_in_zone_name` defaults to
+    // true). Leaving `system` recorded meant `{:?}`-formatting the whole
+    // `MapPoint` -- its `name: Option<String>` and `connections:
+    // Vec<(usize, usize)>` included -- into a fresh string on every call, and
+    // then allocating a distinct Tracy zone per distinct value. A capture of
+    // this app produced 8522 separate zone names from 42349 `node_ui` calls,
+    // with this function accounting for 68% of all frame time. The same
+    // reasoning applies to the three hooks below.
+    #[tracing::instrument(skip_all)]
+    fn node_ui(&self, ui: &mut Ui, ctx: NodeContext) {
         let mut shapes = Vec::new();
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
+        let rect = Rect::from_center_size(ctx.position, Vec2::new(90.0 * ctx.zoom, 35.0 * ctx.zoom));
         colors.1 = if ui.visuals().dark_mode {
             Color32::WHITE
         } else {
@@ -737,32 +747,32 @@ impl NodeTemplate for Template {
         };
         shapes.push(Shape::rect_stroke(
             rect,
-            CornerRadius::same((10.0 * zoom).round() as u8),
-            Stroke::new(4.0 * zoom, colors.1),
+            CornerRadius::same((10.0 * ctx.zoom).round() as u8),
+            Stroke::new(4.0 * ctx.zoom, ctx.color),
             egui::StrokeKind::Middle,
         ));
         shapes.push(Shape::rect_filled(
             rect,
-            CornerRadius::same((10.0 * zoom).round() as u8),
+            CornerRadius::same((10.0 * ctx.zoom).round() as u8),
             colors.0,
         ));
         ui.ctx().fonts_mut(|fonts| {
             shapes.push(Shape::text(
                 fonts,
-                viewport_point,
+                ctx.position,
                 Align2::CENTER_CENTER,
-                system.get_name(),
-                FontId::proportional(12.0 * zoom),
+                ctx.point.name.clone().unwrap_or_default(),
+                FontId::proportional(12.0 * ctx.zoom),
                 colors.1,
             ));
         });
         ui.painter().extend(shapes);
     }
 
-    #[tracing::instrument(skip(self, ui))]
-    fn selection_ui(&self, ui: &mut Ui, viewport_point: Pos2, zoom: f32) {
+    #[tracing::instrument(skip_all)]
+    fn selection_ui(&self, ui: &mut Ui, ctx: SelectionContext) {
         let mut shapes = Vec::new();
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(94.0 * zoom, 39.0 * zoom));
+        let rect = Rect::from_center_size(ctx.position, Vec2::new(94.0 * ctx.zoom, 39.0 * ctx.zoom));
         let color = if ui.visuals().dark_mode {
             Color32::YELLOW
         } else {
@@ -770,14 +780,14 @@ impl NodeTemplate for Template {
         };
         shapes.push(Shape::rect_stroke(
             rect,
-            CornerRadius::same((10.0 * zoom).round() as u8),
-            Stroke::new(3.0 * zoom, color),
+            CornerRadius::same((10.0 * ctx.zoom).round() as u8),
+            Stroke::new(3.0 * ctx.zoom, color),
             egui::StrokeKind::Middle,
         ));
         ui.painter().extend(shapes);
     }
 
-    #[tracing::instrument(skip(self, ui))]
+    #[tracing::instrument(skip_all)]
     fn marker_ui(&self, ui: &mut Ui, ctx: MarkerContext) {
         let viewport_point = ctx.position;
         let zoom = ctx.zoom;
@@ -821,7 +831,7 @@ impl NodeTemplate for Template {
         ui.painter().extend(shapes);
     }
 
-    #[tracing::instrument(skip(self, ui))]
+    #[tracing::instrument(skip_all)]
     fn notification_ui(&self, ui: &mut Ui, ctx: NotificationContext) -> bool {
         let viewport_point = ctx.position;
         let zoom = ctx.zoom;

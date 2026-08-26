@@ -15,6 +15,12 @@ license.workspace = true
 # `profile` gets their spans in the same trace for free, via
 # Cargo's feature unification on the shared `tracing` dependency.
 profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/profile"]
+# Adds allocation tracking on top of `profile` (Tracy's memory pane). Split out
+# because routing every allocation in the process through Tracy costs more than
+# everything else the profiler does, and it distorts the per-frame paint path
+# most of all -- so `profile` alone stays usable for measuring frame time. See
+# the `ProfiledAllocator` comment in `src/main.rs`.
+profile-memory = ["profile"]
 
 [dependencies]
 eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
@@ -22,7 +28,7 @@ eframe = { version = "0.36.1", default-features = false, features = ["accesskit"
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
 # `crates/telescope/src/app/database_updater.rs`.
-sde = { version = "0.3.1", features = ["builder"] }
+sde = { version = "0.3.3", features = ["builder"] }
 # Only needed here to name the `rusqlite::Connection` handed to
 # `sde::builder::schema::create_schema`/`Parser::build_database` --
 # `database_updater.rs` owns opening/creating the `sde.db` file itself
@@ -33,7 +39,7 @@ sde = { version = "0.3.1", features = ["builder"] }
 rusqlite = { version = "0.40" }
 kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.5.1" }
+egui-map = { version = "0.6.1" }
 open = "5.3.2"
 webb = { path = "../webb/", default-features = false, features = []}
 chrono = "0.4.42"
