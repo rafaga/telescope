@@ -10,7 +10,7 @@ use egui_map::map::{
     Map,
     objects::{
         ContextMenuManager, MapLabel, MapPoint, MapSegment, MapSettings, MarkerContext,
-        NodeTemplate, NotificationContext, VisibilitySetting, NodeContext, SelectionContext
+        NodeContext, NodeTemplate, NotificationContext, SelectionContext, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
@@ -179,7 +179,7 @@ impl TabPane for UniversePane {
         if let Ok(msg) = received_data {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
-                    if let Some(node) = self.map.node(system_id){
+                    if let Some(node) = self.map.node(system_id) {
                         node.pulse(time.into());
                     }
                     //self.map.notify(system_id, time.into());
@@ -739,7 +739,8 @@ impl NodeTemplate for Template {
     fn node_ui(&self, ui: &mut Ui, ctx: NodeContext) {
         let mut shapes = Vec::new();
         let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
-        let rect = Rect::from_center_size(ctx.position, Vec2::new(90.0 * ctx.zoom, 35.0 * ctx.zoom));
+        let rect =
+            Rect::from_center_size(ctx.position, Vec2::new(90.0 * ctx.zoom, 35.0 * ctx.zoom));
         colors.1 = if ui.visuals().dark_mode {
             Color32::WHITE
         } else {
@@ -772,7 +773,8 @@ impl NodeTemplate for Template {
     #[tracing::instrument(skip_all)]
     fn selection_ui(&self, ui: &mut Ui, ctx: SelectionContext) {
         let mut shapes = Vec::new();
-        let rect = Rect::from_center_size(ctx.position, Vec2::new(94.0 * ctx.zoom, 39.0 * ctx.zoom));
+        let rect =
+            Rect::from_center_size(ctx.position, Vec2::new(94.0 * ctx.zoom, 39.0 * ctx.zoom));
         let color = if ui.visuals().dark_mode {
             Color32::YELLOW
         } else {
@@ -807,15 +809,10 @@ impl NodeTemplate for Template {
         }
         let corrected_color =
             Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), transparency as u8);
-        let border_color = if ui.visuals().dark_mode {
-            Color32::WHITE
-        } else {
-            Color32::BLACK
-        };
         shapes.push(Shape::Circle(CircleShape::stroke(
             led_position,
             6.5 * zoom,
-            Stroke::new(4.0 * zoom, border_color),
+            Stroke::new(4.0 * zoom, corrected_color),
         )));
         shapes.push(Shape::Circle(CircleShape::filled(
             led_position,
