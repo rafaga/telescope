@@ -149,9 +149,15 @@ impl UniversePane {
             for region in region_areas {
                 let mut label = MapLabel::new();
                 label.text = region.name;
+                // Sit the label at the centre of the region's bounding box,
+                // in the same scaled map space the nodes use: `get_systems`
+                // divides by `factor` and applies the same inversion
+                // `get_region_coordinates` does, so `egui-map` can project it
+                // with pan/zoom like any node. Using a corner (`region.min`)
+                // would pin it to the region's edge instead.
                 label.center = Pos2::new(
-                    (region.min.x() / self.factor) as f32,
-                    (region.min.y() / self.factor) as f32,
+                    ((region.min.x() + region.max.x()) / 2.0 / self.factor) as f32,
+                    ((region.min.y() + region.max.y()) / 2.0 / self.factor) as f32,
                 );
                 labels.push(label);
             }
@@ -175,8 +181,14 @@ impl TabPane for UniversePane {
 
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
-        let received_data = self.mapsync_reciever.try_recv();
-        if let Ok(msg) = received_data {
+        // `while let`, not `if let`: `mapsync_reciever` is a broadcast
+        // channel that keeps filling up whether or not this pane's `ui()`
+        // gets called every frame (e.g. while its tab is hidden behind
+        // another one). A single `try_recv()` only ever drains one message
+        // per frame, so a backlog built up while hidden -- or just a burst
+        // of updates -- would fall permanently behind instead of catching up
+        // once this pane is visible again.
+        while let Ok(msg) = self.mapsync_reciever.try_recv() {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
                     if let Some(node) = self.map.node(system_id) {
@@ -320,8 +332,11 @@ impl RegionPane {
 impl TabPane for RegionPane {
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
-        let received_data = self.mapsync_reciever.try_recv();
-        if let Ok(msg) = received_data {
+        // See `UniversePane::event_manager`'s comment: `while let`, not
+        // `if let`, so a backlog from being hidden or from a burst of
+        // updates gets fully drained instead of leaking one message behind
+        // every frame.
+        while let Ok(msg) = self.mapsync_reciever.try_recv() {
             match msg {
                 MapSync::SystemNotification((system_id, time)) => {
                     if let Some(node) = self.map.node(system_id) {
@@ -738,33 +753,56 @@ impl NodeTemplate for Template {
     #[tracing::instrument(skip_all)]
     fn node_ui(&self, ui: &mut Ui, ctx: NodeContext) {
         let mut shapes = Vec::new();
-        let mut colors: (Color32, Color32) = (ui.visuals().extreme_bg_color, Color32::TRANSPARENT);
         let rect =
             Rect::from_center_size(ctx.position, Vec2::new(90.0 * ctx.zoom, 35.0 * ctx.zoom));
-        colors.1 = if ui.visuals().dark_mode {
-            Color32::WHITE
-        } else {
-            Color32::BLACK
-        };
+        // `ctx.color`: the same per-node color (a system's own star-color
+        // override, falling back to the theme's node color) the built-in
+        // circle paints with when no template is installed -- see
+        // `Map::paint_map_points`'s `node_color` and `NodeContext::color`'s
+        // doc comment. Using the theme's flat `theme.node` here instead would
+        // silently drop every star-color override reaching this node.
         shapes.push(Shape::rect_stroke(
             rect,
             CornerRadius::same((10.0 * ctx.zoom).round() as u8),
-            Stroke::new(4.0 * ctx.zoom, ctx.color),
+            Stroke::new(4.0 * ctx.zoom, ctx.theme.node),
             egui::StrokeKind::Middle,
         ));
+        // `ctx.background_color`: the chip background behind the node,
+        // matching the surrounding UI's own faint background -- exactly what
+        // `ui.visuals().extreme_bg_color` did before `NodeContext` grew this
+        // field. A fixed `Color32::BLACK` here would paint an opaque black
+        // chip under a light theme.
         shapes.push(Shape::rect_filled(
             rect,
             CornerRadius::same((10.0 * ctx.zoom).round() as u8),
-            colors.0,
+            ctx.background_color,
         ));
+        // Snap to the nearest half-pixel: egui's font atlas caches rasterized
+        // glyphs keyed on the exact `FontId` size, and `12.0 * ctx.zoom` is
+        // continuous in `ctx.zoom` -- during a zoom gesture it changes on
+        // essentially every frame, so the atlas never gets a cache hit and
+        // re-rasterizes this label from scratch each time. The 0.5px
+        // granularity is not perceptible but turns that continuous stream of
+        // atlas misses into a small, reusable set of sizes.
+        let font_size = ((12.0 * ctx.zoom) * 2.0).round() / 2.0;
         ui.ctx().fonts_mut(|fonts| {
             shapes.push(Shape::text(
                 fonts,
                 ctx.position,
                 Align2::CENTER_CENTER,
-                ctx.point.name.clone().unwrap_or_default(),
-                FontId::proportional(12.0 * ctx.zoom),
-                colors.1,
+                // `Shape::text` takes `impl ToString` and calls `.to_string()`
+                // on it internally regardless, so passing the already-owned
+                // `.clone()`d `String` here used to pay for two allocations
+                // per node per frame (the clone, then `to_string()`'s own
+                // fresh copy). Borrowing as `&str` instead drops the clone
+                // and leaves the one allocation `Shape::text` needs anyway.
+                ctx.point.name.as_deref().unwrap_or_default(),
+                FontId::proportional(font_size),
+                // `ctx.theme.text`: the same field the built-in label
+                // painting uses (`Map`'s own `text_color: self.theme_colors().text`)
+                // so this label's color tracks the active theme instead of a
+                // hand-rolled dark/light check.
+                ctx.theme.text,
             ));
         });
         ui.painter().extend(shapes);

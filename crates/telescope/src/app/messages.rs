@@ -109,8 +109,31 @@ impl MessageSpawner {
 
     #[tracing::instrument(skip(self, msg), fields(kind = msg.kind()))]
     pub fn spawn(&self, msg: Message) {
-        if self.spawn.blocking_send(msg).is_err() {
-            panic!("The shared runtime has shut down.");
+        // `try_send`, not `blocking_send`: every call site for this reaches
+        // it from the UI thread during `TelescopeApp::update()` (directly,
+        // or via a pane's `event_manager()`/`node_ui()` called from the same
+        // `update()`), and the only thing that ever drains this channel --
+        // `TelescopeApp::event_manager`'s `while let Ok(message) =
+        // self.app_msg.1.try_recv()` -- also runs on that same UI thread,
+        // once, near the top of that same `update()`. If a single frame
+        // ever queued more messages than the channel's capacity (`app.rs`'s
+        // `mpsc::channel::<messages::Message>(40)`), a `blocking_send` here
+        // would block the UI thread waiting for room that only a `recv()`
+        // on this same, now-blocked thread could free -- a self-deadlock
+        // that freezes the whole app. `try_send` trades that hang for the
+        // rare, non-fatal loss of a single log line, which is a strictly
+        // better failure mode for a diagnostics channel.
+        match self.spawn.try_send(msg) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                panic!("The shared runtime has shut down.");
+            }
+            Err(mpsc::error::TrySendError::Full(msg)) => {
+                tracing::warn!(
+                    kind = msg.kind(),
+                    "app message channel is full; dropping message"
+                );
+            }
         }
     }
 }

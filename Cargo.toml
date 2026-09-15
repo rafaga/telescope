@@ -37,5 +37,5 @@ opt-level = 0
 # eframe = { git = "https://github.com/emilk/egui", branch = "master" }
 egui-map = { git = "https://github.com/rafaga/egui-map", branch = "dev" }
 # egui-map = { path = "../egui-map" }
-# sde = { path = "../sde" }
+sde = { path = "../sde" }
 # sde = { git = "https://github.com/rafaga/sde", branch = "test" }

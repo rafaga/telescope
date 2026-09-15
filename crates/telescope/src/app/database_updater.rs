@@ -38,7 +38,7 @@
 
 use eframe::egui::{self, Align2, Vec2};
 use sde::Error;
-use sde::builder::parser::{Parser, ParserConfig, ProjectedAxis};
+use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
 use sde::builder::{extract, http, schema, sde_index};
 use std::fs::File;
 use std::io::Read;
@@ -349,14 +349,19 @@ impl DatabaseUpdater {
         let mut connection = rusqlite::Connection::open(sde_path)?;
         schema::create_schema(&connection)?;
 
-        // `force_isometric_position_2d: true`, matching `sde-builder`
-        // itself: always compute `position2DX`/`Y` locally instead of
-        // trusting CCP's own precomputed value (see `ParserConfig`'s
-        // docs for why).
+        // Local projection instead of CCP's precomputed `position2D`:
+        // that value is a hand-adjusted schematic of the in-game map,
+        // not a projection of the 3D coordinates, and covers k-space
+        // only. `Orthogonal(Y)` is the north-up top-down: EVE's
+        // galactic plane is the X-Z plane (x = east, z = north) with y
+        // as the vertical axis, so dropping y gives east = screen
+        // right, north = screen up -- the community-canonical
+        // orientation -- and, being a true projection, it covers every
+        // system in scope (w-space included). Same default
+        // `sde-builder`'s own CLI uses.
         let parser_config = ParserConfig {
             language: "en".to_string(),
-            force_isometric_position_2d: true,
-            isometric_projected_axis: ProjectedAxis::Y,
+            position_2d: Position2DMode::Orthogonal(ProjectedAxis::Y),
             map_kspace: true,
             map_wspace: true,
             map_abyssal: true,

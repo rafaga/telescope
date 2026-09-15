@@ -43,6 +43,19 @@ pub mod patterns;
 mod settings;
 mod tiles;
 
+/// Maximum number of entries kept in [`TelescopeApp::app_messages`], the
+/// notification log shown at the bottom of the window.
+///
+/// Every `GenericNotification` the app ever emits -- intel matches, ESI
+/// errors, debug traces -- ends up here via `update_status_with_error`,
+/// which only ever pushes, never trims. Across a long play session that is
+/// an unbounded `Vec<LayoutJob>` growing for as long as the app stays open;
+/// the on-screen list is already virtualized (`show_rows` in `update()`
+/// only lays out the visible rows), so the cost is pure memory growth, not
+/// rendering time, but it still never comes back down. Oldest entries are
+/// dropped once this cap is reached -- see `update_status_with_error`.
+const MAX_APP_MESSAGES: usize = 500;
+
 pub struct TelescopeApp {
     initialized: bool,
 
@@ -62,6 +75,8 @@ pub struct TelescopeApp {
 
     // the ESI Manager
     esi: EsiManager,
+    // Capped at `MAX_APP_MESSAGES` by `update_status_with_error` -- see that
+    // constant's doc comment.
     app_messages: Vec<LayoutJob>,
     search_text: String,
     emit_notification: bool,
@@ -1246,6 +1261,13 @@ impl TelescopeApp {
         }
         job.append(&message.3, 0.0, normal_text.clone());
         self.app_messages.push(job);
+        // Drop the oldest entry once we're over the cap, so this log stays
+        // bounded no matter how long the app runs. `remove(0)` shifts at
+        // most `MAX_APP_MESSAGES` elements -- bounded by the cap itself, not
+        // by session length -- so this stays cheap even though it's O(n).
+        if self.app_messages.len() > MAX_APP_MESSAGES {
+            self.app_messages.remove(0);
+        }
     }
 
     #[tracing::instrument(skip(self))]
