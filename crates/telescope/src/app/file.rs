@@ -64,7 +64,19 @@ impl EventHandler for IntelEventHandler {
                         }
                     }
                 }
-                notify::EventKind::Create(CreateKind::File) => {}
+                notify::EventKind::Create(CreateKind::File) => {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+                    runtime.block_on(async {
+                            let _ = send_app_message(
+                                &app_sender_file,
+                                Message::ScanIntelFiles,
+                            )
+                            .await;
+                        });
+                }
                 _ => {
                     thread::spawn(move || {
                         let runtime = tokio::runtime::Builder::new_current_thread()

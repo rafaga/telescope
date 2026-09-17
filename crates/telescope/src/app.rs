@@ -12,7 +12,6 @@ use eframe::egui::{
 };
 use eframe::egui::{IntoAtoms, TextEdit};
 use egui_extras::{Column, TableBuilder};
-use egui_map::map::objects::*;
 use egui_tiles::{Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use patterns::{ActionConfig, PatternEngine, PatternMatch};
@@ -59,8 +58,6 @@ const MAX_APP_MESSAGES: usize = 500;
 pub struct TelescopeApp {
     initialized: bool,
 
-    // 2d point to paint map
-    points: Vec<MapPoint>,
     // generic messages
     app_msg: (Arc<Sender<Message>>, Receiver<Message>),
     // map synchronization Messages
@@ -255,7 +252,6 @@ impl Default for TelescopeApp {
         Self {
             // Example stuff:
             initialized: false,
-            points: Vec::new(),
             app_msg: (arc_msg_sender, grx),
             map_msg: (arc_map_sender, mrx),
             char_msg: None,
@@ -297,7 +293,6 @@ impl eframe::App for TelescopeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let Self {
             initialized: _,
-            points: _points,
             app_msg: _,
             map_msg: _,
             char_msg: _,
@@ -371,6 +366,19 @@ impl eframe::App for TelescopeApp {
             }
 
             self.initialized = true;
+            let app_msg_sender = Arc::clone(&self.app_msg.0);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+            runtime.block_on(async {
+                    let _ = send_app_message(
+                        &app_msg_sender,
+                        Message::ScanIntelFiles,
+                    )
+                    .await;
+                });
+
         }
 
         self.event_manager();
@@ -534,6 +542,9 @@ impl TelescopeApp {
                             let _ = self.settings.scan_channels_logs();
                         }
                     }
+                }
+                Message::ScanIntelFiles => {
+                    let _ = self.settings.scan_channels_logs();
                 }
             };
         }
@@ -1323,7 +1334,22 @@ impl TelescopeApp {
             .families
             .get_mut(&eframe::egui::FontFamily::Proportional)
             .unwrap()
-            .insert(0, "Noto Sans TC".to_owned());
+            .push("Noto Sans TC".to_owned());
+
+        let custom_family = eframe::egui::FontFamily::Name("Custom".into());
+        fonts.families.insert(custom_family.clone(), Vec::new());
+
+        fonts.font_data.insert(
+            "Fira Sans Bold".to_owned(),
+            Arc::new(eframe::egui::FontData::from_static(include_bytes!(
+                "../../../assets/FiraSans-Bold.ttf"
+            ))),
+        );
+        fonts
+            .families
+            .get_mut(&eframe::egui::FontFamily::Name("Custom".into()))
+            .unwrap()
+            .push("Fira Sans Bold".to_owned());
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -1331,7 +1357,6 @@ impl TelescopeApp {
             return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
         }*/
         cc.egui_ctx.set_fonts(fonts);
-
         let app: TelescopeApp = Default::default();
         app
     }

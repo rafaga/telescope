@@ -61,6 +61,10 @@ pub enum Message {
     /// failed (the failure itself was already reported separately via a
     /// `GenericNotification`).
     DatabaseUpdated(bool),
+    /// Sent by `IntelEventHandler` when a new intel file is created in the
+    /// monitored directory or when the application initializes, to trigger
+    ///  a scan of all intel files.
+    ScanIntelFiles
 }
 
 impl Message {
@@ -81,6 +85,7 @@ impl Message {
             Message::DefaultIntelDirectory => "DefaultIntelDirectory",
             Message::DatabaseUpdateProgress(_) => "DatabaseUpdateProgress",
             Message::DatabaseUpdated(_) => "DatabaseUpdated",
+            Message::ScanIntelFiles => "ScanIntelFiles",
         }
     }
 }

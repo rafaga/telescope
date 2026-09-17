@@ -1,7 +1,7 @@
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style,
-    TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, vec2,
+    TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, text::Galley, vec2,
 };
 use egui::PopupCloseBehavior;
 use egui::containers::menu::{MenuButton, MenuConfig};
@@ -9,14 +9,15 @@ use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
     objects::{
-        ContextMenuManager, MapLabel, MapPoint, MapSegment, MapSettings, MarkerContext,
-        NodeContext, NodeTemplate, NotificationContext, SelectionContext, VisibilitySetting,
+        ContextMenuManager, MapPoint, MapSegment, MapSettings, MarkerContext, NodeContext,
+        NodeTemplate, NotificationContext, RegionLabel, SelectionContext, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
 use sde::objects::{ProjectedAxis, SdePoint, SdeSegment};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 use std::{
@@ -127,6 +128,8 @@ impl UniversePane {
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
+        object.map.settings.region_label_alpha = 0.30;
+        object.map.settings.style.region_label_font = FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
@@ -145,9 +148,16 @@ impl UniversePane {
         if let Ok(t_sde) = SdeManager::new(&self.path, self.factor)
             && let Ok(region_areas) = t_sde.get_region_coordinates()
         {
+            // Region names are backdrop for the whole-galaxy view, not
+            // per-node annotations -- `RegionLabel`/`add_region_labels`
+            // (egui-map 0.9) instead of the free-floating `MapLabel` this
+            // used to piggyback on: it scales with zoom rather than staying
+            // a fixed screen size, is always painted behind everything
+            // else, and is drawn in a faded color by default, so it reads
+            // as the region's name rather than competing with system names.
             let mut labels = Vec::new();
             for region in region_areas {
-                let mut label = MapLabel::new();
+                let mut label = RegionLabel::new();
                 label.text = region.name;
                 // Sit the label at the centre of the region's bounding box,
                 // in the same scaled map space the nodes use: `get_systems`
@@ -155,13 +165,14 @@ impl UniversePane {
                 // `get_region_coordinates` does, so `egui-map` can project it
                 // with pan/zoom like any node. Using a corner (`region.min`)
                 // would pin it to the region's edge instead.
+
                 label.center = Pos2::new(
                     ((region.min.x() + region.max.x()) / 2.0 / self.factor) as f32,
                     ((region.min.y() + region.max.y()) / 2.0 / self.factor) as f32,
                 );
                 labels.push(label);
             }
-            self.map.add_labels(labels);
+            self.map.add_region_labels(labels);
         }
     }
 }
@@ -730,12 +741,39 @@ impl ContextMenuManager for ContextMenu {
     }
 }
 
-struct Template {}
+struct Template {
+    // Cached per-node label `Galley`s, keyed by node id. `node_ui` runs once
+    // per visible node, every frame; `FontsView::layout_no_wrap` already
+    // memoizes by content internally (see its own doc comment), but that
+    // memoization still pays for a fresh `String` allocation of the label
+    // text plus hashing the whole layout job on *every* call, hit or miss.
+    // Keying our own cache on the node's id instead (a `usize`, hashed for
+    // free) skips all of that whenever a node's label hasn't actually
+    // changed since last frame -- the common case unless the map is being
+    // actively zoomed, renamed, or re-themed.
+    label_cache: RefCell<HashMap<usize, CachedLabel>>,
+}
+
+/// One entry in [`Template::label_cache`]: the inputs that produced
+/// `galley`, so a lookup can tell a still-valid entry from a stale one --
+/// `name`/`color`/`font_size` are exactly the arguments `node_ui` passes to
+/// [`FontsView::layout_no_wrap`](egui::text::Fonts) to build the label, so
+/// comparing them against the node's current values is the same test
+/// egui's own content-hash cache is already making internally, just without
+/// re-deriving that hash (or re-allocating the `String`) on every call.
+struct CachedLabel {
+    name: Option<String>,
+    color: Color32,
+    font_size: f32,
+    galley: Arc<Galley>,
+}
 
 impl Template {
     #[tracing::instrument]
     fn new() -> Self {
-        Self {}
+        Self {
+            label_cache: RefCell::new(HashMap::new()),
+        }
     }
 }
 
@@ -785,26 +823,62 @@ impl NodeTemplate for Template {
         // granularity is not perceptible but turns that continuous stream of
         // atlas misses into a small, reusable set of sizes.
         let font_size = ((12.0 * ctx.zoom) * 2.0).round() / 2.0;
-        ui.ctx().fonts_mut(|fonts| {
-            shapes.push(Shape::text(
-                fonts,
-                ctx.position,
-                Align2::CENTER_CENTER,
-                // `Shape::text` takes `impl ToString` and calls `.to_string()`
-                // on it internally regardless, so passing the already-owned
-                // `.clone()`d `String` here used to pay for two allocations
-                // per node per frame (the clone, then `to_string()`'s own
-                // fresh copy). Borrowing as `&str` instead drops the clone
-                // and leaves the one allocation `Shape::text` needs anyway.
-                ctx.point.name.as_deref().unwrap_or_default(),
-                FontId::proportional(font_size),
-                // `ctx.theme.text`: the same field the built-in label
-                // painting uses (`Map`'s own `text_color: self.theme_colors().text`)
-                // so this label's color tracks the active theme instead of a
-                // hand-rolled dark/light check.
-                ctx.theme.text,
-            ));
-        });
+        // `ctx.theme.text`: the same field the built-in label painting uses
+        // (`Map`'s own `text_color: self.theme_colors().text`) so this
+        // label's color tracks the active theme instead of a hand-rolled
+        // dark/light check.
+        let text_color = ctx.theme.text;
+        // Reuse this node's cached `Galley` if nothing that would change its
+        // shape has changed (name, color, quantized size); only fall back to
+        // laying it out again -- opening our own narrowly-scoped
+        // `fonts_mut`, held only for the layout call itself -- when it's
+        // genuinely stale. See `Template::label_cache`'s doc comment for why
+        // this is worth doing on top of egui's own font-layout cache.
+        //
+        // This must NOT be widened to wrap the rest of this function:
+        // `ui.painter().extend(shapes)` below also needs to touch
+        // `egui::Context`'s single whole-object lock, and `fonts_mut` holds
+        // that same lock for as long as its closure runs -- nesting the two
+        // is a same-thread reentrant lock attempt, which deadlocks (egui
+        // panics after a 10s timeout in debug builds: "Failed to acquire
+        // RwLock write ... Deadlock?").
+        let mut label_cache = self.label_cache.borrow_mut();
+        let galley = match label_cache.get(&ctx.point.id) {
+            Some(cached)
+                if cached.name == ctx.point.name
+                    && cached.color == text_color
+                    && cached.font_size == font_size =>
+            {
+                Arc::clone(&cached.galley)
+            }
+            _ => {
+                let name = ctx.point.name.clone();
+                let galley = ui.ctx().fonts_mut(|fonts| {
+                    fonts.layout_no_wrap(
+                        name.clone().unwrap_or_default(),
+                        FontId::proportional(font_size),
+                        text_color,
+                    )
+                });
+                label_cache.insert(
+                    ctx.point.id,
+                    CachedLabel {
+                        name,
+                        color: text_color,
+                        font_size,
+                        galley: Arc::clone(&galley),
+                    },
+                );
+                galley
+            }
+        };
+        drop(label_cache);
+        // Same anchoring `Shape::text` does internally (`Align2::anchor_size`
+        // then `Shape::galley`) -- we can't call `Shape::text` itself here
+        // since it always lays the text out fresh; this is the equivalent
+        // that accepts an already-built `Galley` instead.
+        let text_rect = Align2::CENTER_CENTER.anchor_size(ctx.position, galley.size());
+        shapes.push(Shape::galley(text_rect.min, galley, text_color));
         ui.painter().extend(shapes);
     }
 
