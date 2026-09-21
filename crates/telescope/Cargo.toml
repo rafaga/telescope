@@ -52,7 +52,19 @@ hyper = { version = "1.7.0", features = ["server", "http1", "client"] }
 rfesi = {version = "0.50.0", default-features = false, features = ["rustls-tls", "random_state", "validate_jwt"] }
 serde = { version = "1.0.228", features = ["derive"] }
 hyper-util = { version = "0.1.17", features = ["full"] }
-notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+# Use `notify`'s own default backend selection per platform (ReadDirectoryChangesW
+# on Windows, inotify on Linux, FSEvents on macOS) instead of overriding it. This
+# used to force the `macos_kqueue` backend on macOS via `default-features = false,
+# features = ["macos_kqueue"]`, which only registers a watch on the intel
+# directory itself (not on the files already inside it) when `watch()` is called
+# with `RecursiveMode::NonRecursive` (as Telescope does) -- so content changes to
+# any log file that already existed when the watcher started were never detected.
+# FSEvents watches the whole directory natively at the OS level and does not have
+# this per-file-registration limitation. Safe to switch back since this crate is
+# built directly on macOS (not cross-compiled from a machine without the macOS
+# SDK, which is the usual reason projects avoid `fsevent-sys`'s
+# CoreServices/CoreFoundation link requirement).
+notify = "8.2.0"
 directories = "6.0.0"
 regex = "1.12.1"
 # Multi-literal ("dictionary") matching for pattern rules whose alternatives
