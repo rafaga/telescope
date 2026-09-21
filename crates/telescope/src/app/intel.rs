@@ -13,8 +13,10 @@ use crate::app::messages::Message;
 use crate::app::messages::Type;
 use crate::app::patterns::ActionConfig;
 use crate::app::patterns::PatternMatch;
+use notify::{RecursiveMode, Watcher};
 use regex::Regex;
 use sde::SdeManager;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::io::Seek;
@@ -52,6 +54,44 @@ impl<'a> IntelLogName<'a> {
 }
 
 impl TelescopeApp {
+    /// Applies the channel selection made in the Settings window: pushes it
+    /// into the live handle the file watcher reads, (re)registers or drops
+    /// the OS-level watch on the intel directory, and stores the selection
+    /// in the settings (unsaved until `Settings::save`).
+    ///
+    /// Does nothing if the configured intel directory doesn't exist.
+    pub(crate) fn apply_intel_settings(&mut self) {
+        if !self.settings.get_intel().exists() {
+            return;
+        }
+        let monitored_channels = monitored_channel_names(&self.settings.get_available_channels());
+        // Push the freshly-saved selection into the live handle the running
+        // watcher's event handler reads from, so newly checked/unchecked
+        // channels take effect immediately instead of only after a restart
+        // (the watcher's `IntelEventHandler` is constructed once and can't be
+        // swapped out).
+        if let Ok(mut guard) = self.intel_channels.write() {
+            *guard = monitored_channels.clone();
+        }
+        if monitored_channels.is_empty() {
+            let _ = self.watcher.unwatch(self.settings.get_intel());
+        } else {
+            // `watch` doesn't dedupe: calling it again on a path that's
+            // already watched stacks a second OS-level registration instead
+            // of replacing the first one, so every real filesystem event then
+            // gets delivered once per accumulated registration -- e.g.
+            // clicking "Save" three times with a channel checked makes every
+            // log line for that channel repeat three times. `unwatch` first
+            // (ignoring the "wasn't watched yet" error, e.g. on the very
+            // first Save) keeps re-saving idempotent.
+            let _ = self.watcher.unwatch(self.settings.get_intel());
+            let _ = self
+                .watcher
+                .watch(self.settings.get_intel(), RecursiveMode::NonRecursive);
+        }
+        self.settings.set_monitored_channels(monitored_channels);
+    }
+
     #[tracing::instrument(skip(self))]
     pub(crate) fn load_intel_file(&mut self, file_name: String) {
         let path = self.settings.get_intel();
@@ -158,6 +198,18 @@ impl TelescopeApp {
             }
         }
     }
+}
+
+/// Names of the channels flagged as monitored in `available`, sorted: the
+/// watcher's event handler binary-searches this list.
+fn monitored_channel_names(available: &HashMap<String, bool>) -> Vec<String> {
+    let mut names: Vec<String> = available
+        .iter()
+        .filter(|(_, monitored)| **monitored)
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort_unstable();
+    names
 }
 
 /// Decodes a raw byte chunk read from an EVE Online chat log as UTF-16LE.
@@ -316,5 +368,30 @@ mod log_name_tests {
                 "{name:?} should not parse"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod monitored_channel_names_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_only_monitored_channels_sorted() {
+        let available = HashMap::from([
+            (String::from("Local"), false),
+            (String::from("wc.Vale"), true),
+            (String::from("Alliance"), true),
+        ]);
+        assert_eq!(
+            monitored_channel_names(&available),
+            vec![String::from("Alliance"), String::from("wc.Vale")]
+        );
+    }
+
+    #[test]
+    fn is_empty_when_nothing_is_monitored() {
+        let available = HashMap::from([(String::from("Local"), false)]);
+        assert!(monitored_channel_names(&available).is_empty());
+        assert!(monitored_channel_names(&HashMap::new()).is_empty());
     }
 }

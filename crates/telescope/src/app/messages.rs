@@ -31,11 +31,31 @@ pub enum Target {
     Region,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
     Intelligence,
     DataSources,
     Characters,
+}
+
+impl SettingsPage {
+    /// Every settings page, in the order the Settings window menu lists
+    /// them. A new page is one variant above, one entry here, one arm in
+    /// `title` and one arm in the Settings window's page `match`.
+    pub const ALL: [SettingsPage; 3] = [
+        SettingsPage::Intelligence,
+        SettingsPage::DataSources,
+        SettingsPage::Characters,
+    ];
+
+    /// Label shown for this page in the Settings window menu.
+    pub fn title(self) -> &'static str {
+        match self {
+            SettingsPage::Intelligence => "Intelligence",
+            SettingsPage::DataSources => "Data Sources",
+            SettingsPage::Characters => "Characters",
+        }
+    }
 }
 
 pub enum Message {

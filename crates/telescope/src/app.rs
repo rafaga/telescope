@@ -30,6 +30,7 @@ mod file;
 mod intel;
 mod messages;
 mod notifications;
+mod persistence;
 pub mod patterns;
 mod settings;
 mod tiles;
