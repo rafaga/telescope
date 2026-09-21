@@ -1,3 +1,11 @@
+//! File-system watcher glue: [`IntelEventHandler`] receives the `notify` events for
+//! the EVE chat log directory and turns them into app messages
+//! (`IntelFileChanged` for writes to a monitored channel's log, `ScanIntelFiles`
+//! when log files appear or disappear).
+//!
+//! Each OS backend of `notify` reports different event kinds for the same
+//! change, so the matching in `handle_event` is deliberately broad.
+
 use crate::app::intel::IntelLogName;
 use crate::app::messages::{Message, Type, send_app_message};
 use notify::EventHandler;

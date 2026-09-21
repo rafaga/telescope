@@ -1,3 +1,7 @@
+//! The Settings window frame: the page menu, the selected page and the Save button.
+//! Each page lives in its own submodule (`intelligence`, `data_sources`,
+//! `characters`).
+
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
 use eframe::egui;

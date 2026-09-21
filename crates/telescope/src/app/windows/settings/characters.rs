@@ -1,3 +1,6 @@
+//! Settings page "Characters": the linked EVE characters used to emit notifications
+//! when something is close to their location, and the flow to link a new one.
+
 use crate::app::TelescopeApp;
 use crate::app::messages::CharacterSync;
 use crate::app::messages::Message;

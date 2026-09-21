@@ -1,3 +1,11 @@
+//! ESI access and local persistence.
+//!
+//! `EsiManagerCore` wraps the ESI API (`LiveEsiApi`) for the SSO authorization
+//! flow, token refresh and location / portrait queries, and reads and writes
+//! characters, corporations and alliances in the local SQLite player database (see
+//! `player_database`). With the `crypted-db` feature the database is encrypted
+//! (SQLCipher) with a key derived from a per-machine identifier.
+
 use crate::objects::AuthData;
 use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPublicInfo};
 use crate::objects::{Corporation, TokenSet};

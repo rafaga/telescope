@@ -1,3 +1,14 @@
+//! The application root: [`TelescopeApp`] owns the UI state, the ESI manager, the
+//! settings and the message channels that connect the file watcher, the
+//! background tasks and the UI.
+//!
+//! This file holds the struct, its construction, the per-frame `ui` loop and the
+//! map pane management. The rest of the behaviour lives in submodules:
+//! `windows` (about, debug and settings windows), `intel` (chat log reading and
+//! alerts), `watchdog` (character location polling), `database` (player database
+//! and SDE updates), `notifications` (the status log), `persistence` (saving
+//! settings), `tiles` (map panes), `settings`, `messages`, `file` and `patterns`.
+
 use crate::app::file::IntelEventHandler;
 use crate::app::messages::{
     CharacterSync, MapSync, Message, SettingsPage, Type, send_app_message, try_send_app_message,

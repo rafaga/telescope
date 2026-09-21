@@ -1,3 +1,6 @@
+//! ESI client configuration ([`Data`]): user agent, client id, secret key and the
+//! OAuth callback / authorize URLs.
+
 
 pub struct Data{
     pub user_agent:String,

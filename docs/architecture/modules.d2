@@ -1,0 +1,45 @@
+direction: down
+
+entry: "Entry points" {
+  main: "main.rs\n(logging setup, opens the window)"
+  lib: "lib.rs\n(exports TelescopeApp and patterns)"
+}
+
+app: "app.rs: TelescopeApp\n(state, construction, ui(), event_manager(), map panes)"
+
+ui: "User interface" {
+  windows: "windows/\nabout, debug, settings"
+  pages: "windows/settings/\nintelligence, data_sources, characters"
+  tiles: "tiles.rs\nUniversePane, RegionPane, TreeBehavior"
+  notifications: "notifications.rs\n(status log)"
+  windows -> pages
+}
+
+intel: "Intel pipeline" {
+  file: "file.rs\nIntelEventHandler (notify)"
+  reader: "intel.rs\nIntelLogName, log reading,\napply_intel_settings()"
+  patterns: "patterns.rs\nPatternEngine, patterns.toml"
+  file -> reader
+  reader -> patterns
+}
+
+eve: "EVE / ESI" {
+  watchdog: "watchdog.rs\n(location polling)"
+  database: "database.rs\n(characters, SDE cache)"
+  updater: "database_updater.rs\n(SDE check and build)"
+  data: "data.rs\n(ESI app data)"
+}
+
+core: "Shared core" {
+  messages: "messages.rs\nMessage, MapSync, CharacterSync"
+  settings: "settings.rs\nSettings (telescope.toml)"
+  persistence: "persistence.rs\nsave_settings()"
+  persistence -> settings
+}
+
+entry.main -> app
+entry.lib -> app
+app -> ui
+app -> intel
+app -> eve
+app -> core

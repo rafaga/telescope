@@ -28,7 +28,7 @@ eframe = { version = "0.36.1", default-features = false, features = ["accesskit"
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
 # `crates/telescope/src/app/database_updater.rs`.
-sde = { version = "0.3.2", features = ["builder"] }
+sde = { version = "0.4.0", features = ["builder"] }
 # Only needed here to name the `rusqlite::Connection` handed to
 # `sde::builder::schema::create_schema`/`Parser::build_database` --
 # `database_updater.rs` owns opening/creating the `sde.db` file itself

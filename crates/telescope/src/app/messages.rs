@@ -1,3 +1,8 @@
+//! Messages used to communicate between the UI, the background tasks and the file
+//! watcher: the [`Message`] enum (the app's central event type), the map and
+//! character sync messages, and the [`MessageSpawner`] / [`send_app_message`]
+//! helpers that deliver them.
+
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use std::path::PathBuf;

@@ -1,3 +1,11 @@
+//! Platform-specific helpers for Telescope.
+//!
+//! * [`dialog`]: native open file / folder dialogs behind one API.
+//! * `zbus` (Linux only): stable machine identification via DMI, D-Bus and
+//!   machine-id fallbacks.
+//! * `get_*_unique_id`: a per-machine identifier for each OS, with a fixed
+//!   fallback value when the OS cannot provide one.
+
 pub mod dialog;
 #[cfg(target_os = "linux")]
 pub mod zbus;

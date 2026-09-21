@@ -1,3 +1,10 @@
+//! User settings, persisted to a TOML file: data paths (SDE database, player
+//! database, intel directory), map options and start-up regions, and the chat
+//! channels that are available and monitored.
+//!
+//! `Settings` also scans the intel directory for chat logs and remembers how much
+//! of each log has already been read.
+
 use crate::app::intel::IntelLogName;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

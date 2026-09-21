@@ -1,3 +1,6 @@
+//! Background task that polls ESI for the location of each linked character,
+//! refreshing the access token when it expires, and reports the changes to the UI.
+
 use crate::app::TelescopeApp;
 use crate::app::messages::CharacterSync;
 use crate::app::messages::MapSync;

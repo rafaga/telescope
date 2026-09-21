@@ -1,3 +1,7 @@
+//! The on-screen status log: turns incoming `GenericNotification` messages into
+//! colored log entries (capped at `MAX_APP_MESSAGES`) and reports errors changing
+//! the intel directory.
+
 use crate::app::TelescopeApp;
 use crate::app::messages::Message;
 use crate::app::messages::Type;

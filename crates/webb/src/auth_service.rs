@@ -1,3 +1,11 @@
+//! Minimal local HTTP server for the EVE SSO OAuth callback.
+//!
+//! After the player authorizes Telescope, CCP redirects the browser to
+//! `/login?code=...&state=...`. [`AuthService2`] extracts `code` and `state`,
+//! forwards them through a channel to the application and answers with a static
+//! confirmation page (`assets/server.html`). Requests are never logged: the query
+//! string carries the OAuth code.
+
 use hyper::{Method, StatusCode};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::Sender;

@@ -1,3 +1,10 @@
+//! Native open file / open folder dialogs behind one cross-platform API.
+//!
+//! A [`Dialog`] is configured with a [`DialogType`] and its
+//! `open_file_dialog` returns a [`DialogResult`]. Each OS has its own
+//! implementation: `IFileOpenDialog` on Windows, `NSOpenPanel` on macOS and the
+//! XDG desktop portal on Linux.
+
 use std::path::{Path, PathBuf};
 //use std::sync::{Arc, Mutex};
 

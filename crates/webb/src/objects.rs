@@ -1,3 +1,7 @@
+//! Domain types shared by `webb` and the application: authorization data
+//! (`AuthData`, `TokenSet`, `AuthorizeInfo`, `AuthClaims`) and the EVE entities
+//! `Character`, `Corporation` and `Alliance`.
+
 use chrono::prelude::*;
 use rusqlite::Error;
 

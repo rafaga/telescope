@@ -1,3 +1,6 @@
+//! Settings page "Intelligence": alert distance, the EVE chat log directory, the
+//! monitored channels and the maps shown at start-up.
+
 use crate::app::TelescopeApp;
 use crate::app::messages::Message;
 use crate::app::messages::send_app_message;

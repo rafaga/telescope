@@ -1,3 +1,7 @@
+//! `TelescopeApp` methods that keep the local databases in sync: storing a freshly
+//! authorized character in the player database, locating the SDE build cache
+//! directory, and reacting to a finished SDE database update.
+
 use crate::app::TelescopeApp;
 use crate::app::messages::CharacterSync;
 use crate::app::messages::Message;

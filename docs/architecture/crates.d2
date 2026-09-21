@@ -1,0 +1,17 @@
+direction: right
+
+workspace: "This workspace" {
+  telescope: "telescope\n(application: UI, settings,\nfile watching, alerting)"
+  webb: "webb\n(ESI client, OAuth callback,\nplayer database)"
+  native_tools: "native_tools\n(native dialogs,\nmachine identification)"
+}
+
+siblings: "External crates\n(crates.io)" {
+  sde: "sde\n(SDE parser and builder,\nuniverse queries)"
+  egui-map: "egui-map\n(map widget)"
+}
+
+workspace.telescope -> workspace.webb
+workspace.telescope -> workspace.native_tools
+workspace.telescope -> siblings.sde
+workspace.telescope -> siblings.egui-map

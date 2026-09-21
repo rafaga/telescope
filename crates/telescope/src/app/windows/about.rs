@@ -1,3 +1,5 @@
+//! The "About Telescope" window.
+
 use crate::app::TelescopeApp;
 use eframe::egui;
 use eframe::egui::Vec2;

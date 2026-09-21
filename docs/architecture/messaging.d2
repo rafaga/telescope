@@ -1,0 +1,21 @@
+direction: right
+
+bg: "Background threads\n(each with its own Tokio runtime)" {
+  watcher: "notify watcher\nIntelEventHandler"
+  auth: "AuthSpawner\nOAuth callback server\n(localhost:56123)"
+  updater: "DatabaseUpdater\nSDE check and build"
+  watchdog: "Watchdog\nESI location polling (25 s)"
+}
+
+ui: "UI thread" {
+  app: "TelescopeApp\nui() then event_manager()"
+  panes: "Map panes\nUniversePane, RegionPane"
+  app -> panes: "MapSync (broadcast)\nCenterOn, SystemNotification, PlayerMoved"
+}
+
+bg.watcher -> ui.app: "Message (mpsc)\nIntelFileChanged, ScanIntelFiles"
+bg.auth -> ui.app: "Message\nEsiAuthSuccess"
+bg.updater -> ui.app: "Message\nDatabaseUpdateProgress, DatabaseUpdated"
+bg.watchdog -> ui.app: "Message\nPlayerNewLocation"
+bg.watchdog -> ui.panes: "MapSync::PlayerMoved"
+ui.app -> bg.watchdog: "CharacterSync (mpsc)\nAdd, Remove"

@@ -1,3 +1,6 @@
+//! Settings page "Data Sources": the SDE and player database paths, and the
+//! button that checks for SDE updates.
+
 use crate::app::TelescopeApp;
 use eframe::egui;
 use eframe::egui::FontId;

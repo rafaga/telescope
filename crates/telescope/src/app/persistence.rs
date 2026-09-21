@@ -1,3 +1,5 @@
+//! Saving the settings edited in the Settings window.
+
 use crate::app::TelescopeApp;
 use crate::app::messages::{Message, Type};
 

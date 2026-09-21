@@ -1,3 +1,11 @@
+//! The map area of the main window, built on `egui_tiles`: `UniversePane` (the
+//! whole universe) and `RegionPane` (a single region), both implementing
+//! [`TabPane`], and `TreeBehavior`, which lays out the tabs and keeps the
+//! per-region [`TileData`] (visibility, show on start-up).
+//!
+//! It also bridges the `sde` map points and connections into the types `egui-map`
+//! renders.
+
 use crate::app::messages::{MapSync, Message, Target, Type};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style,

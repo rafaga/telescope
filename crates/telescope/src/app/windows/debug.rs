@@ -1,3 +1,6 @@
+//! The debug window: search the SDE by name and act on a result (center the maps
+//! on it, optionally emitting a notification).
+
 use crate::app::TelescopeApp;
 use crate::app::messages::MapSync;
 use crate::app::messages::Message;

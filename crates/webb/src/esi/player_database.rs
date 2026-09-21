@@ -1,3 +1,6 @@
+//! SQLite schema and queries of the local player database: characters,
+//! corporations, alliances and the authorization tokens of the linked characters.
+
 use crate::esi::Error;
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
 use chrono::{DateTime, Utc};

@@ -1,3 +1,9 @@
+//! Entry points for Telescope: `main` for the native build and for the web (wasm) build.
+//!
+//! The native one sets up diagnostics first -- a `log` -> `tracing` bridge and a
+//! `tracing` subscriber filtered by `RUST_LOG` (plus Tracy under the `profile`
+//! feature) -- and then opens the `eframe` window running `TelescopeApp`.
+
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
