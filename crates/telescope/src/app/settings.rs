@@ -1,209 +1,442 @@
+//! User settings, persisted to a TOML file: data paths (SDE database, player
+//! database, intel directory), map options and start-up regions, and the chat
+//! channels that are available and monitored.
+//!
+//! `Settings` also scans the intel directory for chat logs and remembers how much
+//! of each log has already been read.
+
+use crate::app::intel::IntelLogName;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::{File, remove_file};
+use std::error::Error;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{
+    error,
+    fmt::{Display, Formatter},
+};
 
-#[derive(Serialize, Deserialize)]
-pub(crate) struct FilePaths {
+#[derive(Serialize, Deserialize, Clone)]
+struct FilePaths {
     #[serde(skip)]
-    pub settings: String,
-    #[serde(skip)]
-    pub internal_intel: Option<PathBuf>,
-    pub default_behavior: bool,
-    pub intel: String,
-    pub sde_db: String,
-    pub local_db: String,
+    settings: PathBuf,
+    intel: PathBuf,
+    sde: PathBuf,
+    db: PathBuf,
 }
 
-#[derive(Serialize, Deserialize)]
-pub(crate) struct Mapping {
+impl Default for FilePaths {
+    fn default() -> Self {
+        let os_dirs = directories::BaseDirs::new().unwrap();
+        let tpath = os_dirs
+            .home_dir()
+            .join("Documents")
+            .join("EVE")
+            .join("logs")
+            .join("ChatLogs");
+        // A real default path (instead of the previous empty `PathBuf`)
+        // so `database_updater::DatabaseUpdater` has somewhere to build
+        // `sde.db` on a first run without the user having to type a path
+        // into Settings -> Data Sources first. Relative and next to
+        // `telescope.toml` (i.e. wherever Telescope is run from) rather
+        // than an OS data/home directory -- `sde.db` is meant to sit
+        // alongside the app, not get tucked away somewhere the user has
+        // to go look for it. `db` (the ESI/player database, managed by
+        // `webb::esi::EsiManager`) deliberately keeps its previous empty
+        // default here -- unlike `DatabaseUpdater`, `EsiManager::new`'s
+        // startup path doesn't create its parent directory before
+        // opening it, so pointing it at a directory that doesn't exist
+        // yet would turn into a startup panic instead of the harmless
+        // (if useless) SQLite private-temp-database behavior an empty
+        // path gets today.
+        Self {
+            settings: Path::new("telescope.toml").to_path_buf(),
+            intel: tpath,
+            sde: Path::new("sde.db").to_path_buf(),
+            db: PathBuf::new(),
+        }
+    }
+}
+
+impl FilePaths {}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Mapping {
     pub startup_regions: Vec<usize>,
-    pub warning_area: String,
+    pub warning_area: u8,
 }
+
+impl Default for Mapping {
+    fn default() -> Self {
+        Self {
+            startup_regions: vec![],
+            warning_area: 4,
+        }
+    }
+}
+
+impl Mapping {}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Channels {
     #[serde(skip)]
-    pub available: HashMap<String, bool>,
+    available: HashMap<String, bool>,
     #[serde(skip)]
-    pub log_files: HashMap<String, (u64, DateTime<Utc>)>,
-    pub monitored: Arc<Vec<String>>,
+    log_files: HashMap<String, (u64, DateTime<Utc>)>,
+    monitored: Arc<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Manager {
-    pub paths: FilePaths,
-    pub mapping: Mapping,
-    pub channels: Channels,
+pub(crate) struct Settings {
+    paths: FilePaths,
+    mapping: Mapping,
+    channels: Channels,
     #[serde(skip)]
-    pub factor: i64,
+    factor: f64,
     #[serde(skip)]
-    pub region_factor: i64,
+    region_factor: f64,
     #[serde(skip)]
-    pub saved: bool,
+    saved: bool,
 }
 
-impl Manager {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
+impl TryFrom<PathBuf> for Settings {
+    type Error = SettingsError;
 
-    pub(crate) fn save(&mut self) {
-        let file_path = Path::new(&self.paths.settings);
-        let mut toml_file = File::options()
-            .write(true)
-            .open(file_path)
-            .expect("Unable to create settings file.");
-        let toml_data = toml::to_string(self).unwrap();
-        toml_file
-            .write_all(toml_data.as_bytes())
-            .expect("Unable to write settings on file.");
-        self.saved = true;
-    }
-
-    pub(crate) fn create(&mut self) {
-        let file_path = Path::new(&self.paths.settings);
-        let toml_data = toml::to_string(self).unwrap();
-        let mut toml_file = File::create_new(file_path).expect("Unable to create settings file.");
-        toml_file
-            .write_all(toml_data.as_bytes())
-            .expect("Unable to write settings on new file.");
-        self.saved = true;
-    }
-
-    pub(crate) fn check_intel_directory(&self) -> Result<Option<PathBuf>, String> {
-        let intel_path = Path::new(&self.paths.intel);
-        if intel_path.exists() {
-            Ok(Some(intel_path.to_path_buf()))
-        } else if let Some(os_dirs) = directories::BaseDirs::new() {
-            let t_path = os_dirs
-                .home_dir()
-                .join("Documents")
-                .join("EVE")
-                .join("logs")
-                .join("ChatLogs");
-            if t_path.exists() {
-                Ok(Some(t_path))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    pub(crate) fn load(&mut self) -> Result<(), String> {
-        let file_path = Path::new(&self.paths.settings);
+    fn try_from(path: PathBuf) -> std::result::Result<Self, <Self as TryFrom<PathBuf>>::Error> {
         let mut toml_data = String::new();
-        let mut toml_file = File::open(file_path).expect("Unable to create settings file.");
-        toml_file
-            .read_to_string(&mut toml_data)
-            .expect("Unable to write settings on new file.");
-        if let Ok(toml_formatted_data) = toml::from_str::<Manager>(&toml_data) {
-            self.mapping = toml_formatted_data.mapping;
-            self.channels.monitored = toml_formatted_data.channels.monitored;
-            self.paths.local_db = toml_formatted_data.paths.local_db;
-            self.paths.sde_db = toml_formatted_data.paths.sde_db;
-            self.paths.default_behavior = toml_formatted_data.paths.default_behavior;
-            self.paths.intel = toml_formatted_data.paths.intel;
-            self.scan_for_files()?;
-            if self.mapping.warning_area.parse::<i8>().is_err() {
-                self.mapping.warning_area = String::from("1");
-            }
-            for channel in self.channels.monitored.iter() {
-                self.channels
-                    .available
-                    .entry(channel.to_string())
-                    .and_modify(|val| *val = true);
-            }
-            Ok(())
-        } else {
-            Err(String::from("Invalid Data"))
-        }
-    }
-
-    pub fn scan_for_files(&mut self) -> Result<bool, String> {
-        self.channels.available.clear();
-        match &self.paths.internal_intel {
-            Some(path) => {
-                if let Ok(mut directory) = path.as_path().read_dir() {
-                    while let Some(Ok(entry)) = directory.next() {
-                        if let Some((name, file_date)) =
-                            entry.file_name().to_string_lossy().split_once('_')
-                        {
-                            self.channels
-                                .available
-                                .entry(String::from(name))
-                                .or_insert(false);
-                            self.channels
-                                .log_files
-                                .entry(String::from(name) + "_" + file_date)
-                                .and_modify(|hash_entry| {
-                                    hash_entry.1 = Utc::now();
-                                    hash_entry.0 = entry.metadata().unwrap().len();
-                                })
-                                .or_insert((entry.metadata().unwrap().len(), Utc::now()));
-                        }
+        if path.exists() {
+            if let Ok(mut toml_file) = File::open(&path)
+                && toml_file.read_to_string(&mut toml_data).is_ok()
+            {
+                match toml::from_str::<Settings>(&toml_data) {
+                    Ok(mut toml_manager) => {
+                        toml_manager.paths.settings = path.to_path_buf();
+                        toml_manager.factor = 50000000000000.0;
+                        toml_manager.region_factor = -2.0;
+                        toml_manager.saved = false;
+                        Ok(toml_manager)
                     }
-                    Ok(true)
-                } else {
-                    Err(String::from("Error on Intel path setup"))
+                    Err(e) => Err(SettingsError::Other(e.to_string())),
                 }
+            } else {
+                Err(SettingsError::ReadError)
             }
-            None => Ok(false),
+        } else {
+            Err(SettingsError::FileNotFound(
+                path.to_string_lossy().to_string(),
+            ))
         }
     }
 }
 
-impl Default for Manager {
+impl Default for Settings {
     fn default() -> Self {
-        let settings_file = String::from("telescope.toml");
-        let file_path = Path::new(&settings_file);
-        let mut path = None;
-
-        if let Some(os_dirs) = directories::BaseDirs::new() {
-            let t_path = os_dirs
-                .home_dir()
-                .join("Documents")
-                .join("EVE")
-                .join("logs")
-                .join("ChatLogs");
-            if t_path.exists() {
-                path = Some(t_path)
-            }
-        }
-
         let mut config = Self {
-            paths: FilePaths {
-                internal_intel: path,
-                settings: settings_file.clone(),
-                default_behavior: false,
-                intel: String::new(),
-                sde_db: String::from("assets/sde.db"),
-                local_db: String::from("telescope.db"),
-            },
-            mapping: Mapping {
-                startup_regions: vec![],
-                warning_area: 4.to_string(),
-            },
-            factor: 50000000000000,
-            region_factor: -2,
-            saved: true,
+            paths: FilePaths::default(),
+            mapping: Mapping::default(),
+            factor: 50000000000000.0,
+            region_factor: -2.0,
+            saved: false,
             channels: Channels {
                 available: HashMap::new(),
                 log_files: HashMap::new(),
                 monitored: Arc::new(Vec::new()),
             },
         };
-
-        if !file_path.is_file() || (config.load().is_err() && remove_file(file_path).is_ok()) {
-            config.create();
-            let _result = config.scan_for_files();
-        }
-        config.saved = true;
+        let _ = config.scan_channels_logs();
         config
+    }
+}
+
+impl Settings {
+    pub(crate) fn save(&mut self) -> Result<bool> {
+        if self.saved {
+            return Ok(false);
+        }
+        let file_path = Path::new(&self.paths.settings);
+        let mut ancestors = file_path.ancestors();
+        if ancestors.next().is_none() {
+            return Err(SettingsError::FileNotFound(String::new()));
+        }
+        match File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .open(file_path)
+        {
+            Ok(mut toml_file) => {
+                if let Ok(toml_data) = toml::to_string(self)
+                    && toml_file.write_all(toml_data.as_bytes()).is_ok()
+                {
+                    self.saved = true;
+                    Ok(true)
+                } else {
+                    Err(SettingsError::WriteError)
+                }
+            }
+            Err(e) => Err(SettingsError::Other(e.to_string())),
+        }
+    }
+
+    pub(crate) fn get_cloned_monitored_channels(&self) -> Arc<Vec<String>> {
+        self.channels.monitored.clone()
+    }
+
+    pub(crate) fn set_monitored_channels(&mut self, monitored_channels: Vec<String>) {
+        self.channels.monitored = Arc::new(monitored_channels);
+        self.saved = false;
+    }
+
+    pub(crate) fn scan_channels_logs(&mut self) -> Result<()> {
+        self.channels.available.clear();
+        if !self.get_intel().exists() {
+            return Err(SettingsError::InvalidDirectory(String::new()));
+        }
+
+        if let Ok(mut directory) = self.get_intel().read_dir() {
+            while let Some(Ok(entry)) = directory.next() {
+                let file_name = entry.file_name();
+                let full_name = file_name.to_string_lossy();
+
+                let Some(log) = IntelLogName::parse(&full_name) else {
+                    // not a valid chatlog file name, ignoring it
+                    continue;
+                };
+
+                self.channels
+                    .available
+                    .entry(log.channel.to_string())
+                    .or_insert(false);
+
+                self.channels
+                    .log_files
+                    .entry(format!("{}_{}", log.channel, log.suffix))
+                    .and_modify(|hash_entry| {
+                        hash_entry.1 = Utc::now();
+                        hash_entry.0 = entry.metadata().unwrap().len();
+                    })
+                    .or_insert((entry.metadata().unwrap().len(), Utc::now()));
+            }
+            Ok(())
+        } else {
+            Err(SettingsError::ReadError)
+        }
+    }
+
+    pub fn set_intel(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.intel = path.to_path_buf();
+        self.saved = false;
+        Ok(())
+    }
+
+    pub fn get_intel(&self) -> &Path {
+        self.paths.intel.as_path()
+    }
+
+    pub fn get_settings(&self) -> &Path {
+        self.paths.settings.as_path()
+    }
+
+    pub fn get_sde(&self) -> &Path {
+        self.paths.sde.as_path()
+    }
+
+    pub fn get_db(&self) -> &Path {
+        self.paths.db.as_path()
+    }
+
+    /*pub fn set_settings(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.settings = path.to_path_buf();
+        Ok(())
+    }*/
+
+    pub fn set_db(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.db = path.to_path_buf();
+        self.saved = false;
+        Ok(())
+    }
+
+    pub fn set_sde(&mut self, path: &Path) -> Result<()> {
+        if !path.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                path.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.sde = path.to_path_buf();
+        self.saved = false;
+        Ok(())
+    }
+
+    /// Test-only escape hatch around [`Self::set_sde`]'s existence
+    /// check, for exercising callers (e.g.
+    /// `TelescopeApp::sde_build_cache_dir`) against paths -- like an
+    /// empty one -- that can legitimately show up in a `Settings` loaded
+    /// from an old `telescope.toml` (predating
+    /// `FilePaths::default`'s current, always-non-empty `sde` default)
+    /// but that `set_sde` itself would otherwise refuse to construct in
+    /// a test.
+    #[cfg(test)]
+    pub(crate) fn set_sde_for_test(&mut self, path: &Path) {
+        self.paths.sde = path.to_path_buf();
+    }
+
+    pub fn its_saved(&self) -> bool {
+        self.saved
+    }
+
+    pub(crate) fn get_warning_area(&self) -> u8 {
+        self.mapping.warning_area
+    }
+
+    pub(crate) fn set_warning_area(&mut self, new_limit: u8) {
+        self.mapping.warning_area = new_limit;
+        self.saved = false;
+    }
+
+    pub(crate) fn get_startup_regions(&self) -> &Vec<usize> {
+        self.mapping.startup_regions.as_ref()
+    }
+
+    pub(crate) fn set_startup_regions(&mut self, startup_regions: Vec<usize>) {
+        self.mapping.startup_regions = startup_regions;
+        self.saved = false;
+    }
+
+    pub(crate) fn get_factor(&self) -> f64 {
+        self.factor
+    }
+
+    pub(crate) fn get_region_factor(&self) -> f64 {
+        self.region_factor
+    }
+
+    pub(crate) fn get_log_files_channels(&self) -> HashMap<String, (u64, DateTime<Utc>)> {
+        self.channels.log_files.clone()
+    }
+
+    pub(crate) fn get_available_channels(&self) -> HashMap<String, bool> {
+        self.channels.available.clone()
+    }
+
+    pub(crate) fn set_available_channels(&mut self, new_available_channels: HashMap<String, bool>) {
+        if self.channels.available != new_available_channels {
+            self.channels.available = new_available_channels;
+            self.saved = false;
+        }
+    }
+
+    pub(crate) fn set_log_files_channels(
+        &mut self,
+        new_log_channels: HashMap<String, (u64, DateTime<Utc>)>,
+    ) {
+        if self.channels.log_files != new_log_channels {
+            self.channels.log_files = new_log_channels;
+            self.saved = false;
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettingsError {
+    FileNotFound(String),
+    InvalidDirectory(String),
+    ReadError,
+    WriteError,
+    Other(String),
+}
+
+impl Display for SettingsError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileNotFound(path) => write!(f, "File not found: {path}"),
+            Self::ReadError => f.write_str("read error"),
+            Self::WriteError => f.write_str("write error"),
+            Self::InvalidDirectory(path) => write!(f, "Path not found: {path}"),
+            Self::Other(message) => write!(f, "Other Error: {message}"),
+        }
+    }
+}
+
+impl error::Error for SettingsError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+}
+
+pub type Result<T> = std::result::Result<T, SettingsError>;
+impl SettingsError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Creates (and clears) a scratch directory under the OS temp dir,
+    /// unique to this test process, so parallel test runs don't collide.
+    fn temp_dir(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "telescope-settings-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    // Regression test for the intel-directory-change bug: `set_intel` only
+    // accepts paths that already exist, so `scan_channels_logs` must scan
+    // successfully for exactly the directories it can ever actually be
+    // called with -- an inverted `if self.get_intel().exists()` guard here
+    // used to bail out before scanning in precisely that (only realistic)
+    // case, silently leaving `available` empty and making the Settings UI
+    // report "No intel channels detected" no matter what was in the folder.
+    #[test]
+    fn scan_channels_logs_populates_available_channels_for_an_existing_directory() {
+        let dir = temp_dir("existing");
+        fs::write(dir.join("Local_20230101_000000_12345.txt"), b"").unwrap();
+        fs::write(dir.join("wc.Vale+Tribute_20230101_000000_12345.txt"), b"").unwrap();
+
+        let mut settings = Settings::default();
+        settings.set_intel(&dir).unwrap();
+
+        assert!(settings.scan_channels_logs().is_ok());
+
+        let available = settings.get_available_channels();
+        assert!(available.contains_key("Local"));
+        assert!(available.contains_key("wc.Vale+Tribute"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_channels_logs_errors_when_the_directory_does_not_exist() {
+        let mut settings = Settings::default();
+        // `set_intel` itself rejects nonexistent paths, so the field is set
+        // directly here to reach `scan_channels_logs` with a path that
+        // doesn't exist -- exercising the one branch this guard is actually
+        // meant to cover.
+        settings.paths.intel = PathBuf::from("/nonexistent/telescope-test-path-xyz");
+
+        assert!(settings.scan_channels_logs().is_err());
     }
 }

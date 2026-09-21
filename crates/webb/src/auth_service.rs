@@ -1,3 +1,11 @@
+//! Minimal local HTTP server for the EVE SSO OAuth callback.
+//!
+//! After the player authorizes Telescope, CCP redirects the browser to
+//! `/login?code=...&state=...`. [`AuthService2`] extracts `code` and `state`,
+//! forwards them through a channel to the application and answers with a static
+//! confirmation page (`assets/server.html`). Requests are never logged: the query
+//! string carries the OAuth code.
+
 use hyper::{Method, StatusCode};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc::Sender;
@@ -11,7 +19,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-static CONFIRM: &[u8] = b"<html><head><title>Telescope login</title><style>body{font-family: monospace;background-color: gray;color: whitesmoke;}</style></head><body><h1>Telescope</h1><p>Logged in!, now you can close this window safely.</p></body></html>";
+// Kept as a standalone asset (rather than inlined here) so it can be
+// designed/previewed as a normal HTML file; `include_str!` pulls it in at
+// compile time, so serving it is still just a static byte slice with no
+// runtime file I/O.
+static CONFIRM: &[u8] = include_str!("../assets/server.html").as_bytes();
 static NOT_VALID: &[u8] = b"Invalid Request";
 
 #[derive(Debug, Clone)]
@@ -25,8 +37,18 @@ impl Service<Request<IncomingBody>> for AuthService2 {
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn call(&self, req: Request<IncomingBody>) -> Self::Future {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
+        // Manual span, not `#[tracing::instrument]`: this fn returns
+        // `Self::Future` (a boxed `dyn Future + Send`, effectively `'static`
+        // and unrelated to `&self`'s borrow), which the `#[instrument]`
+        // macro's future-aware codegen can't reconcile ("lifetime may not
+        // live long enough") -- it tries to tie the span to a borrow that
+        // doesn't actually outlive this synchronous call. A plain guard
+        // covering just the synchronous body (same role the old
+        // `profiling::function_scope!()` had) sidesteps that entirely.
+        // Never logs `req` -- its query string carries the OAuth `code`
+        // and `state` (parsed by hand below), so it must never be captured
+        // into a span/field.
+        let _span = tracing::info_span!("call").entered();
 
         let res = match (req.method(), req.uri().path()) {
             (&Method::GET, "/login") => {
@@ -51,8 +73,13 @@ impl Service<Request<IncomingBody>> for AuthService2 {
                         let atx = Arc::clone(&self.tx);
                         std::thread::spawn(move || {
                             rt.block_on(async {
-                                #[cfg(feature = "puffin")]
-                                puffin::profile_scope!("http service request response");
+                                // manual scope, not a whole function -- same
+                                // role as the old `profiling::scope!(...)`.
+                                // Doesn't capture `message` (the OAuth
+                                // code/state) since a bare span has no
+                                // fields unless explicitly added.
+                                let _span =
+                                    tracing::info_span!("http service request response").entered();
 
                                 let _res = atx.send(message).await;
                             });
@@ -80,5 +107,124 @@ impl Service<Request<IncomingBody>> for AuthService2 {
                 .unwrap()),
         };
         Box::pin(async { res })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    /// Spawns a hyper server with the `AuthService2` listening on an
+    /// ephemeral port, and returns the address and the receiving end of the
+    /// channel where the OAuth parameters are delivered.
+    async fn spawn_server() -> (SocketAddr, mpsc::Receiver<(String, String)>) {
+        let (tx, rx) = mpsc::channel(1);
+        let service = AuthService2 { tx: Arc::new(tx) };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let service = service.clone();
+                tokio::spawn(async move {
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, service)
+                        .await;
+                });
+            }
+        });
+        (addr, rx)
+    }
+
+    async fn get(addr: SocketAddr, path_and_query: &str) -> (StatusCode, String) {
+        let client: Client<_, Full<Bytes>> = Client::builder(TokioExecutor::new()).build_http();
+        let uri = format!("http://{}{}", addr, path_and_query)
+            .parse()
+            .unwrap();
+        let response = client.get(uri).await.unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn login_with_code_and_state_is_accepted() {
+        let (addr, mut rx) = spawn_server().await;
+
+        let (status, body) = get(addr, "/login?code=auth-code&state=secret-state").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("You're signed in"));
+
+        // the OAuth parameters are forwarded through the channel
+        let message = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for the auth message")
+            .expect("channel closed unexpectedly");
+        assert_eq!(
+            message,
+            (String::from("auth-code"), String::from("secret-state"))
+        );
+    }
+
+    #[tokio::test]
+    async fn login_accepts_parameters_in_any_order() {
+        let (addr, mut rx) = spawn_server().await;
+
+        let (status, _) = get(addr, "/login?state=secret-state&code=auth-code").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let message = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for the auth message")
+            .expect("channel closed unexpectedly");
+        assert_eq!(
+            message,
+            (String::from("auth-code"), String::from("secret-state"))
+        );
+    }
+
+    #[tokio::test]
+    async fn login_without_query_is_rejected() {
+        let (addr, _rx) = spawn_server().await;
+
+        let (status, body) = get(addr, "/login").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body, "Invalid Request");
+    }
+
+    #[tokio::test]
+    async fn login_with_missing_state_is_rejected() {
+        let (addr, _rx) = spawn_server().await;
+
+        let (status, body) = get(addr, "/login?code=auth-code").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body, "Invalid Request");
+    }
+
+    #[tokio::test]
+    async fn login_with_missing_code_is_rejected() {
+        let (addr, _rx) = spawn_server().await;
+
+        let (status, body) = get(addr, "/login?state=secret-state").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body, "Invalid Request");
+    }
+
+    #[tokio::test]
+    async fn unknown_path_returns_not_found() {
+        let (addr, _rx) = spawn_server().await;
+
+        let (status, body) = get(addr, "/nowhere").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, "Invalid Request");
     }
 }

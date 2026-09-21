@@ -1,0 +1,22 @@
+shape: sequence_diagram
+
+log: "EVE chat log\n(UTF-16LE file)"
+watcher: "IntelEventHandler\n(notify thread)"
+app: "TelescopeApp\nevent_manager"
+intel: "intel.rs\nload_intel_file"
+engine: "PatternEngine"
+status: "Status log\n(notifications.rs)"
+sde: "SdeManager"
+maps: "Map panes"
+
+log -> watcher: "line appended (filesystem event)"
+watcher -> watcher: "IntelLogName::parse:\nmonitored channel?"
+watcher -> app: "Message::IntelFileChanged(file name)"
+app -> intel: "load_intel_file"
+intel -> log: "read the bytes added since the last read"
+intel -> intel: "decode UTF-16LE"
+intel -> engine: "evaluate(channel, text)"
+engine -> intel: "matches, each with its action"
+intel -> status: "notify: GenericNotification"
+intel -> sde: "map_alert: resolve the system name"
+intel -> maps: "MapSync::SystemNotification"

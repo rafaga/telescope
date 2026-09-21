@@ -1,0 +1,21 @@
+shape: sequence_diagram
+
+user: "Player"
+settings: "Settings page\nCharacters"
+esi: "EsiManager\n(webb)"
+browser: "Browser\n(EVE SSO)"
+auth: "AuthSpawner\n(webb::auth_service)"
+app: "TelescopeApp\nevent_manager"
+watchdog: "Watchdog"
+
+user -> settings: "click Add"
+settings -> esi: "get_authorize_url"
+settings -> auth: "spawn: listen on localhost:56123"
+settings -> browser: "open the authorize URL"
+user -> browser: "log in and authorize"
+browser -> auth: "redirect /login?code=...&state=..."
+auth -> app: "Message::EsiAuthSuccess(code, state)"
+app -> esi: "auth_user(code, state)"
+esi -> app: "authenticated character"
+app -> app: "keep the character"
+app -> watchdog: "first character: start_watchdog\nnext ones: CharacterSync::Add"

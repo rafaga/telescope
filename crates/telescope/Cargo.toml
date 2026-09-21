@@ -8,46 +8,94 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
-puffin = ["dep:puffin", "dep:puffin_http", "eframe/__screenshot", "egui-map/puffin", "sde/puffin", "webb/puffin"]
+# Enables live profiling with the Tracy profiler (https://github.com/wolfpld/tracy):
+# `cargo run --features profile`, then open the Tracy desktop app and
+# connect (it auto-discovers the running process on the local network). A
+# consumer of `sde`/`egui-map`/`webb`/`native_tools` that also enables
+# `profile` gets their spans in the same trace for free, via
+# Cargo's feature unification on the shared `tracing` dependency.
+profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/profile","rodio/tracing"]
+# Adds allocation tracking on top of `profile` (Tracy's memory pane). Split out
+# because routing every allocation in the process through Tracy costs more than
+# everything else the profiler does, and it distorts the per-frame paint path
+# most of all -- so `profile` alone stays usable for measuring frame time. See
+# the `ProfiledAllocator` comment in `src/main.rs`.
+profile-memory = ["profile"]
 
 [dependencies]
-eframe = { version = "0.34.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-sde = { path = "../sde/"}
+eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+# `builder` pulls in reqwest/tokio/zip/etc. (see sde's own Cargo.toml) so
+# `database_updater` can drive the same check-for-a-new-build/download/
+# parse steps `sde`'s own `sde-builder` CLI does -- see
+# `crates/telescope/src/app/database_updater.rs`.
+sde = { version = "0.4.0", features = ["builder"] }
+# Only needed here to name the `rusqlite::Connection` handed to
+# `sde::builder::schema::create_schema`/`Parser::build_database` --
+# `database_updater.rs` owns opening/creating the `sde.db` file itself
+# (there's no higher-level entry point in `sde` today that would do this
+# on its own; see that module's docs). Cargo unifies this with the same
+# `rusqlite` version `sde`/`webb` already pull in, so this doesn't
+# duplicate the SQLite build.
+rusqlite = { version = "0.40" }
 kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.0.17"}
+egui-map = { version = "0.9.0" }
 open = "5.3.2"
 webb = { path = "../webb/", default-features = false, features = []}
 chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.34.3", features = ["all_loaders"] }
+egui_extras = { version = "0.36.1", features = ["all_loaders"] }
 image = { version = "0.25.8", features = ["jpeg","png"] }
-puffin = {version = "0.20.0", optional = true, default-features = false}
-puffin_http = {version = "0.17.0", optional = true, default-features = false}
-egui_tiles = { version = "0.15.0" }
+egui_tiles = { version = "0.17.0" }
 toml = "1.1.2"
 hyper = { version = "1.7.0", features = ["server", "http1", "client"] }
 rfesi = {version = "0.50.0", default-features = false, features = ["rustls-tls", "random_state", "validate_jwt"] }
 serde = { version = "1.0.228", features = ["derive"] }
 hyper-util = { version = "0.1.17", features = ["full"] }
-notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+# Use `notify`'s own default backend selection per platform (ReadDirectoryChangesW
+# on Windows, inotify on Linux, FSEvents on macOS) instead of overriding it. This
+# used to force the `macos_kqueue` backend on macOS via `default-features = false,
+# features = ["macos_kqueue"]`, which only registers a watch on the intel
+# directory itself (not on the files already inside it) when `watch()` is called
+# with `RecursiveMode::NonRecursive` (as Telescope does) -- so content changes to
+# any log file that already existed when the watcher started were never detected.
+# FSEvents watches the whole directory natively at the OS level and does not have
+# this per-file-registration limitation. Safe to switch back since this crate is
+# built directly on macOS (not cross-compiled from a machine without the macOS
+# SDK, which is the usual reason projects avoid `fsevent-sys`'s
+# CoreServices/CoreFoundation link requirement).
+notify = "8.2.0"
 directories = "6.0.0"
 regex = "1.12.1"
+# Multi-literal ("dictionary") matching for pattern rules whose alternatives
+# are plain words rather than a hand-written regex (e.g. ship names in
+# several languages) -- already pulled transitively by `regex`, declared
+# directly here so patterns.rs can build its own automaton per dictionary
+# instead of being bound by the single combined RegexSet's pattern-length
+# budget. See the "Dictionary rules" section of patterns.rs's module docs.
+aho-corasick = "1.1"
 native_tools = { path = "../native_tools/"}
+tracing = "0.1"
+# Bridges `log`-based diagnostics from dependencies (hyper, notify, wgpu,
+# rfesi, ...) into `tracing`, so nothing that used to go through `log` is
+# lost now that neither `env_logger` (native) nor `eframe::WebLogger` (web)
+# own the `log` sink anymore.
+tracing-log = "0.2"
+rodio = { version = "0.22.2", default-features = false, features = ["wav","mp3"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing-subscriber = "0.3.20"
-env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-tracy = { version = "0.12", optional = true }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.54"
+tracing-wasm = "0.2"
 
 [target.'cfg(not(target_os  = "windows"))'.dependencies]
-wgpu = { version="29.0.3" }
+wgpu = { version="30.0.0" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { version="29.0.3", features = ["dx12"], default-features = false }
+wgpu = { version="30.0.0", features = ["dx12"], default-features = false }
 windows = { version = "0.62.2", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation",] }

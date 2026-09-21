@@ -1,4 +1,14 @@
+//! Platform-specific helpers for Telescope.
+//!
+//! * [`dialog`]: native open file / folder dialogs behind one API.
+//! * `zbus` (Linux only): stable machine identification via DMI, D-Bus and
+//!   machine-id fallbacks.
+//! * `get_*_unique_id`: a per-machine identifier for each OS, with a fixed
+//!   fallback value when the OS cannot provide one.
+
 pub mod dialog;
+#[cfg(target_os = "linux")]
+pub mod zbus;
 
 #[cfg(target_os = "windows")]
 use windows::{Storage::Streams::DataReader, System::Profile::SystemIdentification};
@@ -16,6 +26,7 @@ const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
+#[tracing::instrument]
 pub fn get_macos_unique_id() -> Result<String, String> {
     // macOS unique ID
     unsafe {
@@ -51,12 +62,34 @@ pub fn get_macos_unique_id() -> Result<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_linux_unique_id() -> Result<String, String> {
-    // Placeholder implementation for Linux unique ID
-    Ok(String::from(FALLBACK_UNIQUE_ID))
+#[tracing::instrument]
+pub fn get_linux_unique_id() -> Result<String, String> {
+    // zbus usa el reactor de Tokio (feature "tokio"), así que la cadena
+    // de fallback se conduce dentro de un runtime current-thread creado
+    // en un hilo aparte (igual que en dialog.rs). El hilo evita pánico
+    // si el llamador ya está dentro de un runtime Tokio existente.
+    let outcome = std::thread::spawn(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        runtime
+            .block_on(zbus::get_persistent_hardware_id())
+            .map(|result| result.value)
+            .map_err(|e| e.to_string())
+    })
+    .join();
+
+    match outcome {
+        Ok(Ok(id)) => Ok(id),
+        // Contrato Windows/macOS: cualquier fallo devuelve el ID de respaldo
+        _ => Err(String::from(FALLBACK_UNIQUE_ID)),
+    }
 }
 
 #[cfg(target_os = "windows")]
+#[tracing::instrument]
 pub fn get_windows_unique_id() -> Result<String, String> {
     // this get a unique ID for the user, and its used to generate a unique key
     // for the database encryption
@@ -76,5 +109,26 @@ pub fn get_windows_unique_id() -> Result<String, String> {
             Err(String::from(FALLBACK_UNIQUE_ID))
         }
         Err(_) => Err(String::from(FALLBACK_UNIQUE_ID)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_unique_id_is_not_empty() {
+        assert!(!FALLBACK_UNIQUE_ID.is_empty());
+    }
+
+    // Contrato igual que en Windows/macOS: Ok(id no vacío) si alguna
+    // fuente funcionó, o Err(FALLBACK_UNIQUE_ID) si todas fallaron.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_unique_id_respects_fallback_contract() {
+        match get_linux_unique_id() {
+            Ok(id) => assert!(!id.is_empty()),
+            Err(id) => assert_eq!(id, FALLBACK_UNIQUE_ID),
+        }
     }
 }

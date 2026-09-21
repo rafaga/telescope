@@ -1,3 +1,9 @@
+//! Static ESI application configuration ([`AppData`]): the SSO scopes requested,
+//! the callback URL, the user agent and the client id / secret key.
+//!
+//! The client id and secret key are baked in at compile time from the
+//! `ESI_CLIENT_ID` and `ESI_SECRET_KEY` environment variables (see `BUILD.md`).
+
 #![allow(clippy::option_env_unwrap)]
 pub struct AppData<'a> {
     pub user_agent: String,
@@ -8,10 +14,8 @@ pub struct AppData<'a> {
 }
 
 impl<'a> AppData<'a> {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         AppData {
             scope: vec![
                 "publicData",

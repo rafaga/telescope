@@ -1,3 +1,8 @@
+//! Messages used to communicate between the UI, the background tasks and the file
+//! watcher: the [`Message`] enum (the app's central event type), the map and
+//! character sync messages, and the [`MessageSpawner`] / [`send_app_message`]
+//! helpers that deliver them.
+
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use std::path::PathBuf;
@@ -31,11 +36,31 @@ pub enum Target {
     Region,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
     Intelligence,
     DataSources,
     Characters,
+}
+
+impl SettingsPage {
+    /// Every settings page, in the order the Settings window menu lists
+    /// them. A new page is one variant above, one entry here, one arm in
+    /// `title` and one arm in the Settings window's page `match`.
+    pub const ALL: [SettingsPage; 3] = [
+        SettingsPage::Intelligence,
+        SettingsPage::DataSources,
+        SettingsPage::Characters,
+    ];
+
+    /// Label shown for this page in the Settings window menu.
+    pub fn title(self) -> &'static str {
+        match self {
+            SettingsPage::Intelligence => "Intelligence",
+            SettingsPage::DataSources => "Data Sources",
+            SettingsPage::Characters => "Characters",
+        }
+    }
 }
 
 pub enum Message {
@@ -46,7 +71,48 @@ pub enum Message {
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
     IntelFileChanged(String),
-    UpdateIntelDirectory(Option<PathBuf>),
+    UpdateIntelDirectory(PathBuf),
+    DefaultIntelDirectory,
+    /// Sent by `database_updater::DatabaseUpdater` while its background
+    /// update check/build is running, one per phase -- drives the
+    /// status text in `database_updater::DatabaseUpdater`'s progress
+    /// window (`DatabaseUpdater::set_status`).
+    DatabaseUpdateProgress(String),
+    /// Sent by `database_updater::DatabaseUpdater` once its background
+    /// update check finishes; also hides the progress window
+    /// (`DatabaseUpdater::hide`). `true` means `sde.db` was (re)built
+    /// and should be reloaded (see `TelescopeApp::handle_database_updated`);
+    /// `false` means it was already up to date, or the check/build
+    /// failed (the failure itself was already reported separately via a
+    /// `GenericNotification`).
+    DatabaseUpdated(bool),
+    /// Sent by `IntelEventHandler` when a new intel file is created in the
+    /// monitored directory or when the application initializes, to trigger
+    ///  a scan of all intel files.
+    ScanIntelFiles,
+}
+
+impl Message {
+    /// Returns the variant's name, for lightweight tagging of spans/events
+    /// (e.g. in Tracy) without dumping potentially large or arbitrary
+    /// payloads (`GenericNotification`'s error text, `IntelFileChanged`'s
+    /// path, etc.) into every trace.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Message::EsiAuthSuccess(_) => "EsiAuthSuccess",
+            Message::GenericNotification(_) => "GenericNotification",
+            Message::NewRegionalPane(_) => "NewRegionalPane",
+            Message::MapHidden(_) => "MapHidden",
+            Message::MapShown(_) => "MapShown",
+            Message::PlayerNewLocation(_) => "PlayerNewLocation",
+            Message::IntelFileChanged(_) => "IntelFileChanged",
+            Message::UpdateIntelDirectory(_) => "UpdateIntelDirectory",
+            Message::DefaultIntelDirectory => "DefaultIntelDirectory",
+            Message::DatabaseUpdateProgress(_) => "DatabaseUpdateProgress",
+            Message::DatabaseUpdated(_) => "DatabaseUpdated",
+            Message::ScanIntelFiles => "ScanIntelFiles",
+        }
+    }
 }
 
 pub enum CharacterSync {
@@ -59,10 +125,8 @@ pub struct MessageSpawner {
 }
 
 impl MessageSpawner {
+    #[tracing::instrument(skip(sender))]
     pub fn new(sender: Arc<mpsc::Sender<Message>>) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         // Set up a channel for communicating.
         // Build the runtime for the new thread.
         //
@@ -73,14 +137,58 @@ impl MessageSpawner {
         Self { spawn: sender }
     }
 
+    #[tracing::instrument(skip(self, msg), fields(kind = msg.kind()))]
     pub fn spawn(&self, msg: Message) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
-        if self.spawn.blocking_send(msg).is_err() {
-            panic!("The shared runtime has shut down.");
+        // `try_send`, not `blocking_send`: every call site for this reaches
+        // it from the UI thread during `TelescopeApp::update()` (directly,
+        // or via a pane's `event_manager()`/`node_ui()` called from the same
+        // `update()`), and the only thing that ever drains this channel --
+        // `TelescopeApp::event_manager`'s `while let Ok(message) =
+        // self.app_msg.1.try_recv()` -- also runs on that same UI thread,
+        // once, near the top of that same `update()`. If a single frame
+        // ever queued more messages than the channel's capacity (`app.rs`'s
+        // `mpsc::channel::<messages::Message>(40)`), a `blocking_send` here
+        // would block the UI thread waiting for room that only a `recv()`
+        // on this same, now-blocked thread could free -- a self-deadlock
+        // that freezes the whole app. `try_send` trades that hang for the
+        // rare, non-fatal loss of a single log line, which is a strictly
+        // better failure mode for a diagnostics channel.
+        match self.spawn.try_send(msg) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                panic!("The shared runtime has shut down.");
+            }
+            Err(mpsc::error::TrySendError::Full(msg)) => {
+                tracing::warn!(
+                    kind = msg.kind(),
+                    "app message channel is full; dropping message"
+                );
+            }
         }
     }
+}
+
+/// Sends `msg` on `tx`, tagging the resulting Tracy zone with the
+/// message's `kind()`. Centralizes instrumentation for the many call
+/// sites that hold their own `Sender<Message>`/`Arc<Sender<Message>>`
+/// clone and send directly, instead of going through `MessageSpawner`.
+/// Never records the payload itself (see `Message::kind`).
+#[tracing::instrument(skip(tx, msg), fields(kind = msg.kind()))]
+pub async fn send_app_message(
+    tx: &Sender<Message>,
+    msg: Message,
+) -> Result<(), mpsc::error::SendError<Message>> {
+    tx.send(msg).await
+}
+
+/// Non-async counterpart of [`send_app_message`], for the `try_send` call
+/// sites.
+#[tracing::instrument(skip(tx, msg), fields(kind = msg.kind()))]
+pub fn try_send_app_message(
+    tx: &Sender<Message>,
+    msg: Message,
+) -> Result<(), mpsc::error::TrySendError<Message>> {
+    tx.try_send(msg)
 }
 
 async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
@@ -101,11 +209,11 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                         .build()
                         .unwrap();
                     runtime.block_on(async {
-                        #[cfg(feature = "puffin")]
-                        puffin::profile_scope!("spawned Auth success message");
+                        let _span = tracing::info_span!("spawned Auth success message").entered();
 
                         while let Some(result) = arx.recv().await {
-                            let _send_result = stx.send(Message::EsiAuthSuccess(result)).await;
+                            let _send_result =
+                                send_app_message(&stx, Message::EsiAuthSuccess(result)).await;
                         }
                     });
                 });
@@ -113,28 +221,32 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                 if let Err(t_error) =
                     timeout_at(Instant::now() + Duration::from_secs(time as u64), server).await
                 {
-                    let _ = tx
-                        .send(Message::GenericNotification((
+                    let _ = send_app_message(
+                        &tx,
+                        Message::GenericNotification((
                             Type::Error,
                             String::from("MessageSpawner"),
                             String::from("handle_auth"),
                             t_error.to_string(),
-                        )))
-                        .await;
+                        )),
+                    )
+                    .await;
                 } else {
                     //server.without_shutdown()
                 }
             }
         }
         Err(t_error) => {
-            let _ = tx
-                .send(Message::GenericNotification((
+            let _ = send_app_message(
+                &tx,
+                Message::GenericNotification((
                     Type::Error,
                     String::from("MessageSpawner"),
                     String::from("handle_auth"),
                     t_error.to_string(),
-                )))
-                .await;
+                )),
+            )
+            .await;
         }
     };
 }
@@ -144,10 +256,8 @@ pub struct AuthSpawner {
 }
 
 impl AuthSpawner {
+    #[tracing::instrument(skip(msg_tx))]
     pub fn new(msg_tx: Arc<mpsc::Sender<Message>>) -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         // Set up a channel for communicating.
         let (send, mut recv) = mpsc::channel(3);
         let arc_send = Arc::new(send);
@@ -162,9 +272,7 @@ impl AuthSpawner {
         let cloned_msg_sender = Arc::clone(&msg_tx);
         std::thread::spawn(move || {
             rt.block_on(async move {
-                #[cfg(feature = "puffin")]
-                puffin::profile_scope!("spawned auth handler");
-
+                let _span = tracing::info_span!("spawned auth handler").entered();
                 while let Some(time) = recv.recv().await {
                     let cloned_msg_sender = Arc::clone(&cloned_msg_sender);
                     tokio::spawn(handle_auth(time, cloned_msg_sender));
@@ -179,10 +287,8 @@ impl AuthSpawner {
         obj
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn spawn(&self) {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         if self.spawn.blocking_send(60).is_err() {
             panic!("The shared runtime has shut down.");
         }

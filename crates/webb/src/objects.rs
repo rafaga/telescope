@@ -1,3 +1,7 @@
+//! Domain types shared by `webb` and the application: authorization data
+//! (`AuthData`, `TokenSet`, `AuthorizeInfo`, `AuthClaims`) and the EVE entities
+//! `Character`, `Corporation` and `Alliance`.
+
 use chrono::prelude::*;
 use rusqlite::Error;
 
@@ -9,18 +13,51 @@ pub enum TelescopeDbError {
     NoConnection,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct AuthData {
     pub token: String,
     pub expiration: Option<DateTime<Utc>>,
     pub refresh_token: String,
 }
 
-impl AuthData {
-    pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
+/// OAuth token set returned by CCP after a successful authentication or
+/// token refresh.
+#[derive(Clone, PartialEq, Debug)]
+pub struct TokenSet {
+    pub token: String,
+    pub refresh_token: String,
+    pub expiration: Option<DateTime<Utc>>,
+}
 
+/// Data needed to complete the requested authentication flow.
+#[derive(Clone, PartialEq, Debug)]
+pub struct AuthorizeInfo {
+    /// URL to open in the browser to initiate the authentication.
+    pub url: String,
+    /// PKCE verifier needed to authenticate the received code, when the
+    /// `native-auth-flow` feature is enabled.
+    pub pkce_verifier: Option<String>,
+}
+
+/// Claims extracted from the JWT issued by CCP after authentication.
+#[derive(Clone, PartialEq, Debug)]
+pub struct AuthClaims {
+    /// Character name.
+    pub name: String,
+    /// Subject claim, with the format `CHARACTER:EVE:<character_id>`.
+    pub sub: String,
+}
+
+/// Public information of a character as reported by ESI.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CharacterPublicInfo {
+    pub corporation_id: i32,
+    pub alliance_id: Option<i32>,
+}
+
+impl AuthData {
+    #[tracing::instrument]
+    pub fn new() -> Self {
         AuthData {
             token: String::new(),
             expiration: None,
@@ -35,7 +72,7 @@ impl Default for AuthData {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Character {
     pub id: i32,
     pub name: String,
@@ -47,10 +84,8 @@ pub struct Character {
 }
 
 impl Character {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Character {
             id: 0,
             name: String::new(),
@@ -76,10 +111,8 @@ pub struct Corporation {
 }
 
 impl Corporation {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Corporation {
             id: 0,
             name: String::new(),
@@ -88,10 +121,8 @@ impl Corporation {
 }
 
 impl Default for Corporation {
+    #[tracing::instrument]
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
@@ -99,17 +130,13 @@ impl Default for Corporation {
 impl BasicCatalog for Corporation {
     type Output = i32;
 
+    #[tracing::instrument]
     fn id(&self) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.id
     }
 
+    #[tracing::instrument]
     fn name(&self) -> &str {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         &self.name
     }
 }
@@ -121,10 +148,8 @@ pub struct Alliance {
 }
 
 impl Alliance {
+    #[tracing::instrument]
     pub fn new() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Alliance {
             id: 0,
             name: String::new(),
@@ -133,10 +158,8 @@ impl Alliance {
 }
 
 impl Default for Alliance {
+    #[tracing::instrument]
     fn default() -> Self {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         Self::new()
     }
 }
@@ -144,17 +167,13 @@ impl Default for Alliance {
 impl BasicCatalog for Alliance {
     type Output = i32;
 
+    #[tracing::instrument]
     fn id(&self) -> Self::Output {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         self.id
     }
 
+    #[tracing::instrument]
     fn name(&self) -> &str {
-        #[cfg(feature = "puffin")]
-        puffin::profile_function!();
-
         &self.name
     }
 }
@@ -164,4 +183,98 @@ pub trait BasicCatalog {
 
     fn id(&self) -> Self::Output;
     fn name(&self) -> &str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------
+    // AuthData
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn auth_data_new_is_empty() {
+        let auth = AuthData::new();
+        assert_eq!(auth.token, "");
+        assert_eq!(auth.expiration, None);
+        assert_eq!(auth.refresh_token, "");
+        assert_eq!(auth, AuthData::default());
+    }
+
+    #[test]
+    fn auth_data_clone_and_equality() {
+        let mut auth = AuthData::new();
+        auth.token = String::from("token");
+        auth.refresh_token = String::from("refresh");
+        auth.expiration = Some(Utc::now());
+
+        let cloned = auth.clone();
+        assert_eq!(auth, cloned);
+
+        let mut other = cloned.clone();
+        other.token = String::from("other");
+        assert_ne!(auth, other);
+    }
+
+    // ---------------------------------------------------------------------
+    // Character
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn character_new_is_zeroed() {
+        let character = Character::new();
+        assert_eq!(character.id, 0);
+        assert_eq!(character.name, "");
+        assert_eq!(character.last_logon, DateTime::<Utc>::default());
+        assert_eq!(character.corp, None);
+        assert_eq!(character.alliance, None);
+        assert_eq!(character.photo, None);
+        assert_eq!(character.location, 0);
+        assert_eq!(character, Character::default());
+    }
+
+    // ---------------------------------------------------------------------
+    // Corporation
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn corporation_new_is_zeroed() {
+        let corp = Corporation::new();
+        assert_eq!(corp.id, 0);
+        assert_eq!(corp.name, "");
+        assert_eq!(corp, Corporation::default());
+    }
+
+    #[test]
+    fn corporation_implements_basic_catalog() {
+        let corp = Corporation {
+            id: 98000001,
+            name: String::from("Acme Corp"),
+        };
+        assert_eq!(BasicCatalog::id(&corp), 98000001);
+        assert_eq!(BasicCatalog::name(&corp), "Acme Corp");
+    }
+
+    // ---------------------------------------------------------------------
+    // Alliance
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn alliance_new_is_zeroed() {
+        let alliance = Alliance::new();
+        assert_eq!(alliance.id, 0);
+        assert_eq!(alliance.name, "");
+        assert_eq!(alliance, Alliance::default());
+    }
+
+    #[test]
+    fn alliance_implements_basic_catalog() {
+        let alliance = Alliance {
+            id: 99000001,
+            name: String::from("Acme Alliance"),
+        };
+        assert_eq!(BasicCatalog::id(&alliance), 99000001);
+        assert_eq!(BasicCatalog::name(&alliance), "Acme Alliance");
+    }
 }

@@ -1,0 +1,15 @@
+shape: sequence_diagram
+
+watchdog: "Watchdog\n(start_watchdog)"
+esi: "ESI\n(EsiManager)"
+app: "TelescopeApp"
+maps: "Map panes"
+
+watchdog -> esi: "valid_token? refresh_token if not"
+watchdog -> esi: "get_location(character)"
+esi -> watchdog: "solar system id"
+watchdog -> app: "Message::PlayerNewLocation\n(only if it changed)"
+app -> app: "update_player_location"
+watchdog -> maps: "MapSync::PlayerMoved"
+watchdog -> watchdog: "sleep 25 s, repeat"
+app -> watchdog: "CharacterSync::Add / Remove"

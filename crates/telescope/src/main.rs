@@ -1,39 +1,87 @@
+//! Entry points for Telescope: `main` for the native build and for the web (wasm) build.
+//!
+//! The native one sets up diagnostics first -- a `log` -> `tracing` bridge and a
+//! `tracing` subscriber filtered by `RUST_LOG` (plus Tracy under the `profile`
+//! feature) -- and then opens the `eframe` window running `TelescopeApp`.
+
 #![warn(clippy::all, rust_2018_idioms)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-#[cfg(feature = "puffin")]
-fn start_puffin_server() {
-    puffin::set_scopes_on(true); // tell puffin to collect data
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
 
-    match puffin_http::Server::new("0.0.0.0:8585") {
-        Ok(puffin_server) => {
-            eprintln!("Run:  cargo install puffin_viewer && puffin_viewer --url 127.0.0.1:8585");
-
-            /*std::process::Command::new("puffin_viewer")
-            .arg("--url")
-            .arg("127.0.0.1:8585")
-            .spawn()
-            .ok();*/
-
-            // We can store the server if we want, but in this case we just want
-            // it to keep running. Dropping it closes the server, so let's not drop it!
-            #[allow(clippy::mem_forget)]
-            std::mem::forget(puffin_server);
-        }
-        Err(err) => {
-            eprintln!("Failed to start puffin server: {err}");
-        }
-    };
-}
+// Tracy memory profiling: reports every allocation/deallocation made through
+// the global allocator to Tracy's memory pane (live usage, alloc/free
+// timeline, and allocation-to-zone correlation). `tracing_tracy::client` is
+// a re-export of `tracy_client`, so this needs no extra dependency beyond
+// `tracing-tracy` itself. The `0` callstack-depth argument means allocations
+// are NOT tied to a call stack (cheap); passing a non-zero depth would also
+// capture the allocation site, at a real runtime cost.
+//
+// Gated on `profile-memory` rather than plain `profile`: intercepting *every*
+// allocation in the process is by far the most expensive thing Tracy can do
+// here, and it lands hardest on exactly the per-frame code worth measuring
+// (node painting allocates a handful of short-lived `String`s/`Vec`s per node
+// per frame, and each one becomes a Tracy memory event). Keeping it off the
+// default profiling build means `--features profile` measures frame time
+// without the allocator skewing it; turn it on with `--features profile-memory`
+// when the question actually is "where is the memory going".
+#[cfg(all(feature = "profile-memory", not(target_arch = "wasm32")))]
+#[global_allocator]
+static GLOBAL: tracing_tracy::client::ProfiledAllocator<std::alloc::System> =
+    tracing_tracy::client::ProfiledAllocator::new(std::alloc::System, 0);
 
 // When compiling natively:
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
-    // Log to stdout (if you run with `RUST_LOG=debug`).
-    //tracing_subscriber::fmt::init();
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-    #[cfg(feature = "puffin")]
-    start_puffin_server(); // NOTE: you may only want to call this if the users specifies some flag or clicks a button!
+    // Bridge `log`-based diagnostics from dependencies (hyper, notify, wgpu,
+    // rfesi, ...) into `tracing`, so they reach the subscriber(s) set up
+    // below instead of being silently dropped now that `env_logger` --
+    // which used to own the `log` sink -- is gone.
+    //
+    // Capped at INFO instead of the `LogTracer::init()` default, which is
+    // `LevelFilter::max()` -- i.e. TRACE, i.e. everything. wgpu/naga log one
+    // line per render-pass command at TRACE (`RenderPass::set_scissor_rect`,
+    // `RenderPass::draw_indexed`, `adjusting naga::ir::Expression handle`,
+    // ...); a Tracy capture of this app measured ~98 such messages *per frame*,
+    // every one of them formatted into a string and shipped to the profiler.
+    // They say nothing about this app's behaviour, so they are dropped at the
+    // bridge rather than filtered downstream -- filtering later would still pay
+    // for building the record. This cap applies only to records originating in
+    // the `log` crate; telescope's own `tracing` spans/events are untouched and
+    // stay fully controllable through `RUST_LOG` below.
+    // (`log` is reached through `tracing_log`'s own re-export, so capping the
+    // bridge needs no new dependency in Cargo.toml.)
+    tracing_log::LogTracer::builder()
+        .with_max_level(tracing_log::log::LevelFilter::Info)
+        .init()
+        .expect("installing the log-to-tracing bridge");
+
+    // Wire up `tracing` before any span/event/log-bridged-record runs
+    // anywhere in the process (sde, egui-map, webb, native_tools and
+    // telescope itself all share this same instrumentation):
+    //   - `fmt` prints to stderr, filtered by `RUST_LOG` -- same role and
+    //     same env var `env_logger::init()` used to have.
+    //   - Tracy (only wired up under `profile`) is deliberately
+    //     NOT filtered by `RUST_LOG`, so quieting stderr never hides
+    //     anything from the profiler. `TracyLayer::default()` starts the
+    //     shared `tracy_client::Client` itself (`Client::start()` is
+    //     idempotent); open the Tracy desktop app to connect, it
+    //     auto-discovers the running process.
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_filter(tracing_subscriber::EnvFilter::from_default_env());
+
+    #[cfg(feature = "profile")]
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(fmt_layer)
+            .with(tracing_tracy::TracyLayer::default()),
+    )
+    .expect("setting the global tracing subscriber");
+    #[cfg(not(feature = "profile"))]
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(fmt_layer))
+        .expect("setting the global tracing subscriber");
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -57,8 +105,19 @@ fn main() -> eframe::Result {
 // when compiling to web using trunk.
 #[cfg(target_arch = "wasm32")]
 fn main() {
-    // Redirect `log` message to `console.log` and friends:
-    eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+    // Bridge `log`-based diagnostics from dependencies into `tracing`, same
+    // role as on native.
+    tracing_log::LogTracer::init().expect("installing the log-to-tracing bridge");
+
+    // Redirect tracing spans/events (including the ones just bridged from
+    // `log`) to the browser console (`console.log` and friends), replacing
+    // `eframe::WebLogger`. `DEBUG` matches the level `WebLogger::init` used
+    // before.
+    tracing_wasm::set_as_global_default_with_config(
+        tracing_wasm::WASMLayerConfigBuilder::new()
+            .set_max_level(tracing::Level::DEBUG)
+            .build(),
+    );
 
     let web_options = eframe::WebOptions::default();
 
