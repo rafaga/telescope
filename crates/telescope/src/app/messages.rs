@@ -64,7 +64,7 @@ pub enum Message {
     /// Sent by `IntelEventHandler` when a new intel file is created in the
     /// monitored directory or when the application initializes, to trigger
     ///  a scan of all intel files.
-    ScanIntelFiles
+    ScanIntelFiles,
 }
 
 impl Message {

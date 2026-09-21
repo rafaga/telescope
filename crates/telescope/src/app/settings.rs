@@ -1,3 +1,4 @@
+use crate::app::intel::IntelLogName;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -188,23 +189,30 @@ impl Settings {
         if !self.get_intel().exists() {
             return Err(SettingsError::InvalidDirectory(String::new()));
         }
+
         if let Ok(mut directory) = self.get_intel().read_dir() {
             while let Some(Ok(entry)) = directory.next() {
-                if let Some((name, file_date)) = entry.file_name().to_string_lossy().split_once('_')
-                {
-                    self.channels
-                        .available
-                        .entry(String::from(name))
-                        .or_insert(false);
-                    self.channels
-                        .log_files
-                        .entry(String::from(name) + "_" + file_date)
-                        .and_modify(|hash_entry| {
-                            hash_entry.1 = Utc::now();
-                            hash_entry.0 = entry.metadata().unwrap().len();
-                        })
-                        .or_insert((entry.metadata().unwrap().len(), Utc::now()));
-                }
+                let file_name = entry.file_name();
+                let full_name = file_name.to_string_lossy();
+
+                let Some(log) = IntelLogName::parse(&full_name) else {
+                    // not a valid chatlog file name, ignoring it
+                    continue;
+                };
+
+                self.channels
+                    .available
+                    .entry(log.channel.to_string())
+                    .or_insert(false);
+
+                self.channels
+                    .log_files
+                    .entry(format!("{}_{}", log.channel, log.suffix))
+                    .and_modify(|hash_entry| {
+                        hash_entry.1 = Utc::now();
+                        hash_entry.0 = entry.metadata().unwrap().len();
+                    })
+                    .or_insert((entry.metadata().unwrap().len(), Utc::now()));
             }
             Ok(())
         } else {

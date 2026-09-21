@@ -1,0 +1,320 @@
+//! Intel (EVE chat log) handling.
+//!
+//! Two parts live here: [`IntelLogName`], the single place that knows the
+//! chatlog file naming format (the directory scan, the file watcher and the
+//! log reader all go through [`IntelLogName::parse`], so a format change only
+//! needs to be made here), and the `TelescopeApp` methods that read a log
+//! file, decode it and dispatch pattern matches.
+
+use chrono::Utc;
+use crate::app::TelescopeApp;
+use crate::app::messages::MapSync;
+use crate::app::messages::Message;
+use crate::app::messages::Type;
+use crate::app::patterns::ActionConfig;
+use crate::app::patterns::PatternMatch;
+use regex::Regex;
+use sde::SdeManager;
+use std::fs::File;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::sync::OnceLock;
+
+/// A chatlog file name split into its channel and the rest.
+///
+/// EVE names chatlogs `<channel>_<YYYYMMDD>_<HHMMSS>[_<charid>].txt`. The
+/// channel itself may contain underscores, so it can't be found by splitting
+/// on the first `_`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct IntelLogName<'a> {
+    /// Channel name, e.g. `Local` or `wc.Vale+Tribute`.
+    pub channel: &'a str,
+    /// Everything after the channel's trailing underscore:
+    /// `<YYYYMMDD>_<HHMMSS>[_<charid>].txt`.
+    pub suffix: &'a str,
+}
+
+impl<'a> IntelLogName<'a> {
+    /// Parses a chatlog file name, or returns `None` if `file_name` is not one.
+    pub(crate) fn parse(file_name: &'a str) -> Option<Self> {
+        static LOG_NAME: OnceLock<Regex> = OnceLock::new();
+        let re = LOG_NAME.get_or_init(|| {
+            Regex::new(r"^(?P<channel>.+?)_(?P<suffix>\d{8}_\d{6}(?:_\d+)?\.txt)$")
+                .expect("hardcoded chatlog name regex must compile")
+        });
+        let caps = re.captures(file_name)?;
+        Some(Self {
+            channel: caps.name("channel")?.as_str(),
+            suffix: caps.name("suffix")?.as_str(),
+        })
+    }
+}
+
+impl TelescopeApp {
+    #[tracing::instrument(skip(self))]
+    pub(crate) fn load_intel_file(&mut self, file_name: String) {
+        let path = self.settings.get_intel();
+        let path = &path.join(file_name.as_str());
+        let mut log_files_map = self.settings.get_log_files_channels();
+
+        //getting the first byte to read from the last recorded file lenght
+        let mut start = 0;
+        if let Some(log_entry) = log_files_map.get(&file_name) {
+            start = log_entry.0;
+        }
+
+        let channel = IntelLogName::parse(&file_name)
+            .map(|log| log.channel.to_string())
+            .unwrap_or_default();
+
+        if let Ok(mut intel_file) = File::open(path) {
+            let file_length = intel_file.metadata().map(|meta| meta.len()).unwrap_or(0);
+            //if the file shrank (log rotation), read it from the beginning
+            if file_length < start {
+                start = 0;
+            }
+            if file_length > start && intel_file.seek(SeekFrom::Start(start)).is_ok() {
+                // EVE Online writes chat logs as UTF-16LE, never UTF-8, so
+                // this cannot use read_to_string (it requires valid UTF-8
+                // and fails on the very first byte of every real log file,
+                // silently, since the caller only checks `is_ok()`). Read
+                // the raw bytes and decode them ourselves.
+                let mut chunk = intel_file.take(file_length - start);
+                let mut raw = Vec::new();
+                if let Ok(bytes_read) = chunk.read_to_end(&mut raw) {
+                    let (new_data, consumed) = decode_utf16le_chunk(&raw[..bytes_read]);
+                    self.parse_intel_data(&channel, &new_data);
+                    log_files_map.entry(file_name).and_modify(|hash_entry| {
+                        hash_entry.0 = start + consumed as u64;
+                        hash_entry.1 = Utc::now();
+                    });
+                }
+            }
+        }
+        self.settings.set_log_files_channels(log_files_map);
+    }
+
+    #[tracing::instrument(skip(self, data))]
+    fn parse_intel_data(&self, channel: &str, data: &str) {
+        for intel_match in self.pattern_engine.evaluate(channel, data) {
+            match &intel_match.action {
+                ActionConfig::Notify => {
+                    self.task_msg.spawn(Message::GenericNotification((
+                        Type::Info,
+                        String::from("PatternEngine"),
+                        intel_match.rule_id.clone(),
+                        intel_match.line.to_string(),
+                    )));
+                }
+                ActionConfig::MapAlert { system_group } => {
+                    self.dispatch_map_alert(&intel_match, system_group);
+                }
+            }
+        }
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn dispatch_map_alert(&self, intel_match: &PatternMatch, system_group: &str) {
+        let Some(system_name) = intel_match.named.get(system_group) else {
+            return;
+        };
+        //validate the captured text before using it in any query; real
+        //solar system names are at most 17 chars and may contain spaces
+        //and dashes (e.g. "Old Man Star", "Tash-Murkon Prime")
+        if system_name.is_empty()
+            || system_name.len() > 20
+            || !system_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
+        {
+            return;
+        }
+        let sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
+        match sde.and_then(|s| s.get_system_id(system_name.to_lowercase())) {
+            Ok(results) => {
+                //prefer an exact name match over partial (LIKE) results
+                let found = results
+                    .iter()
+                    .find(|entry| entry.1.eq_ignore_ascii_case(system_name))
+                    .or(results.first());
+                if let Some(entry) = found {
+                    let system_id = usize::try_from(entry.0).unwrap_or(0);
+                    if system_id > 0 {
+                        let _ = self.map_msg.0.send(MapSync::SystemNotification((
+                            system_id,
+                            tokio::time::Instant::now(),
+                        )));
+                    }
+                }
+            }
+            Err(t_error) => {
+                self.task_msg.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("PatternEngine"),
+                    String::from("dispatch_map_alert"),
+                    t_error.to_string(),
+                )));
+            }
+        }
+    }
+}
+
+/// Decodes a raw byte chunk read from an EVE Online chat log as UTF-16LE.
+///
+/// EVE writes chat logs as UTF-16LE and re-emits a byte-order mark (U+FEFF)
+/// not only at the start of the file but at the start of every appended
+/// line (each flush is encoded as its own fragment, BOM included) -- every
+/// occurrence is stripped here, not just a single leading one, since
+/// [`crate::app::patterns::PatternEngine::parse_line`]'s line regex is anchored on a
+/// literal `[` and would otherwise fail to match every line but the first.
+///
+/// Returns the decoded text and the number of bytes actually consumed from
+/// `raw`. If `raw`'s length is odd, the trailing byte is half of a UTF-16
+/// code unit split across two reads (the writer flushed mid-character); it
+/// is left unconsumed (excluded from the returned count) so the caller
+/// re-reads it, paired with its other half, on the next chunk instead of
+/// corrupting decoding here. Malformed code units (unpaired surrogates)
+/// are replaced with U+FFFD via [`String::from_utf16_lossy`] rather than
+/// failing the whole read.
+fn decode_utf16le_chunk(raw: &[u8]) -> (String, usize) {
+    let usable_len = raw.len() - (raw.len() % 2);
+    let code_units: Vec<u16> = raw[..usable_len]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
+        .collect();
+    let text = String::from_utf16_lossy(&code_units).replace('\u{feff}', "");
+    (text, usable_len)
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::decode_utf16le_chunk;
+
+    /// Encodes `s` as raw UTF-16LE bytes, the same wire format EVE writes,
+    /// without needing an encoding crate as a test dependency.
+    fn utf16le_bytes(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn decodes_plain_ascii_line() {
+        let raw = utf16le_bytes("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear\r\n");
+        let (text, consumed) = decode_utf16le_chunk(&raw);
+        assert_eq!(
+            text,
+            "[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear\r\n"
+        );
+        assert_eq!(consumed, raw.len());
+    }
+
+    #[test]
+    fn strips_leading_file_bom() {
+        let raw = utf16le_bytes("\u{feff}[ 2021.09.08 22:56:47 ] A > hi\r\n");
+        let (text, _) = decode_utf16le_chunk(&raw);
+        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r\n");
+    }
+
+    #[test]
+    fn strips_every_per_line_bom_not_just_the_first() {
+        // Real EVE logs re-emit U+FEFF at the start of every appended
+        // line, not only once at the top of the file.
+        let raw = utf16le_bytes(
+            "\u{feff}[ 2021.09.08 22:56:47 ] A > line one\r\n\u{feff}[ 2021.09.08 22:56:48 ] B > line two\r\n",
+        );
+        let (text, _) = decode_utf16le_chunk(&raw);
+        assert_eq!(
+            text,
+            "[ 2021.09.08 22:56:47 ] A > line one\r\n[ 2021.09.08 22:56:48 ] B > line two\r\n"
+        );
+        assert!(!text.contains('\u{feff}'));
+    }
+
+    #[test]
+    fn decodes_non_latin_script_correctly() {
+        // The same corpus this fix was validated against has a large
+        // Chinese-speaking population; a naive UTF-8 read does not just
+        // mis-decode this text, it fails to decode the file at all (0xFF,
+        // the first byte of the UTF-16LE BOM, is never a valid UTF-8
+        // start byte).
+        let raw = utf16le_bytes("[ 2023.03.27 02:19:05 ] Algae Roben > 有萨沙甲亢的配置吗\r\n");
+        let (text, consumed) = decode_utf16le_chunk(&raw);
+        assert_eq!(
+            text,
+            "[ 2023.03.27 02:19:05 ] Algae Roben > 有萨沙甲亢的配置吗\r\n"
+        );
+        assert_eq!(consumed, raw.len());
+    }
+
+    #[test]
+    fn holds_back_a_trailing_split_code_unit() {
+        let full = utf16le_bytes("[ 2021.09.08 22:56:47 ] A > hi\r\n");
+        // Simulate a read landing mid-character: drop the last byte,
+        // leaving a dangling first byte of the final code unit ('\n').
+        let raw = &full[..full.len() - 1];
+        let (text, consumed) = decode_utf16le_chunk(raw);
+        // The dangling byte must not be consumed nor corrupt the decoded
+        // text.
+        assert_eq!(consumed, raw.len() - 1);
+        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r");
+    }
+
+    #[test]
+    fn empty_input_decodes_to_empty_output() {
+        let (text, consumed) = decode_utf16le_chunk(&[]);
+        assert_eq!(text, "");
+        assert_eq!(consumed, 0);
+    }
+}
+
+#[cfg(test)]
+mod log_name_tests {
+    use super::*;
+
+    #[test]
+    fn splits_channel_and_suffix() {
+        let log = IntelLogName::parse("Local_20230101_000000_12345.txt").unwrap();
+        assert_eq!(log.channel, "Local");
+        assert_eq!(log.suffix, "20230101_000000_12345.txt");
+    }
+
+    #[test]
+    fn accepts_a_name_without_character_id() {
+        let log = IntelLogName::parse("Local_20230101_000000.txt").unwrap();
+        assert_eq!(log.channel, "Local");
+        assert_eq!(log.suffix, "20230101_000000.txt");
+    }
+
+    #[test]
+    fn keeps_underscores_inside_the_channel_name() {
+        let log = IntelLogName::parse("My_Intel_Channel_20230101_000000_12345.txt").unwrap();
+        assert_eq!(log.channel, "My_Intel_Channel");
+        assert_eq!(log.suffix, "20230101_000000_12345.txt");
+    }
+
+    #[test]
+    fn keeps_channel_punctuation() {
+        let log = IntelLogName::parse("wc.Vale+Tribute_20230101_000000_12345.txt").unwrap();
+        assert_eq!(log.channel, "wc.Vale+Tribute");
+    }
+
+    #[test]
+    fn rejects_files_that_are_not_chatlogs() {
+        for name in [
+            "notes.txt",
+            "nounderscore",
+            ".DS_Store",
+            "Local_20230101_000000_12345.log",
+            "Local_2023_000000_12345.txt",
+            "_20230101_000000_12345.txt",
+            "",
+        ] {
+            assert!(
+                IntelLogName::parse(name).is_none(),
+                "{name:?} should not parse"
+            );
+        }
+    }
+}

@@ -1,6 +1,7 @@
+use crate::app::intel::IntelLogName;
 use crate::app::messages::{Message, Type, send_app_message};
 use notify::EventHandler;
-use notify::event::{CreateKind, ModifyKind};
+use notify::event::ModifyKind;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tokio::sync::mpsc::Sender;
@@ -27,14 +28,34 @@ impl EventHandler for IntelEventHandler {
         if let Ok(event) = event {
             let app_sender_file = Arc::clone(&self.app_msg);
             match event.kind {
-                notify::EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)) => {
-                    if let Some(path) = event.paths[0].file_name() {
+                // This arm has to line up with what each backend actually
+                // emits for a real content write, which differs per OS
+                // (checked against notify-8.2.0's own backend source):
+                //   - Windows (windows.rs, ReadDirectoryChangesW): every
+                //     FILE_ACTION_MODIFIED is the untyped
+                //     `Modify(ModifyKind::Any)` -- never `Data(_)` at all.
+                //   - Linux (inotify.rs, IN_MODIFY): always
+                //     `Modify(Data(DataChange::Any))` -- never the specific
+                //     `DataChange::Content` this arm matched alone before.
+                //   - macOS (fsevent.rs, kFSEventStreamEventFlagItemModified):
+                //     correctly `Modify(Data(DataChange::Content))` -- the
+                //     one platform where the original match actually worked.
+                // `Data(_)` covers Linux (and macOS, a strict subset) in one
+                // pattern; the bare `Any` arm is only reachable on Windows,
+                // where "Data" is never used. Before this, a real new line
+                // appended to a chatlog never triggered `IntelFileChanged`
+                // on Windows *or* Linux -- it fell through to the catch-all
+                // below and got logged as "Created", which is also why that
+                // label kept showing up for events that weren't creations.
+                notify::EventKind::Modify(ModifyKind::Data(_))
+                | notify::EventKind::Modify(ModifyKind::Any) => {
+                    if let Some(path) = event.paths.first().and_then(|p| p.file_name()) {
                         let file_name = path.to_string_lossy().to_string();
-                        let splitted_file_name = file_name.split_once('_').unwrap();
-                        if channels
-                            .binary_search(&splitted_file_name.0.to_string())
-                            .is_ok()
-                        {
+                        // not a chatlog name (or not a monitored channel): ignore
+                        let is_monitored = IntelLogName::parse(&file_name).is_some_and(|log| {
+                            channels.binary_search(&log.channel.to_string()).is_ok()
+                        });
+                        if is_monitored {
                             thread::spawn(move || {
                                 let runtime = tokio::runtime::Builder::new_current_thread()
                                     .enable_all()
@@ -64,20 +85,38 @@ impl EventHandler for IntelEventHandler {
                         }
                     }
                 }
-                notify::EventKind::Create(CreateKind::File) => {
+                // Both broadened from `CreateKind::File`/`RemoveKind::File`
+                // to the whole `CreateKind`/`RemoveKind` enum for the same
+                // reason as the Modify arm above: Windows' FILE_ACTION_ADDED
+                // and FILE_ACTION_REMOVED are always reported as the untyped
+                // `CreateKind::Any`/`RemoveKind::Any` (windows.rs), never the
+                // `File` variant either of these arms required, so on
+                // Windows a new or deleted log file never triggered a
+                // rescan -- it fell through to the catch-all below and got
+                // logged as "Created" regardless of which of the two it
+                // actually was. Linux/macOS already report the specific
+                // `File`/`Folder` kind correctly in the common case, so this
+                // is a no-op improvement there (it only additionally catches
+                // each backend's own rarer ambiguous-kind fallback).
+                notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
                     let runtime = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .unwrap();
+                        .enable_all()
+                        .build()
+                        .unwrap();
                     runtime.block_on(async {
-                            let _ = send_app_message(
-                                &app_sender_file,
-                                Message::ScanIntelFiles,
-                            )
-                            .await;
-                        });
+                        let _ = send_app_message(&app_sender_file, Message::ScanIntelFiles).await;
+                    });
                 }
-                _ => {
+                // Genuinely unhandled kinds only now (Access, Rename,
+                // Modify(Metadata(_)/Name(_)), the untyped `Any` default,
+                // etc.) -- Create, Remove and content-relevant Modify events
+                // are all handled above. Labels with the real `event.kind`
+                // instead of a hardcoded " Created" that used to be printed
+                // regardless of what actually happened, which is what made
+                // unrelated events (e.g. a metadata/access-time touch right
+                // after a real write) look like repeated duplicate
+                // "Created" lines for the same file.
+                kind => {
                     thread::spawn(move || {
                         let runtime = tokio::runtime::Builder::new_current_thread()
                             .enable_all()
@@ -90,13 +129,15 @@ impl EventHandler for IntelEventHandler {
                                     Type::Debug,
                                     String::from("Telescope"),
                                     String::from("IntelWatcher"),
-                                    event.paths[0]
-                                        .file_name()
-                                        .unwrap()
-                                        .to_str()
-                                        .unwrap()
-                                        .to_owned()
-                                        + " Created",
+                                    format!(
+                                        "{} {kind:?}",
+                                        event
+                                            .paths
+                                            .first()
+                                            .and_then(|p| p.file_name())
+                                            .map(|n| n.to_string_lossy().into_owned())
+                                            .unwrap_or_default()
+                                    ),
                                 )),
                             )
                             .await;
