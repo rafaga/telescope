@@ -7,15 +7,15 @@
 //! file, decode it and dispatch pattern matches.
 
 use crate::app::TelescopeApp;
-use crate::app::messages::{MapSync,Message,Type};
-use crate::app::patterns::{ActionConfig,PatternMatch};
+use crate::app::messages::{MapSync, Message, Type};
+use crate::app::patterns::{ActionConfig, PatternMatch};
 use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
 use regex::Regex;
 use sde::SdeManager;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read,Seek,SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::OnceLock;
 
 /// A chatlog file name split into its channel and the rest.
