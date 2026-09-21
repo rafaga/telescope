@@ -6,13 +6,13 @@
 //! needs to be made here), and the `TelescopeApp` methods that read a log
 //! file, decode it and dispatch pattern matches.
 
-use chrono::Utc;
 use crate::app::TelescopeApp;
 use crate::app::messages::MapSync;
 use crate::app::messages::Message;
 use crate::app::messages::Type;
 use crate::app::patterns::ActionConfig;
 use crate::app::patterns::PatternMatch;
+use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
 use regex::Regex;
 use sde::SdeManager;

@@ -11,21 +11,21 @@ use std::sync::Arc;
 impl TelescopeApp {
     pub(super) fn show_data_sources_page(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Data Paths").font(FontId::proportional(20.0)));
-        ui.horizontal(|ui|{
+        ui.horizontal(|ui| {
             ui.label("SDE database:");
             let mut str_sde = self.settings.get_sde().to_string_lossy().to_string();
             if ui.text_edit_singleline(&mut str_sde).changed() {
                 let _ = self.settings.set_sde(Path::new(&str_sde));
             }
         });
-        ui.horizontal(|ui|{
+        ui.horizontal(|ui| {
             ui.label("private database:");
             let mut str_db = self.settings.get_db().to_string_lossy().to_string();
             if ui.text_edit_singleline(&mut str_db).changed() {
                 let _ = self.settings.set_db(Path::new(&str_db));
             }
         });
-        ui.horizontal(|ui|{
+        ui.horizontal(|ui| {
             if ui.button("🔄 Check for SDE updates").clicked() {
                 let sde_cache_dir = Self::sde_build_cache_dir(&self.settings);
                 crate::app::database_updater::DatabaseUpdater::spawn(
