@@ -34,6 +34,7 @@ use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
 use native_tools::dialog::*;
 
+mod audio;
 mod data;
 mod database;
 mod database_updater;
@@ -90,9 +91,23 @@ pub struct TelescopeApp {
     intel_channels: Arc<RwLock<Vec<String>>>,
     dlg_intel_dir: Dialog,
     pattern_engine: PatternEngine,
+    // Alarm sound for `ActionConfig::MapAlert` matches -- see the
+    // `audio` module docs for why this has to be a long-lived field
+    // rather than something opened per alert.
+    audio: audio::AlarmPlayer,
     // UI state for the "updating the SDE database" progress window --
     // see `database_updater`'s module docs.
     database_updater: database_updater::DatabaseUpdater,
+    // Last `GenericNotification` accepted by `update_status_with_error`,
+    // plus when it was accepted -- lets that function collapse an
+    // immediate repeat (same type/source/context/text) arriving within
+    // `notifications::NOTIFICATION_DEDUP_WINDOW`. Two independent upstream
+    // sources can each emit back-to-back duplicates of the same
+    // notification: the file watcher can report more than one event for a
+    // single write, and the pattern engine can match more than one rule
+    // against the same line. Both funnel through this one field, so a
+    // single check here covers both cases without touching either source.
+    last_notification: Option<(Type, String, String, String, std::time::Instant)>,
 }
 
 impl Default for TelescopeApp {
@@ -192,6 +207,12 @@ impl Default for TelescopeApp {
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
+        // Built here, as its own `let`, rather than inline in the `Self`
+        // literal below: `task_msg: msgmon` there moves `msgmon` out, so
+        // anything else in that same literal that still needs a clone of
+        // it (this, and `behavior`'s `TreeBehavior::new`) has to grab one
+        // before that move happens.
+        let audio = audio::AlarmPlayer::new(Arc::clone(&msgmon));
 
         // Compile the pattern matching engine once at startup. Rules that
         // fail validation are reported and skipped; a missing or corrupted
@@ -270,7 +291,9 @@ impl Default for TelescopeApp {
             intel_channels,
             dlg_intel_dir,
             pattern_engine,
+            audio,
             database_updater: database_updater::DatabaseUpdater::default(),
+            last_notification: None,
         }
     }
 }
@@ -307,7 +330,9 @@ impl eframe::App for TelescopeApp {
             intel_channels: _,
             dlg_intel_dir: _,
             pattern_engine: _,
+            audio: _,
             database_updater: _,
+            last_notification: _,
         } = self;
 
         if !self.initialized {

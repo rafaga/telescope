@@ -23,6 +23,7 @@ pub enum MapSync {
     PlayerMoved((usize, usize)),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Info,
     Error,

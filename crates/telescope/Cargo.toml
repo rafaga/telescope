@@ -14,7 +14,7 @@ license.workspace = true
 # consumer of `sde`/`egui-map`/`webb`/`native_tools` that also enables
 # `profile` gets their spans in the same trace for free, via
 # Cargo's feature unification on the shared `tracing` dependency.
-profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/profile","rodio/tracing"]
+profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/profile"]
 # Adds allocation tracking on top of `profile` (Tracy's memory pane). Split out
 # because routing every allocation in the process through Tracy costs more than
 # everything else the profiler does, and it distorts the per-frame paint path
@@ -81,7 +81,7 @@ tracing = "0.1"
 # lost now that neither `env_logger` (native) nor `eframe::WebLogger` (web)
 # own the `log` sink anymore.
 tracing-log = "0.2"
-rodio = { version = "0.22.2", default-features = false, features = ["wav","mp3"] }
+rodio = { version = "0.22.2", default-features = false, features = ["wav","mp3","playback","tracing"] }
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

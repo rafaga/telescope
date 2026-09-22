@@ -7,11 +7,10 @@
 //! change, so the matching in `handle_event` is deliberately broad.
 
 use crate::app::intel::IntelLogName;
-use crate::app::messages::{Message, Type, send_app_message};
+use crate::app::messages::{Message, Type, try_send_app_message};
 use notify::EventHandler;
 use notify::event::ModifyKind;
 use std::sync::{Arc, RwLock};
-use std::thread;
 use tokio::sync::mpsc::Sender;
 
 pub struct IntelEventHandler {
@@ -64,32 +63,19 @@ impl EventHandler for IntelEventHandler {
                             channels.binary_search(&log.channel.to_string()).is_ok()
                         });
                         if is_monitored {
-                            thread::spawn(move || {
-                                let runtime = tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                    .unwrap();
-                                runtime.block_on(async {
-                                    let _span = tracing::info_span!("spawned Auth success message")
-                                        .entered();
-
-                                    let _ = send_app_message(
-                                        &app_sender_file,
-                                        Message::IntelFileChanged(file_name.clone()),
-                                    )
-                                    .await;
-                                    let _ = send_app_message(
-                                        &app_sender_file,
-                                        Message::GenericNotification((
-                                            Type::Debug,
-                                            String::from("Telescope"),
-                                            String::from("IntelWatcher"),
-                                            file_name + " Changed",
-                                        )),
-                                    )
-                                    .await;
-                                });
-                            });
+                            let _ = try_send_app_message(
+                                &app_sender_file,
+                                Message::IntelFileChanged(file_name.clone()),
+                            );
+                            let _ = try_send_app_message(
+                                &app_sender_file,
+                                Message::GenericNotification((
+                                    Type::Debug,
+                                    String::from("Telescope"),
+                                    String::from("IntelWatcher"),
+                                    file_name + " Changed",
+                                )),
+                            );
                         }
                     }
                 }
@@ -107,13 +93,7 @@ impl EventHandler for IntelEventHandler {
                 // is a no-op improvement there (it only additionally catches
                 // each backend's own rarer ambiguous-kind fallback).
                 notify::EventKind::Create(_) | notify::EventKind::Remove(_) => {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    runtime.block_on(async {
-                        let _ = send_app_message(&app_sender_file, Message::ScanIntelFiles).await;
-                    });
+                    let _ = try_send_app_message(&app_sender_file, Message::ScanIntelFiles);
                 }
                 // Genuinely unhandled kinds only now (Access, Rename,
                 // Modify(Metadata(_)/Name(_)), the untyped `Any` default,
@@ -125,32 +105,23 @@ impl EventHandler for IntelEventHandler {
                 // after a real write) look like repeated duplicate
                 // "Created" lines for the same file.
                 kind => {
-                    thread::spawn(move || {
-                        let runtime = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .unwrap();
-                        runtime.block_on(async {
-                            let _ = send_app_message(
-                                &app_sender_file,
-                                Message::GenericNotification((
-                                    Type::Debug,
-                                    String::from("Telescope"),
-                                    String::from("IntelWatcher"),
-                                    format!(
-                                        "{} {kind:?}",
-                                        event
-                                            .paths
-                                            .first()
-                                            .and_then(|p| p.file_name())
-                                            .map(|n| n.to_string_lossy().into_owned())
-                                            .unwrap_or_default()
-                                    ),
-                                )),
-                            )
-                            .await;
-                        });
-                    });
+                    let _ = try_send_app_message(
+                        &app_sender_file,
+                        Message::GenericNotification((
+                            Type::Debug,
+                            String::from("Telescope"),
+                            String::from("IntelWatcher"),
+                            format!(
+                                "{} {kind:?}",
+                                event
+                                    .paths
+                                    .first()
+                                    .and_then(|p| p.file_name())
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default()
+                            ),
+                        )),
+                    );
                 }
             }
         }

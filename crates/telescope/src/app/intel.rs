@@ -180,6 +180,7 @@ impl TelescopeApp {
                             system_id,
                             tokio::time::Instant::now(),
                         )));
+                        self.audio.play_alarm(&self.settings.get_alert_sound_path());
                     }
                 }
             }

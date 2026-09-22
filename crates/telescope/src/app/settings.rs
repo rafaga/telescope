@@ -19,6 +19,16 @@ use std::{
     fmt::{Display, Formatter},
 };
 
+/// Directory the bundled alarm sounds live in (see `app::audio`'s module
+/// docs), relative to wherever Telescope is run from -- same convention as
+/// `sde.db`/`patterns.toml`/`telescope.toml`. The one place both
+/// `Settings::set_alert_sound`'s validation and
+/// `Settings::get_alert_sound_path` build a real path against, and
+/// `windows::settings::intelligence`'s picker reads to list the choices --
+/// previously each of those three (plus `app::audio`'s now-removed
+/// `ALARM_SOUND_PATH`) hardcoded their own copy of this string.
+pub(crate) const ALERTS_DIR: &str = "assets/alerts";
+
 #[derive(Serialize, Deserialize, Clone)]
 struct FilePaths {
     #[serde(skip)]
@@ -26,6 +36,11 @@ struct FilePaths {
     intel: PathBuf,
     sde: PathBuf,
     db: PathBuf,
+    // Just the file name (e.g. "1_campana_info.wav"), resolved against
+    // `ALERTS_DIR` by `Settings::get_alert_sound_path` -- not the full path,
+    // so a future change to `ALERTS_DIR` doesn't require migrating every
+    // `telescope.toml` already on disk.
+    alert_sound: PathBuf,
 }
 
 impl Default for FilePaths {
@@ -57,6 +72,7 @@ impl Default for FilePaths {
             intel: tpath,
             sde: Path::new("sde.db").to_path_buf(),
             db: PathBuf::new(),
+            alert_sound: PathBuf::from("1_campana_info.wav"),
         }
     }
 }
@@ -219,7 +235,7 @@ impl Settings {
                         hash_entry.1 = Utc::now();
                         hash_entry.0 = entry.metadata().unwrap().len();
                     })
-                    .or_insert((entry.metadata().unwrap().len(), Utc::now()));
+                    .or_insert_with(|| (entry.metadata().unwrap().len(), Utc::now()));
             }
             Ok(())
         } else {
@@ -353,6 +369,55 @@ impl Settings {
             self.saved = false;
         }
     }
+
+    /// The selected alarm sound's file name (e.g. `"1_campana_info.wav"`),
+    /// not a path you can open directly -- see [`Self::get_alert_sound_path`]
+    /// for that.
+    pub(crate) fn get_alert_sound(&self) -> &Path {
+        self.paths.alert_sound.as_path()
+    }
+
+    /// [`Self::get_alert_sound`] resolved against [`ALERTS_DIR`], ready to
+    /// hand to `File::open` -- what `app::audio::AlarmPlayer::play_alarm`
+    /// actually plays.
+    pub(crate) fn get_alert_sound_path(&self) -> PathBuf {
+        Path::new(ALERTS_DIR).join(&self.paths.alert_sound)
+    }
+
+    /// `name` is just a file name (what `windows::settings::intelligence`'s
+    /// picker lists from reading [`ALERTS_DIR`]), not a path -- this joins
+    /// it against `ALERTS_DIR` itself to check it really exists before
+    /// accepting it.
+    pub fn set_alert_sound(&mut self, name: &str) -> Result<()> {
+        let full = Path::new(ALERTS_DIR).join(name);
+        if !full.exists() {
+            return Err(SettingsError::InvalidDirectory(
+                full.to_string_lossy().to_string(),
+            ));
+        }
+        self.paths.alert_sound = PathBuf::from(name);
+        self.saved = false;
+        Ok(())
+    }
+
+    /// Test-only escape hatch around [`Self::set_alert_sound`]'s existence
+    /// check, for the same reason [`Self::set_sde_for_test`] exists: `cargo
+    /// test` runs this crate's test binary with its working directory set
+    /// to the package root (`crates/telescope`), not the workspace root
+    /// [`ALERTS_DIR`] is actually relative to, so the real check can never
+    /// pass in a test without reaching outside the test process to change
+    /// its working directory -- which this deliberately avoids, to not
+    /// risk interfering with any other test that (now or later) reads a
+    /// relative path while this one has it pointed elsewhere. Also sets
+    /// `saved = false`, unlike `set_sde_for_test`, since tests that need
+    /// this (the dirty-flag and save/reload round-trip tests) need that
+    /// side effect specifically, and skipping the filesystem check doesn't
+    /// change what a real accepted name would have done to it.
+    #[cfg(test)]
+    pub(crate) fn set_alert_sound_for_test(&mut self, name: &str) {
+        self.paths.alert_sound = PathBuf::from(name);
+        self.saved = false;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -438,5 +503,63 @@ mod tests {
         settings.paths.intel = PathBuf::from("/nonexistent/telescope-test-path-xyz");
 
         assert!(settings.scan_channels_logs().is_err());
+    }
+
+    #[test]
+    fn alert_sound_default_is_1_campana_info_wav() {
+        let settings = Settings::default();
+        assert_eq!(settings.get_alert_sound(), Path::new("1_campana_info.wav"));
+    }
+
+    #[test]
+    fn get_alert_sound_path_joins_it_against_alerts_dir() {
+        let mut settings = Settings::default();
+        settings.set_alert_sound_for_test("9_trino_marimba.wav");
+
+        assert_eq!(
+            settings.get_alert_sound_path(),
+            Path::new(ALERTS_DIR).join("9_trino_marimba.wav")
+        );
+    }
+
+    // `set_alert_sound` itself can't be exercised against a real,
+    // known-good file name here -- see `set_alert_sound_for_test`'s doc
+    // comment for why -- but a name that doesn't exist under `ALERTS_DIR`
+    // has to fail regardless of the test binary's working directory, so
+    // this much of the real function is still safe to cover directly.
+    #[test]
+    fn set_alert_sound_rejects_an_unknown_sound_name() {
+        let mut settings = Settings::default();
+
+        let result = settings.set_alert_sound("this-sound-does-not-exist.wav");
+
+        assert!(matches!(result, Err(SettingsError::InvalidDirectory(_))));
+        // A rejected name must not have touched the stored value.
+        assert_eq!(settings.get_alert_sound(), Path::new("1_campana_info.wav"));
+    }
+
+    #[test]
+    fn set_alert_sound_for_test_marks_settings_as_unsaved() {
+        let mut settings = Settings::default();
+        settings.saved = true;
+
+        settings.set_alert_sound_for_test("7_gong_solemne.wav");
+
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn alert_sound_survives_a_save_and_reload_round_trip() {
+        let dir = temp_dir("alert-sound-roundtrip");
+        let mut settings = Settings::default();
+        settings.paths.settings = dir.join("telescope.toml");
+        settings.set_alert_sound_for_test("7_gong_solemne.wav");
+
+        assert_eq!(settings.save(), Ok(true));
+
+        let reloaded = Settings::try_from(dir.join("telescope.toml")).unwrap();
+        assert_eq!(reloaded.get_alert_sound(), Path::new("7_gong_solemne.wav"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

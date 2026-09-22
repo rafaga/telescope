@@ -33,6 +33,10 @@
         "src": "./assets/icon.png",
         "target": "./assets/icon.png"
       },
+      {
+        "src": "./assets/alerts",
+        "target": "./assets/alerts"
+      },
       "Lorem ipsum"
     ],
     "externalBinaries": null,

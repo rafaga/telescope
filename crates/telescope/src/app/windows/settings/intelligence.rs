@@ -2,17 +2,13 @@
 //! monitored channels and the maps shown at start-up.
 
 use crate::app::TelescopeApp;
-use crate::app::messages::Message;
-use crate::app::messages::send_app_message;
+use crate::app::messages::{Message, send_app_message};
+use crate::app::settings::ALERTS_DIR;
 use eframe::egui;
-use eframe::egui::Button;
-use eframe::egui::FontId;
-use eframe::egui::IntoAtoms;
-use eframe::egui::RichText;
-use eframe::egui::TextEdit;
-use egui_extras::Column;
-use egui_extras::TableBuilder;
+use eframe::egui::{Button, FontId, IntoAtoms, RichText, TextEdit};
+use egui_extras::{Column, TableBuilder};
 use native_tools::dialog::*;
+use std::path::Path;
 use std::sync::Arc;
 
 impl TelescopeApp {
@@ -30,6 +26,37 @@ impl TelescopeApp {
                     for i in 1u8..8 {
                         if ui.selectable_value(&mut data, i, i.to_string()).changed() {
                             self.settings.set_warning_area(i);
+                        }
+                    }
+                });
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            // Compared against each candidate below via `selectable_value`,
+            // so it has to be the currently selected sound's own name, not
+            // (as this used to read) a leftover clone of the warning-area
+            // combo's `u8` above -- that made the dropdown's highlighted
+            // entry meaningless, though the closed box's label was still
+            // right since that comes from `get_alert_sound()` directly.
+            let mut current = self
+                .settings
+                .get_alert_sound()
+                .to_string_lossy()
+                .into_owned();
+            ui.label("Alert sound:");
+            egui::ComboBox::new("alert_sound", "")
+                .selected_text(current.clone())
+                .show_ui(ui, |ui| {
+                    if let Ok(obj_dir) = Path::new(ALERTS_DIR).read_dir() {
+                        for file in obj_dir.flatten() {
+                            if let Some(name) = file.file_name().to_str() {
+                                if ui
+                                    .selectable_value(&mut current, name.to_string(), name)
+                                    .changed()
+                                {
+                                    let _ = self.settings.set_alert_sound(name);
+                                }
+                            }
                         }
                     }
                 });
@@ -75,6 +102,7 @@ impl TelescopeApp {
         // clone keys to avoid borrowing available_channels while we later mutably borrow it
         let mut channels: Vec<String> = available_channels.keys().cloned().collect();
         channels.sort_unstable();
+        ui.add_space(12.00);
         ui.label(RichText::new("Monitored channels").font(FontId::proportional(20.0)));
         ui.label("Select all the Intel Channels to monitor.");
         ui.push_id("chan_tbl", |ui| {
@@ -109,6 +137,7 @@ impl TelescopeApp {
                 });
         });
         self.settings.set_available_channels(available_channels);
+        ui.add_space(12.00);
         ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
         ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
         ui.push_id("rgn_tbl", |ui| {
