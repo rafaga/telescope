@@ -105,7 +105,7 @@ Telescope reads and writes these in the directory it runs from:
 | `telescope.toml` | User settings (`Settings`). |
 | `patterns.toml` | Alert rules. Created from a built-in template when missing, and regenerated (keeping a backup) when corrupt. |
 | `sde.db` | The SDE database. Built automatically when it does not exist. |
-| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Data Sources*). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. |
+| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Data Sources*). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. |
 
 ## Threads and messages
 

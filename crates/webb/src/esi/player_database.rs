@@ -10,10 +10,11 @@ use std::collections::HashMap;
 pub(crate) struct PlayerDatabase {}
 
 /// Schema version this build writes and expects, stored in the `metadata`
-/// row `db`. To change the schema: bump it, update `create_database` (new
-/// databases start at the latest version directly) and append the script
-/// that takes a database from the previous version to this one to
-/// [`MIGRATIONS`].
+/// row `db`. To change the schema: bump it and append the script that takes
+/// a database from the previous version to this one to [`MIGRATIONS`].
+/// Nothing else changes: a database created from scratch runs the frozen
+/// base schema (version 0, [`PlayerDatabase::create_base_schema`]) followed
+/// by every migration, so both paths always end in the same schema.
 ///
 /// - 0: one token set for every character, in `metadata`.
 /// - 1: one token set per character, in the `auth` table.
@@ -28,8 +29,7 @@ const MIGRATIONS: &[Migration] = &[PlayerDatabase::migrate_0_to_1];
 // One migration per version step, always.
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 
-/// Creation script of the `auth` table, shared by `create_database` and
-/// the 0 -> 1 migration.
+/// Creation script of the `auth` table (0 -> 1 migration).
 const CREATE_AUTH_TABLE: &str = "CREATE TABLE auth (id INTEGER PRIMARY KEY \
     REFERENCES char(id) ON DELETE CASCADE ON UPDATE CASCADE, \
     token TEXT NOT NULL, refresh_token TEXT NOT NULL, expiration TEXT NOT NULL)";
@@ -138,8 +138,23 @@ impl PlayerDatabase {
         Ok(())
     }
 
+    /// Creates the database from scratch at [`SCHEMA_VERSION`]: the base
+    /// schema, then every migration script in order.
     #[tracing::instrument]
     pub(crate) fn create_database(conn: &Connection) -> Result<bool, Error> {
+        PlayerDatabase::create_base_schema(conn)?;
+        for migration in MIGRATIONS {
+            migration(conn)?;
+        }
+        PlayerDatabase::set_schema_version(conn, SCHEMA_VERSION)?;
+        Ok(true)
+    }
+
+    /// Schema version 0, exactly as the first Telescope builds created it.
+    /// Frozen: never change it -- schema changes go in a new migration (see
+    /// [`SCHEMA_VERSION`]).
+    #[tracing::instrument]
+    fn create_base_schema(conn: &Connection) -> Result<(), Error> {
         //Character Public Data
         let mut query =
             String::from("CREATE TABLE char (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL,");
@@ -159,20 +174,21 @@ impl PlayerDatabase {
         statement = conn.prepare(query)?;
         statement.execute([])?;
 
-        // OAuth tokens, one set per character (an EVE SSO token only works
-        // for the character that logged in).
-        statement = conn.prepare(CREATE_AUTH_TABLE)?;
-        statement.execute([])?;
-
-        // Telescope Metadata
-        let query =
-            "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY,value VARCHAR(255) NOT NULL);";
+        // Telescope Metadata: schema version and a single (empty) token set.
+        query = "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY,value VARCHAR(255) NOT NULL);";
         statement = conn.prepare(query)?;
         statement.execute([])?;
-        let query = "INSERT INTO metadata (id,value) VALUES (?,?)";
-        statement = conn.prepare(query)?;
-        statement.execute(["db", SCHEMA_VERSION.to_string().as_str()])?;
-        Ok(true)
+        query = "INSERT INTO metadata (id,value) VALUES (?,?)";
+        for (id, value) in [
+            ("db", "0"),
+            ("token", ""),
+            ("refresh_token", ""),
+            ("expiration", ""),
+        ] {
+            statement = conn.prepare(query)?;
+            statement.execute([id, value])?;
+        }
+        Ok(())
     }
 
     #[tracing::instrument]
@@ -702,6 +718,52 @@ mod tests {
             |row| row.get(0),
         )
         .unwrap()
+    }
+
+    /// Every table/index definition, sorted, plus the `metadata` rows.
+    fn schema_snapshot(conn: &Connection) -> (Vec<String>, Vec<(String, String)>) {
+        let mut statement = conn
+            .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+            .unwrap();
+        let sql = statement
+            .query_map([], |row| row.get::<usize, String>(0))
+            .unwrap()
+            .map(|sql| sql.unwrap())
+            .collect();
+        let mut statement = conn
+            .prepare("SELECT id, value FROM metadata ORDER BY id")
+            .unwrap();
+        let metadata = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        (sql, metadata)
+    }
+
+    // Creating from scratch is the base schema plus every migration, so it
+    // must match an old database migrated forward exactly.
+    #[test]
+    fn a_new_database_matches_a_migrated_one() {
+        let created = memory_connection();
+        PlayerDatabase::create_database(&created).unwrap();
+
+        let migrated = memory_connection();
+        PlayerDatabase::create_base_schema(&migrated).unwrap();
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&migrated).unwrap(),
+            SchemaStatus::Migrated(0)
+        );
+
+        assert_eq!(schema_snapshot(&created), schema_snapshot(&migrated));
+    }
+
+    #[test]
+    fn the_base_schema_is_version_0() {
+        let conn = memory_connection();
+        PlayerDatabase::create_base_schema(&conn).unwrap();
+        assert_eq!(PlayerDatabase::schema_version(&conn).unwrap(), Some(0));
+        assert!(!table_names(&conn).contains(&String::from("auth")));
     }
 
     #[test]
