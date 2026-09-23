@@ -49,13 +49,12 @@ impl TelescopeApp {
                 .show_ui(ui, |ui| {
                     if let Ok(obj_dir) = Path::new(ALERTS_DIR).read_dir() {
                         for file in obj_dir.flatten() {
-                            if let Some(name) = file.file_name().to_str() {
-                                if ui
+                            if let Some(name) = file.file_name().to_str()
+                                && ui
                                     .selectable_value(&mut current, name.to_string(), name)
                                     .changed()
-                                {
-                                    let _ = self.settings.set_alert_sound(name);
-                                }
+                            {
+                                let _ = self.settings.set_alert_sound(name);
                             }
                         }
                     }
