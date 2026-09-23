@@ -110,16 +110,20 @@ pub(crate) struct Channels {
     monitored: Arc<Vec<String>>,
 }
 
-/// Layout of the main window that is remembered between runs. Saved on its
-/// own (see [`Settings::save_ui_state`]), without the Settings window's
-/// Save button: it isn't a preference the user edits there.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+/// Layout and language of the main window, remembered between runs. Saved on
+/// its own, as soon as it changes (see [`Settings::save_ui_state`]), without
+/// the Settings window's Save button: the log panel layout isn't edited in
+/// that window, and a language change is already visible on the next frame.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub(crate) struct UiState {
     /// Whether the log panel at the bottom is expanded.
     pub log_expanded: bool,
     /// Height of the expanded log panel, in points.
     pub log_height: f32,
+    /// Interface language: `"auto"` (the operating system's) or the name of
+    /// a `locales/` file such as `"es"`. See `crate::i18n`.
+    pub language: String,
 }
 
 impl Default for UiState {
@@ -127,6 +131,7 @@ impl Default for UiState {
         Self {
             log_expanded: true,
             log_height: 110.0,
+            language: String::from(crate::i18n::AUTO),
         }
     }
 }
@@ -205,7 +210,7 @@ impl Default for Settings {
 
 impl Settings {
     pub(crate) fn get_ui_state(&self) -> UiState {
-        self.ui
+        self.ui.clone()
     }
 
     /// Stores the main window layout and writes it to `telescope.toml` right
@@ -214,7 +219,7 @@ impl Settings {
     /// unsaved. When the file doesn't exist yet, the next regular save
     /// writes the layout with everything else.
     pub(crate) fn save_ui_state(&mut self, state: UiState) -> Result<()> {
-        self.ui = state;
+        self.ui = state.clone();
         let path = Path::new(&self.paths.settings);
         if !path.exists() {
             return Ok(());
@@ -223,7 +228,7 @@ impl Settings {
             .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
         let mut document: toml::Table =
             toml::from_str(&text).map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
-        let ui = toml::Table::try_from(state)
+        let ui = toml::Table::try_from(&state)
             .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
         document.insert(String::from("ui"), toml::Value::Table(ui));
         let text = toml::to_string(&document)
@@ -592,6 +597,25 @@ mod tests {
         assert_eq!(loaded.get_ui_state(), UiState::default());
     }
 
+    // A `[ui]` table written before `language` existed keeps its layout and
+    // follows the operating system's language.
+    #[test]
+    fn language_defaults_to_auto_in_an_older_ui_table() {
+        let dir = temp_dir("ui-no-language");
+        let path = dir.join("telescope.toml");
+        let settings = Settings::default();
+        let mut document: toml::Table =
+            toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        let mut ui = toml::Table::new();
+        ui.insert(String::from("log_expanded"), toml::Value::Boolean(false));
+        document.insert(String::from("ui"), toml::Value::Table(ui));
+        fs::write(&path, toml::to_string(&document).unwrap()).unwrap();
+
+        let loaded = Settings::try_from(path).unwrap().get_ui_state();
+        assert!(!loaded.log_expanded);
+        assert_eq!(loaded.language, crate::i18n::AUTO);
+    }
+
     // Saving the layout patches only `[ui]`: an unsaved change made in the
     // Settings window must not reach the file this way.
     #[test]
@@ -606,8 +630,9 @@ mod tests {
         let state = UiState {
             log_expanded: false,
             log_height: 222.0,
+            language: String::from("es"),
         };
-        settings.save_ui_state(state).unwrap();
+        settings.save_ui_state(state.clone()).unwrap();
 
         let loaded = Settings::try_from(path).unwrap();
         assert_eq!(loaded.get_ui_state(), state);

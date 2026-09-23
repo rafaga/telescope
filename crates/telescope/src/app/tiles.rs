@@ -210,7 +210,7 @@ impl TabPane for UniversePane {
 
     #[tracing::instrument(skip(self))]
     fn get_title(&self) -> WidgetText {
-        "Universe".into()
+        t!("map.universe").into_owned().into()
     }
 
     #[tracing::instrument(skip(self))]
@@ -568,7 +568,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 ui.available_height(),
             ))
             .1;
-        if str_text != "Universe" && !tab_state.is_being_dragged {
+        if str_text != t!("map.universe") && !tab_state.is_being_dragged {
             rect_close = Some(
                 ui.allocate_space(vec2(2.0 * x_margin, ui.available_height()))
                     .1,
@@ -663,7 +663,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
             .ui(ui, |ui| {
                 let mut _data: Vec<usize> = Vec::new();
-                ui.label("Search region:");
+                ui.label(t!("map.search_region"));
                 if ui.text_edit_singleline(&mut self.search_text).changed() {
                     self.search_regions.clear();
                     if self.search_text.len() > 3 {
@@ -754,11 +754,11 @@ impl ContextMenu {
 impl ContextMenuManager for ContextMenu {
     #[tracing::instrument(skip(self, ui))]
     fn ui(&self, ui: &mut Ui) {
-        if ui.button("set beacon").clicked() {
+        if ui.button(t!("map.set_beacon")).clicked() {
             ui.close();
         }
         ui.separator();
-        if ui.button("⚙ settings").clicked() {
+        if ui.button(t!("map.settings")).clicked() {
             ui.close();
         }
     }

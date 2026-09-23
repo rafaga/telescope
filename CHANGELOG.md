@@ -11,6 +11,12 @@ period it happened in.
 
 ### Added
 
+* Interface translations with `rust-i18n` and TOML files in
+  `crates/telescope/locales/` (English and Spanish), a language selector in the
+  new *Settings -> General* page and `language` in `[ui]` (`"auto"` follows
+  the operating system); tests check every language has the same keys as
+  English (September 2026).
+
 * Settings window split into pages (*Intelligence*, *Data Sources*,
   *Characters*), with per-page modules and a page menu driven by
   `SettingsPage::ALL` (September 2026).
@@ -46,6 +52,9 @@ period it happened in.
 
 ### Changed
 
+* Noto Sans TC replaced by Noto Sans CJK (`NotoSansCJK-Medium.ttc`), always
+  loaded as the fallback font so intel lines in Chinese, Japanese, Korean and
+  Russian are drawn whatever the interface language (September 2026).
 * `app.rs` split from a single file of about 1,900 lines into focused modules
   (`windows`, `intel`, `watchdog`, `database`, `notifications`,
   `persistence`); behaviour is unchanged (September 2026).

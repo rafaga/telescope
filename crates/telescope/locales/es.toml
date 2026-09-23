@@ -1,0 +1,89 @@
+# Textos de la interfaz de Telescope, español. Mismas claves que `en.toml`
+# (los tests de `i18n` lo comprueban); los marcadores `%{nombre}` se dejan tal
+# cual. Ver `src/i18n.rs`.
+
+[language]
+name = "Español"
+
+[menu]
+file = "Archivo"
+preferences = "Preferencias"
+debug = "Depuración"
+quit = "Salir"
+help = "Ayuda"
+about = "Acerca de Telescope"
+
+[about]
+title = "Acerca de Telescope"
+author = "Autor: %{name}"
+license = "Licencia %{license}"
+
+[settings]
+title = "Configuración"
+save = "Guardar"
+unsaved = "⚠ cambios sin guardar"
+
+[settings.pages]
+general = "General"
+intelligence = "Inteligencia"
+data_sources = "Fuentes de datos"
+characters = "Personajes"
+
+[settings.general]
+heading = "Interfaz"
+language = "Idioma:"
+auto = "Automático (%{language})"
+language_hint = "\"Automático\" usa el idioma de tu sistema operativo. El cambio se aplica de inmediato y se guarda."
+
+[settings.intelligence]
+alerts = "Alertas"
+warn_before = "Avisarme cuando haya un enemigo a"
+warn_after = "sistemas o menos de mí"
+alert_sound = "Sonido de alerta:"
+chat_logs = "Logs de canales de EVE:"
+select = "Elegir"
+default = "Predeterminado"
+monitored = "Canales monitoreados"
+monitored_help = "Marca todos los canales de inteligencia que quieres monitorear."
+no_channels = "No se detectaron canales de inteligencia"
+startup_maps = "Mapas al iniciar"
+startup_help = "Por defecto se muestran el mapa del universo y los mapas de las regiones donde tienes personajes enlazados. Marca aquí otras regiones para mostrar también sus mapas al iniciar."
+
+[settings.data_sources]
+heading = "Rutas de datos"
+sde = "Base de datos del SDE:"
+player_db = "Base de datos privada:"
+player_db_hint = "Aquí se guardan los personajes enlazados. El archivo se crea si no existe; los cambios se aplican al reiniciar Telescope."
+check_updates = "🔄 Buscar actualizaciones del SDE"
+
+[settings.characters]
+heading = "Personajes enlazados"
+help = "Se usan para avisarte cuando hay algo cerca de tu ubicación."
+add = "➕ Agregar"
+add_hint = "Inicia sesión con EVE SSO en tu navegador para enlazar un personaje"
+remove = "✖ Quitar"
+remove_hint = "Desenlazar a %{name}"
+remove_disabled = "Selecciona un personaje para desenlazarlo"
+alliance = "Alianza:"
+no_alliance = "Sin alianza"
+corporation = "Corporación:"
+no_corporation = "Sin corporación"
+last_logon = "Última conexión:"
+empty = "⚠ Todavía no hay personajes enlazados en Telescope. Usa ➕ Agregar para enlazar uno."
+
+[map]
+universe = "Universo"
+search_region = "Buscar región:"
+set_beacon = "Poner baliza"
+settings = "⚙ Configuración"
+
+[log]
+title = "Log (%{count})"
+collapse = "Contraer el log"
+expand = "Expandir el log"
+
+[sde_update]
+title = "Actualizando la base de datos del SDE de EVE Online"
+checking = "Buscando una nueva versión del SDE de EVE Online..."
+downloading = "Descargando la nueva exportación del SDE..."
+rebuilding = "Reconstruyendo la base de datos del SDE, puede tardar un minuto..."

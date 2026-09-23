@@ -110,6 +110,7 @@ pub enum Target {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
+    General,
     Intelligence,
     DataSources,
     Characters,
@@ -119,19 +120,22 @@ impl SettingsPage {
     /// Every settings page, in the order the Settings window menu lists
     /// them. A new page is one variant above, one entry here, one arm in
     /// `title` and one arm in the Settings window's page `match`.
-    pub const ALL: [SettingsPage; 3] = [
+    pub const ALL: [SettingsPage; 4] = [
+        SettingsPage::General,
         SettingsPage::Intelligence,
         SettingsPage::DataSources,
         SettingsPage::Characters,
     ];
 
     /// Label shown for this page in the Settings window menu.
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            SettingsPage::Intelligence => "Intelligence",
-            SettingsPage::DataSources => "Data Sources",
-            SettingsPage::Characters => "Characters",
+            SettingsPage::General => t!("settings.pages.general"),
+            SettingsPage::Intelligence => t!("settings.pages.intelligence"),
+            SettingsPage::DataSources => t!("settings.pages.data_sources"),
+            SettingsPage::Characters => t!("settings.pages.characters"),
         }
+        .into_owned()
     }
 }
 

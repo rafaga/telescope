@@ -18,8 +18,8 @@ const CARD_SPACING: f32 = 4.0;
 
 impl TelescopeApp {
     pub(super) fn show_characters_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Linked characters").font(FontId::proportional(20.0)));
-        ui.label("These are used to emit notifications when something is close to your location.");
+        ui.label(RichText::new(t!("settings.characters.heading")).font(FontId::proportional(20.0)));
+        ui.label(t!("settings.characters.help"));
         self.character_toolbar(ui);
         ui.add_space(CARD_SPACING);
 
@@ -45,8 +45,8 @@ impl TelescopeApp {
     fn character_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
-                .button("➕ Add")
-                .on_hover_text("Log in with EVE SSO in your browser to link a character")
+                .button(t!("settings.characters.add"))
+                .on_hover_text(t!("settings.characters.add_hint"))
                 .clicked()
             {
                 self.start_character_link();
@@ -59,10 +59,15 @@ impl TelescopeApp {
                     .find(|c| c.id == id)
                     .map(|c| (id, c.name.clone()))
             });
-            let remove = ui.add_enabled(selected.is_some(), egui::Button::new("✖ Remove"));
+            let remove = ui.add_enabled(
+                selected.is_some(),
+                egui::Button::new(t!("settings.characters.remove")),
+            );
             let remove = match &selected {
-                Some((_, name)) => remove.on_hover_text(format!("Unlink {name}")),
-                None => remove.on_disabled_hover_text("Select a character to unlink it"),
+                Some((_, name)) => {
+                    remove.on_hover_text(t!("settings.characters.remove_hint", name = name))
+                }
+                None => remove.on_disabled_hover_text(t!("settings.characters.remove_disabled")),
             };
             if remove.clicked()
                 && let Some((id, _)) = selected
@@ -115,23 +120,23 @@ fn character_card(ui: &mut egui::Ui, character: &Character, selected: bool) -> e
                                 .show(ui, |ui| {
                                     detail_row(
                                         ui,
-                                        "Alliance:",
-                                        character
-                                            .alliance
-                                            .as_ref()
-                                            .map_or("No alliance", |a| a.name.as_str()),
+                                        &t!("settings.characters.alliance"),
+                                        &character.alliance.as_ref().map_or_else(
+                                            || t!("settings.characters.no_alliance"),
+                                            |a| a.name.as_str().into(),
+                                        ),
                                     );
                                     detail_row(
                                         ui,
-                                        "Corporation:",
-                                        character
-                                            .corp
-                                            .as_ref()
-                                            .map_or("No corporation", |c| c.name.as_str()),
+                                        &t!("settings.characters.corporation"),
+                                        &character.corp.as_ref().map_or_else(
+                                            || t!("settings.characters.no_corporation"),
+                                            |c| c.name.as_str().into(),
+                                        ),
                                     );
                                     detail_row(
                                         ui,
-                                        "Last logon:",
+                                        &t!("settings.characters.last_logon"),
                                         &character
                                             .last_logon
                                             .format("%Y-%m-%d %H:%M UTC")
@@ -159,8 +164,6 @@ fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
 fn empty_state(ui: &mut egui::Ui) {
     ui.add_sized(
         [ui.available_width(), EMPTY_STATE_HEIGHT],
-        egui::Label::new(
-            "⚠ There are no characters linked in Telescope yet. Use ➕ Add to link one.",
-        ),
+        egui::Label::new(t!("settings.characters.empty")),
     );
 }

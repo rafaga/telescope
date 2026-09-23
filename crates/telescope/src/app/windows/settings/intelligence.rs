@@ -16,11 +16,13 @@ impl TelescopeApp {
         let mut keys: Vec<usize> = self.behavior.tile_data.keys().copied().collect();
         keys.sort_unstable();
         let num_rows = keys.len().div_ceil(3);
-        ui.label(RichText::new("Alerts").font(FontId::proportional(20.0)));
+        ui.label(
+            RichText::new(t!("settings.intelligence.alerts")).font(FontId::proportional(20.0)),
+        );
         ui.horizontal(|ui| {
             let mut data = self.settings.get_warning_area();
-            ui.label("Warn me when an enemy is within");
-            egui::ComboBox::from_label("systems close to me")
+            ui.label(t!("settings.intelligence.warn_before"));
+            egui::ComboBox::new("warning_area", t!("settings.intelligence.warn_after"))
                 .selected_text(data.to_string())
                 .show_ui(ui, |ui| {
                     for i in 1u8..8 {
@@ -43,7 +45,7 @@ impl TelescopeApp {
                 .get_alert_sound()
                 .to_string_lossy()
                 .into_owned();
-            ui.label("Alert sound:");
+            ui.label(t!("settings.intelligence.alert_sound"));
             egui::ComboBox::new("alert_sound", "")
                 .selected_text(current.clone())
                 .show_ui(ui, |ui| {
@@ -63,10 +65,10 @@ impl TelescopeApp {
         });
         ui.horizontal(|ui| {
             let enabled = true;
-            ui.label("EVE Channel logs:");
+            ui.label(t!("settings.intelligence.chat_logs"));
             let mut str_intel = self.settings.get_intel().to_string_lossy().to_string();
             ui.add_enabled(enabled, TextEdit::singleline(&mut str_intel));
-            let atoms2 = ("Select").into_atoms();
+            let atoms2 = t!("settings.intelligence.select").into_owned().into_atoms();
             if ui.add_enabled(enabled, Button::new(atoms2)).clicked() {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -84,7 +86,9 @@ impl TelescopeApp {
                     }
                 });
             }
-            let atoms = ("Default").into_atoms();
+            let atoms = t!("settings.intelligence.default")
+                .into_owned()
+                .into_atoms();
             if ui.add_enabled(enabled, Button::new(atoms)).clicked() {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -102,8 +106,10 @@ impl TelescopeApp {
         let mut channels: Vec<String> = available_channels.keys().cloned().collect();
         channels.sort_unstable();
         ui.add_space(12.00);
-        ui.label(RichText::new("Monitored channels").font(FontId::proportional(20.0)));
-        ui.label("Select all the Intel Channels to monitor.");
+        ui.label(
+            RichText::new(t!("settings.intelligence.monitored")).font(FontId::proportional(20.0)),
+        );
+        ui.label(t!("settings.intelligence.monitored_help"));
         ui.push_id("chan_tbl", |ui| {
             TableBuilder::new(ui)
                 .columns(Column::resizable(Column::exact(230.0), true), 2)
@@ -129,7 +135,7 @@ impl TelescopeApp {
                     } else {
                         body.row(row_height, |mut row| {
                             row.col(|ui| {
-                                ui.label("No intel channels detected");
+                                ui.label(t!("settings.intelligence.no_channels"));
                             });
                         });
                     }
@@ -137,8 +143,12 @@ impl TelescopeApp {
         });
         self.settings.set_available_channels(available_channels);
         ui.add_space(12.00);
-        ui.label(RichText::new("Start-up maps").font(FontId::proportional(20.0)));
-        ui.label("By default the universe map its shown, and the regional maps where do you have linked characters, but you can override this setting marking the default regional maps to show on startup.").with_new_rect(ui.available_rect_before_wrap());
+        ui.label(
+            RichText::new(t!("settings.intelligence.startup_maps"))
+                .font(FontId::proportional(20.0)),
+        );
+        ui.label(t!("settings.intelligence.startup_help"))
+            .with_new_rect(ui.available_rect_before_wrap());
         ui.push_id("rgn_tbl", |ui| {
             TableBuilder::new(ui)
                 .column(Column::resizable(Column::exact(150.0), false))

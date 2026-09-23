@@ -50,6 +50,15 @@ mod tiles;
 mod watchdog;
 mod windows;
 
+/// Key of Noto Sans CJK in egui's font definitions (see
+/// `TelescopeApp::font_definitions`).
+const CJK_FONT: &str = "Noto Sans CJK";
+
+/// Face of `NotoSansCJK-Medium.ttc` Telescope uses: 0 JP, 1 KR, 2 SC, 3 TC,
+/// 4 HK. Every face has every glyph; only the shape of Han characters
+/// changes.
+const CJK_FONT_INDEX: u32 = 2;
+
 pub struct TelescopeApp {
     initialized: bool,
 
@@ -411,20 +420,20 @@ impl eframe::App for TelescopeApp {
             //egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Preferences").clicked() {
+                ui.menu_button(t!("menu.file"), |ui| {
+                    if ui.button(t!("menu.preferences")).clicked() {
                         self.open[2] = true;
                     }
-                    if ui.button("Debug").clicked() {
+                    if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;
                     }
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(t!("menu.quit")).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.menu_button("Help", |ui| {
-                    if ui.button("About Telescope").clicked() {
+                ui.menu_button(t!("menu.help"), |ui| {
+                    if ui.button(t!("menu.about")).clicked() {
                         self.open[0] = true;
                     }
                 });
@@ -596,42 +605,56 @@ impl TelescopeApp {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
-        let mut fonts = eframe::egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "Noto Sans TC".to_owned(),
-            Arc::new(eframe::egui::FontData::from_static(include_bytes!(
-                "../../../assets/NotoSansTC-VariableFont_wght.ttf"
-            ))),
-        );
-        fonts
-            .families
-            .get_mut(&eframe::egui::FontFamily::Proportional)
-            .unwrap()
-            .push("Noto Sans TC".to_owned());
+        cc.egui_ctx.set_fonts(Self::font_definitions());
+        let app: TelescopeApp = Default::default();
+        crate::i18n::apply_language(&app.settings.get_ui_state().language);
+        app
+    }
 
-        let custom_family = eframe::egui::FontFamily::Name("Custom".into());
-        fonts.families.insert(custom_family.clone(), Vec::new());
+    /// The fonts Telescope draws with: egui's defaults, then Noto Sans CJK as
+    /// the fallback of the proportional and monospace families, and Fira Sans
+    /// Bold as the `Custom` family (map labels).
+    ///
+    /// Noto Sans CJK is always included, whatever the interface language:
+    /// intel channels carry lines in Chinese, Japanese, Korean and Russian
+    /// even when the interface is in English, and without the fallback those
+    /// lines are drawn as empty boxes. It covers Latin, Cyrillic, Greek,
+    /// kana, Hangul and Han; egui's own fonts go first so Latin text keeps
+    /// its look.
+    ///
+    /// `NotoSansCJK-Medium.ttc` holds the same glyphs five times, with the
+    /// Han characters shaped for each region (JP, KR, SC, TC, HK);
+    /// [`CJK_FONT_INDEX`] picks the Simplified Chinese one.
+    pub(crate) fn font_definitions() -> eframe::egui::FontDefinitions {
+        use eframe::egui::{FontData, FontDefinitions, FontFamily};
+
+        let mut fonts = FontDefinitions::default();
+        fonts.font_data.insert(
+            CJK_FONT.to_owned(),
+            Arc::new(FontData {
+                index: CJK_FONT_INDEX,
+                ..FontData::from_static(include_bytes!("../../../assets/NotoSansCJK-Medium.ttc"))
+            }),
+        );
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push(CJK_FONT.to_owned());
+        }
 
         fonts.font_data.insert(
             "Fira Sans Bold".to_owned(),
-            Arc::new(eframe::egui::FontData::from_static(include_bytes!(
+            Arc::new(FontData::from_static(include_bytes!(
                 "../../../assets/FiraSans-Bold.ttf"
             ))),
         );
+        fonts.families.insert(
+            FontFamily::Name("Custom".into()),
+            vec!["Fira Sans Bold".to_owned()],
+        );
         fonts
-            .families
-            .get_mut(&eframe::egui::FontFamily::Name("Custom".into()))
-            .unwrap()
-            .push("Fira Sans Bold".to_owned());
-
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
-        /*if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
-        }*/
-        cc.egui_ctx.set_fonts(fonts);
-        let app: TelescopeApp = Default::default();
-        app
     }
 
     #[tracing::instrument(skip(receiver, task_msg))]
@@ -714,5 +737,66 @@ impl TelescopeApp {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+    use eframe::egui::{Color32, FontId};
+
+    /// One line of each script intel channels carry besides Latin.
+    const SAMPLES: [&str; 5] = [
+        "有萨沙甲亢的配置吗", // Simplified Chinese
+        "有薩沙甲亢的配置嗎", // Traditional Chinese
+        "ジタ クリア です",   // Japanese
+        "적 함대 발견",       // Korean
+        "Нейтрал в системе",  // Russian
+    ];
+
+    /// Whether every glyph of `text` is in the fonts and gets drawn (a glyph
+    /// egui can't read from the font file is laid out with nothing in the
+    /// atlas).
+    fn draws(ctx: &egui::Context, text: &str) -> bool {
+        let font_id = FontId::proportional(14.0);
+        ctx.fonts_mut(|fonts| {
+            if !fonts.has_glyphs(&font_id, text) {
+                return false;
+            }
+            let galley = fonts.layout_no_wrap(text.to_owned(), font_id, Color32::WHITE);
+            let drawn = galley
+                .rows
+                .iter()
+                .flat_map(|row| row.glyphs.iter())
+                .filter(|glyph| !glyph.chr.is_whitespace() && !glyph.uv_rect.is_nothing())
+                .count();
+            drawn == text.chars().filter(|c| !c.is_whitespace()).count()
+        })
+    }
+
+    fn context_with(fonts: egui::FontDefinitions) -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        // Fonts set with `set_fonts` are loaded at the start of the next pass.
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
+        ctx
+    }
+
+    #[test]
+    fn intel_lines_in_every_script_are_drawn() {
+        let ctx = context_with(TelescopeApp::font_definitions());
+        for sample in SAMPLES {
+            assert!(draws(&ctx, sample), "{sample}");
+        }
+    }
+
+    // Guards the test above: egui's own fonts can't draw these lines, so it
+    // really is Noto Sans CJK drawing them.
+    #[test]
+    fn egui_default_fonts_do_not_draw_cjk() {
+        let ctx = context_with(egui::FontDefinitions::default());
+        assert!(!draws(&ctx, SAMPLES[0]));
     }
 }

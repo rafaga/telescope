@@ -5,6 +5,13 @@
 //! against configurable regex pattern rules (see [`patterns`]) and presents
 //! the results on interactive maps of the universe.
 
+#[macro_use]
+extern crate rust_i18n;
+
+// Interface texts, embedded from `locales/*.toml`; see `i18n`.
+rust_i18n::i18n!("locales", fallback = "en");
+
 mod app;
+mod i18n;
 pub use app::TelescopeApp;
 pub use app::patterns;

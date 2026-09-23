@@ -1,6 +1,6 @@
 //! The Settings window frame: the page menu, the selected page and the Save button.
-//! Each page lives in its own submodule (`intelligence`, `data_sources`,
-//! `characters`).
+//! Each page lives in its own submodule (`general`, `intelligence`,
+//! `data_sources`, `characters`).
 
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
@@ -12,6 +12,7 @@ use egui_extras::TableBuilder;
 
 mod characters;
 mod data_sources;
+mod general;
 mod intelligence;
 
 impl TelescopeApp {
@@ -21,7 +22,10 @@ impl TelescopeApp {
         // `self.open[2]` for the whole `show` call: the page methods called
         // inside the closure need `&mut self` as a whole.
         let mut open = self.open[2];
-        egui::Window::new("Settings")
+        // Fixed id: by default egui derives it from the title, which changes
+        // with the interface language.
+        egui::Window::new(t!("settings.title"))
+            .id(egui::Id::new("settings_window"))
             .movable(true)
             .resizable(false)
             .fixed_size([700.0, 510.0])
@@ -60,6 +64,7 @@ impl TelescopeApp {
                         ui.vertical(|ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 match self.selected_settings_page {
+                                    SettingsPage::General => self.show_general_page(ui),
                                     SettingsPage::Intelligence => self.show_intelligence_page(ui),
                                     SettingsPage::DataSources => self.show_data_sources_page(ui),
                                     SettingsPage::Characters => self.show_characters_page(ui),
@@ -72,11 +77,11 @@ impl TelescopeApp {
                     ui.add_space(650.00);
                 });
                 ui.horizontal(|ui| {
-                    if ui.add(Button::new("Save")).clicked() {
+                    if ui.add(Button::new(t!("settings.save"))).clicked() {
                         self.save_settings();
                     }
                     if !self.settings.its_saved() {
-                        ui.colored_label(Color32::YELLOW, "⚠ unsaved changes");
+                        ui.colored_label(Color32::YELLOW, t!("settings.unsaved"));
                     }
                 });
             });

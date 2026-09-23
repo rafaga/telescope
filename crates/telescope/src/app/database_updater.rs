@@ -85,7 +85,8 @@ impl DatabaseUpdater {
         if !self.visible {
             return;
         }
-        egui::Window::new("Updating EVE Online SDE database")
+        egui::Window::new(t!("sde_update.title"))
+            .id(egui::Id::new("sde_update_window"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -291,9 +292,7 @@ impl DatabaseUpdater {
     ) -> Result<bool, Error> {
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(String::from(
-                "Checking for a new EVE Online SDE build...",
-            )),
+            Message::DatabaseUpdateProgress(t!("sde_update.checking").into_owned()),
         )
         .await
         .ok();
@@ -308,7 +307,7 @@ impl DatabaseUpdater {
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(String::from("Downloading the new SDE export...")),
+            Message::DatabaseUpdateProgress(t!("sde_update.downloading").into_owned()),
         )
         .await
         .ok();
@@ -339,9 +338,7 @@ impl DatabaseUpdater {
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(String::from(
-                "Rebuilding the SDE database, this can take a minute...",
-            )),
+            Message::DatabaseUpdateProgress(t!("sde_update.rebuilding").into_owned()),
         )
         .await
         .ok();

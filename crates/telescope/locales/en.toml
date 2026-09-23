@@ -1,0 +1,91 @@
+# Telescope interface texts, English (the fallback for a key missing from any
+# other language). Every file in this folder has exactly these keys; the
+# `i18n` tests check it. `%{name}` placeholders are filled in by the code and
+# must be kept as they are. See `src/i18n.rs`.
+
+[language]
+# This language's own name, as the selector in Settings -> General shows it.
+name = "English"
+
+[menu]
+file = "File"
+preferences = "Preferences"
+debug = "Debug"
+quit = "Quit"
+help = "Help"
+about = "About Telescope"
+
+[about]
+title = "About Telescope"
+author = "Author: %{name}"
+license = "Licensed under %{license}"
+
+[settings]
+title = "Settings"
+save = "Save"
+unsaved = "⚠ unsaved changes"
+
+[settings.pages]
+general = "General"
+intelligence = "Intelligence"
+data_sources = "Data Sources"
+characters = "Characters"
+
+[settings.general]
+heading = "Interface"
+language = "Language:"
+auto = "Automatic (%{language})"
+language_hint = "\"Automatic\" follows your operating system's language. The change applies right away and is saved."
+
+[settings.intelligence]
+alerts = "Alerts"
+warn_before = "Warn me when an enemy is within"
+warn_after = "systems close to me"
+alert_sound = "Alert sound:"
+chat_logs = "EVE Channel logs:"
+select = "Select"
+default = "Default"
+monitored = "Monitored channels"
+monitored_help = "Select all the Intel Channels to monitor."
+no_channels = "No intel channels detected"
+startup_maps = "Start-up maps"
+startup_help = "By default the universe map is shown, along with the regional maps where you have linked characters. Mark regions here to also show their maps at start-up."
+
+[settings.data_sources]
+heading = "Data Paths"
+sde = "SDE database:"
+player_db = "Private database:"
+player_db_hint = "Linked characters are stored here. The file is created if it doesn't exist; changes apply after restarting Telescope."
+check_updates = "🔄 Check for SDE updates"
+
+[settings.characters]
+heading = "Linked characters"
+help = "These are used to emit notifications when something is close to your location."
+add = "➕ Add"
+add_hint = "Log in with EVE SSO in your browser to link a character"
+remove = "✖ Remove"
+remove_hint = "Unlink %{name}"
+remove_disabled = "Select a character to unlink it"
+alliance = "Alliance:"
+no_alliance = "No alliance"
+corporation = "Corporation:"
+no_corporation = "No corporation"
+last_logon = "Last logon:"
+empty = "⚠ There are no characters linked in Telescope yet. Use ➕ Add to link one."
+
+[map]
+universe = "Universe"
+search_region = "Search region:"
+set_beacon = "Set beacon"
+settings = "⚙ Settings"
+
+[log]
+title = "Log (%{count})"
+collapse = "Collapse the log"
+expand = "Expand the log"
+
+[sde_update]
+title = "Updating EVE Online SDE database"
+checking = "Checking for a new EVE Online SDE build..."
+downloading = "Downloading the new SDE export..."
+rebuilding = "Rebuilding the SDE database, this can take a minute..."

@@ -62,7 +62,8 @@ with Telescope.
 ```text
 crates/telescope/src
 ├── main.rs                  entry point: logging / tracing setup, opens the window
-├── lib.rs                   exports TelescopeApp and patterns
+├── lib.rs                   exports TelescopeApp and patterns; loads the translations
+├── i18n.rs                  interface language: available languages, "auto", switching
 ├── app.rs                   TelescopeApp: state, construction, per-frame ui(),
 │                            event_manager() and map pane management
 └── app/
@@ -85,10 +86,14 @@ crates/telescope/src
         ├── debug.rs         debug window
         ├── settings.rs      Settings window frame (menu, page match, Save button)
         └── settings/
+            ├── general.rs        interface language
             ├── intelligence.rs   alerts, monitored channels, start-up maps
             ├── data_sources.rs   database paths, SDE update button
             └── characters.rs     linked characters
 ```
+
+The interface texts live in `crates/telescope/locales/<code>.toml` (see
+[Languages](#languages)).
 
 ![Module map of the telescope crate: entry points, app.rs with TelescopeApp, and the user interface, intel pipeline, EVE / ESI and shared core groups](docs/architecture/modules.svg)
 
@@ -106,6 +111,29 @@ Telescope reads and writes these in the directory it runs from:
 | `patterns.toml` | Alert rules. Created from a built-in template when missing, and regenerated (keeping a backup) when corrupt. |
 | `sde.db` | The SDE database. Built automatically when it does not exist. |
 | player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Data Sources*). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. |
+
+## Languages
+
+Every text the user reads comes from `t!("section.key")` (`rust-i18n`), looked
+up in `crates/telescope/locales/<code>.toml`: one file per language, all with
+the same keys, embedded in the binary at compile time. A key missing from a
+language falls back to English. The `i18n` tests check that every file has
+exactly the keys and `%{placeholders}` of `en.toml`.
+
+- **Adding a language** is adding its file (copy `en.toml`, translate the
+  values, including `language.name`). *Settings -> General* lists it on its own.
+- **The chosen language** is `language` in `telescope.toml`'s `[ui]` table:
+  `"auto"` (the operating system's language, English when there is no file for
+  it) or a file name such as `"es"`. It is applied at start-up and as soon as
+  it changes in *Settings -> General*, and saved right away like the rest of
+  `[ui]`.
+- **Not translated:** `tracing` output, the log panel messages and the Debug
+  window, so bug reports read the same in every language.
+- **Fonts:** Noto Sans CJK (`assets/NotoSansCJK-Medium.ttc`, Simplified
+  Chinese face) is always the fallback after egui's own fonts, whatever the
+  interface language: intel channels carry Chinese, Japanese, Korean and
+  Russian lines. `TelescopeApp::font_definitions` sets it up and a test checks
+  those scripts are drawn.
 
 ## Threads and messages
 

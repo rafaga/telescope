@@ -204,12 +204,12 @@ impl TelescopeApp {
             |ui, is_expanded| {
                 ui.horizontal(|ui| {
                     let arrow = if is_expanded { "⏷" } else { "⏵" };
-                    let header =
-                        egui::Button::new(format!("{arrow} Log ({})", messages.len())).frame(false);
+                    let title = t!("log.title", count = messages.len());
+                    let header = egui::Button::new(format!("{arrow} {title}")).frame(false);
                     let hint = if is_expanded {
-                        "Collapse the log"
+                        t!("log.collapse")
                     } else {
-                        "Expand the log"
+                        t!("log.expand")
                     };
                     if ui.add(header).on_hover_text(hint).clicked() {
                         toggle = true;
@@ -253,6 +253,7 @@ impl TelescopeApp {
         let state = UiState {
             log_expanded: expanded,
             log_height: height,
+            ..saved.clone()
         };
         if state != saved
             && !ui.input(|input| input.pointer.any_down())
