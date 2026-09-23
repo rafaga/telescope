@@ -4,8 +4,10 @@
 
 use crate::app::TelescopeApp;
 use crate::app::messages::{Message, Type};
-use crate::app::settings::SettingsError;
-use eframe::egui::{Color32, FontFamily, FontId, TextFormat, epaint::text::LayoutJob};
+use crate::app::settings::{SettingsError, UiState};
+use eframe::egui::{
+    self, Color32, FontFamily, FontId, Margin, TextFormat, epaint::text::LayoutJob,
+};
 
 /// Maximum number of entries kept in [`TelescopeApp::app_messages`], the
 /// notification log shown at the bottom of the window.
@@ -169,6 +171,94 @@ impl TelescopeApp {
         // by session length -- so this stays cheap even though it's O(n).
         if self.app_messages.len() > MAX_APP_MESSAGES {
             self.app_messages.remove(0);
+        }
+    }
+}
+
+/// Id of the expanded log panel (its size is persisted under it by egui).
+const LOG_PANEL_ID: &str = "log_panel";
+/// Smallest height the expanded log panel can be dragged to, in points.
+const LOG_PANEL_MIN_HEIGHT: f32 = 60.0;
+
+impl TelescopeApp {
+    /// The status log at the bottom of the window. Collapsed, it is a single
+    /// bar with the entry count and the latest entry; expanded, a resizable
+    /// panel with the whole (scrollable) log. Clicking the header toggles it;
+    /// the state and height are remembered in `telescope.toml` (`[ui]`).
+    pub(crate) fn show_log_panel(&mut self, ui: &mut egui::Ui) {
+        let saved = self.settings.get_ui_state();
+        let mut expanded = saved.log_expanded;
+        let mut toggle = false;
+
+        let collapsed_panel = egui::Panel::bottom("log_panel_collapsed").resizable(false);
+        let expanded_panel = egui::Panel::bottom(LOG_PANEL_ID)
+            .resizable(true)
+            .min_size(LOG_PANEL_MIN_HEIGHT)
+            .default_size(saved.log_height);
+        let messages = &self.app_messages;
+        egui::Panel::show_switched(
+            ui,
+            &mut expanded,
+            collapsed_panel,
+            expanded_panel,
+            |ui, is_expanded| {
+                ui.horizontal(|ui| {
+                    let arrow = if is_expanded { "⏷" } else { "⏵" };
+                    let header =
+                        egui::Button::new(format!("{arrow} Log ({})", messages.len())).frame(false);
+                    let hint = if is_expanded {
+                        "Collapse the log"
+                    } else {
+                        "Expand the log"
+                    };
+                    if ui.add(header).on_hover_text(hint).clicked() {
+                        toggle = true;
+                    }
+                    if !is_expanded && let Some(last) = messages.last() {
+                        ui.separator();
+                        ui.add(egui::Label::new(last.clone()).truncate());
+                    }
+                });
+                if is_expanded {
+                    egui::Frame::canvas(ui.style())
+                        .inner_margin(Margin::symmetric(2, 5))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .stick_to_bottom(true)
+                                .auto_shrink(false)
+                                .show_rows(
+                                    ui,
+                                    ui.text_style_height(&egui::TextStyle::Body),
+                                    messages.len(),
+                                    |ui, row_range| {
+                                        for index in row_range {
+                                            ui.label(messages[index].clone());
+                                        }
+                                    },
+                                );
+                        });
+                }
+            },
+        );
+        if toggle {
+            expanded = !expanded;
+        }
+
+        // Remember the layout once the user is done changing it (not on every
+        // frame of a resize drag).
+        let height =
+            egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new(LOG_PANEL_ID))
+                .filter(|_| expanded)
+                .map_or(saved.log_height, |state| state.size().y.round());
+        let state = UiState {
+            log_expanded: expanded,
+            log_height: height,
+        };
+        if state != saved
+            && !ui.input(|input| input.pointer.any_down())
+            && let Err(t_error) = self.settings.save_ui_state(state)
+        {
+            tracing::warn!("could not save the log panel layout: {t_error}");
         }
     }
 }

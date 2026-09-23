@@ -15,8 +15,8 @@ use crate::app::messages::{
 };
 use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, Margin, epaint::text::LayoutJob};
-use egui_tiles::{Tiles, Tree};
+use eframe::egui::{self, epaint::text::LayoutJob};
+use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use patterns::PatternEngine;
 use sde::{SdeManager, objects::Universe};
@@ -74,6 +74,8 @@ pub struct TelescopeApp {
     emit_notification: bool,
     search_selected_row: Option<usize>,
     search_results: Vec<(isize, String, isize, String)>,
+    // State of the Debug window's "Advanced" section.
+    debug: windows::debug::DebugState,
     universe: Universe,
     selected_settings_page: SettingsPage,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -282,6 +284,7 @@ impl Default for TelescopeApp {
                 settings.get_sde().to_path_buf(),
             ),
             search_results: Vec::new(),
+            debug: windows::debug::DebugState::default(),
             tree: None,
             universe,
             selected_settings_page: SettingsPage::Intelligence,
@@ -320,6 +323,7 @@ impl eframe::App for TelescopeApp {
             emit_notification: _,
             search_selected_row: _,
             search_results: _,
+            debug: _,
             tree: _,
             universe: _,
             selected_settings_page: _,
@@ -376,6 +380,7 @@ impl eframe::App for TelescopeApp {
                 }
             }
 
+            self.report_player_database_status();
             if !self.esi.characters.is_empty() {
                 let mut ids = vec![];
                 for char in &self.esi.characters {
@@ -426,14 +431,8 @@ impl eframe::App for TelescopeApp {
             });
         });
 
-        // Bottom menu
-        egui::Panel::bottom("bottom_panel").show(ui, |ui| {
-            //egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                ui.separator();
-            });
-        });
+        // Status log (collapsible), docked at the bottom.
+        self.show_log_panel(ui);
 
         if self.open[0] {
             self.open_about_window(ui.ctx());
@@ -453,32 +452,11 @@ impl eframe::App for TelescopeApp {
         egui::CentralPanel::default().show(ui, |ui| {
             let _span = tracing::info_span!("inserting map").entered();
             if let Some(tree) = &mut self.tree {
-                let mut rect = ui.available_size_before_wrap();
-                rect.y -= 100.0;
-                tree.set_height(rect.y);
+                // The log is its own bottom panel now: the maps get all the
+                // remaining height.
+                tree.set_height(ui.available_height());
                 tree.ui(&mut self.behavior, ui);
             }
-            let _ = egui::Frame::canvas(ui.style())
-                .inner_margin(Margin::symmetric(2, 5))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .stick_to_bottom(true)
-                        .max_height(100.0)
-                        .max_width(f32::INFINITY)
-                        .auto_shrink(false)
-                        .show_rows(
-                            ui,
-                            ui.text_style_height(&egui::TextStyle::Body),
-                            self.app_messages.len(),
-                            |ui, row_range| {
-                                ui.vertical(|ui| {
-                                    for index in row_range {
-                                        ui.label(self.app_messages[index].clone());
-                                    }
-                                });
-                            },
-                        );
-                });
         });
 
         //ui.add(&mut self.map);
@@ -554,15 +532,37 @@ impl TelescopeApp {
         }
     }
 
+    /// Removes an unlinked character's marker from every pane.
+    pub(crate) fn remove_player_marker(&mut self, player_id: i32) {
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.remove_marker(player_id as usize);
+                }
+            }
+        }
+    }
+
+    /// Puts every linked character's last known location on a new pane, so
+    /// it doesn't wait for the character to move to show its marker.
+    fn seed_player_markers(&self, pane: &mut dyn TabPane) {
+        for character in &self.esi.characters {
+            if character.location > 0 {
+                pane.update_marker(character.id as usize, character.location as usize);
+            }
+        }
+    }
+
     #[tracing::instrument(skip(self))]
     fn create_new_regional_pane(&mut self, region_id: usize) {
-        let pane = Self::generate_pane(
+        let mut pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
             self.settings.get_sde().to_path_buf(),
             self.settings.get_region_factor(),
             Some(region_id),
             Arc::clone(&self.task_msg),
         );
+        self.seed_player_markers(pane.as_mut());
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
         let root = self.tree.as_ref().unwrap().root.unwrap();
         let counter = self.tree.as_ref().unwrap().tiles.len();
@@ -672,13 +672,15 @@ impl TelescopeApp {
     #[tracing::instrument(skip(self))]
     fn create_tree(&self) -> Tree<Box<dyn TabPane>> {
         let mut tiles = Tiles::default();
-        let id = tiles.insert_pane(Self::generate_pane(
+        let mut pane = Self::generate_pane(
             self.map_msg.0.subscribe(),
             self.settings.get_sde().to_path_buf(),
             self.settings.get_factor(),
             None,
             Arc::clone(&self.task_msg),
-        ));
+        );
+        self.seed_player_markers(pane.as_mut());
+        let id = tiles.insert_pane(pane);
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
         egui_tiles::Tree::new("maps", root, tiles)
@@ -686,6 +688,18 @@ impl TelescopeApp {
 
     #[tracing::instrument(skip(self))]
     fn update_player_location(&mut self, player_id: i32, solar_system_id: i32) {
+        // Straight to every pane (visible or not) instead of through the
+        // `MapSync` broadcast: panes only drain that channel while they are
+        // drawn, so a hidden tab fell behind, lost the one-off location
+        // message once the channel lagged, and the marker only showed up
+        // after a restart.
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.update_marker(player_id as usize, solar_system_id as usize);
+                }
+            }
+        }
         for index in 0..self.esi.characters.len() {
             if self.esi.characters[index].id == player_id {
                 self.esi.characters[index].location = solar_system_id;

@@ -4,25 +4,43 @@
 use crate::esi::Error;
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
 use chrono::{DateTime, Utc};
-use rusqlite::vtab::array;
 use rusqlite::{Connection, ToSql, params};
-use std::rc::Rc;
+use std::collections::HashMap;
 
 pub(crate) struct PlayerDatabase {}
 
 /// Schema version this build writes and expects, stored in the `metadata`
-/// row `db`. When the schema changes: bump it, and add the step that takes
-/// a database from the previous version to this one in
-/// [`PlayerDatabase::migrate_database`] (and change `create_database` so new
-/// databases start at the new version directly).
-pub(crate) const SCHEMA_VERSION: i32 = 0;
+/// row `db`. To change the schema: bump it, update `create_database` (new
+/// databases start at the latest version directly) and append the script
+/// that takes a database from the previous version to this one to
+/// [`MIGRATIONS`].
+///
+/// - 0: one token set for every character, in `metadata`.
+/// - 1: one token set per character, in the `auth` table.
+pub const SCHEMA_VERSION: i32 = 1;
+
+/// A migration script: changes only what its version step needs.
+type Migration = fn(&Connection) -> Result<(), Error>;
+
+/// `MIGRATIONS[n]` takes a database from schema version `n` to `n + 1`.
+const MIGRATIONS: &[Migration] = &[PlayerDatabase::migrate_0_to_1];
+
+// One migration per version step, always.
+const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
+
+/// Creation script of the `auth` table, shared by `create_database` and
+/// the 0 -> 1 migration.
+const CREATE_AUTH_TABLE: &str = "CREATE TABLE auth (id INTEGER PRIMARY KEY \
+    REFERENCES char(id) ON DELETE CASCADE ON UPDATE CASCADE, \
+    token TEXT NOT NULL, refresh_token TEXT NOT NULL, expiration TEXT NOT NULL)";
 
 /// What [`PlayerDatabase::ensure_schema`] found and did.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SchemaStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaStatus {
     /// There was no schema (new or empty file): it was created.
     Created,
-    /// The schema was at the given older version: it was migrated.
+    /// The schema was at the given older version: the pending migration
+    /// scripts were run, keeping the stored data.
     Migrated(i32),
     /// Already at [`SCHEMA_VERSION`]: nothing to do.
     UpToDate,
@@ -32,9 +50,10 @@ pub(crate) enum SchemaStatus {
 
 impl PlayerDatabase {
     /// Brings the database to [`SCHEMA_VERSION`]: creates the schema when
-    /// there is none, runs the pending migrations when it is older, and does
-    /// nothing when it is current. Creation and migration each run in a
-    /// single transaction, so a failure never leaves a half-built schema.
+    /// there is none, runs the pending migration scripts (and only those)
+    /// when it is older, and does nothing when it is current or newer.
+    /// Creation and migration run in a single transaction, so a failure
+    /// leaves the database as it was.
     #[tracing::instrument]
     pub(crate) fn ensure_schema(conn: &Connection) -> Result<SchemaStatus, Error> {
         match PlayerDatabase::schema_version(conn)? {
@@ -46,7 +65,10 @@ impl PlayerDatabase {
             }
             Some(version) if version < SCHEMA_VERSION => {
                 let transaction = conn.unchecked_transaction()?;
-                PlayerDatabase::migrate_database(&transaction, version)?;
+                for step in version.max(0)..SCHEMA_VERSION {
+                    MIGRATIONS[step as usize](&transaction)?;
+                }
+                PlayerDatabase::set_schema_version(&transaction, SCHEMA_VERSION)?;
                 transaction.commit()?;
                 Ok(SchemaStatus::Migrated(version))
             }
@@ -71,6 +93,51 @@ impl PlayerDatabase {
         })
     }
 
+    fn set_schema_version(conn: &Connection, version: i32) -> Result<(), Error> {
+        let query = "UPDATE metadata SET value = ?1 WHERE id = 'db'";
+        conn.execute(query, [version.to_string()])?;
+        Ok(())
+    }
+
+    /// 0 -> 1: tokens move from a single set in `metadata` to one set per
+    /// character in the new `auth` table. The stored set is kept for the
+    /// character it belongs to (read from the token's own `sub` claim, no
+    /// network needed); the other characters have no token and must be
+    /// linked again. Characters, corporations and alliances are untouched.
+    #[tracing::instrument]
+    fn migrate_0_to_1(conn: &Connection) -> Result<(), Error> {
+        conn.execute(CREATE_AUTH_TABLE, [])?;
+
+        let value = |id: &str| -> Result<Option<String>, Error> {
+            let mut statement = conn.prepare("SELECT value FROM metadata WHERE id = ?1")?;
+            let mut rows = statement.query([id])?;
+            Ok(match rows.next()? {
+                Some(row) => Some(row.get(0)?),
+                None => None,
+            })
+        };
+        let token = value("token")?.unwrap_or_default();
+        let refresh_token = value("refresh_token")?.unwrap_or_default();
+        let expiration = value("expiration")?.unwrap_or_default();
+
+        if let Some(character_id) = jwt_character_id(&token)
+            && !refresh_token.is_empty()
+            && !PlayerDatabase::select_characters(conn, vec![character_id])?.is_empty()
+        {
+            let mut auth = AuthData::new();
+            auth.token = token;
+            auth.refresh_token = refresh_token;
+            if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&expiration) {
+                auth.expiration = Some(utc_dt.to_utc());
+            }
+            PlayerDatabase::insert_auth(conn, character_id, &auth)?;
+        }
+
+        let query = "DELETE FROM metadata WHERE id IN ('token', 'refresh_token', 'expiration')";
+        conn.execute(query, [])?;
+        Ok(())
+    }
+
     #[tracing::instrument]
     pub(crate) fn create_database(conn: &Connection) -> Result<bool, Error> {
         //Character Public Data
@@ -92,16 +159,19 @@ impl PlayerDatabase {
         statement = conn.prepare(query)?;
         statement.execute([])?;
 
+        // OAuth tokens, one set per character (an EVE SSO token only works
+        // for the character that logged in).
+        statement = conn.prepare(CREATE_AUTH_TABLE)?;
+        statement.execute([])?;
+
         // Telescope Metadata
-        let mut query =
+        let query =
             "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY,value VARCHAR(255) NOT NULL);";
         statement = conn.prepare(query)?;
         statement.execute([])?;
-        query = "INSERT INTO metadata (id,value) VALUES (?,?)";
+        let query = "INSERT INTO metadata (id,value) VALUES (?,?)";
         statement = conn.prepare(query)?;
-        statement.execute(["db", "0"])?;
-
-        PlayerDatabase::insert_auth(conn, &AuthData::new())?;
+        statement.execute(["db", SCHEMA_VERSION.to_string().as_str()])?;
         Ok(true)
     }
 
@@ -179,90 +249,86 @@ impl PlayerDatabase {
         Ok(rows)
     }
 
+    /// Token sets of every linked character, by character id.
     #[tracing::instrument]
-    pub(crate) fn select_auth(conn: &Connection) -> Result<AuthData, Error> {
-        let values = vec![
-            String::from("token"),
-            String::from("expiration"),
-            String::from("refresh_token"),
-        ];
-        let mut result = AuthData::new();
-        let query = String::from("SELECT id, value FROM metadata WHERE id IN rarray(?1)");
-
-        let mut statement = conn.prepare(&query)?;
-        let id_list: array::Array = Rc::new(
-            values
-                .into_iter()
-                .map(rusqlite::types::Value::from)
-                .collect::<Vec<rusqlite::types::Value>>(),
-        );
-        let mut rows = statement.query([id_list])?;
+    pub(crate) fn select_auth(conn: &Connection) -> Result<HashMap<i32, AuthData>, Error> {
+        let query = "SELECT id, token, refresh_token, expiration FROM auth";
+        let mut statement = conn.prepare(query)?;
+        let mut rows = statement.query([])?;
+        let mut result = HashMap::new();
         while let Some(row) = rows.next()? {
-            let field: String = row.get(0)?;
-            if field.as_str() == "token" {
-                result.token = row.get(1)?;
+            let mut auth = AuthData::new();
+            auth.token = row.get(1)?;
+            auth.refresh_token = row.get(2)?;
+            let expiration: String = row.get(3)?;
+            if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&expiration) {
+                auth.expiration = Some(utc_dt.to_utc());
             }
-            if field.as_str() == "expiration" {
-                let date_as_string = row.get::<usize, String>(1)?;
-
-                if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&date_as_string) {
-                    result.expiration = Some(utc_dt.to_utc());
-                }
-            }
-            if field.as_str() == "refresh_token" {
-                result.refresh_token = row.get(1)?;
-            }
+            result.insert(row.get(0)?, auth);
         }
         Ok(result)
     }
 
+    /// Stores the token set of a character: updates its row, or inserts it
+    /// when the character has none yet.
     #[tracing::instrument(skip(auth_data))]
-    pub(crate) fn insert_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
-        let mut data: Vec<(String, String)> = Vec::new();
-        let mut query = String::from("INSERT INTO metadata (id,value)");
-        query += " VALUES (?1,?2)";
-        data.push((String::from("token"), auth_data.token.clone()));
-        data.push((
-            String::from("refresh_token"),
-            auth_data.refresh_token.clone(),
-        ));
-        if let Some(expiration_date) = auth_data.expiration {
-            data.push((String::from("expiration"), expiration_date.to_rfc3339()));
-        } else {
-            data.push((String::from("expiration"), String::new()));
+    pub(crate) fn save_auth(
+        conn: &Connection,
+        character_id: i32,
+        auth_data: &AuthData,
+    ) -> Result<usize, Error> {
+        let rows = PlayerDatabase::update_auth(conn, character_id, auth_data)?;
+        if rows > 0 {
+            return Ok(rows);
         }
+        PlayerDatabase::insert_auth(conn, character_id, auth_data)
+    }
 
-        let mut rows = 0;
-        for item in data {
-            let mut statement = conn.prepare(&query)?;
-            let affected_rows = statement.execute(params![item.0, item.1])?;
-            rows += affected_rows;
-        }
+    #[tracing::instrument(skip(auth_data))]
+    pub(crate) fn insert_auth(
+        conn: &Connection,
+        character_id: i32,
+        auth_data: &AuthData,
+    ) -> Result<usize, Error> {
+        let query =
+            "INSERT INTO auth (id, token, refresh_token, expiration) VALUES (?1, ?2, ?3, ?4)";
+        let mut statement = conn.prepare(query)?;
+        let rows = statement.execute(params![
+            character_id,
+            auth_data.token,
+            auth_data.refresh_token,
+            PlayerDatabase::expiration_text(auth_data),
+        ])?;
         Ok(rows)
     }
 
     #[tracing::instrument(skip(auth_data))]
-    pub(crate) fn update_auth(conn: &Connection, auth_data: &AuthData) -> Result<usize, Error> {
-        let query = String::from("UPDATE metadata SET value = ?1 WHERE id = ?2;");
-        let mut data: Vec<(String, String)> = Vec::new();
-        data.push((String::from("token"), auth_data.token.clone()));
-        data.push((
-            String::from("refresh_token"),
-            auth_data.refresh_token.clone(),
-        ));
-        if let Some(expiration_date) = auth_data.expiration {
-            data.push((String::from("expiration"), expiration_date.to_rfc3339()));
-        } else {
-            data.push((String::from("expiration"), String::new()));
-        }
-        let mut rows = 0;
-        for item in data {
-            let mut statement = conn.prepare(&query)?;
-            let affected_rows = statement.execute(params![item.1, item.0])?;
-            statement.finalize()?;
-            rows += affected_rows;
-        }
+    pub(crate) fn update_auth(
+        conn: &Connection,
+        character_id: i32,
+        auth_data: &AuthData,
+    ) -> Result<usize, Error> {
+        let query = "UPDATE auth SET token = ?1, refresh_token = ?2, expiration = ?3 WHERE id = ?4";
+        let mut statement = conn.prepare(query)?;
+        let rows = statement.execute(params![
+            auth_data.token,
+            auth_data.refresh_token,
+            PlayerDatabase::expiration_text(auth_data),
+            character_id,
+        ])?;
         Ok(rows)
+    }
+
+    #[tracing::instrument]
+    pub(crate) fn delete_auth(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
+        PlayerDatabase::delete_general(conn, "auth", ids)
+    }
+
+    fn expiration_text(auth_data: &AuthData) -> String {
+        auth_data
+            .expiration
+            .map(|expiration| expiration.to_rfc3339())
+            .unwrap_or_default()
     }
 
     #[tracing::instrument]
@@ -334,18 +400,6 @@ impl PlayerDatabase {
         // Remove trailing comma
         s.pop();
         s
-    }
-
-    #[tracing::instrument]
-    pub(crate) fn migrate_database(conn: &Connection, from_version: i32) -> Result<bool, Error> {
-        // One step per version, applied in order, e.g.:
-        //   if from_version < 1 { /* ALTER TABLE ... */ }
-        // No migrations exist yet: version 0 is the first schema.
-        let _ = from_version;
-        let query = "UPDATE metadata SET value = ?1 WHERE id = 'db'";
-        let mut statement = conn.prepare(query)?;
-        statement.execute([SCHEMA_VERSION.to_string()])?;
-        Ok(true)
     }
 
     #[tracing::instrument]
@@ -488,9 +542,23 @@ impl PlayerDatabase {
     }
 }
 
+/// Character id from the `sub` claim (`CHARACTER:EVE:<id>`) of an EVE SSO
+/// access token (a JWT), without verifying it: only used to tell which
+/// character an already stored token belongs to.
+fn jwt_character_id(token: &str) -> Option<i32> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims["sub"].as_str()?.split(':').nth(2)?.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::vtab::array;
 
     fn memory_connection() -> Connection {
         let conn = Connection::open_in_memory().expect("cannot open in-memory database");
@@ -553,32 +621,16 @@ mod tests {
     }
 
     #[test]
-    fn create_database_seeds_metadata_and_empty_auth() {
+    fn create_database_stamps_the_version_and_starts_without_tokens() {
         let conn = memory_connection();
         PlayerDatabase::create_database(&conn).unwrap();
 
-        let db_version: String = conn
-            .query_row("SELECT value FROM metadata WHERE id = 'db'", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(db_version, "0");
-
-        let auth = PlayerDatabase::select_auth(&conn).unwrap();
-        assert_eq!(auth.token, "");
-        assert_eq!(auth.refresh_token, "");
-        assert_eq!(auth.expiration, None);
-    }
-
-    #[test]
-    fn migrate_database_stamps_the_current_version() {
-        let conn = memory_connection();
-        PlayerDatabase::create_database(&conn).unwrap();
-        assert!(PlayerDatabase::migrate_database(&conn, 0).unwrap());
         assert_eq!(
             PlayerDatabase::schema_version(&conn).unwrap(),
             Some(SCHEMA_VERSION)
         );
+        assert!(table_names(&conn).contains(&String::from("auth")));
+        assert!(PlayerDatabase::select_auth(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -601,6 +653,136 @@ mod tests {
         );
     }
 
+    /// Unsigned JWT whose `sub` claim is the given character (enough for
+    /// `jwt_character_id`, which doesn't verify the signature).
+    fn fake_jwt(character_id: i32) -> String {
+        use base64::Engine;
+        let encode =
+            |json: String| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes());
+        format!(
+            "{}.{}.signature",
+            encode(String::from(r#"{"alg":"RS256"}"#)),
+            encode(format!(
+                r#"{{"sub":"CHARACTER:EVE:{character_id}","name":"Old"}}"#
+            ))
+        )
+    }
+
+    /// Version 0 schema, as older builds created it (single token set in
+    /// `metadata`, no `auth` table), with characters 1 and 2 and the given
+    /// stored access token.
+    fn create_version_0_schema(conn: &Connection, token: &str) {
+        conn.execute_batch(
+            "CREATE TABLE char (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL,
+                corporation INTEGER REFERENCES corp(id) ON DELETE CASCADE ON UPDATE CASCADE,
+                alliance INTEGER REFERENCES alliance(id) ON DELETE CASCADE ON UPDATE CASCADE,
+                portrait BLOB, lastLogon DATETIME NOT NULL, location INTEGER NOT NULL);
+             CREATE TABLE corp (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL);
+             CREATE TABLE alliance (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL);
+             INSERT INTO corp (id,name) VALUES (98000001,'Acme Corp');
+             CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY,value VARCHAR(255) NOT NULL);
+             INSERT INTO metadata (id,value) VALUES ('db','0'), ('refresh_token','old-refresh'),
+                ('expiration','2026-01-01T00:00:00+00:00');
+             INSERT INTO char (id,name,corporation,lastLogon,location) VALUES
+                (1,'One',98000001,'2026-01-01T00:00:00+00:00',30000142),
+                (2,'Two',98000001,'2026-01-01T00:00:00+00:00',30000142);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO metadata (id,value) VALUES ('token',?1)",
+            [token],
+        )
+        .unwrap();
+    }
+
+    fn token_rows_in_metadata(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM metadata WHERE id <> 'db'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ensure_schema_migrates_version_0_keeping_data() {
+        let conn = memory_connection();
+        create_version_0_schema(&conn, &fake_jwt(2));
+
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Migrated(0)
+        );
+        assert_eq!(
+            PlayerDatabase::schema_version(&conn).unwrap(),
+            Some(SCHEMA_VERSION)
+        );
+        // Characters and corporations are kept.
+        assert_eq!(
+            PlayerDatabase::select_characters(&conn, vec![])
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            PlayerDatabase::select_corporation(&conn, vec![])
+                .unwrap()
+                .len(),
+            1
+        );
+        // The stored token went to the character it belongs to.
+        let auth = PlayerDatabase::select_auth(&conn).unwrap();
+        assert_eq!(auth.len(), 1);
+        assert_eq!(auth[&2].token, fake_jwt(2));
+        assert_eq!(auth[&2].refresh_token, "old-refresh");
+        assert!(auth[&2].expiration.is_some());
+        assert_eq!(token_rows_in_metadata(&conn), 0);
+
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::UpToDate
+        );
+    }
+
+    #[test]
+    fn migration_skips_a_token_it_cannot_attribute() {
+        let conn = memory_connection();
+        // Not a JWT (and, below, a JWT for a character that isn't linked).
+        create_version_0_schema(&conn, "opaque-token");
+        PlayerDatabase::ensure_schema(&conn).unwrap();
+        assert!(PlayerDatabase::select_auth(&conn).unwrap().is_empty());
+        assert_eq!(
+            PlayerDatabase::select_characters(&conn, vec![])
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let conn = memory_connection();
+        create_version_0_schema(&conn, &fake_jwt(99));
+        PlayerDatabase::ensure_schema(&conn).unwrap();
+        assert!(PlayerDatabase::select_auth(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_the_database_as_it_was() {
+        let conn = memory_connection();
+        create_version_0_schema(&conn, &fake_jwt(1));
+        // Makes the migration's CREATE TABLE fail.
+        conn.execute("CREATE TABLE auth (id INTEGER)", []).unwrap();
+
+        assert!(PlayerDatabase::ensure_schema(&conn).is_err());
+        assert_eq!(PlayerDatabase::schema_version(&conn).unwrap(), Some(0));
+        assert_eq!(token_rows_in_metadata(&conn), 3);
+    }
+
+    #[test]
+    fn jwt_character_id_reads_the_sub_claim() {
+        assert_eq!(jwt_character_id(&fake_jwt(95279738)), Some(95279738));
+        assert_eq!(jwt_character_id("not-a-jwt"), None);
+        assert_eq!(jwt_character_id(""), None);
+    }
+
     #[test]
     fn ensure_schema_leaves_a_newer_schema_untouched() {
         let conn = memory_connection();
@@ -616,7 +798,7 @@ mod tests {
     #[test]
     fn update_auth_without_schema_is_an_error_not_a_panic() {
         let conn = memory_connection();
-        assert!(PlayerDatabase::update_auth(&conn, &AuthData::new()).is_err());
+        assert!(PlayerDatabase::update_auth(&conn, 1, &AuthData::new()).is_err());
     }
 
     // ---------------------------------------------------------------------
@@ -843,61 +1025,85 @@ mod tests {
     // Auth
     // ---------------------------------------------------------------------
 
-    #[test]
-    fn auth_insert_and_select_roundtrip() {
-        let conn = memory_connection();
-        array::load_module(&conn).unwrap();
-        conn.execute(
-            "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY, value VARCHAR(255) NOT NULL);",
-            [],
-        )
-        .unwrap();
-
-        let mut auth = AuthData::new();
-        auth.token = String::from("access-token");
-        auth.refresh_token = String::from("refresh-token");
-        auth.expiration = Some(DateTime::from_timestamp(1760000000, 0).unwrap());
-
-        // one row per field: token, refresh_token, expiration
-        assert_eq!(PlayerDatabase::insert_auth(&conn, &auth).unwrap(), 3);
-
-        let stored = PlayerDatabase::select_auth(&conn).unwrap();
-        assert_eq!(stored, auth);
-    }
-
-    #[test]
-    fn auth_insert_without_expiration_stores_none() {
-        let conn = memory_connection();
-        conn.execute(
-            "CREATE TABLE metadata (id VARCHAR(255) PRIMARY KEY, value VARCHAR(255) NOT NULL);",
-            [],
-        )
-        .unwrap();
-
-        let mut auth = AuthData::new();
-        auth.token = String::from("access-token");
-        auth.refresh_token = String::from("refresh-token");
-        PlayerDatabase::insert_auth(&conn, &auth).unwrap();
-
-        let stored = PlayerDatabase::select_auth(&conn).unwrap();
-        assert_eq!(stored.token, "access-token");
-        assert_eq!(stored.refresh_token, "refresh-token");
-        assert_eq!(stored.expiration, None);
-    }
-
-    #[test]
-    fn auth_update_persists_new_values() {
+    /// Creates the schema plus the characters the auth rows will point to
+    /// (foreign keys are enforced).
+    fn database_with_characters(ids: &[i32]) -> Connection {
         let conn = memory_connection();
         PlayerDatabase::create_database(&conn).unwrap();
+        for id in ids {
+            let mut character = Character::new();
+            character.id = *id;
+            character.name = format!("Pilot {id}");
+            PlayerDatabase::insert_character(&conn, &character).unwrap();
+        }
+        conn
+    }
 
+    fn sample_auth(token: &str) -> AuthData {
         let mut auth = AuthData::new();
-        auth.token = String::from("new-access-token");
-        auth.refresh_token = String::from("new-refresh-token");
+        auth.token = format!("{token}-access");
+        auth.refresh_token = format!("{token}-refresh");
         auth.expiration = Some(DateTime::from_timestamp(1760000000, 0).unwrap());
+        auth
+    }
 
-        assert_eq!(PlayerDatabase::update_auth(&conn, &auth).unwrap(), 3);
+    #[test]
+    fn auth_is_stored_per_character() {
+        let conn = database_with_characters(&[1, 2]);
+
+        assert_eq!(
+            PlayerDatabase::insert_auth(&conn, 1, &sample_auth("one")).unwrap(),
+            1
+        );
+        assert_eq!(
+            PlayerDatabase::insert_auth(&conn, 2, &sample_auth("two")).unwrap(),
+            1
+        );
 
         let stored = PlayerDatabase::select_auth(&conn).unwrap();
-        assert_eq!(stored, auth);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[&1], sample_auth("one"));
+        assert_eq!(stored[&2], sample_auth("two"));
+    }
+
+    #[test]
+    fn auth_without_expiration_stores_none() {
+        let conn = database_with_characters(&[1, 2]);
+        let mut auth = sample_auth("one");
+        auth.expiration = None;
+        PlayerDatabase::insert_auth(&conn, 1, &auth).unwrap();
+
+        assert_eq!(
+            PlayerDatabase::select_auth(&conn).unwrap()[&1].expiration,
+            None
+        );
+    }
+
+    #[test]
+    fn save_auth_inserts_then_updates_only_that_character() {
+        let conn = database_with_characters(&[1, 2]);
+        PlayerDatabase::save_auth(&conn, 1, &sample_auth("one")).unwrap();
+        PlayerDatabase::save_auth(&conn, 2, &sample_auth("two")).unwrap();
+
+        assert_eq!(
+            PlayerDatabase::save_auth(&conn, 1, &sample_auth("one-new")).unwrap(),
+            1
+        );
+        let stored = PlayerDatabase::select_auth(&conn).unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[&1], sample_auth("one-new"));
+        assert_eq!(stored[&2], sample_auth("two"));
+    }
+
+    #[test]
+    fn delete_auth_removes_only_the_given_characters() {
+        let conn = database_with_characters(&[1, 2]);
+        PlayerDatabase::save_auth(&conn, 1, &sample_auth("one")).unwrap();
+        PlayerDatabase::save_auth(&conn, 2, &sample_auth("two")).unwrap();
+
+        assert_eq!(PlayerDatabase::delete_auth(&conn, vec![1]).unwrap(), 1);
+        let stored = PlayerDatabase::select_auth(&conn).unwrap();
+        assert!(!stored.contains_key(&1));
+        assert!(stored.contains_key(&2));
     }
 }

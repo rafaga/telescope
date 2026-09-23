@@ -105,7 +105,7 @@ Telescope reads and writes these in the directory it runs from:
 | `telescope.toml` | User settings (`Settings`). |
 | `patterns.toml` | Alert rules. Created from a built-in template when missing, and regenerated (keeping a backup) when corrupt. |
 | `sde.db` | The SDE database. Built automatically when it does not exist. |
-| player database | Linked characters and their tokens. Its path is set in *Settings -> Data Sources*. |
+| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Data Sources*). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. |
 
 ## Threads and messages
 
@@ -162,20 +162,24 @@ callback server (`AuthSpawner`), the watchdog and the `DatabaseUpdater`.
    corporation and alliance lookups, and storing the character), so the UI
    thread never waits on the network.
 3. The result comes back as `Message::CharacterAuthenticated`.
-   `handle_character_authenticated` (`character_link.rs`) adopts the clone's
-   token state (`EsiManager::adopt_session`), keeps the character (a re-linked
-   character replaces its old entry), and starts the watchdog if it is the
-   first one; otherwise it sends `CharacterSync::Add`.
+   `handle_character_authenticated` (`character_link.rs`) takes that
+   character's tokens from the clone (`EsiManager::adopt_session`), keeps the
+   character (a re-linked character replaces its old entry), and starts the
+   watchdog if it is the first one; otherwise it sends `CharacterSync::Add`
+   (the watchdog then reloads the stored tokens).
 
 ### Location tracking
 
 ![Sequence diagram: the watchdog polling ESI for a character's location and updating the maps](docs/architecture/flow-location.svg)
 
-`start_watchdog` polls ESI every 25 seconds. It refreshes the access token when
-needed and asks for the location of each linked character. A change produces
+`start_watchdog` polls ESI every 25 seconds. Each character is asked for its
+location with its own token (an EVE SSO token only works for the character
+that logged in), refreshed when needed. A change produces
 `Message::PlayerNewLocation` (the app stores the new location) and
-`MapSync::PlayerMoved` (the map panes move the marker). The task ends when no
-characters are left.
+`MapSync::PlayerMoved` (the map panes move the marker). If a character's token
+is rejected (401/403) or can't be renewed, only that character stops being
+followed, with a notification to link it again; linking it again resumes it.
+The task ends when no characters are left.
 
 ### SDE database
 

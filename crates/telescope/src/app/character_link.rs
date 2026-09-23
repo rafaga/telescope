@@ -13,6 +13,7 @@ use crate::app::messages::LinkedCharacter;
 use crate::app::messages::Message;
 use crate::app::messages::Type;
 use tokio::sync::mpsc::error::TrySendError;
+use webb::esi::{SCHEMA_VERSION, SchemaStatus};
 use webb::objects::Character;
 
 /// Inserts `character` into `characters`, replacing an existing entry with the
@@ -76,6 +77,7 @@ impl TelescopeApp {
             return;
         }
         remove_character(&mut self.esi.characters, id);
+        self.remove_player_marker(id);
         if self.esi.active_character == Some(id) {
             self.esi.active_character = None;
         }
@@ -100,7 +102,7 @@ impl TelescopeApp {
     #[tracing::instrument(skip_all)]
     pub(crate) fn handle_character_authenticated(&mut self, linked: LinkedCharacter) {
         let LinkedCharacter { esi, character } = linked;
-        self.esi.adopt_session(esi);
+        self.esi.adopt_session(esi, character.id);
         self.register_linked_character(character);
     }
 
@@ -109,7 +111,12 @@ impl TelescopeApp {
     fn register_linked_character(&mut self, player: Character) {
         let id = player.id as usize;
         if !upsert_character(&mut self.esi.characters, player) {
-            // Already linked (and already tracked): only its data was refreshed.
+            // Already linked: its data and tokens were refreshed. Tell the
+            // watchdog anyway, so it resumes the character if it had
+            // stopped following it (e.g. a rejected token).
+            if let Some(sender) = &self.char_msg {
+                let _ = sender.try_send(CharacterSync::Add(id));
+            }
             return;
         }
         if self.esi.characters.len() == 1 {
@@ -138,6 +145,33 @@ impl TelescopeApp {
             let ids = self.esi.characters.iter().map(|c| c.id as usize).collect();
             self.start_watchdog(ids);
         }
+    }
+
+    /// Tells the user, once at startup, when opening the player database
+    /// required creating or migrating it (see `SchemaStatus`).
+    pub(crate) fn report_player_database_status(&mut self) {
+        let message = match self.esi.schema_status {
+            Some(SchemaStatus::Migrated(version)) => format!(
+                "The player database was updated (schema version {version} -> \
+                 {SCHEMA_VERSION}). Characters whose login could not be kept will ask to \
+                 be linked again."
+            ),
+            Some(SchemaStatus::Newer(version)) => format!(
+                "The player database was written by a newer Telescope (schema version \
+                 {version}, this one uses {SCHEMA_VERSION}); it was left untouched and \
+                 may not work as expected."
+            ),
+            Some(SchemaStatus::Created | SchemaStatus::UpToDate) => return,
+            None => String::from(
+                "The player database could not be opened; linked characters are unavailable.",
+            ),
+        };
+        self.update_status_with_error((
+            Type::Warning,
+            String::from("EsiManager"),
+            String::from("player_database"),
+            message,
+        ));
     }
 
     fn notify_character_error(&self, operation: &str, message: String) {

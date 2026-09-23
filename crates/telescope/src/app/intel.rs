@@ -119,7 +119,7 @@ impl TelescopeApp {
                 let mut raw = Vec::new();
                 if let Ok(bytes_read) = chunk.read_to_end(&mut raw) {
                     let (new_data, consumed) = decode_utf16le_chunk(&raw[..bytes_read]);
-                    self.parse_intel_data(&channel, &new_data);
+                    let _ = self.parse_intel_data(&channel, &new_data);
                     log_files_map.entry(file_name).and_modify(|hash_entry| {
                         hash_entry.0 = start + consumed as u64;
                         hash_entry.1 = Utc::now();
@@ -130,9 +130,12 @@ impl TelescopeApp {
         self.settings.set_log_files_channels(log_files_map);
     }
 
+    /// Runs the pattern engine over `data` (chat-log lines from `channel`)
+    /// and dispatches every match. Returns the ids of the matched rules.
     #[tracing::instrument(skip(self, data))]
-    fn parse_intel_data(&self, channel: &str, data: &str) {
-        for intel_match in self.pattern_engine.evaluate(channel, data) {
+    pub(crate) fn parse_intel_data(&self, channel: &str, data: &str) -> Vec<String> {
+        let matches = self.pattern_engine.evaluate(channel, data);
+        for intel_match in &matches {
             match &intel_match.action {
                 ActionConfig::Notify => {
                     self.task_msg.spawn(Message::GenericNotification((
@@ -143,10 +146,14 @@ impl TelescopeApp {
                     )));
                 }
                 ActionConfig::MapAlert { system_group } => {
-                    self.dispatch_map_alert(&intel_match, system_group);
+                    self.dispatch_map_alert(intel_match, system_group);
                 }
             }
         }
+        matches
+            .into_iter()
+            .map(|intel_match| intel_match.rule_id)
+            .collect()
     }
 
     #[tracing::instrument(skip(self))]

@@ -15,6 +15,7 @@ use hyper_tls::HttpsConnector;
 use rfesi::prelude::*;
 use rusqlite::vtab::array;
 use rusqlite::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 //use hyper::body::Bytes;
 use bytes::Bytes;
@@ -35,7 +36,8 @@ use objc2_io_kit::{
     IOServiceMatching, kIOMainPortDefault,
 };
 
-use self::player_database::{PlayerDatabase, SchemaStatus};
+use self::player_database::PlayerDatabase;
+pub use self::player_database::{SCHEMA_VERSION, SchemaStatus};
 pub mod player_database;
 
 #[cfg(feature = "crypted-db")]
@@ -57,6 +59,9 @@ pub trait EsiApi: Send {
     fn has_token_state(&self) -> bool;
     /// Returns the current token set, if complete.
     fn current_tokens(&self) -> Option<TokenSet>;
+    /// Loads a character's token set into the client, so the next
+    /// authenticated call is made as that character.
+    fn set_tokens(&mut self, tokens: &TokenSet);
     /// Exchanges an OAuth code for tokens and returns the JWT claims.
     async fn authenticate(
         &mut self,
@@ -150,6 +155,15 @@ impl EsiApi for LiveEsiApi {
         self.esi.access_expiration.is_some()
             && self.esi.access_token.is_some()
             && self.esi.refresh_token.is_some()
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn set_tokens(&mut self, tokens: &TokenSet) {
+        self.esi.access_token = Some(tokens.token.clone());
+        self.esi.refresh_token = Some(tokens.refresh_token.clone());
+        self.esi.access_expiration = tokens
+            .expiration
+            .map(|expiration| expiration.timestamp_millis());
     }
 
     #[tracing::instrument(skip(self))]
@@ -272,7 +286,12 @@ impl EsiApi for LiveEsiApi {
 #[derive(Clone)]
 pub struct EsiManagerCore<T: EsiApi> {
     api: T,
-    pub auth: AuthData,
+    /// OAuth token set of each linked character, by character id (an EVE
+    /// SSO token only works for the character that logged in).
+    pub auth: HashMap<i32, AuthData>,
+    /// What opening the player database found (see
+    /// [`PlayerDatabase::ensure_schema`]); `None` if it couldn't be opened.
+    pub schema_status: Option<SchemaStatus>,
     pub characters: Vec<Character>,
     pub path: PathBuf,
     pub active_character: Option<i32>,
@@ -537,29 +556,38 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(result)
     }
 
-    /// Takes over the authenticated session (API client token state and
-    /// [`AuthData`]) of `other`, typically a clone of this manager that
-    /// completed [`Self::auth_user`] on a background thread. The character
-    /// list and the rest of this manager's state are left untouched.
-    pub fn adopt_session(&mut self, other: Self) {
-        self.api = other.api;
-        self.auth = other.auth;
+    /// Takes over the token set of `character_id` (and the API client) from
+    /// `other`, typically a clone of this manager that completed
+    /// [`Self::auth_user`] for that character on a background thread. The
+    /// other characters' tokens and the character list are left untouched.
+    pub fn adopt_session(&mut self, other: Self, character_id: i32) {
+        let Self { api, mut auth, .. } = other;
+        self.api = api;
+        if let Some(character_auth) = auth.remove(&character_id) {
+            self.auth.insert(character_id, character_auth);
+        }
+    }
+
+    /// Reloads every character's token set from the database, e.g. in a
+    /// long-lived clone (the watchdog) after another clone stored a new one.
+    #[tracing::instrument(skip(self))]
+    pub fn reload_auth(&mut self) -> Result<(), Error> {
+        let conn = self.get_standard_connection()?;
+        self.auth = PlayerDatabase::select_auth(&conn)?;
+        Ok(())
     }
 
     #[tracing::instrument(skip(self))]
     pub fn remove_characters(&mut self, char_vec: Option<Vec<i32>>) -> Result<usize, Error> {
-        let conn = match self.get_standard_connection() {
-            Ok(connection) => connection,
-            Err(error) => {
-                return Err(error);
-            }
-        };
-
-        let result = if let Some(id_chars) = char_vec {
-            PlayerDatabase::delete_characters(&conn, id_chars)?
-        } else {
-            PlayerDatabase::delete_characters(&conn, vec![])?
-        };
+        let conn = self.get_standard_connection()?;
+        let ids = char_vec.unwrap_or_default();
+        let transaction = conn.unchecked_transaction()?;
+        PlayerDatabase::delete_auth(&transaction, ids.clone())?;
+        let result = PlayerDatabase::delete_characters(&transaction, ids.clone())?;
+        transaction.commit()?;
+        for id in ids {
+            self.auth.remove(&id);
+        }
         Ok(result)
     }
 
@@ -569,23 +597,26 @@ impl<T: EsiApi> EsiManagerCore<T> {
     fn build(api: T, database_path: &Path) -> Self {
         let mut obj = EsiManagerCore {
             api,
-            auth: AuthData::new(),
+            auth: HashMap::new(),
+            schema_status: None,
             characters: Vec::new(),
             path: database_path.to_path_buf(),
             active_character: None,
         };
 
-        // Create the schema if the file has none (new or empty file) or
-        // migrate it if it is older; see `PlayerDatabase::ensure_schema`.
+        // Create the schema if the file has none (new or empty file) or run
+        // the pending migration scripts if it is older; see
+        // `PlayerDatabase::ensure_schema`. The caller reports
+        // `schema_status` to the user.
         match obj.get_standard_connection() {
             Ok(conn) => {
                 match PlayerDatabase::ensure_schema(&conn) {
-                    Ok(SchemaStatus::Newer(version)) => tracing::warn!(
-                        path = %obj.path.display(),
-                        version,
-                        "player database was written by a newer Telescope"
-                    ),
-                    Ok(_) => {}
+                    Ok(status) => {
+                        if status != SchemaStatus::UpToDate {
+                            tracing::warn!(path = %obj.path.display(), ?status, "player database schema");
+                        }
+                        obj.schema_status = Some(status);
+                    }
                     Err(t_error) => tracing::error!(
                         path = %obj.path.display(),
                         error = %t_error,
@@ -604,10 +635,13 @@ impl<T: EsiApi> EsiManagerCore<T> {
             // load existing players
             if let Ok(chars) = PlayerDatabase::select_characters(&conn, vec![]) {
                 obj.characters = chars;
-                if !obj.characters.is_empty() {
-                    obj.auth =
-                        PlayerDatabase::select_auth(&conn).expect("Invalid Authetication data");
-                }
+            }
+            match PlayerDatabase::select_auth(&conn) {
+                Ok(auth) => obj.auth = auth,
+                Err(t_error) => tracing::error!(
+                    error = %t_error,
+                    "could not load the characters' tokens"
+                ),
             }
         }
         obj
@@ -631,49 +665,56 @@ impl<T: EsiApi> EsiManagerCore<T> {
         self.api.update_spec().await
     }
 
+    /// Current solar system of a character, called as that character (its
+    /// own token set is loaded into the client first).
     #[tracing::instrument(skip(self))]
     pub async fn get_location(&mut self, player_id: i32) -> Result<i32, String> {
-        if !self.valid_token().await {
+        if !self.valid_token(player_id).await {
             return Err(String::from("Invalid Token"));
         }
-
+        let auth = &self.auth[&player_id];
+        self.api.set_tokens(&TokenSet {
+            token: auth.token.clone(),
+            refresh_token: auth.refresh_token.clone(),
+            expiration: auth.expiration,
+        });
         self.api.get_location(player_id).await
     }
 
+    /// Whether the character has a token set that is still valid for at
+    /// least 20 seconds.
     #[tracing::instrument(skip(self))]
-    pub async fn valid_token(&self) -> bool {
-        let mut result = false;
-        if !self.api.has_token_state() {
-            return result;
+    pub async fn valid_token(&self, character_id: i32) -> bool {
+        let Some(auth) = self.auth.get(&character_id) else {
+            return false;
+        };
+        if auth.token.is_empty() || auth.refresh_token.is_empty() {
+            return false;
         }
-
-        if !self.auth.token.is_empty() && !self.auth.refresh_token.is_empty() {
-            let current_datetime = chrono::Utc::now();
-            //if auth.expiration =
-            if let Some(expire) = self.auth.expiration {
-                let offset = expire - current_datetime;
-                if offset.num_seconds() >= 20 {
-                    result = true;
-                }
-            }
-        }
-        result
+        auth.expiration
+            .is_some_and(|expire| (expire - chrono::Utc::now()).num_seconds() >= 20)
     }
 
+    /// Gets a new access token for the character with its refresh token,
+    /// and stores it.
     #[tracing::instrument(skip(self))]
-    pub async fn refresh_token(&mut self) -> Result<usize, String> {
-        let tokens = self
-            .api
-            .refresh_access_token(&self.auth.refresh_token)
-            .await?;
-        self.auth.token = tokens.token;
-        self.auth.expiration = tokens.expiration;
-        self.auth.refresh_token = tokens.refresh_token;
-        if let Ok(conn) = self.get_standard_connection()
-            && let Err(t_error) = PlayerDatabase::update_auth(&conn, &self.auth)
-        {
-            return Err(t_error.to_string());
-        }
+    pub async fn refresh_token(&mut self, character_id: i32) -> Result<usize, String> {
+        let refresh_token = match self.auth.get(&character_id) {
+            Some(auth) if !auth.refresh_token.is_empty() => auth.refresh_token.clone(),
+            _ => return Err(String::from("No refresh token for this character")),
+        };
+        let tokens = self.api.refresh_access_token(&refresh_token).await?;
+        let auth = AuthData {
+            token: tokens.token,
+            expiration: tokens.expiration,
+            refresh_token: tokens.refresh_token,
+        };
+        let conn = self
+            .get_standard_connection()
+            .map_err(|t_error| t_error.to_string())?;
+        PlayerDatabase::save_auth(&conn, character_id, &auth)
+            .map_err(|t_error| t_error.to_string())?;
+        self.auth.insert(character_id, auth);
         Ok(0)
     }
 
@@ -730,16 +771,17 @@ impl<T: EsiApi> EsiManagerCore<T> {
                 .nth(2)
                 .and_then(|id| id.parse::<i32>().ok())
                 .ok_or("invalid character id in authentication claims")?;
-            if !self.valid_token().await
-                && let Some(tokens) = self.api.current_tokens()
-            {
-                self.auth.token = tokens.token;
-                self.auth.refresh_token = tokens.refresh_token;
-                self.auth.expiration = tokens.expiration;
-                if let Ok(conn) = self.get_standard_connection() {
-                    let _ = PlayerDatabase::update_auth(&conn, &self.auth);
-                }
-            }
+            // The client now holds this character's tokens; keep them for
+            // this character only (every character has its own).
+            let tokens = self
+                .api
+                .current_tokens()
+                .ok_or("incomplete token set after authentication")?;
+            let auth = AuthData {
+                token: tokens.token,
+                expiration: tokens.expiration,
+                refresh_token: tokens.refresh_token,
+            };
             self.api.update_spec().await?;
             let public_info = self.api.get_character_public_info(player.id).await?;
             let corp = self
@@ -755,6 +797,9 @@ impl<T: EsiApi> EsiManagerCore<T> {
             player.location = self.api.get_location(player.id).await?;
 
             self.write_character(&player)?;
+            let conn = self.get_standard_connection()?;
+            PlayerDatabase::save_auth(&conn, player.id, &auth)?;
+            self.auth.insert(player.id, auth);
             Ok(Some(player))
         } else {
             Ok(None)
@@ -877,7 +922,7 @@ mod tests {
     #[tokio::test]
     async fn valid_token_is_false_without_authentication() {
         let (manager, path) = test_manager("valid_token");
-        assert!(!manager.valid_token().await);
+        assert!(!manager.valid_token(90000001).await);
         cleanup(&path);
     }
 
@@ -896,12 +941,13 @@ mod tests {
             vec!["publicData"],
             &path,
         );
-        let conn = manager.get_standard_connection().unwrap();
-        assert!(PlayerDatabase::update_auth(&conn, &manager.auth).is_ok());
+        assert_eq!(manager.schema_status, Some(SchemaStatus::Created));
         let mut character = Character::new();
         character.id = 7;
         character.name = String::from("Pilot");
         assert_eq!(manager.write_character(&character).unwrap(), 1);
+        let conn = manager.get_standard_connection().unwrap();
+        assert!(PlayerDatabase::save_auth(&conn, 7, &AuthData::new()).is_ok());
         cleanup(&path);
     }
 
@@ -929,20 +975,26 @@ mod tests {
     }
 
     #[test]
-    fn adopt_session_takes_auth_but_keeps_characters() {
+    fn adopt_session_takes_only_that_characters_tokens() {
         let (mut manager, path) = test_manager("adopt_session");
         let mut kept = Character::new();
         kept.id = 1;
         manager.characters.push(kept);
+        let mut first = AuthData::new();
+        first.token = String::from("first-token");
+        manager.auth.insert(1, first.clone());
 
         let mut background = manager.clone();
         background.characters.clear();
-        background.auth.token = String::from("new-access-token");
-        background.auth.refresh_token = String::from("new-refresh-token");
+        // A stale copy of character 1's tokens must not overwrite ours.
+        background.auth.insert(1, AuthData::new());
+        let mut second = AuthData::new();
+        second.token = String::from("second-token");
+        background.auth.insert(2, second.clone());
 
-        manager.adopt_session(background);
-        assert_eq!(manager.auth.token, "new-access-token");
-        assert_eq!(manager.auth.refresh_token, "new-refresh-token");
+        manager.adopt_session(background, 2);
+        assert_eq!(manager.auth[&1], first);
+        assert_eq!(manager.auth[&2], second);
         assert_eq!(manager.characters.len(), 1);
         cleanup(&path);
     }
@@ -1072,16 +1124,29 @@ mod tests {
     /// database.
     fn mock_manager(test_name: &str, mock: MockEsiApi) -> (EsiManagerCore<MockEsiApi>, PathBuf) {
         let path = temp_db_path(test_name);
+        let mut mock = mock;
+        // Loading a character's tokens into the client has no observable
+        // effect on the mock; allow it everywhere.
+        mock.expect_set_tokens().returning(|_| ());
         let manager = EsiManagerCore::with_api(mock, &path);
         (manager, path)
     }
 
-    /// Simulates a fully authenticated session on the manager.
+    /// Character the mocked sessions belong to (see `sample_claims`).
+    const PILOT: i32 = 90000001;
+
+    /// Simulates a fully authenticated session for [`PILOT`].
     fn authenticate_session(manager: &mut EsiManagerCore<MockEsiApi>, seconds_valid: i64) {
-        manager.auth.token = String::from("access-token");
-        manager.auth.refresh_token = String::from("refresh-token");
-        manager.auth.expiration =
-            Some(chrono::Utc::now() + chrono::Duration::try_seconds(seconds_valid).unwrap());
+        manager.auth.insert(
+            PILOT,
+            AuthData {
+                token: String::from("access-token"),
+                refresh_token: String::from("refresh-token"),
+                expiration: Some(
+                    chrono::Utc::now() + chrono::Duration::try_seconds(seconds_valid).unwrap(),
+                ),
+            },
+        );
     }
 
     fn sample_tokens() -> TokenSet {
@@ -1162,18 +1227,30 @@ mod tests {
             .times(1)
             .returning(move |_| Ok(tokens.clone()));
         let (mut manager, path) = mock_manager("refresh_ok", mock);
-        manager.auth.refresh_token = String::from("old-refresh-token");
+        let mut pilot = Character::new();
+        pilot.id = PILOT;
+        pilot.name = String::from("Test Pilot");
+        manager.write_character(&pilot).unwrap();
+        let mut old = AuthData::new();
+        old.refresh_token = String::from("old-refresh-token");
+        manager.auth.insert(PILOT, old);
+        let mut other = AuthData::new();
+        other.token = String::from("other-token");
+        manager.auth.insert(1, other.clone());
 
-        assert_eq!(manager.refresh_token().await, Ok(0));
-        assert_eq!(manager.auth.token, "new-access-token");
-        assert_eq!(manager.auth.refresh_token, "new-refresh-token");
-        assert_eq!(manager.auth.expiration, expected_expiration);
+        assert_eq!(manager.refresh_token(PILOT).await, Ok(0));
+        let refreshed = &manager.auth[&PILOT];
+        assert_eq!(refreshed.token, "new-access-token");
+        assert_eq!(refreshed.refresh_token, "new-refresh-token");
+        assert_eq!(refreshed.expiration, expected_expiration);
+        // Other characters keep their own tokens.
+        assert_eq!(manager.auth[&1], other);
 
-        // The new token set must be persisted in the database.
+        // The new token set must be persisted for that character.
         let conn = manager.get_standard_connection().unwrap();
         let stored = PlayerDatabase::select_auth(&conn).unwrap();
-        assert_eq!(stored.token, "new-access-token");
-        assert_eq!(stored.refresh_token, "new-refresh-token");
+        assert_eq!(stored[&PILOT].token, "new-access-token");
+        assert_eq!(stored[&PILOT].refresh_token, "new-refresh-token");
 
         cleanup(&path);
     }
@@ -1184,12 +1261,24 @@ mod tests {
         mock.expect_refresh_access_token()
             .returning(|_| Err(String::from("invalid_grant")));
         let (mut manager, path) = mock_manager("refresh_err", mock);
-        manager.auth.token = String::from("access-token");
-        manager.auth.refresh_token = String::from("old-refresh-token");
+        let mut auth = AuthData::new();
+        auth.token = String::from("access-token");
+        auth.refresh_token = String::from("old-refresh-token");
+        manager.auth.insert(PILOT, auth.clone());
 
-        assert!(manager.refresh_token().await.is_err());
-        assert_eq!(manager.auth.token, "access-token");
-        assert_eq!(manager.auth.refresh_token, "old-refresh-token");
+        assert!(manager.refresh_token(PILOT).await.is_err());
+        assert_eq!(manager.auth[&PILOT], auth);
+
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn refresh_token_without_tokens_is_an_error() {
+        let mut mock = MockEsiApi::new();
+        mock.expect_refresh_access_token().never();
+        let (mut manager, path) = mock_manager("refresh_none", mock);
+
+        assert!(manager.refresh_token(PILOT).await.is_err());
 
         cleanup(&path);
     }
@@ -1202,8 +1291,7 @@ mod tests {
             .times(1)
             .in_sequence(&mut seq)
             .returning(|_, _| Ok(Some(sample_claims())));
-        // The session is not authenticated yet, so the token branch runs.
-        mock.expect_has_token_state().returning(|| true);
+        // The new character's tokens are always taken from the client.
         mock.expect_current_tokens()
             .times(1)
             .returning(|| Some(sample_tokens()));
@@ -1271,10 +1359,10 @@ mod tests {
 
         // Character and tokens must be persisted.
         assert_eq!(manager.read_characters(None).unwrap().len(), 1);
-        assert_eq!(manager.auth.token, "new-access-token");
+        assert_eq!(manager.auth[&PILOT].token, "new-access-token");
         let conn = manager.get_standard_connection().unwrap();
         assert_eq!(
-            PlayerDatabase::select_auth(&conn).unwrap().token,
+            PlayerDatabase::select_auth(&conn).unwrap()[&PILOT].token,
             "new-access-token"
         );
 
@@ -1311,7 +1399,9 @@ mod tests {
         mock.expect_authenticate()
             .times(1)
             .returning(|_, _| Ok(Some(sample_claims())));
-        mock.expect_has_token_state().returning(|| true);
+        mock.expect_current_tokens()
+            .times(1)
+            .returning(|| Some(sample_tokens()));
         mock.expect_update_spec().times(1).returning(|| Ok(()));
         mock.expect_get_character_public_info()
             .times(1)
@@ -1338,8 +1428,6 @@ mod tests {
             .times(1)
             .returning(|_| Ok(30000142));
         let (mut manager, path) = mock_manager("auth_no_ally", mock);
-        // An already authenticated session skips the token branch.
-        authenticate_session(&mut manager, 3600);
 
         let player = manager
             .auth_user(
@@ -1380,24 +1468,52 @@ mod tests {
 
     #[tokio::test]
     async fn valid_token_matrix() {
-        let mut mock = MockEsiApi::new();
-        mock.expect_has_token_state().returning(|| true);
-        let (mut manager, path) = mock_manager("valid_matrix", mock);
+        let (mut manager, path) = mock_manager("valid_matrix", MockEsiApi::new());
+
+        // No tokens for that character
+        assert!(!manager.valid_token(PILOT).await);
 
         // Missing expiration
-        manager.auth.token = String::from("access-token");
-        manager.auth.refresh_token = String::from("refresh-token");
-        manager.auth.expiration = None;
-        assert!(!manager.valid_token().await);
+        manager.auth.insert(
+            PILOT,
+            AuthData {
+                token: String::from("access-token"),
+                refresh_token: String::from("refresh-token"),
+                expiration: None,
+            },
+        );
+        assert!(!manager.valid_token(PILOT).await);
 
         // Expiring within the 20 second safety window
         authenticate_session(&mut manager, 10);
-        assert!(!manager.valid_token().await);
+        assert!(!manager.valid_token(PILOT).await);
 
-        // Valid token
+        // Valid token, only for that character
         authenticate_session(&mut manager, 3600);
-        assert!(manager.valid_token().await);
+        assert!(manager.valid_token(PILOT).await);
+        assert!(!manager.valid_token(1).await);
 
+        cleanup(&path);
+    }
+
+    #[test]
+    fn remove_characters_also_removes_their_tokens() {
+        let (mut manager, path) = test_manager("remove_tokens");
+        let conn = manager.get_standard_connection().unwrap();
+        for id in [1, 2] {
+            let mut character = Character::new();
+            character.id = id;
+            character.name = format!("Pilot {id}");
+            manager.write_character(&character).unwrap();
+            PlayerDatabase::save_auth(&conn, id, &AuthData::new()).unwrap();
+            manager.auth.insert(id, AuthData::new());
+        }
+
+        assert_eq!(manager.remove_characters(Some(vec![1])).unwrap(), 1);
+        assert!(!manager.auth.contains_key(&1));
+        let stored = PlayerDatabase::select_auth(&conn).unwrap();
+        assert!(!stored.contains_key(&1));
+        assert!(stored.contains_key(&2));
         cleanup(&path);
     }
 

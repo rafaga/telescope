@@ -1,5 +1,5 @@
 //! Secondary egui windows opened from the main `TelescopeApp` UI.
 
 mod about;
-mod debug;
+pub(crate) mod debug;
 mod settings;

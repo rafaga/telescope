@@ -107,6 +107,12 @@ pub trait TabPane {
     fn get_title(&self) -> WidgetText;
     fn event_manager(&mut self);
     fn center_on_target(&mut self, message: (usize, Target));
+    /// Places (or moves) the marker of a linked character on its solar
+    /// system. Called directly by the app for every pane, visible or not --
+    /// see `TelescopeApp::update_player_location`.
+    fn update_marker(&mut self, player_id: usize, system_id: usize);
+    /// Removes the marker of a character that is no longer linked.
+    fn remove_marker(&mut self, player_id: usize);
 }
 
 pub struct UniversePane {
@@ -187,6 +193,14 @@ impl UniversePane {
 }
 
 impl TabPane for UniversePane {
+    fn update_marker(&mut self, player_id: usize, system_id: usize) {
+        self.map.update_marker(player_id, system_id);
+    }
+
+    fn remove_marker(&mut self, player_id: usize) {
+        self.map.remove_marker(player_id);
+    }
+
     #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
@@ -210,6 +224,11 @@ impl TabPane for UniversePane {
         // once this pane is visible again.
         while let Ok(msg) = self.mapsync_reciever.try_recv() {
             match msg {
+                MapSync::NodeEffect((system_id, effect)) => {
+                    if let Some(node) = self.map.node(system_id) {
+                        effect.apply(node);
+                    }
+                }
                 MapSync::SystemNotification((system_id, time)) => {
                     if let Some(node) = self.map.node(system_id) {
                         node.pulse(time.into());
@@ -219,15 +238,6 @@ impl TabPane for UniversePane {
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
-                }
-                MapSync::PlayerMoved((player_id, location)) => {
-                    self.task_msg.spawn(Message::GenericNotification((
-                        Type::Debug,
-                        String::from("UniversePane"),
-                        String::from("event_manager"),
-                        String::from("Universe Pane - Player moved RCV"),
-                    )));
-                    self.map.update_marker(player_id, location)
                 }
             };
         }
@@ -350,6 +360,14 @@ impl RegionPane {
 }
 
 impl TabPane for RegionPane {
+    fn update_marker(&mut self, player_id: usize, system_id: usize) {
+        self.map.update_marker(player_id, system_id);
+    }
+
+    fn remove_marker(&mut self, player_id: usize) {
+        self.map.remove_marker(player_id);
+    }
+
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
         // See `UniversePane::event_manager`'s comment: `while let`, not
@@ -358,6 +376,11 @@ impl TabPane for RegionPane {
         // every frame.
         while let Ok(msg) = self.mapsync_reciever.try_recv() {
             match msg {
+                MapSync::NodeEffect((system_id, effect)) => {
+                    if let Some(node) = self.map.node(system_id) {
+                        effect.apply(node);
+                    }
+                }
                 MapSync::SystemNotification((system_id, time)) => {
                     if let Some(node) = self.map.node(system_id) {
                         node.pulse(time.into());
@@ -366,15 +389,6 @@ impl TabPane for RegionPane {
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
                     self.center_on_target(t_msg);
-                }
-                MapSync::PlayerMoved((player_id, location)) => {
-                    self.task_msg.spawn(Message::GenericNotification((
-                        Type::Debug,
-                        String::from("UniversePane"),
-                        String::from("event_manager"),
-                        self.tab_name.clone() + " - Player moved RCV",
-                    )));
-                    self.map.update_marker(player_id, location)
                 }
             };
         }
@@ -893,21 +907,25 @@ impl NodeTemplate for Template {
 
     #[tracing::instrument(skip_all)]
     fn selection_ui(&self, ui: &mut Ui, ctx: SelectionContext) {
-        let mut shapes = Vec::new();
-        let rect =
-            Rect::from_center_size(ctx.position, Vec2::new(94.0 * ctx.zoom, 39.0 * ctx.zoom));
-        let color = if ui.visuals().dark_mode {
-            Color32::YELLOW
-        } else {
-            Color32::KHAKI
-        };
-        shapes.push(Shape::rect_stroke(
+        /// Gap between the node's border and the selection stroke, in screen points.
+        const SELECTION_GAP: f32 = 2.0;
+
+        let zoom = ctx.zoom;
+        // Same rect and border as `node_ui` (90x35, 4.0 stroke with `Middle`):
+        // the node's outer edge sits 2.0 * zoom outside its rect.
+        let node_rect = Rect::from_center_size(ctx.position, Vec2::new(90.0 * zoom, 35.0 * zoom));
+        let node_outer = node_rect.expand(2.0 * zoom);
+        // The stroke starts exactly SELECTION_GAP points further out and grows outward.
+        let rect = node_outer.expand(SELECTION_GAP);
+        // Concentric radius: node radius + half its border + the gap.
+        let radius = (10.0 * zoom + 2.0 * zoom + SELECTION_GAP).round() as u8;
+
+        ui.painter().add(Shape::rect_stroke(
             rect,
-            CornerRadius::same((10.0 * ctx.zoom).round() as u8),
-            Stroke::new(3.0 * ctx.zoom, color),
-            egui::StrokeKind::Middle,
+            CornerRadius::same(radius),
+            Stroke::new(2.0 * zoom, ctx.theme.selected),
+            egui::StrokeKind::Outside,
         ));
-        ui.painter().extend(shapes);
     }
 
     #[tracing::instrument(skip_all)]

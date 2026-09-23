@@ -110,11 +110,35 @@ pub(crate) struct Channels {
     monitored: Arc<Vec<String>>,
 }
 
+/// Layout of the main window that is remembered between runs. Saved on its
+/// own (see [`Settings::save_ui_state`]), without the Settings window's
+/// Save button: it isn't a preference the user edits there.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(default)]
+pub(crate) struct UiState {
+    /// Whether the log panel at the bottom is expanded.
+    pub log_expanded: bool,
+    /// Height of the expanded log panel, in points.
+    pub log_height: f32,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            log_expanded: true,
+            log_height: 110.0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Settings {
     paths: FilePaths,
     mapping: Mapping,
     channels: Channels,
+    // `default`: `telescope.toml` files from before this section existed.
+    #[serde(default)]
+    ui: UiState,
     #[serde(skip)]
     factor: f64,
     #[serde(skip)]
@@ -167,6 +191,7 @@ impl Default for Settings {
             factor: 50000000000000.0,
             region_factor: -2.0,
             saved: false,
+            ui: UiState::default(),
             channels: Channels {
                 available: HashMap::new(),
                 log_files: HashMap::new(),
@@ -179,6 +204,33 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub(crate) fn get_ui_state(&self) -> UiState {
+        self.ui
+    }
+
+    /// Stores the main window layout and writes it to `telescope.toml` right
+    /// away -- only its `[ui]` table, patched into the file as it is on disk,
+    /// so settings edited in the Settings window but not saved yet stay
+    /// unsaved. When the file doesn't exist yet, the next regular save
+    /// writes the layout with everything else.
+    pub(crate) fn save_ui_state(&mut self, state: UiState) -> Result<()> {
+        self.ui = state;
+        let path = Path::new(&self.paths.settings);
+        if !path.exists() {
+            return Ok(());
+        }
+        let text = std::fs::read_to_string(path)
+            .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
+        let mut document: toml::Table =
+            toml::from_str(&text).map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
+        let ui = toml::Table::try_from(state)
+            .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
+        document.insert(String::from("ui"), toml::Value::Table(ui));
+        let text = toml::to_string(&document)
+            .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
+        std::fs::write(path, text).map_err(|t_error| SettingsError::Other(t_error.to_string()))
+    }
+
     pub(crate) fn save(&mut self) -> Result<bool> {
         if self.saved {
             return Ok(false);
@@ -523,6 +575,44 @@ mod tests {
         settings.paths.intel = PathBuf::from("/nonexistent/telescope-test-path-xyz");
 
         assert!(settings.scan_channels_logs().is_err());
+    }
+
+    // An old `telescope.toml` has no `[ui]` table: the defaults apply.
+    #[test]
+    fn ui_state_defaults_when_missing_from_the_file() {
+        let dir = temp_dir("ui-missing");
+        let path = dir.join("telescope.toml");
+        let settings = Settings::default();
+        let mut document: toml::Table =
+            toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        document.remove("ui");
+        fs::write(&path, toml::to_string(&document).unwrap()).unwrap();
+
+        let loaded = Settings::try_from(path).unwrap();
+        assert_eq!(loaded.get_ui_state(), UiState::default());
+    }
+
+    // Saving the layout patches only `[ui]`: an unsaved change made in the
+    // Settings window must not reach the file this way.
+    #[test]
+    fn save_ui_state_only_writes_the_ui_table() {
+        let dir = temp_dir("ui-save");
+        let path = dir.join("telescope.toml");
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        settings.save().unwrap();
+        settings.set_warning_area(9);
+
+        let state = UiState {
+            log_expanded: false,
+            log_height: 222.0,
+        };
+        settings.save_ui_state(state).unwrap();
+
+        let loaded = Settings::try_from(path).unwrap();
+        assert_eq!(loaded.get_ui_state(), state);
+        assert_ne!(loaded.get_warning_area(), 9);
+        assert!(!settings.its_saved());
     }
 
     #[test]
