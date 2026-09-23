@@ -35,7 +35,7 @@ use objc2_io_kit::{
     IOServiceMatching, kIOMainPortDefault,
 };
 
-use self::player_database::PlayerDatabase;
+use self::player_database::{PlayerDatabase, SchemaStatus};
 pub mod player_database;
 
 #[cfg(feature = "crypted-db")]
@@ -83,6 +83,48 @@ pub trait EsiApi: Send {
     async fn get_character_portrait_url(&mut self, character_id: i32) -> Result<String, String>;
     /// Fetches the current solar system of a character from ESI.
     async fn get_location(&mut self, character_id: i32) -> Result<i32, String>;
+}
+
+/// ESI endpoints Telescope uses, as `(operationId, path)` in the format of
+/// the old Swagger spec, which is what `rfesi` resolves operation ids
+/// against.
+///
+/// CCP removed `/latest/swagger.json` on 11 August 2026 (it now answers
+/// 404), and `rfesi` 0.50.2 still downloads its spec from there, so every
+/// ESI call failed with "Invalid HTTP status code received: 404". Embedding
+/// the few routes we need removes that network dependency; the routes
+/// themselves still answer (versioned by the `X-Compatibility-Date` header
+/// `rfesi` sends). A new endpoint used through `rfesi` must be added here.
+const ESI_ENDPOINTS: &[(&str, &str)] = &[
+    ("get_characters_character_id", "/characters/{character_id}/"),
+    (
+        "get_characters_character_id_portrait",
+        "/characters/{character_id}/portrait/",
+    ),
+    (
+        "get_characters_character_id_location",
+        "/characters/{character_id}/location/",
+    ),
+    (
+        "get_corporations_corporation_id",
+        "/corporations/{corporation_id}/",
+    ),
+    ("get_alliances_alliance_id", "/alliances/{alliance_id}/"),
+];
+
+/// Builds the minimal Swagger-shaped spec (`{"paths": {path: {"get":
+/// {"operationId": ..}}}}`) for [`ESI_ENDPOINTS`].
+fn embedded_spec_json() -> serde_json::Value {
+    let paths: serde_json::Map<String, serde_json::Value> = ESI_ENDPOINTS
+        .iter()
+        .map(|(op_id, path)| {
+            (
+                (*path).to_owned(),
+                serde_json::json!({ "get": { "operationId": op_id } }),
+            )
+        })
+        .collect();
+    serde_json::json!({ "paths": paths })
 }
 
 /// Production [`EsiApi`] implementation backed by `rfesi`.
@@ -139,12 +181,11 @@ impl EsiApi for LiveEsiApi {
         }
     }
 
+    /// No-op: the spec is embedded at construction (see [`ESI_ENDPOINTS`]),
+    /// because the Swagger URL `rfesi` would download it from is gone.
     #[tracing::instrument(skip(self))]
     async fn update_spec(&mut self) -> Result<(), String> {
-        self.esi
-            .update_spec()
-            .await
-            .map_err(|t_error| t_error.to_string())
+        Ok(())
     }
 
     // `refresh_token` is itself a credential -- never recorded, same as
@@ -496,6 +537,15 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(result)
     }
 
+    /// Takes over the authenticated session (API client token state and
+    /// [`AuthData`]) of `other`, typically a clone of this manager that
+    /// completed [`Self::auth_user`] on a background thread. The character
+    /// list and the rest of this manager's state are left untouched.
+    pub fn adopt_session(&mut self, other: Self) {
+        self.api = other.api;
+        self.auth = other.auth;
+    }
+
     #[tracing::instrument(skip(self))]
     pub fn remove_characters(&mut self, char_vec: Option<Vec<i32>>) -> Result<usize, Error> {
         let conn = match self.get_standard_connection() {
@@ -525,16 +575,30 @@ impl<T: EsiApi> EsiManagerCore<T> {
             active_character: None,
         };
 
-        // Path needs to be checked before invoking rusqlite to be effective
-        let temp_path = Path::new(&obj.path);
-        if !temp_path.exists() || !temp_path.is_file() {
-            let conn = obj
-                .get_standard_connection()
-                .expect("Error on ESIManager new() -> get_standard_connection()");
-            if let Ok(true) = PlayerDatabase::create_database(&conn) {
-                let _ = PlayerDatabase::migrate_database();
+        // Create the schema if the file has none (new or empty file) or
+        // migrate it if it is older; see `PlayerDatabase::ensure_schema`.
+        match obj.get_standard_connection() {
+            Ok(conn) => {
+                match PlayerDatabase::ensure_schema(&conn) {
+                    Ok(SchemaStatus::Newer(version)) => tracing::warn!(
+                        path = %obj.path.display(),
+                        version,
+                        "player database was written by a newer Telescope"
+                    ),
+                    Ok(_) => {}
+                    Err(t_error) => tracing::error!(
+                        path = %obj.path.display(),
+                        error = %t_error,
+                        "could not prepare the player database"
+                    ),
+                }
+                let _ = conn.close();
             }
-            let _ = conn.close();
+            Err(t_error) => tracing::error!(
+                path = %obj.path.display(),
+                error = %t_error,
+                "could not open the player database"
+            ),
         }
         if let Ok(conn) = obj.get_standard_connection() {
             // load existing players
@@ -708,6 +772,12 @@ impl EsiManagerCore<LiveEsiApi> {
         scope: Vec<&str>,
         database_path: &Path,
     ) -> Self {
+        // `rfesi`'s `Spec` type isn't exported, so it is named through
+        // inference from `EsiBuilder::spec`; the JSON is built by us, so a
+        // failure here is a programming error.
+        let spec = serde_json::from_value(embedded_spec_json())
+            .expect("embedded ESI spec must match rfesi's Spec shape");
+
         #[cfg(not(feature = "native-auth-flow"))]
         let esi = EsiBuilder::new()
             .user_agent(useragent)
@@ -715,6 +785,7 @@ impl EsiManagerCore<LiveEsiApi> {
             .client_secret(_client_secret)
             .callback_url(callback_url)
             .scope(scope.join(" ").as_str())
+            .spec(Some(spec))
             .build()
             .unwrap();
 
@@ -725,6 +796,7 @@ impl EsiManagerCore<LiveEsiApi> {
             .callback_url(callback_url)
             .enable_application_authentication(true)
             .scope(scope.join(" ").as_str())
+            .spec(Some(spec))
             .build()
             .unwrap();
 
@@ -806,6 +878,72 @@ mod tests {
     async fn valid_token_is_false_without_authentication() {
         let (manager, path) = test_manager("valid_token");
         assert!(!manager.valid_token().await);
+        cleanup(&path);
+    }
+
+    // Regression test: a database file that exists but has no tables used
+    // to be left as is, and the first auth update then panicked with
+    // "no such table: metadata".
+    #[test]
+    fn new_repairs_an_existing_database_file_without_tables() {
+        let path = temp_db_path("empty_file");
+        std::fs::write(&path, b"").unwrap();
+        let mut manager = EsiManager::new(
+            "telescope-test (test@example.com)",
+            "test-client-id",
+            "test-client-secret",
+            "http://localhost:8000/login",
+            vec!["publicData"],
+            &path,
+        );
+        let conn = manager.get_standard_connection().unwrap();
+        assert!(PlayerDatabase::update_auth(&conn, &manager.auth).is_ok());
+        let mut character = Character::new();
+        character.id = 7;
+        character.name = String::from("Pilot");
+        assert_eq!(manager.write_character(&character).unwrap(), 1);
+        cleanup(&path);
+    }
+
+    // The Swagger spec URL rfesi downloads from answers 404 since
+    // 11 August 2026; the embedded spec must resolve every endpoint we use
+    // without any network access.
+    #[test]
+    fn embedded_spec_resolves_every_endpoint_offline() {
+        let (manager, path) = test_manager("embedded_spec");
+        for (op_id, expected) in ESI_ENDPOINTS {
+            let resolved = manager.api.esi.get_endpoint_for_op_id(op_id).unwrap();
+            // rfesi strips the leading slash before appending to the base URL.
+            assert_eq!(format!("/{resolved}"), *expected);
+        }
+        assert_eq!(
+            manager
+                .api
+                .esi
+                .get_endpoint_for_op_id("get_characters_character_id_portrait")
+                .unwrap()
+                .replace("{character_id}", "42"),
+            "characters/42/portrait/"
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn adopt_session_takes_auth_but_keeps_characters() {
+        let (mut manager, path) = test_manager("adopt_session");
+        let mut kept = Character::new();
+        kept.id = 1;
+        manager.characters.push(kept);
+
+        let mut background = manager.clone();
+        background.characters.clear();
+        background.auth.token = String::from("new-access-token");
+        background.auth.refresh_token = String::from("new-refresh-token");
+
+        manager.adopt_session(background);
+        assert_eq!(manager.auth.token, "new-access-token");
+        assert_eq!(manager.auth.refresh_token, "new-refresh-token");
+        assert_eq!(manager.characters.len(), 1);
         cleanup(&path);
     }
 

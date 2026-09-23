@@ -14,7 +14,7 @@ ui: "UI thread" {
 }
 
 bg.watcher -> ui.app: "Message (mpsc)\nIntelFileChanged, ScanIntelFiles"
-bg.auth -> ui.app: "Message\nEsiAuthSuccess"
+bg.auth -> ui.app: "Message\nCharacterAuthenticated"
 bg.updater -> ui.app: "Message\nDatabaseUpdateProgress, DatabaseUpdated"
 bg.watchdog -> ui.app: "Message\nPlayerNewLocation"
 bg.watchdog -> ui.panes: "MapSync::PlayerMoved"

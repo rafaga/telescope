@@ -16,4 +16,3 @@ telescope.toml
 /crates/telescope/target/
 /assets/sde-build-cache/
 sde-build-cache
-docs

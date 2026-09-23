@@ -35,6 +35,7 @@ use self::tiles::RegionPane;
 use native_tools::dialog::*;
 
 mod audio;
+mod character_link;
 mod data;
 mod database;
 mod database_updater;
@@ -496,8 +497,8 @@ impl TelescopeApp {
             let _span =
                 tracing::info_span!("dispatch app message", kind = message.kind()).entered();
             match message {
-                Message::EsiAuthSuccess(character) => {
-                    self.update_character_into_database(character)
+                Message::CharacterAuthenticated(linked) => {
+                    self.handle_character_authenticated(*linked)
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),

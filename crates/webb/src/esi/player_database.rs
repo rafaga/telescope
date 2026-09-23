@@ -10,7 +10,67 @@ use std::rc::Rc;
 
 pub(crate) struct PlayerDatabase {}
 
+/// Schema version this build writes and expects, stored in the `metadata`
+/// row `db`. When the schema changes: bump it, and add the step that takes
+/// a database from the previous version to this one in
+/// [`PlayerDatabase::migrate_database`] (and change `create_database` so new
+/// databases start at the new version directly).
+pub(crate) const SCHEMA_VERSION: i32 = 0;
+
+/// What [`PlayerDatabase::ensure_schema`] found and did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SchemaStatus {
+    /// There was no schema (new or empty file): it was created.
+    Created,
+    /// The schema was at the given older version: it was migrated.
+    Migrated(i32),
+    /// Already at [`SCHEMA_VERSION`]: nothing to do.
+    UpToDate,
+    /// Written by a newer Telescope, at the given version: left untouched.
+    Newer(i32),
+}
+
 impl PlayerDatabase {
+    /// Brings the database to [`SCHEMA_VERSION`]: creates the schema when
+    /// there is none, runs the pending migrations when it is older, and does
+    /// nothing when it is current. Creation and migration each run in a
+    /// single transaction, so a failure never leaves a half-built schema.
+    #[tracing::instrument]
+    pub(crate) fn ensure_schema(conn: &Connection) -> Result<SchemaStatus, Error> {
+        match PlayerDatabase::schema_version(conn)? {
+            None => {
+                let transaction = conn.unchecked_transaction()?;
+                PlayerDatabase::create_database(&transaction)?;
+                transaction.commit()?;
+                Ok(SchemaStatus::Created)
+            }
+            Some(version) if version < SCHEMA_VERSION => {
+                let transaction = conn.unchecked_transaction()?;
+                PlayerDatabase::migrate_database(&transaction, version)?;
+                transaction.commit()?;
+                Ok(SchemaStatus::Migrated(version))
+            }
+            Some(version) if version > SCHEMA_VERSION => Ok(SchemaStatus::Newer(version)),
+            Some(_) => Ok(SchemaStatus::UpToDate),
+        }
+    }
+
+    /// Schema version stored in the database, or `None` when it has no
+    /// schema yet (no `metadata` table, e.g. a brand-new or empty file).
+    #[tracing::instrument]
+    pub(crate) fn schema_version(conn: &Connection) -> Result<Option<i32>, Error> {
+        let query = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'metadata'";
+        let tables: i64 = conn.query_row(query, [], |row| row.get(0))?;
+        if tables == 0 {
+            return Ok(None);
+        }
+        let query = "SELECT value FROM metadata WHERE id = 'db'";
+        let value: String = conn.query_row(query, [], |row| row.get(0))?;
+        value.trim().parse::<i32>().map(Some).map_err(|t_error| {
+            Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(t_error))
+        })
+    }
+
     #[tracing::instrument]
     pub(crate) fn create_database(conn: &Connection) -> Result<bool, Error> {
         //Character Public Data
@@ -197,7 +257,7 @@ impl PlayerDatabase {
         }
         let mut rows = 0;
         for item in data {
-            let mut statement = conn.prepare(&query).unwrap();
+            let mut statement = conn.prepare(&query)?;
             let affected_rows = statement.execute(params![item.1, item.0])?;
             statement.finalize()?;
             rows += affected_rows;
@@ -277,8 +337,14 @@ impl PlayerDatabase {
     }
 
     #[tracing::instrument]
-    pub(crate) fn migrate_database() -> Result<bool, Error> {
-        // TODO: migration database schema goes here
+    pub(crate) fn migrate_database(conn: &Connection, from_version: i32) -> Result<bool, Error> {
+        // One step per version, applied in order, e.g.:
+        //   if from_version < 1 { /* ALTER TABLE ... */ }
+        // No migrations exist yet: version 0 is the first schema.
+        let _ = from_version;
+        let query = "UPDATE metadata SET value = ?1 WHERE id = 'db'";
+        let mut statement = conn.prepare(query)?;
+        statement.execute([SCHEMA_VERSION.to_string()])?;
         Ok(true)
     }
 
@@ -505,8 +571,52 @@ mod tests {
     }
 
     #[test]
-    fn migrate_database_returns_true() {
-        assert!(PlayerDatabase::migrate_database().unwrap());
+    fn migrate_database_stamps_the_current_version() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        assert!(PlayerDatabase::migrate_database(&conn, 0).unwrap());
+        assert_eq!(
+            PlayerDatabase::schema_version(&conn).unwrap(),
+            Some(SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn schema_version_is_none_without_schema() {
+        let conn = memory_connection();
+        assert_eq!(PlayerDatabase::schema_version(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn ensure_schema_creates_then_reports_up_to_date() {
+        let conn = memory_connection();
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Created
+        );
+        assert!(table_names(&conn).contains(&String::from("char")));
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::UpToDate
+        );
+    }
+
+    #[test]
+    fn ensure_schema_leaves_a_newer_schema_untouched() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        conn.execute("UPDATE metadata SET value = '99' WHERE id = 'db'", [])
+            .unwrap();
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Newer(99)
+        );
+    }
+
+    #[test]
+    fn update_auth_without_schema_is_an_error_not_a_panic() {
+        let conn = memory_connection();
+        assert!(PlayerDatabase::update_auth(&conn, &AuthData::new()).is_err());
     }
 
     // ---------------------------------------------------------------------

@@ -15,6 +15,13 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::time::{Duration, Instant, timeout_at};
 use webb::auth_service::AuthService2;
+use webb::esi::EsiManager;
+use webb::objects::AuthorizeInfo;
+use webb::objects::Character;
+
+/// How long the local OAuth callback listener waits for the browser to
+/// come back from the EVE SSO login page.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub enum MapSync {
@@ -64,8 +71,18 @@ impl SettingsPage {
     }
 }
 
+/// A character that finished the SSO flow on the auth thread, together with
+/// the manager clone that authenticated it (its token state is adopted by the
+/// UI's manager, see `EsiManagerCore::adopt_session`).
+pub struct LinkedCharacter {
+    pub esi: EsiManager,
+    pub character: Character,
+}
+
 pub enum Message {
-    EsiAuthSuccess((String, String)),
+    /// Sent by the auth thread (`handle_auth`) once a character finished the
+    /// SSO flow and its data was fetched from ESI and stored.
+    CharacterAuthenticated(Box<LinkedCharacter>),
     GenericNotification((Type, String, String, String)),
     NewRegionalPane(usize),
     MapHidden(usize),
@@ -100,7 +117,7 @@ impl Message {
     /// path, etc.) into every trace.
     pub fn kind(&self) -> &'static str {
         match self {
-            Message::EsiAuthSuccess(_) => "EsiAuthSuccess",
+            Message::CharacterAuthenticated(_) => "CharacterAuthenticated",
             Message::GenericNotification(_) => "GenericNotification",
             Message::NewRegionalPane(_) => "NewRegionalPane",
             Message::MapHidden(_) => "MapHidden",
@@ -192,7 +209,27 @@ pub fn try_send_app_message(
     tx.try_send(msg)
 }
 
-async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
+/// One "link a character" attempt, handed to [`AuthSpawner::spawn`]: a clone
+/// of the UI's ESI manager to authenticate with (so the network calls never
+/// touch the UI thread) and the authorization info the browser was sent to.
+pub struct AuthRequest {
+    pub esi: EsiManager,
+    pub auth_info: AuthorizeInfo,
+}
+
+fn auth_notification(kind: Type, message: String) -> Message {
+    Message::GenericNotification((
+        kind,
+        String::from("AuthSpawner"),
+        String::from("handle_auth"),
+        message,
+    ))
+}
+
+/// Listens for the SSO callback, then finishes the authentication (token
+/// exchange + character, corporation and alliance lookups) off the UI thread
+/// and reports the outcome as a single [`Message`].
+async fn handle_auth(request: AuthRequest, tx: Arc<Sender<Message>>) {
     let addr: SocketAddr = ([127, 0, 0, 1], 56123).into();
     let (atx, mut arx) = mpsc::channel::<(String, String)>(1);
     match TcpListener::bind(addr).await {
@@ -204,63 +241,67 @@ async fn handle_auth(time: usize, tx: Arc<Sender<Message>>) {
                     .into_future();
 
                 let stx = Arc::clone(&tx);
+                let AuthRequest { mut esi, auth_info } = request;
                 thread::spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
+                    let runtime = match tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .unwrap();
+                    {
+                        Ok(runtime) => runtime,
+                        Err(t_error) => {
+                            let _ = try_send_app_message(
+                                &stx,
+                                auth_notification(Type::Error, t_error.to_string()),
+                            );
+                            return;
+                        }
+                    };
                     runtime.block_on(async {
-                        let _span = tracing::info_span!("spawned Auth success message").entered();
+                        let _span = tracing::info_span!("spawned auth completion").entered();
 
-                        while let Some(result) = arx.recv().await {
-                            let _send_result =
-                                send_app_message(&stx, Message::EsiAuthSuccess(result)).await;
+                        // The SSO redirect delivers a single callback; the
+                        // channel closes when the server above is dropped.
+                        if let Some(response) = arx.recv().await {
+                            let message = match esi.auth_user(auth_info, response).await {
+                                Ok(Some(character)) => Message::CharacterAuthenticated(Box::new(
+                                    LinkedCharacter { esi, character },
+                                )),
+                                Ok(None) => auth_notification(
+                                    Type::Info,
+                                    String::from(
+                                        "Apparently there was some kind of trouble authenticating the player.",
+                                    ),
+                                ),
+                                Err(t_error) => auth_notification(Type::Error, t_error.to_string()),
+                            };
+                            let _ = send_app_message(&stx, message).await;
                         }
                     });
                 });
 
-                if let Err(t_error) =
-                    timeout_at(Instant::now() + Duration::from_secs(time as u64), server).await
-                {
-                    let _ = send_app_message(
-                        &tx,
-                        Message::GenericNotification((
-                            Type::Error,
-                            String::from("MessageSpawner"),
-                            String::from("handle_auth"),
-                            t_error.to_string(),
-                        )),
-                    )
-                    .await;
-                } else {
-                    //server.without_shutdown()
+                if let Err(t_error) = timeout_at(Instant::now() + AUTH_TIMEOUT, server).await {
+                    let _ =
+                        send_app_message(&tx, auth_notification(Type::Error, t_error.to_string()))
+                            .await;
                 }
             }
         }
         Err(t_error) => {
-            let _ = send_app_message(
-                &tx,
-                Message::GenericNotification((
-                    Type::Error,
-                    String::from("MessageSpawner"),
-                    String::from("handle_auth"),
-                    t_error.to_string(),
-                )),
-            )
-            .await;
+            let _ =
+                send_app_message(&tx, auth_notification(Type::Error, t_error.to_string())).await;
         }
     };
 }
 
 pub struct AuthSpawner {
-    spawn: Arc<mpsc::Sender<usize>>,
+    spawn: Arc<mpsc::Sender<AuthRequest>>,
 }
 
 impl AuthSpawner {
     #[tracing::instrument(skip(msg_tx))]
     pub fn new(msg_tx: Arc<mpsc::Sender<Message>>) -> Self {
         // Set up a channel for communicating.
-        let (send, mut recv) = mpsc::channel(3);
+        let (send, mut recv) = mpsc::channel::<AuthRequest>(3);
         let arc_send = Arc::new(send);
 
         let obj = Self { spawn: arc_send };
@@ -274,9 +315,9 @@ impl AuthSpawner {
         std::thread::spawn(move || {
             rt.block_on(async move {
                 let _span = tracing::info_span!("spawned auth handler").entered();
-                while let Some(time) = recv.recv().await {
+                while let Some(request) = recv.recv().await {
                     let cloned_msg_sender = Arc::clone(&cloned_msg_sender);
-                    tokio::spawn(handle_auth(time, cloned_msg_sender));
+                    tokio::spawn(handle_auth(request, cloned_msg_sender));
                 }
                 // Once all senders have gone out of scope,
                 // the `.recv()` call returns None and it will
@@ -288,10 +329,18 @@ impl AuthSpawner {
         obj
     }
 
-    #[tracing::instrument(skip(self))]
-    pub fn spawn(&self) {
-        if self.spawn.blocking_send(60).is_err() {
-            panic!("The shared runtime has shut down.");
-        }
+    /// Queues a link attempt without blocking the caller (the UI thread).
+    #[tracing::instrument(skip_all)]
+    pub fn spawn(&self, request: AuthRequest) -> Result<(), String> {
+        self.spawn
+            .try_send(request)
+            .map_err(|t_error| match t_error {
+                mpsc::error::TrySendError::Full(_) => {
+                    String::from("Too many character links in progress; try again in a minute.")
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    String::from("The authentication service has shut down.")
+                }
+            })
     }
 }

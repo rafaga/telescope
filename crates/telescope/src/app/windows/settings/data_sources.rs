@@ -21,7 +21,14 @@ impl TelescopeApp {
         ui.horizontal(|ui| {
             ui.label("private database:");
             let mut str_db = self.settings.get_db().to_string_lossy().to_string();
-            if ui.text_edit_singleline(&mut str_db).changed() {
+            if ui
+                .text_edit_singleline(&mut str_db)
+                .on_hover_text(
+                    "Linked characters are stored here. The file is created if it doesn't \
+                     exist; changes apply after restarting Telescope.",
+                )
+                .changed()
+            {
                 let _ = self.settings.set_db(Path::new(&str_db));
             }
         });

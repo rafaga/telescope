@@ -29,6 +29,10 @@ use std::{
 /// `ALARM_SOUND_PATH`) hardcoded their own copy of this string.
 pub(crate) const ALERTS_DIR: &str = "assets/alerts";
 
+/// Default file name of the player (ESI) database, relative to the working
+/// directory (next to `telescope.toml`).
+pub(crate) const DEFAULT_PLAYER_DB: &str = "telescope.db";
+
 #[derive(Serialize, Deserialize, Clone)]
 struct FilePaths {
     #[serde(skip)]
@@ -59,19 +63,20 @@ impl Default for FilePaths {
         // `telescope.toml` (i.e. wherever Telescope is run from) rather
         // than an OS data/home directory -- `sde.db` is meant to sit
         // alongside the app, not get tucked away somewhere the user has
-        // to go look for it. `db` (the ESI/player database, managed by
-        // `webb::esi::EsiManager`) deliberately keeps its previous empty
-        // default here -- unlike `DatabaseUpdater`, `EsiManager::new`'s
-        // startup path doesn't create its parent directory before
-        // opening it, so pointing it at a directory that doesn't exist
-        // yet would turn into a startup panic instead of the harmless
-        // (if useless) SQLite private-temp-database behavior an empty
-        // path gets today.
+        // to go look for it.
+        //
+        // Same for `db` (the ESI/player database managed by
+        // `webb::esi::EsiManager`): relative, so its parent (the working
+        // directory) always exists and `EsiManager::new` can create it on
+        // a first run. It used to default to an empty path, which SQLite
+        // treats as a *private temporary* database -- a fresh, empty one
+        // per connection, deleted on close -- so linking a character
+        // failed (no tables) and nothing was ever persisted.
         Self {
             settings: Path::new("telescope.toml").to_path_buf(),
             intel: tpath,
             sde: Path::new("sde.db").to_path_buf(),
-            db: PathBuf::new(),
+            db: PathBuf::from(DEFAULT_PLAYER_DB),
             alert_sound: PathBuf::from("1_campana_info.wav"),
         }
     }
@@ -130,6 +135,12 @@ impl TryFrom<PathBuf> for Settings {
                 match toml::from_str::<Settings>(&toml_data) {
                     Ok(mut toml_manager) => {
                         toml_manager.paths.settings = path.to_path_buf();
+                        // `telescope.toml` files written before `db` had a
+                        // real default carry `db = ""`; see
+                        // `FilePaths::default` for why that can't be kept.
+                        if toml_manager.paths.db.as_os_str().is_empty() {
+                            toml_manager.paths.db = PathBuf::from(DEFAULT_PLAYER_DB);
+                        }
                         toml_manager.factor = 50000000000000.0;
                         toml_manager.region_factor = -2.0;
                         toml_manager.saved = false;
@@ -280,8 +291,17 @@ impl Settings {
         Ok(())
     }*/
 
+    /// Sets the player database file. Unlike the SDE, the file doesn't have
+    /// to exist yet (`EsiManager` creates it); only its directory does.
+    /// Takes effect the next time Telescope starts.
     pub fn set_db(&mut self, path: &Path) -> Result<()> {
-        if !path.exists() {
+        let parent_exists = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.is_dir(),
+            // A bare file name lives in the working directory.
+            Some(_) => true,
+            None => false,
+        };
+        if path.as_os_str().is_empty() || path.is_dir() || !parent_exists {
             return Err(SettingsError::InvalidDirectory(
                 path.to_string_lossy().to_string(),
             ));
@@ -503,6 +523,46 @@ mod tests {
         settings.paths.intel = PathBuf::from("/nonexistent/telescope-test-path-xyz");
 
         assert!(settings.scan_channels_logs().is_err());
+    }
+
+    #[test]
+    fn db_defaults_to_a_real_file_next_to_the_app() {
+        assert_eq!(Settings::default().get_db(), Path::new(DEFAULT_PLAYER_DB));
+    }
+
+    // Regression test: a `telescope.toml` from before `db` had a default
+    // carries `db = ""`, which SQLite opens as a throwaway temp database.
+    #[test]
+    fn an_empty_db_in_an_old_toml_falls_back_to_the_default() {
+        let dir = temp_dir("empty-db");
+        let path = dir.join("telescope.toml");
+        let mut settings = Settings::default();
+        settings.paths.db = PathBuf::new();
+        fs::write(&path, toml::to_string(&settings).unwrap()).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("db = \"\""));
+
+        let loaded = Settings::try_from(path).unwrap();
+        assert_eq!(loaded.get_db(), Path::new(DEFAULT_PLAYER_DB));
+    }
+
+    #[test]
+    fn set_db_accepts_a_new_file_in_an_existing_directory() {
+        let dir = temp_dir("set-db-new");
+        let mut settings = Settings::default();
+        let db = dir.join("new.db");
+        settings.set_db(&db).unwrap();
+        assert_eq!(settings.get_db(), db.as_path());
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn set_db_rejects_missing_directories_directories_and_empty_paths() {
+        let dir = temp_dir("set-db-bad");
+        let mut settings = Settings::default();
+        assert!(settings.set_db(&dir.join("missing").join("x.db")).is_err());
+        assert!(settings.set_db(&dir).is_err());
+        assert!(settings.set_db(Path::new("")).is_err());
+        assert_eq!(settings.get_db(), Path::new(DEFAULT_PLAYER_DB));
     }
 
     #[test]

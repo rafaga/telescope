@@ -69,8 +69,12 @@ use std::sync::Arc;
 /// corrupt/unsupported file is exactly as testable here as it is at
 /// runtime.
 fn open_alarm_sound(path: &Path) -> Result<Decoder<BufReader<File>>, String> {
-    let file = File::open(path)
-        .map_err(|error| format!("could not open the alarm sound at {}: {error}", path.display()))?;
+    let file = File::open(path).map_err(|error| {
+        format!(
+            "could not open the alarm sound at {}: {error}",
+            path.display()
+        )
+    })?;
     Decoder::try_from(file).map_err(|error| format!("could not decode the alarm sound: {error}"))
 }
 
@@ -209,12 +213,17 @@ mod tests {
         // rather than through `new()`, since opening a real device isn't
         // something a test can rely on either way.
         let (task_msg, mut rx) = task_msg_with_receiver();
-        let player = AlarmPlayer { sink: None, task_msg };
+        let player = AlarmPlayer {
+            sink: None,
+            task_msg,
+        };
 
         // Must not panic, and -- since `new()` already reported the
         // missing device once at startup -- must not report anything a
         // second time here, whether or not `sound_path` itself is real.
-        player.play_alarm(Path::new("/nonexistent-telescope-alerts-directory/whatever.wav"));
+        player.play_alarm(Path::new(
+            "/nonexistent-telescope-alerts-directory/whatever.wav",
+        ));
 
         assert!(rx.try_recv().is_err());
     }

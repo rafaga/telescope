@@ -25,7 +25,7 @@ source and regenerate the SVGs (the sequence diagrams ignore the layout
 option):
 
 ```sh
-for f in docs/architecture/*.d2; do d2 --layout=elk "$f" "${f%.d2}.svg"; done
+for f in docs/architecture/*.d2; do d2 --pad 24 --layout=elk "$f" "${f%.d2}.svg"; done
 ```
 
 Two more crates by the same author, published on crates.io, are used from outside this workspace:
@@ -152,14 +152,20 @@ callback server (`AuthSpawner`), the watchdog and the `DatabaseUpdater`.
 
 ![Sequence diagram: linking a character through EVE SSO until the watchdog starts](docs/architecture/flow-character.svg)
 
-1. *Settings -> Characters -> Add* asks `EsiManager` for the authorize URL and
-   opens it in the browser.
+1. *Settings -> Characters -> Add* asks `EsiManager` for the authorize URL,
+   hands `AuthSpawner` an `AuthRequest` (a clone of the `EsiManager` plus that
+   authorize info) and opens the URL in the browser.
 2. The `AuthSpawner` thread runs `webb::auth_service` on
-   `http://localhost:56123/login`. The redirect's `code` and `state` come back
-   as `Message::EsiAuthSuccess`.
-3. `update_character_into_database` completes the authorization
-   (`EsiManager::auth_user`), keeps the character, and starts the watchdog if
-   it is the first one; otherwise it sends `CharacterSync::Add`.
+   `http://localhost:56123/login`. When the redirect's `code` and `state`
+   arrive, that same background thread completes the authorization with its
+   `EsiManager` clone (`EsiManager::auth_user`: token exchange, character,
+   corporation and alliance lookups, and storing the character), so the UI
+   thread never waits on the network.
+3. The result comes back as `Message::CharacterAuthenticated`.
+   `handle_character_authenticated` (`character_link.rs`) adopts the clone's
+   token state (`EsiManager::adopt_session`), keeps the character (a re-linked
+   character replaces its old entry), and starts the watchdog if it is the
+   first one; otherwise it sends `CharacterSync::Add`.
 
 ### Location tracking
 

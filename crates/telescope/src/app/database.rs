@@ -1,9 +1,8 @@
-//! `TelescopeApp` methods that keep the local databases in sync: storing a freshly
-//! authorized character in the player database, locating the SDE build cache
-//! directory, and reacting to a finished SDE database update.
+//! `TelescopeApp` methods that keep the local databases in sync: locating the
+//! SDE build cache directory and reacting to a finished SDE database update.
+//! (Storing a freshly authorized character lives in `character_link.rs`.)
 
 use crate::app::TelescopeApp;
-use crate::app::messages::CharacterSync;
 use crate::app::messages::Message;
 use crate::app::messages::Type;
 use crate::app::settings::Settings;
@@ -11,50 +10,6 @@ use sde::SdeManager;
 use std::path::PathBuf;
 
 impl TelescopeApp {
-    #[tracing::instrument(skip(self, response_data))]
-    pub(crate) fn update_character_into_database(&mut self, response_data: (String, String)) {
-        let auth_info = self.esi.get_authorize_url().unwrap();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build();
-        match rt
-            .as_ref()
-            .expect("Esi character authentication failure")
-            .block_on(self.esi.auth_user(auth_info, response_data))
-        {
-            Ok(Some(player)) => {
-                let id = player.id as usize;
-                self.esi.characters.push(player);
-                if self.esi.characters.len() == 1 {
-                    self.start_watchdog(vec![id]);
-                } else if let Some(sender) = &self.char_msg {
-                    let _result = rt
-                        .as_ref()
-                        .expect("Esi character authentication failure")
-                        .block_on(async { sender.send(CharacterSync::Add(id)).await });
-                }
-            }
-            Ok(None) => {
-                self.task_msg.spawn(Message::GenericNotification((
-                    Type::Info,
-                    String::from("EsiManager"),
-                    String::from("auth_user"),
-                    String::from(
-                        "Apparently there was some kind of trouble authenticating the player.",
-                    ),
-                )));
-            }
-            Err(t_error) => {
-                self.task_msg.spawn(Message::GenericNotification((
-                    Type::Error,
-                    String::from("EsiManager"),
-                    String::from("auth_user"),
-                    t_error.to_string(),
-                )));
-            }
-        };
-    }
-
     /// Base scratch directory for `database_updater::DatabaseUpdater`'s
     /// background update/build (see `sde::builder::update::UpdatePaths`):
     /// callers join `"data"` onto it for the downloaded zip and the
