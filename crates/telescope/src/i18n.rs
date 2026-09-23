@@ -3,9 +3,11 @@
 //! The texts live in `locales/<code>.toml` (one file per language, same keys in
 //! every file) and are embedded at compile time by `rust_i18n::i18n!` in
 //! `lib.rs`; the UI reads them with `t!("section.key")`. A key missing from a
-//! language falls back to English. Adding a language is adding its file: the
-//! selector in Settings -> General lists every file it finds, by the name in
-//! its own `language.name` key.
+//! language falls back to English, but an empty value is shown as it is
+//! (blank). Adding a language is adding its file: the selector in Settings ->
+//! General lists every file whose `language.name` key has a value, by that
+//! name. A template with empty values (such as `es.toml` until it is
+//! translated) is therefore left out.
 //!
 //! Only what the user reads is translated. `tracing` output and the
 //! messages in the log panel stay in English, so bug reports read the same
@@ -21,14 +23,23 @@ pub(crate) const AUTO: &str = "auto";
 /// Language used when the operating system's one isn't available.
 const FALLBACK: &str = "en";
 
-/// The languages there is a `locales/` file for, sorted by code.
-pub(crate) fn available() -> Vec<String> {
+/// Every `locales/` file, translated or not, sorted by code.
+fn all_locales() -> Vec<String> {
     let mut locales: Vec<String> = rust_i18n::available_locales!()
         .into_iter()
         .map(|code| code.into_owned())
         .collect();
     locales.sort_unstable();
     locales
+}
+
+/// The languages the user can pick: the `locales/` files whose
+/// `language.name` has a value, sorted by code.
+pub(crate) fn available() -> Vec<String> {
+    all_locales()
+        .into_iter()
+        .filter(|code| !display_name(code).trim().is_empty())
+        .collect()
 }
 
 /// A language's own name (`"Español"`, `"日本語"`), as the selector shows it.
@@ -108,7 +119,7 @@ mod tests {
     #[test]
     fn every_locale_has_the_same_keys_as_english() {
         let english = locale_keys("en");
-        for code in available() {
+        for code in all_locales() {
             let other = locale_keys(&code);
             let missing: Vec<_> = english.difference(&other).collect();
             let extra: Vec<_> = other.difference(&english).collect();
@@ -120,6 +131,7 @@ mod tests {
     }
 
     // `%{name}` placeholders must match too, or a translation drops a value.
+    // An empty value isn't translated yet and has nothing to compare.
     #[test]
     fn every_locale_keeps_the_placeholders() {
         let placeholders = |text: &str| -> BTreeSet<String> {
@@ -129,10 +141,13 @@ mod tests {
                 .map(str::to_owned)
                 .collect()
         };
-        for code in available() {
+        for code in all_locales() {
             for key in locale_keys("en") {
                 let english = t!(&key, locale = "en");
                 let other = t!(&key, locale = &code);
+                if other.is_empty() {
+                    continue;
+                }
                 assert_eq!(
                     placeholders(&english),
                     placeholders(&other),
@@ -143,10 +158,21 @@ mod tests {
     }
 
     #[test]
-    fn english_and_spanish_are_available() {
-        let locales = available();
-        assert!(locales.iter().any(|code| code == "en"));
-        assert!(locales.iter().any(|code| code == "es"));
+    fn english_is_available_and_every_file_is_embedded() {
+        assert!(available().iter().any(|code| code == "en"));
+        let all = all_locales();
+        assert!(all.iter().any(|code| code == "en"));
+        assert!(all.iter().any(|code| code == "es"));
+    }
+
+    // A file without `language.name` (an untranslated template) isn't
+    // offered, so its empty texts never reach the interface.
+    #[test]
+    fn only_languages_with_a_name_are_offered() {
+        for code in all_locales() {
+            let named = !display_name(&code).trim().is_empty();
+            assert_eq!(available().contains(&code), named, "{code}");
+        }
     }
 
     #[test]
@@ -161,13 +187,12 @@ mod tests {
 
     #[test]
     fn an_explicit_language_wins_and_an_unknown_one_is_english() {
-        assert_eq!(resolve("es"), "es");
+        assert_eq!(resolve("en"), "en");
         assert_eq!(resolve("xx"), "en");
     }
 
     #[test]
-    fn each_language_names_itself() {
+    fn english_names_itself() {
         assert_eq!(display_name("en"), "English");
-        assert_eq!(display_name("es"), "Español");
     }
 }

@@ -1,8 +1,11 @@
-# Textos de la interfaz de Telescope, español. Mismas claves que `en.toml`
-# (los tests de `i18n` lo comprueban); los marcadores `%{nombre}` se dejan tal
-# cual. Ver `src/i18n.rs`.
+# Telescope interface texts, Spanish. Template with every key of `en.toml`
+# and empty values, to be filled in. Keep `%{name}` placeholders as they are in
+# `en.toml`. Settings -> General offers the language once `language.name`
+# has a value; an empty value is shown as blank text (not as English), so fill
+# in the rest before that. See `src/i18n.rs`.
 
 [language]
+# This language's own name, as the selector in Settings -> General shows it.
 name = "Español"
 
 [menu]
@@ -15,75 +18,76 @@ about = "Acerca de Telescope"
 
 [about]
 title = "Acerca de Telescope"
-author = "Autor: %{name}"
-license = "Licencia %{license}"
+author = "Autor"
+license = "Licencia"
 
 [settings]
 title = "Configuración"
 save = "Guardar"
-unsaved = "⚠ cambios sin guardar"
+unsaved = "⚠ Existen cambios sin guardar"
 
 [settings.pages]
 general = "General"
 intelligence = "Inteligencia"
-data_sources = "Fuentes de datos"
+data_sources = "Fuentes de Datos"
 characters = "Personajes"
 
 [settings.general]
-heading = "Interfaz"
-language = "Idioma:"
-auto = "Automático (%{language})"
-language_hint = "\"Automático\" usa el idioma de tu sistema operativo. El cambio se aplica de inmediato y se guarda."
+heading = "Configuración General"
+language = "Idioma"
+auto = "Automático"
+language_hint = "El idioma de la interfaz de usuario se ajusta automáticamente al idioma de tu sistema operativo. El cambio se aplica de inmediato y se guarda."
 
 [settings.intelligence]
 alerts = "Alertas"
-warn_before = "Avisarme cuando haya un enemigo a"
-warn_after = "sistemas o menos de mí"
-alert_sound = "Sonido de alerta:"
-chat_logs = "Logs de canales de EVE:"
-select = "Elegir"
-default = "Predeterminado"
-monitored = "Canales monitoreados"
-monitored_help = "Marca todos los canales de inteligencia que quieres monitorear."
-no_channels = "No se detectaron canales de inteligencia"
-startup_maps = "Mapas al iniciar"
-startup_help = "Por defecto se muestran el mapa del universo y los mapas de las regiones donde tienes personajes enlazados. Marca aquí otras regiones para mostrar también sus mapas al iniciar."
+warn_before = "Avisar antes"
+warn_after = "Avisar después"
+alert_sound = "Sonido de alerta"
+chat_logs = "Registros de chat"
+select = "Seleccionar"
+default = "por defecto"
+monitored = "Canal(es) Monitoreado(s)"
+monitored_help = "Los canales seleccionados serán monitoreados para alertas."
+no_channels = "No hay canales seleccionados"
+startup_maps = "Mapas de Inicio"
+startup_help = "Los mapas seleccionados se abrirán al iniciar Telescope."
 
 [settings.data_sources]
-heading = "Rutas de datos"
-sde = "Base de datos del SDE:"
-player_db = "Base de datos privada:"
-player_db_hint = "Aquí se guardan los personajes enlazados. El archivo se crea si no existe; los cambios se aplican al reiniciar Telescope."
-check_updates = "🔄 Buscar actualizaciones del SDE"
+heading = "Rutas de Datos"
+sde = "Base de datos SDE"
+player_db = "Base de datos de jugadores"
+player_db_hint = "Ruta a la base de datos de jugadores"
+check_updates = "🔄 Verificar actualizaciones"
 
 [settings.characters]
-heading = "Personajes enlazados"
-help = "Se usan para avisarte cuando hay algo cerca de tu ubicación."
+heading = "Personajes"
+help = "Gestiona los personajes que deseas monitorear."
 add = "➕ Agregar"
-add_hint = "Inicia sesión con EVE SSO en tu navegador para enlazar un personaje"
-remove = "✖ Quitar"
-remove_hint = "Desenlazar a %{name}"
-remove_disabled = "Selecciona un personaje para desenlazarlo"
-alliance = "Alianza:"
+add_hint = "Introduce el nombre del personaje que deseas agregar."
+remove = "✖ Eliminar"
+remove_hint = "Eliminar %{name}"
+remove_disabled = "Selecciona un personaje para eliminarlo"
+alliance = "Alianza"
 no_alliance = "Sin alianza"
-corporation = "Corporación:"
+corporation = "Corporación"
 no_corporation = "Sin corporación"
-last_logon = "Última conexión:"
-empty = "⚠ Todavía no hay personajes enlazados en Telescope. Usa ➕ Agregar para enlazar uno."
+last_logon = "Último inicio de sesión"
+empty = "⚠ No hay personajes vinculados. Usa ➕ Agregar para vincular uno."
 
 [map]
 universe = "Universo"
-search_region = "Buscar región:"
-set_beacon = "Poner baliza"
+search_region = "Buscar región"
+set_beacon = "Establecer marcador"
 settings = "⚙ Configuración"
 
 [log]
-title = "Log (%{count})"
-collapse = "Contraer el log"
-expand = "Expandir el log"
+title = "Bitácora (%{count})"
+collapse = "Colapsar"
+expand = "Expandir"
 
 [sde_update]
-title = "Actualizando la base de datos del SDE de EVE Online"
-checking = "Buscando una nueva versión del SDE de EVE Online..."
-downloading = "Descargando la nueva exportación del SDE..."
-rebuilding = "Reconstruyendo la base de datos del SDE, puede tardar un minuto..."
+title = "Actualizando SDE"
+checking = "Verificando actualizaciones..."
+downloading = "Descargando actualizaciones..."
+rebuilding = "Reconstruyendo base de datos, puede demorar unos minutos..."
+

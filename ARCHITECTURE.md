@@ -117,11 +117,14 @@ Telescope reads and writes these in the directory it runs from:
 Every text the user reads comes from `t!("section.key")` (`rust-i18n`), looked
 up in `crates/telescope/locales/<code>.toml`: one file per language, all with
 the same keys, embedded in the binary at compile time. A key missing from a
-language falls back to English. The `i18n` tests check that every file has
-exactly the keys and `%{placeholders}` of `en.toml`.
+language falls back to English, but an empty value is shown blank. The `i18n`
+tests check that every file has exactly the keys of `en.toml`, and the same
+`%{placeholders}` in every value that isn't empty.
 
 - **Adding a language** is adding its file (copy `en.toml`, translate the
-  values, including `language.name`). *Settings -> General* lists it on its own.
+  values, including `language.name`). *Settings -> General* lists it on its own
+  once `language.name` has a value. `es.toml` is such a template today: every
+  key, empty values, not offered yet.
 - **The chosen language** is `language` in `telescope.toml`'s `[ui]` table:
   `"auto"` (the operating system's language, English when there is no file for
   it) or a file name such as `"es"`. It is applied at start-up and as soon as

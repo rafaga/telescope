@@ -117,6 +117,12 @@ pub trait TabPane {
 
 pub struct UniversePane {
     map: Map,
+    /// Whether `generate_data` loaded the systems into `map`. Without them
+    /// (no usable `sde.db`: first run, or while `DatabaseUpdater` rebuilds
+    /// it) markers are not passed on: egui-map 0.9.1 panics drawing a marker
+    /// on a map that has no points (`map.rs`, `self.points.as_ref().unwrap()`
+    /// in the marker loop). An empty map has nowhere to put them anyway.
+    has_points: bool,
     mapsync_reciever: Receiver<MapSync>,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
@@ -139,6 +145,7 @@ impl UniversePane {
             path,
             factor,
             task_msg,
+            has_points: false,
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -155,6 +162,7 @@ impl UniversePane {
         if let Ok(t_sde) = SdeManager::new(&self.path, self.factor) {
             if let Ok(points) = t_sde.get_systems() {
                 self.map.add_hashmap_points(sde_points_to_map(points));
+                self.has_points = true;
             }
             if let Ok(hash_conns) = t_sde.get_connections() {
                 self.map.add_hashmap_lines(sde_segments_to_map(hash_conns));
@@ -194,7 +202,9 @@ impl UniversePane {
 
 impl TabPane for UniversePane {
     fn update_marker(&mut self, player_id: usize, system_id: usize) {
-        self.map.update_marker(player_id, system_id);
+        if self.has_points {
+            self.map.update_marker(player_id, system_id);
+        }
     }
 
     fn remove_marker(&mut self, player_id: usize) {
@@ -285,6 +295,12 @@ impl TabPane for UniversePane {
 
 pub struct RegionPane {
     map: Map,
+    /// Whether `generate_data` loaded the systems into `map`. Without them
+    /// (no usable `sde.db`: first run, or while `DatabaseUpdater` rebuilds
+    /// it) markers are not passed on: egui-map 0.9.1 panics drawing a marker
+    /// on a map that has no points (`map.rs`, `self.points.as_ref().unwrap()`
+    /// in the marker loop). An empty map has nowhere to put them anyway.
+    has_points: bool,
     mapsync_reciever: Receiver<MapSync>,
     path: PathBuf,
     factor: f64,
@@ -310,6 +326,7 @@ impl RegionPane {
             region_id,
             tab_name: String::from("Region"),
             task_msg,
+            has_points: false,
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -337,6 +354,7 @@ impl RegionPane {
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
             Ok(points) => {
                 self.map.add_hashmap_points(sde_points_to_map(points));
+                self.has_points = true;
                 if let Ok(lines) = t_sde.get_abstract_connections(vec![self.region_id as u32]) {
                     self.map.add_hashmap_lines(sde_segments_to_map(lines));
                 }
@@ -361,7 +379,9 @@ impl RegionPane {
 
 impl TabPane for RegionPane {
     fn update_marker(&mut self, player_id: usize, system_id: usize) {
-        self.map.update_marker(player_id, system_id);
+        if self.has_points {
+            self.map.update_marker(player_id, system_id);
+        }
     }
 
     fn remove_marker(&mut self, player_id: usize) {
@@ -1000,5 +1020,60 @@ impl NodeTemplate for Template {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod no_sde_tests {
+    use super::*;
+    use crate::app::messages::MapSync;
+
+    /// A spawner and the receiver that keeps its channel open (the pane
+    /// reports the missing `sde.db` through it).
+    fn spawner() -> (
+        Arc<MessageSpawner>,
+        tokio::sync::mpsc::Receiver<crate::app::messages::Message>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        (Arc::new(MessageSpawner::new(Arc::new(sender))), receiver)
+    }
+
+    /// Draws `pane` once in a headless egui context.
+    fn draw(pane: &mut dyn TabPane) {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        ctx.run_ui(raw, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let _ = pane.ui(ui);
+            });
+        })
+        .textures_delta
+        .clear();
+    }
+
+    // Regression test: with no usable `sde.db` (first run, or while
+    // `DatabaseUpdater` rebuilds it) a pane has no systems, and a linked
+    // character's marker made egui-map 0.9.1 panic on its first frame
+    // (`map.rs:739`, an `unwrap` on the missing points).
+    #[test]
+    fn panes_without_sde_data_ignore_markers() {
+        let missing = PathBuf::from("/nonexistent/telescope-test/sde.db");
+        let (sender, _) = tokio::sync::broadcast::channel::<MapSync>(4);
+        let (spawner, _messages) = spawner();
+
+        let mut universe =
+            UniversePane::new(sender.subscribe(), missing.clone(), 1.0, spawner.clone());
+        universe.update_marker(1, 30000142);
+        draw(&mut universe);
+
+        let mut region = RegionPane::new(sender.subscribe(), missing, 1.0, 10000002, spawner);
+        region.update_marker(1, 30000142);
+        draw(&mut region);
     }
 }

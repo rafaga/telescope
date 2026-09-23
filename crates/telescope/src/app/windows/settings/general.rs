@@ -18,7 +18,14 @@ impl TelescopeApp {
                 )
                 .into_owned()
             } else {
-                i18n::display_name(setting)
+                // A language saved in `[ui]` whose file has no name (yet):
+                // show its code rather than an empty box.
+                let name = i18n::display_name(setting);
+                if name.trim().is_empty() {
+                    setting.to_owned()
+                } else {
+                    name
+                }
             }
         };
         let mut chosen = state.language.clone();

@@ -71,6 +71,10 @@ period it happened in.
 
 ### Fixed
 
+* Crash on the first frame when a character is linked and `sde.db` can't be
+  loaded yet (first run, or while it is being rebuilt): map panes without
+  systems no longer pass markers to egui-map 0.9.1, which panicked drawing
+  them (September 2026).
 * Intel watcher on Windows and Linux: content writes and file creation /
   removal are now recognised, and the watch is re-registered idempotently so
   saving the settings several times no longer repeats every log line
