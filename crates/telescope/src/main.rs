@@ -72,16 +72,32 @@ fn main() -> eframe::Result {
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env());
 
+    //   - `PanelLayer` copies WARN/ERROR events from dependencies (a portrait
+    //     that fails to download, an ESI error, ...) into the on-screen log
+    //     at the bottom of the window; see `telescope::log_bridge`. Its own
+    //     fixed filter, independent of `RUST_LOG`.
+    let panel_layer = telescope::log_bridge::PanelLayer
+        .with_filter(tracing_subscriber::filter::LevelFilter::WARN);
+
     #[cfg(feature = "profile")]
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(fmt_layer)
+            .with(panel_layer)
             .with(tracing_tracy::TracyLayer::default()),
     )
     .expect("setting the global tracing subscriber");
     #[cfg(not(feature = "profile"))]
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(fmt_layer))
-        .expect("setting the global tracing subscriber");
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(fmt_layer)
+            .with(panel_layer),
+    )
+    .expect("setting the global tracing subscriber");
+
+    // Installed copies keep their files in the per-user data folder; see
+    // `telescope::app_dirs`.
+    telescope::app_dirs::prepare();
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

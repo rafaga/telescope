@@ -50,6 +50,7 @@
 //! |--------|--------------|--------|
 //! | `notify` | — | Sends the matched line to the application notification log. |
 //! | `map_alert` | `system_group` | Resolves the named capture group as a solar system and highlights it on the maps. The group must exist in the pattern (validated at load time). |
+//! | `ignore` | — | Drops the whole line: no other rule (pattern or dictionary) is evaluated on it, whatever the declaration order. Use it for lines that are never intel, such as the channel's message of the day. Only for `[[patterns]]`. |
 //!
 //! # Dictionary rules
 //!
@@ -92,6 +93,7 @@
 //!
 //! | Rule id | Matches | Action | State |
 //! |---------|---------|--------|-------|
+//! | `channel_motd` | The `Channel MOTD:` line EVE writes when a channel is joined. | `ignore` | active |
 //! | `intel_line` | Every parsed intel line. | `notify` | active |
 //! | `system_reported` | Any EVE solar system name; the pattern covers 100% of the 8436 `solarSystemName` values in `assets/sde.db` (wormholes `J\d{6}`, nullsec-style `1DQ1-A`/`B-R5RB`, coded `AD001`, named systems like `Jita` or `Tash-Murkon Prime`). | `map_alert` | active |
 //! | `clear_report` | `clear` / `clr` keywords (case-insensitive). | `notify` | active |
@@ -199,6 +201,7 @@ fn default_true() -> bool {
 /// ```toml
 /// action = { type = "notify" }
 /// action = { type = "map_alert", system_group = "system" }
+/// action = { type = "ignore" }
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -213,6 +216,10 @@ pub enum ActionConfig {
         /// Name of the capture group holding the solar system name.
         system_group: String,
     },
+    /// Drop the whole line: no rule (pattern or dictionary) produces a
+    /// match for it. Never returned in a [`PatternMatch`]; see
+    /// [`PatternEngine::evaluate`].
+    Ignore,
 }
 
 /// Action executed when a [`DictionaryRuleConfig`] matches.
@@ -1015,6 +1022,20 @@ impl PatternEngine {
                 continue;
             };
             let candidates = self.set.matches(&line.text);
+            // An `ignore` rule that applies to this channel drops the line
+            // before anything else runs on it. The `RegexSet` hit is enough:
+            // an ignore rule needs no captures.
+            let ignored = candidates.iter().any(|index| {
+                let rule = &self.rules[index];
+                rule.action == ActionConfig::Ignore
+                    && rule
+                        .channels
+                        .as_ref()
+                        .is_none_or(|channels| channels.contains(channel))
+            });
+            if ignored {
+                continue;
+            }
             for index in candidates.iter() {
                 if results.len() >= MAX_MATCHES_PER_CHUNK {
                     break;
@@ -1747,5 +1768,46 @@ mod tests {
         let mut ids: Vec<&str> = matches.iter().map(|m| m.rule_id.as_str()).collect();
         ids.sort();
         assert_eq!(ids, vec!["clear_report", "ships_en"]);
+    }
+
+    #[test]
+    fn an_ignore_rule_drops_the_whole_line() {
+        let mut ignore = rule("channel_motd", "^Channel MOTD:");
+        ignore.action = ActionConfig::Ignore;
+        let config = PatternConfig {
+            patterns: vec![rule("intel_line", ".+"), ignore],
+            dictionaries: vec![dict("ships", &["Rifter"])],
+        };
+        let (engine, errors) = PatternEngine::from_config(&config).unwrap();
+        assert!(errors.is_empty());
+        let data = "[ 2023.04.03 18:01:14 ] EVE System > Channel MOTD: Rifter welcome\n\
+                    [ 2023.04.03 18:02:00 ] Pilot > Rifter in 1DQ1-A\n";
+        let matches = engine.evaluate("intel", data);
+        assert!(!matches.is_empty());
+        assert!(matches.iter().all(|m| m.line.author == "Pilot"));
+        assert!(matches.iter().all(|m| m.action != ActionConfig::Ignore));
+    }
+
+    #[test]
+    fn an_ignore_rule_only_applies_to_its_channels() {
+        let mut ignore = rule("quiet", "^Channel MOTD:");
+        ignore.action = ActionConfig::Ignore;
+        ignore.channels = vec![String::from("other")];
+        let config = PatternConfig {
+            patterns: vec![rule("intel_line", ".+"), ignore],
+            dictionaries: Vec::new(),
+        };
+        let (engine, _) = PatternEngine::from_config(&config).unwrap();
+        let data = "[ 2023.04.03 18:01:14 ] EVE System > Channel MOTD: hello\n";
+        assert_eq!(engine.evaluate("intel", data).len(), 1);
+        assert!(engine.evaluate("other", data).is_empty());
+    }
+
+    #[test]
+    fn the_template_ignores_the_channel_motd() {
+        let config: PatternConfig = toml::from_str(DEFAULT_PATTERNS_TOML).unwrap();
+        let (engine, _) = PatternEngine::from_config(&config).unwrap();
+        let data = "[ 2023.04.03 18:01:14 ] EVE System > Channel MOTD: Welcome to Jita\n";
+        assert!(engine.evaluate("wc.Vale+Tribute", data).is_empty());
     }
 }

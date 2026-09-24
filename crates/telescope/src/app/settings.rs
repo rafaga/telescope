@@ -29,11 +29,23 @@ use std::{
 /// `ALARM_SOUND_PATH`) hardcoded their own copy of this string.
 pub(crate) const ALERTS_DIR: &str = "assets/alerts";
 
+/// Where the alarm sounds actually are: [`ALERTS_DIR`] under the first
+/// place Telescope's shipped files are found (the working directory, or the
+/// executable's folder once installed -- see `crate::app_dirs`), or
+/// `ALERTS_DIR` itself if none has it.
+pub(crate) fn alerts_dir() -> PathBuf {
+    crate::app_dirs::find_resource(Path::new(ALERTS_DIR))
+        .unwrap_or_else(|| PathBuf::from(ALERTS_DIR))
+}
+
 /// Default file name of the player (ESI) database, relative to the working
 /// directory (next to `telescope.toml`).
 pub(crate) const DEFAULT_PLAYER_DB: &str = "telescope.db";
 
+// `default`: a settings file may leave out any path (the shipped template
+// leaves out `intel`, whose default depends on the user's home folder).
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 struct FilePaths {
     #[serde(skip)]
     settings: PathBuf,
@@ -88,6 +100,11 @@ impl FilePaths {}
 struct Mapping {
     pub startup_regions: Vec<usize>,
     pub warning_area: u8,
+    /// Center every map on the linked character an alert sounded for.
+    /// `serde(default)`: settings files written before this option existed
+    /// load with it off.
+    #[serde(default)]
+    pub center_on_alert: bool,
 }
 
 impl Default for Mapping {
@@ -95,6 +112,7 @@ impl Default for Mapping {
         Self {
             startup_regions: vec![],
             warning_area: 4,
+            center_on_alert: false,
         }
     }
 }
@@ -405,6 +423,15 @@ impl Settings {
         self.saved = false;
     }
 
+    pub(crate) fn get_center_on_alert(&self) -> bool {
+        self.mapping.center_on_alert
+    }
+
+    pub(crate) fn set_center_on_alert(&mut self, value: bool) {
+        self.mapping.center_on_alert = value;
+        self.saved = false;
+    }
+
     pub(crate) fn get_startup_regions(&self) -> &Vec<usize> {
         self.mapping.startup_regions.as_ref()
     }
@@ -458,7 +485,7 @@ impl Settings {
     /// hand to `File::open` -- what `app::audio::AlarmPlayer::play_alarm`
     /// actually plays.
     pub(crate) fn get_alert_sound_path(&self) -> PathBuf {
-        Path::new(ALERTS_DIR).join(&self.paths.alert_sound)
+        alerts_dir().join(&self.paths.alert_sound)
     }
 
     /// `name` is just a file name (what `windows::settings::intelligence`'s
@@ -466,7 +493,7 @@ impl Settings {
     /// it against `ALERTS_DIR` itself to check it really exists before
     /// accepting it.
     pub fn set_alert_sound(&mut self, name: &str) -> Result<()> {
-        let full = Path::new(ALERTS_DIR).join(name);
+        let full = alerts_dir().join(name);
         if !full.exists() {
             return Err(SettingsError::InvalidDirectory(
                 full.to_string_lossy().to_string(),
@@ -736,5 +763,15 @@ mod tests {
         assert_eq!(reloaded.get_alert_sound(), Path::new("7_gong_solemne.wav"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shipped_settings_template_loads() {
+        let text = include_str!("../../../../assets/telescope.default.toml");
+        let settings: Settings = toml::from_str(text).unwrap();
+        assert_eq!(settings.paths.intel, FilePaths::default().intel);
+        assert_eq!(settings.ui.language, crate::i18n::AUTO);
+        assert!(settings.get_startup_regions().is_empty());
+        assert!(!settings.get_center_on_alert());
     }
 }

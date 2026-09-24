@@ -13,13 +13,13 @@
       }
     ],
     "identifier": "org.rafaga.telescope",
-    "beforePackagingCommand": null,
+    "beforePackagingCommand": "cargo build --release -p telescope",
     "beforeEachPackageCommand": null,
     "logLevel": "info",
     "formats": ["wix", "dmg"],
     "targetTriple": null,
     "homepage": "http://github.com/rafaga/telescope/",
-    "icons": ["./assets/icon.png"],
+    "icons": ["./assets/icon.ico", "./assets/icon.png"],
     "authors": [
       "Rafael Amador Galván"
     ],
@@ -37,7 +37,14 @@
         "src": "./assets/alerts",
         "target": "./assets/alerts"
       },
-      "Lorem ipsum"
+      {
+        "src": "./assets/telescope.default.toml",
+        "target": "./telescope.default.toml"
+      },
+      {
+        "src": "./patterns.toml",
+        "target": "./patterns.toml"
+      }
     ],
     "externalBinaries": null,
     "windows": {

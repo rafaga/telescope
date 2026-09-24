@@ -12,6 +12,8 @@ extern crate rust_i18n;
 rust_i18n::i18n!("locales", fallback = "en");
 
 mod app;
+pub mod app_dirs;
 mod i18n;
+pub mod log_bridge;
 pub use app::TelescopeApp;
 pub use app::patterns;

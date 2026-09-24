@@ -112,7 +112,6 @@ pub enum Target {
 pub enum SettingsPage {
     General,
     Intelligence,
-    DataSources,
     Characters,
 }
 
@@ -120,10 +119,9 @@ impl SettingsPage {
     /// Every settings page, in the order the Settings window menu lists
     /// them. A new page is one variant above, one entry here, one arm in
     /// `title` and one arm in the Settings window's page `match`.
-    pub const ALL: [SettingsPage; 4] = [
+    pub const ALL: [SettingsPage; 3] = [
         SettingsPage::General,
         SettingsPage::Intelligence,
-        SettingsPage::DataSources,
         SettingsPage::Characters,
     ];
 
@@ -132,7 +130,6 @@ impl SettingsPage {
         match self {
             SettingsPage::General => t!("settings.pages.general"),
             SettingsPage::Intelligence => t!("settings.pages.intelligence"),
-            SettingsPage::DataSources => t!("settings.pages.data_sources"),
             SettingsPage::Characters => t!("settings.pages.characters"),
         }
         .into_owned()

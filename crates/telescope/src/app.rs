@@ -353,6 +353,9 @@ impl eframe::App for TelescopeApp {
             let _span = tracing::info_span!("telescope_init").entered();
 
             egui_extras::install_image_loaders(ui.ctx());
+            // Wake the UI when a dependency logs a warning/error, so it
+            // shows up in the log panel right away (see `log_bridge`).
+            crate::log_bridge::set_repaint_context(ui.ctx());
 
             self.tree = Some(self.create_tree());
             let mut vec_chars = Vec::new();
@@ -467,12 +470,6 @@ impl eframe::App for TelescopeApp {
                 tree.ui(&mut self.behavior, ui);
             }
         });
-
-        //ui.add(&mut self.map);
-        /*if let Some(points) = self.universe.points {
-
-        }*/
-        //ui.label("鑑於對人類家庭所有成員的固有尊嚴及其平等的和不移的權利的承認，乃是世界自由、正義與和平的基礎");
         tracing::info!(tracy.frame_mark = true);
     }
 }
@@ -480,6 +477,22 @@ impl eframe::App for TelescopeApp {
 impl TelescopeApp {
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
+        // Warnings/errors that dependencies only reported through
+        // `tracing`/`log` (see `log_bridge`), shown like any notification.
+        for record in crate::log_bridge::drain() {
+            let kind = if record.is_error {
+                Type::Error
+            } else {
+                Type::Warning
+            };
+            let text = if record.is_error {
+                record.text
+            } else {
+                // The log panel prints source/context only for errors.
+                format!("{}: {}", record.source, record.text)
+            };
+            self.update_status_with_error((kind, record.source, record.context, text));
+        }
         while let Ok(message) = self.app_msg.1.try_recv() {
             let _span =
                 tracing::info_span!("dispatch app message", kind = message.kind()).entered();

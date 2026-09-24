@@ -1,6 +1,6 @@
 //! The Settings window frame: the page menu, the selected page and the Save button.
 //! Each page lives in its own submodule (`general`, `intelligence`,
-//! `data_sources`, `characters`).
+//! `characters`); `data_sources` is a section of the General page.
 
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
@@ -66,7 +66,6 @@ impl TelescopeApp {
                                 match self.selected_settings_page {
                                     SettingsPage::General => self.show_general_page(ui),
                                     SettingsPage::Intelligence => self.show_intelligence_page(ui),
-                                    SettingsPage::DataSources => self.show_data_sources_page(ui),
                                     SettingsPage::Characters => self.show_characters_page(ui),
                                 }
                             });

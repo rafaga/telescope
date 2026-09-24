@@ -28,7 +28,6 @@ unsaved = "⚠ unsaved changes"
 [settings.pages]
 general = "General"
 intelligence = "Intelligence"
-data_sources = "Data Sources"
 characters = "Characters"
 
 [settings.general]
@@ -36,20 +35,23 @@ heading = "Interface"
 language = "Language:"
 auto = "Automatic (%{language})"
 language_hint = "\"Automatic\" follows your operating system's language. The change applies right away and is saved."
+startup_maps = "Start-up maps"
+startup_help = "By default the universe map is shown, along with the regional maps where you have linked characters. Mark regions here to also show their maps at start-up."
 
 [settings.intelligence]
 alerts = "Alerts"
 warn_before = "Warn me when an enemy is within"
 warn_after = "systems close to me"
 alert_sound = "Alert sound:"
+play_sound = "Play this sound"
+center_on_alert = "Center the maps on the alerted character"
+center_on_alert_hint = "When an alert sounds, move every map to the linked character closest to the reported system."
 chat_logs = "EVE Channel logs:"
 select = "Select"
 default = "Default"
 monitored = "Monitored channels"
 monitored_help = "Select all the Intel Channels to monitor."
 no_channels = "No intel channels detected"
-startup_maps = "Start-up maps"
-startup_help = "By default the universe map is shown, along with the regional maps where you have linked characters. Mark regions here to also show their maps at start-up."
 
 [settings.data_sources]
 heading = "Data Paths"

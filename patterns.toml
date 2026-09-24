@@ -31,6 +31,11 @@
 #                        otherwise the first LIKE hit is used, which is not
 #                        guaranteed to be the system you meant if the
 #                        captured text is a short/ambiguous fragment.
+#                    - { type = "ignore" }
+#                        drops the whole line: no other rule (pattern or
+#                        dictionary) is evaluated on it, whatever order the
+#                        rules are declared in. For lines that are never
+#                        intel. Only for [[patterns]].
 #
 # Dictionary rules
 # -----------------
@@ -89,6 +94,15 @@
 # named "WinterCo_Friends") is truncated to the part before it. This did not
 # affect any channel name used below, but it is worth knowing if you add a
 # rule scoped to a channel whose name has an underscore in it.
+
+# The channel's message of the day, which EVE writes as a line from
+# "EVE System" every time the channel is joined. It is not intel, and its
+# words would otherwise trigger other rules (e.g. "Channel" looks like a
+# named solar system to system_reported), so the whole line is dropped.
+[[patterns]]
+id = "channel_motd"
+pattern = '^Channel MOTD:'
+action = { type = "ignore" }
 
 # Baseline rule: notifies every parsed intel line.
 [[patterns]]

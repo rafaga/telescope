@@ -149,7 +149,7 @@ impl UniversePane {
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
-        object.map.settings.region_label_alpha = 0.30;
+        object.map.settings.region_label_alpha = 0.25;
         object.map.settings.style.region_label_font =
             FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;

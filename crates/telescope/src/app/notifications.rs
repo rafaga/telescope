@@ -50,8 +50,14 @@ const NOTIFICATION_DEDUP_WINDOW: std::time::Duration = std::time::Duration::from
 /// The pure comparison behind the dedup check in
 /// [`TelescopeApp::update_status_with_error`], split out so it can be unit
 /// tested without spinning up a whole `TelescopeApp`. `true` means
-/// `message` is an exact repeat of `last` and arrived within
-/// [`NOTIFICATION_DEDUP_WINDOW`] of it, and should be collapsed.
+/// `message` would show exactly the same log entry as `last` and arrived
+/// within [`NOTIFICATION_DEDUP_WINDOW`] of it, and should be collapsed.
+///
+/// Source and context only count for errors, the only type whose entry
+/// prints them. For the rest they are invisible, and comparing them let
+/// through the most common duplicate: one intel line matched by two
+/// `notify` rules (e.g. `intel_line` plus a `ship_report_*` dictionary)
+/// arrives twice with the same text but a different rule id as context.
 fn is_duplicate_notification(
     last: Option<&(Type, String, String, String, std::time::Instant)>,
     message: &(Type, String, String, String),
@@ -59,9 +65,10 @@ fn is_duplicate_notification(
 ) -> bool {
     match last {
         Some((last_type, last_source, last_context, last_text, last_time)) => {
+            let same_origin = message.0 != Type::Error
+                || (*last_source == message.1 && *last_context == message.2);
             *last_type == message.0
-                && *last_source == message.1
-                && *last_context == message.2
+                && same_origin
                 && *last_text == message.3
                 && now.duration_since(*last_time) < NOTIFICATION_DEDUP_WINDOW
         }
@@ -302,6 +309,44 @@ mod dedup_tests {
             &message(Type::Info, "hello"),
             now
         ));
+    }
+
+    #[test]
+    fn the_same_line_from_another_rule_is_a_duplicate() {
+        let now = Instant::now();
+        let last = (
+            Type::Info,
+            String::from("PatternEngine"),
+            String::from("intel_line"),
+            String::from("hello"),
+            now,
+        );
+        let other_rule = (
+            Type::Info,
+            String::from("PatternEngine"),
+            String::from("ship_report_en"),
+            String::from("hello"),
+        );
+        assert!(is_duplicate_notification(Some(&last), &other_rule, now));
+    }
+
+    #[test]
+    fn errors_from_different_places_are_not_duplicates() {
+        let now = Instant::now();
+        let last = (
+            Type::Error,
+            String::from("a"),
+            String::from("x"),
+            String::from("failed"),
+            now,
+        );
+        let other = (
+            Type::Error,
+            String::from("b"),
+            String::from("x"),
+            String::from("failed"),
+        );
+        assert!(!is_duplicate_notification(Some(&last), &other, now));
     }
 
     #[test]

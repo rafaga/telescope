@@ -22,6 +22,10 @@ profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/
 # the `ProfiledAllocator` comment in `src/main.rs`.
 profile-memory = ["profile"]
 
+# Embeds assets/icon.ico in the Windows executable (see build.rs).
+[build-dependencies]
+winresource = "0.1.31"
+
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 # `builder` pulls in reqwest/tokio/zip/etc. (see sde's own Cargo.toml) so

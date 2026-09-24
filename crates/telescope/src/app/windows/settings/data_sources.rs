@@ -1,5 +1,5 @@
-//! Settings page "Data Sources": the SDE and player database paths, and the
-//! button that checks for SDE updates.
+//! "Data Paths" section of the General settings page: the SDE and player
+//! database paths, and the button that checks for SDE updates.
 
 use crate::app::TelescopeApp;
 use eframe::egui;
@@ -9,14 +9,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 impl TelescopeApp {
-    pub(super) fn show_data_sources_page(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn show_data_sources_section(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(12.00);
         ui.label(
             RichText::new(t!("settings.data_sources.heading")).font(FontId::proportional(20.0)),
         );
         ui.horizontal(|ui| {
             ui.label(t!("settings.data_sources.sde"));
             let mut str_sde = self.settings.get_sde().to_string_lossy().to_string();
-            if ui.text_edit_singleline(&mut str_sde).changed() {
+            if ui
+                .add(egui::TextEdit::singleline(&mut str_sde).desired_width(ui.available_width()))
+                .changed()
+            {
                 let _ = self.settings.set_sde(Path::new(&str_sde));
             }
         });
@@ -24,7 +28,7 @@ impl TelescopeApp {
             ui.label(t!("settings.data_sources.player_db"));
             let mut str_db = self.settings.get_db().to_string_lossy().to_string();
             if ui
-                .text_edit_singleline(&mut str_db)
+                .add(egui::TextEdit::singleline(&mut str_db).desired_width(ui.available_width()))
                 .on_hover_text(t!("settings.data_sources.player_db_hint"))
                 .changed()
             {

@@ -7,13 +7,14 @@
 //! file, decode it and dispatch pattern matches.
 
 use crate::app::TelescopeApp;
-use crate::app::messages::{MapSync, Message, Type};
+use crate::app::messages::{MapSync, Message, Target, Type};
 use crate::app::patterns::{ActionConfig, PatternMatch};
 use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
 use regex::Regex;
 use sde::SdeManager;
-use std::collections::HashMap;
+use sde::objects::SolarSystem;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::OnceLock;
@@ -148,6 +149,8 @@ impl TelescopeApp {
                 ActionConfig::MapAlert { system_group } => {
                     self.dispatch_map_alert(intel_match, system_group);
                 }
+                // Dropped inside `PatternEngine::evaluate`; never matched.
+                ActionConfig::Ignore => {}
             }
         }
         matches
@@ -187,7 +190,15 @@ impl TelescopeApp {
                             system_id,
                             tokio::time::Instant::now(),
                         )));
-                        self.audio.play_alarm(&self.settings.get_alert_sound_path());
+                        if let Some(character_system) = self.nearest_character_in_range(system_id) {
+                            self.audio.play_alarm(&self.settings.get_alert_sound_path());
+                            if self.settings.get_center_on_alert() {
+                                let _ = self.map_msg.0.send(MapSync::CenterOn((
+                                    character_system as usize,
+                                    Target::System,
+                                )));
+                            }
+                        }
                     }
                 }
             }
@@ -201,6 +212,70 @@ impl TelescopeApp {
             }
         }
     }
+}
+
+impl TelescopeApp {
+    /// Whether an alert in `system_id` should sound: it is within the
+    /// warning radius set in Settings (`warning_area`, in stargate jumps) of
+    /// at least one linked character's last known location. Returns the
+    /// solar system of the closest such character (where the maps are
+    /// centered when `center_on_alert` is on), or `None` for no sound.
+    ///
+    /// When that can't be judged -- no character has a known location yet,
+    /// or the universe (SDE) isn't loaded -- the alert stays silent: the
+    /// sound only fires for a distance that was actually computed. The map
+    /// notification itself is never filtered, only the sound.
+    fn nearest_character_in_range(&self, system_id: usize) -> Option<u32> {
+        let origins: Vec<u32> = self
+            .esi
+            .characters
+            .iter()
+            .filter_map(|character| u32::try_from(character.location).ok())
+            .filter(|location| *location > 0)
+            .collect();
+        let target = u32::try_from(system_id).ok()?;
+        if origins.is_empty() || self.universe.solar_systems.is_empty() {
+            return None;
+        }
+        nearest_origin_within(
+            &self.universe.solar_systems,
+            &origins,
+            target,
+            self.settings.get_warning_area(),
+        )
+    }
+}
+
+/// The member of `origins` closest to `target` in stargate jumps, if it is at
+/// most `max_jumps` away (breadth-first search over
+/// [`SolarSystem::connections`], so the first origin to reach `target` is the
+/// nearest one; ties go to the earlier origin in the list).
+fn nearest_origin_within(
+    systems: &HashMap<u32, SolarSystem>,
+    origins: &[u32],
+    target: u32,
+    max_jumps: u8,
+) -> Option<u32> {
+    let mut seen: HashSet<u32> = origins.iter().copied().collect();
+    // (system reached, origin it was reached from, jumps from that origin)
+    let mut queue: VecDeque<(u32, u32, u8)> = origins.iter().map(|&id| (id, id, 0)).collect();
+    while let Some((system, origin, jumps)) = queue.pop_front() {
+        if system == target {
+            return Some(origin);
+        }
+        if jumps == max_jumps {
+            continue;
+        }
+        let Some(solar_system) = systems.get(&system) else {
+            continue;
+        };
+        for &next in &solar_system.connections {
+            if seen.insert(next) {
+                queue.push_back((next, origin, jumps + 1));
+            }
+        }
+    }
+    None
 }
 
 /// Names of the channels flagged as monitored in `available`, sorted: the
@@ -396,5 +471,55 @@ mod monitored_channel_names_tests {
         let available = HashMap::from([(String::from("Local"), false)]);
         assert!(monitored_channel_names(&available).is_empty());
         assert!(monitored_channel_names(&HashMap::new()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod nearest_origin_tests {
+    use super::nearest_origin_within;
+    use sde::objects::SolarSystem;
+    use std::collections::HashMap;
+
+    /// A straight chain 1 - 2 - 3 - 4 - 5, plus 6 connected to nothing.
+    fn chain() -> HashMap<u32, SolarSystem> {
+        let links: [(u32, &[u32]); 6] = [
+            (1, &[2]),
+            (2, &[1, 3]),
+            (3, &[2, 4]),
+            (4, &[3, 5]),
+            (5, &[4]),
+            (6, &[]),
+        ];
+        links
+            .into_iter()
+            .map(|(id, connections)| {
+                let mut system = SolarSystem::new(1.0);
+                system.id = id;
+                system.connections = connections.to_vec();
+                (id, system)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_origin_itself_is_in_range() {
+        assert_eq!(nearest_origin_within(&chain(), &[3], 3, 0), Some(3));
+    }
+
+    #[test]
+    fn systems_up_to_the_radius_are_in_range() {
+        assert_eq!(nearest_origin_within(&chain(), &[1], 3, 2), Some(1));
+        assert_eq!(nearest_origin_within(&chain(), &[1], 4, 2), None);
+    }
+
+    #[test]
+    fn the_closest_origin_is_returned() {
+        assert_eq!(nearest_origin_within(&chain(), &[1, 5], 4, 7), Some(5));
+        assert_eq!(nearest_origin_within(&chain(), &[1, 5], 2, 7), Some(1));
+    }
+
+    #[test]
+    fn unconnected_systems_are_never_in_range() {
+        assert_eq!(nearest_origin_within(&chain(), &[1], 6, 7), None);
     }
 }

@@ -1,10 +1,12 @@
-//! Settings page "General": the interface language.
+//! Settings page "General": the interface language, the data paths (see
+//! `data_sources`) and the maps shown at start-up.
 
 use crate::app::TelescopeApp;
 use crate::i18n;
 use eframe::egui;
 use eframe::egui::FontId;
 use eframe::egui::RichText;
+use egui_extras::{Column, TableBuilder};
 
 impl TelescopeApp {
     pub(super) fn show_general_page(&mut self, ui: &mut egui::Ui) {
@@ -50,5 +52,58 @@ impl TelescopeApp {
                 tracing::warn!("could not save the interface language: {t_error}");
             }
         }
+        self.show_data_sources_section(ui);
+        self.show_startup_maps_section(ui);
+    }
+
+    /// Regions whose map opens at start-up, in three columns.
+    fn show_startup_maps_section(&mut self, ui: &mut egui::Ui) {
+        let mut keys: Vec<usize> = self.behavior.tile_data.keys().copied().collect();
+        keys.sort_unstable();
+        let num_rows = keys.len().div_ceil(3);
+        let row_height = 18.0;
+        ui.add_space(12.00);
+        ui.label(
+            RichText::new(t!("settings.general.startup_maps")).font(FontId::proportional(20.0)),
+        );
+        ui.label(t!("settings.general.startup_help"))
+            .with_new_rect(ui.available_rect_before_wrap());
+        ui.push_id("rgn_tbl", |ui| {
+            TableBuilder::new(ui)
+                .column(Column::resizable(Column::exact(150.0), false))
+                .column(Column::resizable(Column::exact(150.0), false))
+                .column(Column::resizable(Column::exact(150.0), false))
+                .striped(true)
+                .vscroll(false)
+                .body(|body| {
+                    body.rows(row_height, num_rows, |mut row| {
+                        let key_index = row.index() * 3;
+                        row.col(|ui: &mut egui::Ui| {
+                            let region = self.behavior.tile_data.get_mut(&keys[key_index]).unwrap();
+                            let name = region.get_name();
+                            //let checked = &mut self.behavior.tile_data.get_mut(&region.get_id()).unwrap().show_on_startup;
+                            ui.checkbox(&mut region.show_on_startup, name);
+                        });
+                        let mut t_key_index = key_index + 1;
+                        if t_key_index < keys.len() {
+                            row.col(|ui: &mut egui::Ui| {
+                                let region =
+                                    self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                let name = region.get_name();
+                                ui.checkbox(&mut region.show_on_startup, name);
+                            });
+                        }
+                        t_key_index += 1;
+                        if t_key_index < keys.len() {
+                            row.col(|ui: &mut egui::Ui| {
+                                let region =
+                                    self.behavior.tile_data.get_mut(&keys[t_key_index]).unwrap();
+                                let name = region.get_name();
+                                ui.checkbox(&mut region.show_on_startup, name);
+                            });
+                        }
+                    });
+                });
+        });
     }
 }
