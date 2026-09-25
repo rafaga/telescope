@@ -32,19 +32,22 @@ pub enum MapSync {
     /// `clear` report) and its line in the node tooltip.
     SystemAlert(IntelAlert),
     /// Plays (or clears) an animation on a node of every map that has it;
-    /// used by the Debug window to preview the node effects. Nothing else
-    /// constructs this today, so it (and `NodeEffect` itself) is
-    /// `#[cfg(debug_assertions)]` along with the rest of the debug menu --
-    /// see `app/windows.rs`'s `mod debug`.
-    #[cfg(debug_assertions)]
+    /// used by the Debug window to preview the node effects. Only the
+    /// `#[cfg(debug_assertions)]` Debug window (see `app/windows.rs`'s
+    /// `mod debug`) ever sends it, but the variant and its handling arms stay
+    /// compiled in every profile -- gating them with the UI is what used to
+    /// drop the animation match arms entirely in release. The `allow` below
+    /// covers release, where nothing constructs it.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeEffect((usize, NodeEffect)),
 }
 
 /// Node animations offered by `egui-map` (see `egui_map::map::NodeHandle`):
 /// one-off events that end on their own, lasting states that run until
 /// cleared, and `Clear` itself. Only ever constructed by the Debug window's
-/// animation preview -- see the cfg on `MapSync::NodeEffect` above.
-#[cfg(debug_assertions)]
+/// animation preview, but kept compiled in every profile -- see the note on
+/// `MapSync::NodeEffect` above.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NodeEffect {
     #[default]
@@ -59,7 +62,7 @@ pub enum NodeEffect {
     Clear,
 }
 
-#[cfg(debug_assertions)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 impl NodeEffect {
     pub const ALL: [NodeEffect; 9] = [
         NodeEffect::Pulse,
@@ -116,10 +119,11 @@ pub enum Type {
 pub enum Target {
     System,
     /// Never constructed outside the Debug window (`center_on_target`'s
-    /// handler for it in both map panes is an unfinished no-op stub), so
-    /// it's `#[cfg(debug_assertions)]` along with the rest of the debug
-    /// menu -- see `app/windows.rs`'s `mod debug`.
-    #[cfg(debug_assertions)]
+    /// handler for it in both map panes is an unfinished no-op stub), but
+    /// kept compiled in every profile so those arms stay put -- see the note
+    /// on `MapSync::NodeEffect`. The `allow` below covers release, where
+    /// nothing constructs it.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     Region,
 }
 

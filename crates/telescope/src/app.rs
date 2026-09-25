@@ -332,41 +332,11 @@ impl eframe::App for TelescopeApp {
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     #[tracing::instrument(skip_all)]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let Self {
-            initialized: _,
-            app_msg: _,
-            map_msg: _,
-            char_msg: _,
-            open: _,
-            esi: _,
-            app_messages: _,
-            tree: _,
-            universe: _,
-            selected_settings_page: _,
-            behavior: _,
-            task_msg: _,
-            task_auth: _,
-            settings: _,
-            watcher: _,
-            intel_channels: _,
-            dlg_intel_dir: _,
-            pattern_engine: _,
-            audio: _,
-            database_updater: _,
-            last_notification: _,
-            // search_text/emit_notification/search_selected_row/
-            // search_results/debug are #[cfg(debug_assertions)] fields (see
-            // the struct definition) -- listing them here unconditionally
-            // would fail to compile in a release build, and `#[cfg]` on a
-            // struct *pattern* field (unlike on the definition/literal) is
-            // not something this sandbox can verify compiles either way
-            // without a real `cargo build --release`, so this `..` covers
-            // them instead of guessing. That does mean this exhaustiveness
-            // reminder no longer forces a look at *this* spot for a brand
-            // new field either -- an accepted, minor trade-off for a build
-            // that's guaranteed to compile in both profiles.
-            ..
-        } = self;
+        // No `let Self { .. } = self;` here: every field was bound as `_`
+        // (nothing used the bindings) and `..` makes the list unable to act
+        // as an exhaustiveness reminder anyway, so the whole destructuring
+        // was dead code -- and clippy::unneeded_wildcard_pattern flagged it.
+        // Fields are accessed through `self.` below.
 
         if !self.initialized {
             let _span = tracing::info_span!("telescope_init").entered();
