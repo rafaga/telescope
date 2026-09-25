@@ -33,12 +33,40 @@ jobs:
       # from Cargo.toml. Overwrite it from the release tag so every release
       # ships installers versioned to match it, instead of relying on
       # someone remembering to bump packager.json by hand before tagging.
+      #
+      # WiX/MSI's ProductVersion must be plain "major.minor.build" numbers
+      # (each 0-65535) -- no "-rc01"/"+something" suffix survives as-is, or
+      # cargo-packager fails the Windows job with "Optional build metadata
+      # in app version must be numeric-only and cannot be greater than
+      # 65535 for msi target" (hit for real on tag 1.0.0-rc01).
+      #
+      # Fix: strip the tag down to its numeric major.minor.patch core, then
+      # attach the CI run number as semver build metadata ("+<run_number>").
+      # cargo-packager (inherited from tauri-bundler, confirmed by reading
+      # its version-conversion PR) special-cases a purely-numeric "+build"
+      # by using it as a literal 4th MSI version field, so "1.0.0+187"
+      # becomes ProductVersion 1.0.0.187. github.run_number increases by 1
+      # on every run of this workflow, so every build -- RC or final, no
+      # matter how the tag is spelled -- gets a strictly increasing,
+      # always-valid installer version, and the tag itself is free to stay
+      # human-readable ("v1.0.0-rc01", "v1.0.0-rc02", "v1.0.0", ...). The
+      # installer's ProductVersion (1.0.0.187) won't visually match the tag
+      # -- if that distinction needs to be visible somewhere, it belongs in
+      # the app's own About/title, not in this metadata field.
+      #
+      # (github.run_number is scoped to this workflow file and resets if
+      # the workflow is ever renamed/recreated; also capped at 65535 by the
+      # same MSI limit -- a non-issue at this project's release cadence.)
       - name: Sync packager.json version with the release tag
         shell: bash
         env:
           TAG: ${{ github.event.release.tag_name }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
           version="${TAG#v}"
+          version="${version%%-*}"
+          version="${version%%+*}"
+          version="${version}+${RUN_NUMBER}"
           jq --arg v "$version" '.version = $v' packager.json > packager.json.tmp
           mv packager.json.tmp packager.json
 
@@ -57,14 +85,28 @@ jobs:
       # the resulting installer panics for every user the moment
       # TelescopeApp::new() calls AppData::new(). Sourced from repo secrets
       # (Settings -> Secrets and variables -> Actions), never committed.
+      #
+      # APPLE_SIGNING_IDENTITY: "-" is ad-hoc signing (macOS only -- ignored
+      # on Windows). No Apple Developer account/certificate involved, it's
+      # the pseudo-identity `codesign --sign -` uses to self-sign locally.
+      # Required just to let the app *launch* on Apple Silicon (macOS
+      # refuses to run an unsigned arm64 binary at all) -- it does NOT
+      # notarize or satisfy Gatekeeper for a downloaded file: users still
+      # get the "unidentified developer" prompt and have to right-click ->
+      # Open the first time. Real notarization needs a paid Developer ID
+      # certificate (see claude/release-ci-installers.md) -- this is the
+      # no-cost stand-in until/unless that's set up. `packager.json` itself
+      # is left untouched (macos.signingIdentity stays unset) so this only
+      # applies to this CI build, not Rafael's manual local packaging.
       - name: Build installer
         env:
           ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
+          APPLE_SIGNING_IDENTITY: "-"
         run: cargo packager --release
 
       - name: Upload installer to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           fail_on_unmatched_files: false
           files: |
