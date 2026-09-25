@@ -19,7 +19,7 @@
     "formats": ["wix", "dmg"],
     "targetTriple": null,
     "homepage": "http://github.com/rafaga/telescope/",
-    "icons": ["./assets/icon.ico", "./assets/icon.png"],
+    "icons": ["./assets/icon.ico", "./assets/icon.png", "./assets/icon.icns"],
     "authors": [
       "Rafael Amador Galván"
     ],

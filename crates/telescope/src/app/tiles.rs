@@ -383,7 +383,9 @@ impl RegionPane {
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
-        object.map.set_node_template(Rc::new(Template::new(node_style)));
+        object
+            .map
+            .set_node_template(Rc::new(Template::new(node_style)));
         object
     }
 
@@ -943,7 +945,9 @@ impl NodeTemplate for Template {
                     corner_radius: self.node_style.corner_radius * ctx.zoom,
                 },
                 ui.input(|input| input.time) as f32,
-                ctx.theme.marker.gamma_multiply(self.node_style.glow_max_alpha),
+                ctx.theme
+                    .marker
+                    .gamma_multiply(self.node_style.glow_max_alpha),
                 ctx.marker,
             );
             ui.ctx().request_repaint();

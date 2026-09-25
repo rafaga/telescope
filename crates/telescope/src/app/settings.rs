@@ -7,6 +7,7 @@
 
 use crate::app::intel::IntelLogName;
 use chrono::{DateTime, Utc};
+use sde::builder::BuildUrls;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -159,32 +160,6 @@ impl Default for UiState {
     }
 }
 
-/// Where `DatabaseUpdater` fetches the SDE from. Not user-editable (there's
-/// nowhere in Settings' UI to change it), so it isn't persisted to
-/// `telescope.toml` -- see [`Settings::get_sde_url`]/[`Settings::get_maps_url`]/
-/// [`Settings::get_sde_variant`].
-pub(crate) struct DataSourceUrls {
-    pub(crate) sde_url: String,
-    pub(crate) maps_url: String,
-    pub(crate) sde_variant: String,
-}
-
-impl Default for DataSourceUrls {
-    fn default() -> Self {
-        Self {
-            // CCP's official SDE index/download root.
-            sde_url: String::from("https://developers.eveonline.com/static-data/tranquility/"),
-            // dotlan's map SVGs, only fetched when `with_third_party` is
-            // enabled (used to build `mapAbstractSystems`, see
-            // `sde::builder::parser::ParserConfig::with_third_party`).
-            maps_url: String::from("http://evemaps.dotlan.net/svg/"),
-            // The `sde-builder` CLI also offers `"yaml"`; Telescope only
-            // ever needs the smaller `jsonl` export the parser reads.
-            sde_variant: String::from("jsonl"),
-        }
-    }
-}
-
 /// Tuning for the on-screen notification log (`app::notifications`). Not
 /// user-editable, so not persisted to `telescope.toml`.
 pub(crate) struct NotificationLimits {
@@ -267,7 +242,19 @@ impl Default for CharacterCardStyle {
 /// value a plain `const` used to hold before it moved here.
 #[derive(Default)]
 pub(crate) struct InternalDefaults {
-    pub(crate) data_sources: DataSourceUrls,
+    /// Where `DatabaseUpdater` fetches the SDE from. Not user-editable
+    /// (there's nowhere in Settings' UI to change it), so it isn't
+    /// persisted to `telescope.toml` -- see
+    /// [`Settings::get_sde_url`]/[`Settings::get_maps_url`]/
+    /// [`Settings::get_sde_variant`].
+    ///
+    /// [`sde::builder::BuildUrls`] rather than a Telescope-owned struct:
+    /// as of `sde` 0.5.0 (already a dependency, with the `builder` feature
+    /// enabled for `database_updater.rs`) its `Default` impl already
+    /// returns the exact CCP SDE / dotlan maps / `jsonl` values Telescope
+    /// needs, so a local copy of the same three defaults would just be
+    /// duplication to keep in sync by hand.
+    pub(crate) data_sources: BuildUrls,
     pub(crate) notifications: NotificationLimits,
     pub(crate) node_style: NodeStyle,
     pub(crate) character_card: CharacterCardStyle,
@@ -862,7 +849,10 @@ mod tests {
 
     #[test]
     fn db_defaults_to_a_real_file_next_to_the_app() {
-        assert_eq!(Settings::default().get_db(), Path::new(FilePaths::DEFAULT_DB));
+        assert_eq!(
+            Settings::default().get_db(),
+            Path::new(FilePaths::DEFAULT_DB)
+        );
     }
 
     // Regression test: a `telescope.toml` from before `db` had a default
@@ -986,6 +976,9 @@ mod tests {
             Mapping::MAX_ALERT_DURATION_SECS
         );
         let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
-        assert_eq!(old.alert_duration_secs, Mapping::DEFAULT_ALERT_DURATION_SECS);
+        assert_eq!(
+            old.alert_duration_secs,
+            Mapping::DEFAULT_ALERT_DURATION_SECS
+        );
     }
 }
