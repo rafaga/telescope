@@ -57,10 +57,24 @@ jobs:
       # the resulting installer panics for every user the moment
       # TelescopeApp::new() calls AppData::new(). Sourced from repo secrets
       # (Settings -> Secrets and variables -> Actions), never committed.
+      #
+      # APPLE_SIGNING_IDENTITY: "-" is ad-hoc signing (macOS only -- ignored
+      # on Windows). No Apple Developer account/certificate involved, it's
+      # the pseudo-identity `codesign --sign -` uses to self-sign locally.
+      # Required just to let the app *launch* on Apple Silicon (macOS
+      # refuses to run an unsigned arm64 binary at all) -- it does NOT
+      # notarize or satisfy Gatekeeper for a downloaded file: users still
+      # get the "unidentified developer" prompt and have to right-click ->
+      # Open the first time. Real notarization needs a paid Developer ID
+      # certificate (see claude/release-ci-installers.md) -- this is the
+      # no-cost stand-in until/unless that's set up. `packager.json` itself
+      # is left untouched (macos.signingIdentity stays unset) so this only
+      # applies to this CI build, not Rafael's manual local packaging.
       - name: Build installer
         env:
           ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
+          APPLE_SIGNING_IDENTITY: "-"
         run: cargo packager --release
 
       - name: Upload installer to the release
