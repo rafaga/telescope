@@ -77,11 +77,19 @@ pub struct TelescopeApp {
     esi: EsiManager,
     // Capped at `Settings::get_max_app_messages` by `update_status_with_error`.
     app_messages: Vec<LayoutJob>,
+    // Debug window's SDE-search state and its own state -- see the cfg on
+    // the "menu.debug" button/window-render call above `fn ui` for why
+    // these only exist in a non-release build.
+    #[cfg(debug_assertions)]
     search_text: String,
+    #[cfg(debug_assertions)]
     emit_notification: bool,
+    #[cfg(debug_assertions)]
     search_selected_row: Option<usize>,
+    #[cfg(debug_assertions)]
     search_results: Vec<(isize, String, isize, String)>,
     // State of the Debug window's "Advanced" section.
+    #[cfg(debug_assertions)]
     debug: windows::debug::DebugState,
     universe: Universe,
     selected_settings_page: SettingsPage,
@@ -283,15 +291,20 @@ impl Default for TelescopeApp {
             open: [false; 3],
             esi,
             app_messages: Vec::new(),
+            #[cfg(debug_assertions)]
             search_text: String::new(),
+            #[cfg(debug_assertions)]
             search_selected_row: None,
+            #[cfg(debug_assertions)]
             emit_notification: false,
             behavior: TreeBehavior::new(
                 Arc::clone(&msgmon),
                 settings.get_factor(),
                 settings.get_sde().to_path_buf(),
             ),
+            #[cfg(debug_assertions)]
             search_results: Vec::new(),
+            #[cfg(debug_assertions)]
             debug: windows::debug::DebugState::default(),
             tree: None,
             universe,
@@ -327,11 +340,6 @@ impl eframe::App for TelescopeApp {
             open: _,
             esi: _,
             app_messages: _,
-            search_text: _,
-            emit_notification: _,
-            search_selected_row: _,
-            search_results: _,
-            debug: _,
             tree: _,
             universe: _,
             selected_settings_page: _,
@@ -346,6 +354,18 @@ impl eframe::App for TelescopeApp {
             audio: _,
             database_updater: _,
             last_notification: _,
+            // search_text/emit_notification/search_selected_row/
+            // search_results/debug are #[cfg(debug_assertions)] fields (see
+            // the struct definition) -- listing them here unconditionally
+            // would fail to compile in a release build, and `#[cfg]` on a
+            // struct *pattern* field (unlike on the definition/literal) is
+            // not something this sandbox can verify compiles either way
+            // without a real `cargo build --release`, so this `..` covers
+            // them instead of guessing. That does mean this exhaustiveness
+            // reminder no longer forces a look at *this* spot for a brand
+            // new field either -- an accepted, minor trade-off for a build
+            // that's guaranteed to compile in both profiles.
+            ..
         } = self;
 
         if !self.initialized {

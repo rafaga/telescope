@@ -346,6 +346,7 @@ impl TabPane for UniversePane {
         // once this pane is visible again.
         while let Ok(msg) = self.mapsync_reciever.try_recv() {
             match msg {
+                #[cfg(debug_assertions)]
                 MapSync::NodeEffect((system_id, effect)) => {
                     if let Some(node) = self.map.node(system_id) {
                         effect.apply(node);
@@ -397,6 +398,7 @@ impl TabPane for UniversePane {
                     )));
                 }
             }
+            #[cfg(debug_assertions)]
             Target::Region => {}
         }
     }
@@ -520,6 +522,7 @@ impl TabPane for RegionPane {
         // every frame.
         while let Ok(msg) = self.mapsync_reciever.try_recv() {
             match msg {
+                #[cfg(debug_assertions)]
                 MapSync::NodeEffect((system_id, effect)) => {
                     if let Some(node) = self.map.node(system_id) {
                         effect.apply(node);
@@ -555,6 +558,7 @@ impl TabPane for RegionPane {
             Target::System => {
                 self.map.set_pos_from_nodeid(message.0);
             }
+            #[cfg(debug_assertions)]
             Target::Region => {}
         }
     }

@@ -32,13 +32,19 @@ pub enum MapSync {
     /// `clear` report) and its line in the node tooltip.
     SystemAlert(IntelAlert),
     /// Plays (or clears) an animation on a node of every map that has it;
-    /// used by the Debug window to preview the node effects.
+    /// used by the Debug window to preview the node effects. Nothing else
+    /// constructs this today, so it (and `NodeEffect` itself) is
+    /// `#[cfg(debug_assertions)]` along with the rest of the debug menu --
+    /// see `app/windows.rs`'s `mod debug`.
+    #[cfg(debug_assertions)]
     NodeEffect((usize, NodeEffect)),
 }
 
 /// Node animations offered by `egui-map` (see `egui_map::map::NodeHandle`):
 /// one-off events that end on their own, lasting states that run until
-/// cleared, and `Clear` itself.
+/// cleared, and `Clear` itself. Only ever constructed by the Debug window's
+/// animation preview -- see the cfg on `MapSync::NodeEffect` above.
+#[cfg(debug_assertions)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NodeEffect {
     #[default]
@@ -53,6 +59,7 @@ pub enum NodeEffect {
     Clear,
 }
 
+#[cfg(debug_assertions)]
 impl NodeEffect {
     pub const ALL: [NodeEffect; 9] = [
         NodeEffect::Pulse,
@@ -108,6 +115,11 @@ pub enum Type {
 #[derive(Clone)]
 pub enum Target {
     System,
+    /// Never constructed outside the Debug window (`center_on_target`'s
+    /// handler for it in both map panes is an unfinished no-op stub), so
+    /// it's `#[cfg(debug_assertions)]` along with the rest of the debug
+    /// menu -- see `app/windows.rs`'s `mod debug`.
+    #[cfg(debug_assertions)]
     Region,
 }
 
