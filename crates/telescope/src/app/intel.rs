@@ -7,6 +7,7 @@
 //! file, decode it and dispatch pattern matches.
 
 use crate::app::TelescopeApp;
+use crate::app::map_alerts::{AlertSummary, IntelAlert, is_query};
 use crate::app::messages::{MapSync, Message, Target, Type};
 use crate::app::patterns::{ActionConfig, PatternMatch};
 use chrono::Utc;
@@ -136,6 +137,9 @@ impl TelescopeApp {
     #[tracing::instrument(skip(self, data))]
     pub(crate) fn parse_intel_data(&self, channel: &str, data: &str) -> Vec<String> {
         let matches = self.pattern_engine.evaluate(channel, data);
+        // Lines with a `map_alert` match, in order: each is dispatched once,
+        // with all of its matches, so the tooltip summary sees the whole line.
+        let mut alert_lines: Vec<usize> = Vec::new();
         for intel_match in &matches {
             match &intel_match.action {
                 ActionConfig::Notify => {
@@ -146,12 +150,26 @@ impl TelescopeApp {
                         intel_match.line.to_string(),
                     )));
                 }
-                ActionConfig::MapAlert { system_group } => {
-                    self.dispatch_map_alert(intel_match, system_group);
+                ActionConfig::MapAlert { .. } => {
+                    if !alert_lines.contains(&intel_match.line_index) {
+                        alert_lines.push(intel_match.line_index);
+                    }
                 }
                 // Dropped inside `PatternEngine::evaluate`; never matched.
                 ActionConfig::Ignore => {}
             }
+        }
+        for line_index in alert_lines {
+            let line_matches: Vec<&PatternMatch> = matches
+                .iter()
+                .filter(|intel_match| intel_match.line_index == line_index)
+                .collect();
+            // A question about a system ("H-5GUI status?") is not a report:
+            // no visual alert, no sound, no tooltip entry.
+            if is_query(&line_matches) {
+                continue;
+            }
+            self.dispatch_map_alert(&line_matches);
         }
         matches
             .into_iter()
@@ -159,11 +177,78 @@ impl TelescopeApp {
             .collect()
     }
 
-    #[tracing::instrument(skip(self))]
-    fn dispatch_map_alert(&self, intel_match: &PatternMatch, system_group: &str) {
-        let Some(system_name) = intel_match.named.get(system_group) else {
+    /// Sends the map alert of one intel line (`line_matches` are all the
+    /// matches of that line) to every system it reports. A line may name
+    /// several candidates (a pilot name also fits the system pattern); only
+    /// those that resolve to a real system count. A `clear` report only
+    /// reaches the tooltips: no visual alert, no sound, no centering. The
+    /// alarm sounds at most once per line.
+    #[tracing::instrument(skip(self, line_matches))]
+    fn dispatch_map_alert(&self, line_matches: &[&PatternMatch]) {
+        let Some(first) = line_matches.first() else {
             return;
         };
+        let text = &first.line.text;
+        let mut systems: Vec<usize> = Vec::new();
+        let mut system_spans = Vec::new();
+        for intel_match in line_matches {
+            if let ActionConfig::MapAlert { system_group } = &intel_match.action
+                && let Some(system_id) = self.resolve_reported_system(intel_match, system_group)
+            {
+                system_spans.push(intel_match.span.clone());
+                if !systems.contains(&system_id) {
+                    systems.push(system_id);
+                }
+            }
+        }
+        if systems.is_empty() {
+            return;
+        }
+        let summary = AlertSummary::from_line(text, line_matches, system_spans);
+        let received = std::time::Instant::now();
+        let raises_visual = !summary.is_clear();
+        for system_id in &systems {
+            let alert = IntelAlert::new(
+                *system_id,
+                received,
+                self.settings.get_alert_duration(),
+                text,
+                summary.clone(),
+            );
+            let _ = self.map_msg.0.send(MapSync::SystemAlert(alert));
+        }
+        if !raises_visual {
+            return;
+        }
+        if let Some(character_system) = systems
+            .iter()
+            .find_map(|system_id| self.nearest_character_in_range(*system_id))
+        {
+            self.audio.play_alarm(&self.settings.get_alert_sound_path());
+            if self.settings.get_center_on_alert() {
+                let _ = self.map_msg.0.send(MapSync::CenterOn((
+                    character_system as usize,
+                    Target::System,
+                )));
+            }
+        }
+    }
+
+    /// The solar system named by the `system_group` capture of
+    /// `intel_match`, if the text is a plausible name of a real system.
+    ///
+    /// An exact name (any case) is looked up in the loaded universe. Only a
+    /// code-like text (see [`allows_partial_match`]) may also resolve to a
+    /// system whose name merely contains it (SQL `LIKE` against the SDE),
+    /// e.g. "H-5GU" or a nickname such as "4-h"; plain words never do, so a
+    /// pilot name next to the system can't turn into some unrelated system.
+    /// Without a loaded universe everything goes to the SDE as before.
+    fn resolve_reported_system(
+        &self,
+        intel_match: &PatternMatch,
+        system_group: &str,
+    ) -> Option<usize> {
+        let system_name = intel_match.named.get(system_group)?;
         //validate the captured text before using it in any query; real
         //solar system names are at most 17 chars and may contain spaces
         //and dashes (e.g. "Old Man Star", "Tash-Murkon Prime")
@@ -173,7 +258,23 @@ impl TelescopeApp {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
         {
-            return;
+            return None;
+        }
+        let known = !self.universe.solar_systems.is_empty();
+        if known {
+            let exact = exact_system(
+                self.universe
+                    .solar_systems
+                    .values()
+                    .map(|system| (system.id, system.name.as_str())),
+                system_name,
+            );
+            if let Some(system_id) = exact {
+                return usize::try_from(system_id).ok();
+            }
+            if !allows_partial_match(system_name) {
+                return None;
+            }
         }
         let sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
         match sde.and_then(|s| s.get_system_id(system_name.to_lowercase())) {
@@ -182,26 +283,14 @@ impl TelescopeApp {
                 let found = results
                     .iter()
                     .find(|entry| entry.1.eq_ignore_ascii_case(system_name))
-                    .or(results.first());
-                if let Some(entry) = found {
-                    let system_id = usize::try_from(entry.0).unwrap_or(0);
-                    if system_id > 0 {
-                        let _ = self.map_msg.0.send(MapSync::SystemNotification((
-                            system_id,
-                            tokio::time::Instant::now(),
-                            self.settings.get_alert_duration(),
-                        )));
-                        if let Some(character_system) = self.nearest_character_in_range(system_id) {
-                            self.audio.play_alarm(&self.settings.get_alert_sound_path());
-                            if self.settings.get_center_on_alert() {
-                                let _ = self.map_msg.0.send(MapSync::CenterOn((
-                                    character_system as usize,
-                                    Target::System,
-                                )));
-                            }
-                        }
-                    }
-                }
+                    .or_else(|| {
+                        results
+                            .first()
+                            .filter(|_| !known || allows_partial_match(system_name))
+                    });
+                found
+                    .and_then(|entry| usize::try_from(entry.0).ok())
+                    .filter(|system_id| *system_id > 0)
             }
             Err(t_error) => {
                 self.task_msg.spawn(Message::GenericNotification((
@@ -210,6 +299,7 @@ impl TelescopeApp {
                     String::from("dispatch_map_alert"),
                     t_error.to_string(),
                 )));
+                None
             }
         }
     }
@@ -245,6 +335,22 @@ impl TelescopeApp {
             self.settings.get_warning_area(),
         )
     }
+}
+
+/// The id of the system in `systems` (id, name) named exactly `name`,
+/// ignoring ASCII case.
+fn exact_system<'a>(systems: impl IntoIterator<Item = (u32, &'a str)>, name: &str) -> Option<u32> {
+    systems
+        .into_iter()
+        .find(|(_, system)| system.eq_ignore_ascii_case(name))
+        .map(|(id, _)| id)
+}
+
+/// Whether `name` may resolve to a system whose name only contains it:
+/// code-like text (a digit or a dash, as in "H-5GU", "4-h" or "J1234"),
+/// never plain words such as a pilot name.
+fn allows_partial_match(name: &str) -> bool {
+    name.chars().any(|c| c.is_ascii_digit() || c == '-')
 }
 
 /// The member of `origins` closest to `target` in stargate jumps, if it is at
@@ -522,5 +628,29 @@ mod nearest_origin_tests {
     #[test]
     fn unconnected_systems_are_never_in_range() {
         assert_eq!(nearest_origin_within(&chain(), &[1], 6, 7), None);
+    }
+}
+
+#[cfg(test)]
+mod system_lookup_tests {
+    use super::{allows_partial_match, exact_system};
+
+    const SYSTEMS: [(u32, &str); 3] = [(1, "H-5GUI"), (2, "Jita"), (3, "Old Man Star")];
+
+    #[test]
+    fn exact_names_match_in_any_case() {
+        assert_eq!(exact_system(SYSTEMS, "h-5gui"), Some(1));
+        assert_eq!(exact_system(SYSTEMS, "old man star"), Some(3));
+        assert_eq!(exact_system(SYSTEMS, "H-5GU"), None);
+        assert_eq!(exact_system(SYSTEMS, "Floris Saucus"), None);
+    }
+
+    #[test]
+    fn only_code_like_text_may_match_partially() {
+        assert!(allows_partial_match("H-5GU"));
+        assert!(allows_partial_match("4-h"));
+        assert!(allows_partial_match("J1234"));
+        assert!(!allows_partial_match("Floris Saucus"));
+        assert!(!allows_partial_match("Jit"));
     }
 }

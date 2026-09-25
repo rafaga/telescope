@@ -24,18 +24,42 @@
 #                    - { type = "map_alert", system_group = "<group>" }
 #                        resolves the named capture group as a solar system
 #                        and highlights it on the maps. The group must exist
-#                        in the pattern. Resolution is a case-insensitive SQL
-#                        LIKE '%<captured text>%' against solar system names
-#                        (see dispatch_map_alert / SdeManager::get_system_id):
-#                        an exact case-insensitive match wins if present,
-#                        otherwise the first LIKE hit is used, which is not
-#                        guaranteed to be the system you meant if the
-#                        captured text is a short/ambiguous fragment.
+#                        in the pattern. Every match in the line is a
+#                        candidate (up to 8), since a pilot name written
+#                        before the system also fits the pattern; candidates
+#                        that are not a real system are dropped. A candidate
+#                        resolves by its exact name (any case). Only
+#                        code-like text (with a digit or a dash, e.g. "H-5GU"
+#                        or "4-h") may also resolve to the first system whose
+#                        name contains it (SQL LIKE '%<text>%', see
+#                        resolve_reported_system / SdeManager::get_system_id),
+#                        which is not guaranteed to be the system you meant
+#                        if the text is a short/ambiguous fragment.
 #                    - { type = "ignore" }
 #                        drops the whole line: no other rule (pattern or
 #                        dictionary) is evaluated on it, whatever order the
 #                        rules are declared in. For lines that are never
 #                        intel. Only for [[patterns]].
+#   category         (optional) what a match adds to the map tooltip summary
+#                    shown for a line that raised a map alert:
+#                    - "ship"    the matched text is a ship name; ships are
+#                                listed grouped, e.g. "Drake ×2".
+#                    - "count"   the pattern's `count` capture group
+#                                (required) is the number of pilots
+#                                reported, e.g. "+3".
+#                    - "clear"   the line reports the system clear: it is
+#                                listed with a check mark and raises no
+#                                visual alert or sound.
+#                    - "keyword" shorthand with nothing to show (e.g. "nv"):
+#                                only removed from the leftover text.
+#                    - "query"   the line asks about the system (e.g.
+#                                "status?") instead of reporting it: no map
+#                                alert at all (no visual alert, no sound, no
+#                                tooltip entry).
+#                    A line with no ship and no count shows its leftover
+#                    text instead (the line minus the reported system and
+#                    every categorized match -- usually the pilot names),
+#                    cut to 40 characters.
 #
 # Dictionary rules
 # -----------------
@@ -72,6 +96,8 @@
 #                        capture groups, the matched word is itself the
 #                        reported system name). Same LIKE-based resolution
 #                        as [[patterns]]'s map_alert, documented above.
+#   category         (optional) same as [[patterns]]'s category, except
+#                    "count" (a dictionary has no capture groups).
 #
 # Rules below marked "data-derived" were built from a corpus of 9011 real
 # chat log exports (196k lines, ~180k of them real chat after dropping the
@@ -132,6 +158,7 @@ id = "clear_report"
 pattern = '\b(clear|clr)\b'
 case_insensitive = true
 action = { type = "notify" }
+category = "clear"
 
 # Data-derived, highest-value rule in this file: "nv" is this alliance's
 # standard shorthand for "a pilot of unknown/neutral standing was seen" --
@@ -152,6 +179,26 @@ pattern = '\bnv\b'
 case_insensitive = true
 channels = ["wc.Vale+Tribute"]
 action = { type = "notify" }
+category = "keyword"
+
+# How many pilots a report is about, for the map tooltip: a leading "+3" or
+# "x3" ("+3 Drake"), or a number followed by "x" or a pilot word ("3x",
+# "3 neuts", "5 reds", "2 hostiles"). Two rules because a regex cannot give
+# two alternatives the same group name. Numbers are capped at 3 digits and
+# need one of those markers, so the digits inside system names (1DQ1-A,
+# J123456) and pilot names never count.
+[[patterns]]
+id = "pilot_count_prefix"
+pattern = '(?:^|\s)[+xX](?P<count>\d{1,3})\b'
+action = { type = "notify" }
+category = "count"
+
+[[patterns]]
+id = "pilot_count_suffix"
+pattern = '\b(?P<count>\d{1,3})\s?(?:x|neuts?|neutrals?|reds?|hostiles?|pilots?)\b'
+case_insensitive = true
+action = { type = "notify" }
+category = "count"
 
 # Data-derived: reports of an ESS (Encounter Surveillance System) bank
 # becoming raidable, usually with a countdown, e.g. "L-1HKR* ESS 5:00" or
@@ -197,6 +244,7 @@ pattern = '\bstatus\s*[?？]'
 case_insensitive = true
 channels = ["wc.Vale+Tribute"]
 action = { type = "notify" }
+category = "query"
 
 # Ship-name detection, built from the official CCP SDE
 # (invCategories/invGroups/invTypes, categoryID 6 "Ship", 423 published
@@ -619,6 +667,7 @@ words = [
 ]
 case_insensitive = true
 action = { type = "notify" }
+category = "ship"
 
 
 # Data-derived, shape-based (not dictionary-based) ship-name detection for
@@ -655,6 +704,7 @@ action = { type = "notify" }
 id = "ship_report_zh"
 pattern = '[一-鿿]{2,14}级'
 action = { type = "notify" }
+category = "ship"
 
 # Other languages were checked against this same corpus and against the
 # SDE's other localized ("de"/"es"/"fr"/"ja"/"ko"/"ru") ship-name columns:
@@ -794,6 +844,7 @@ words = [
     "Arca",
 ]
 action = { type = "notify" }
+category = "ship"
 
 # French ship names (61).
 [[dictionaries]]
@@ -862,6 +913,7 @@ words = [
     "Hécate",
 ]
 action = { type = "notify" }
+category = "ship"
 
 # Japanese ship names (422). No word-boundary caveat overrides the general
 # one documented above (no spaces in normal Japanese prose).
@@ -1292,6 +1344,7 @@ words = [
     "ウツ",
 ]
 action = { type = "notify" }
+category = "ship"
 
 # Korean ship names (423). No word-boundary caveat overrides the general
 # one documented above (no spaces in normal Korean prose).
@@ -1723,6 +1776,7 @@ words = [
     "웜",
 ]
 action = { type = "notify" }
+category = "ship"
 
 
 # --- Examples below are disabled (commented out). Uncomment and adjust to

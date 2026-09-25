@@ -6,11 +6,15 @@
 //! It also bridges the `sde` map points and connections into the types `egui-map`
 //! renders.
 
+use crate::app::map_alerts::{
+    ALERT_ICON, AlertLog, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
+};
 use crate::app::messages::{MapSync, Message, Target, Type};
 use crate::app::settings::NodeStyle;
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style,
-    TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::RectShape, text::Galley, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, RichText, Sense, Shape,
+    Stroke, Style, TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::RectShape, text::Galley,
+    vec2,
 };
 use egui::PopupCloseBehavior;
 use egui::containers::menu::{MenuButton, MenuConfig};
@@ -126,10 +130,21 @@ type CharactersOnMap = HashMap<usize, (usize, String)>;
 /// Icon shown to the left of each character name in the node tooltips.
 pub(crate) const CHARACTER_ICON: &str = "👤";
 
+/// Color of [`ALERT_ICON`] in the node tooltips.
+const ALERT_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
+/// Color of [`CLEAR_ICON`] in the node tooltips.
+const CLEAR_ICON_COLOR: Color32 = Color32::from_rgb(90, 200, 90);
+
 /// The tooltip of the node under the pointer, only on nodes that have
-/// something to show: for now, the linked characters in that system, one per
-/// line with [`CHARACTER_ICON`] as a marker (no header, to keep it short).
-fn show_node_tooltip(response: Response, map: &Map, characters: &CharactersOnMap) {
+/// something to show: the linked characters in that system, one per line
+/// with [`CHARACTER_ICON`] as a marker (no header, to keep it short), then
+/// its active intel alerts, newest first (see `map_alerts`).
+fn show_node_tooltip(
+    response: Response,
+    map: &Map,
+    characters: &CharactersOnMap,
+    alerts: &mut AlertLog,
+) {
     let Some(system_id) = map.hovered_node() else {
         return;
     };
@@ -138,24 +153,68 @@ fn show_node_tooltip(response: Response, map: &Map, characters: &CharactersOnMap
         .filter(|(system, _)| *system == system_id)
         .map(|(_, name)| name.as_str())
         .collect();
-    if names.is_empty() {
+    let now = Instant::now();
+    let active = alerts.active(system_id, now);
+    if names.is_empty() && active.is_empty() {
         return;
     }
     names.sort_unstable();
     response.on_hover_ui_at_pointer(|ui| {
-        for name in names {
+        for name in &names {
             ui.label(format!("{CHARACTER_ICON} {name}"));
+        }
+        if active.is_empty() {
+            return;
+        }
+        if !names.is_empty() {
+            ui.separator();
+        }
+        for alert in active.iter().take(MAX_TOOLTIP_ALERTS) {
+            alert_line(ui, alert, now);
+        }
+        if active.len() > MAX_TOOLTIP_ALERTS {
+            ui.weak(t!(
+                "map.alert_more",
+                count = active.len() - MAX_TOOLTIP_ALERTS
+            ));
+        }
+        // The ages tick even when nothing else repaints (a clear report
+        // has no animation).
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
+    });
+}
+
+/// One intel alert in a node tooltip: icon, age and summary.
+fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
+    ui.horizontal(|ui| {
+        let (icon, color) = if alert.raises_visual() {
+            (ALERT_ICON, ALERT_ICON_COLOR)
+        } else {
+            (CLEAR_ICON, CLEAR_ICON_COLOR)
+        };
+        ui.label(RichText::new(icon).color(color));
+        ui.label(RichText::new(format_age(now.saturating_duration_since(alert.received))).weak());
+        let detail = alert.summary.detail(|count| match count {
+            1 => t!("map.alert_pilots_one").into_owned(),
+            _ => t!("map.alert_pilots_other", count = count).into_owned(),
+        });
+        if !detail.is_empty() {
+            ui.label(detail);
         }
     });
 }
 
-/// Starts the visual alert of an intel report on `system_id`: a pulse
-/// repeated for `duration`, fading out over that time (egui-map's lasting
-/// notifications).
-fn start_alert(map: &mut Map, system_id: usize, time: Instant, duration: Duration) {
-    if let Some(node) = map.node(system_id) {
-        node.lasting(duration).pulse(time);
+/// Handles an intel alert on a pane's map: starts its visual alert -- a
+/// pulse repeated for its duration, fading out over that time (egui-map's
+/// lasting notifications) -- unless it is a `clear` report, and lists it
+/// for the node tooltip.
+fn receive_alert(map: &mut Map, alerts: &mut AlertLog, alert: IntelAlert) {
+    if alert.raises_visual()
+        && let Some(node) = map.node(alert.system_id)
+    {
+        node.lasting(alert.duration).pulse(alert.received);
     }
+    alerts.push(alert);
 }
 
 pub struct UniversePane {
@@ -169,6 +228,8 @@ pub struct UniversePane {
     mapsync_reciever: Receiver<MapSync>,
     /// See [`CharactersOnMap`].
     characters: CharactersOnMap,
+    /// Intel alerts for the node tooltips.
+    alerts: AlertLog,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
     factor: f64,
@@ -192,6 +253,7 @@ impl UniversePane {
             task_msg,
             has_points: false,
             characters: HashMap::new(),
+            alerts: AlertLog::default(),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -264,7 +326,7 @@ impl TabPane for UniversePane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
         let response = ui.add(&mut self.map);
-        show_node_tooltip(response, &self.map, &self.characters);
+        show_node_tooltip(response, &self.map, &self.characters, &mut self.alerts);
         UiResponse::None
     }
 
@@ -289,8 +351,8 @@ impl TabPane for UniversePane {
                         effect.apply(node);
                     }
                 }
-                MapSync::SystemNotification((system_id, time, duration)) => {
-                    start_alert(&mut self.map, system_id, time.into(), duration);
+                MapSync::SystemAlert(alert) => {
+                    receive_alert(&mut self.map, &mut self.alerts, alert);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -356,6 +418,8 @@ pub struct RegionPane {
     task_msg: Arc<MessageSpawner>,
     /// See [`CharactersOnMap`].
     characters: CharactersOnMap,
+    /// Intel alerts for the node tooltips.
+    alerts: AlertLog,
 }
 
 impl RegionPane {
@@ -378,6 +442,7 @@ impl RegionPane {
             task_msg,
             has_points: false,
             characters: HashMap::new(),
+            alerts: AlertLog::default(),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -460,8 +525,8 @@ impl TabPane for RegionPane {
                         effect.apply(node);
                     }
                 }
-                MapSync::SystemNotification((system_id, time, duration)) => {
-                    start_alert(&mut self.map, system_id, time.into(), duration);
+                MapSync::SystemAlert(alert) => {
+                    receive_alert(&mut self.map, &mut self.alerts, alert);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -480,7 +545,7 @@ impl TabPane for RegionPane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
         let response = ui.add(&mut self.map);
-        show_node_tooltip(response, &self.map, &self.characters);
+        show_node_tooltip(response, &self.map, &self.characters, &mut self.alerts);
         UiResponse::None
     }
 

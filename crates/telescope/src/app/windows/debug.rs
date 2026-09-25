@@ -5,6 +5,7 @@
 //! internal state.
 
 use crate::app::TelescopeApp;
+use crate::app::map_alerts::{AlertSummary, IntelAlert};
 use crate::app::messages::CharacterSync;
 use crate::app::messages::MapSync;
 use crate::app::messages::Message;
@@ -154,12 +155,12 @@ impl TelescopeApp {
                                                     Target::System,
                                                 )));
                                                 if self.emit_notification {
-                                                    let _result =
-                                                        tx_map.send(MapSync::SystemNotification((
+                                                    let _result = tx_map.send(
+                                                        MapSync::SystemAlert(debug_alert(
                                                             system_id.try_into().unwrap(),
-                                                            tokio::time::Instant::now(),
                                                             self.settings.get_alert_duration(),
-                                                        )));
+                                                        )),
+                                                    );
                                                 }
                                             }
                                         });
@@ -172,9 +173,8 @@ impl TelescopeApp {
                                             )));
                                             if self.emit_notification {
                                                 let _result =
-                                                    tx_map.send(MapSync::SystemNotification((
+                                                    tx_map.send(MapSync::SystemAlert(debug_alert(
                                                         system_id.try_into().unwrap(),
-                                                        tokio::time::Instant::now(),
                                                         self.settings.get_alert_duration(),
                                                     )));
                                             }
@@ -519,4 +519,21 @@ impl TelescopeApp {
                 }
             });
     }
+}
+
+/// A made-up intel alert on `system_id`, sent by "Emit notification" to
+/// preview the node effect and its tooltip line.
+fn debug_alert(system_id: usize, duration: std::time::Duration) -> IntelAlert {
+    let text = "Debug alert";
+    let summary = AlertSummary {
+        leftover: String::from(text),
+        ..AlertSummary::default()
+    };
+    IntelAlert::new(
+        system_id,
+        std::time::Instant::now(),
+        duration,
+        text,
+        summary,
+    )
 }

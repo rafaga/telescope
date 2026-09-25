@@ -3,6 +3,7 @@
 //! character sync messages, and the [`MessageSpawner`] / [`send_app_message`]
 //! helpers that deliver them.
 
+use crate::app::map_alerts::IntelAlert;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
@@ -27,9 +28,9 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub enum MapSync {
     CenterOn((usize, Target)),
-    /// An intel report on a solar system: when it happened and how long its
-    /// visual alert lasts (Settings -> Intelligence).
-    SystemNotification((usize, Instant, std::time::Duration)),
+    /// An intel report on a solar system: its visual alert (unless it is a
+    /// `clear` report) and its line in the node tooltip.
+    SystemAlert(IntelAlert),
     /// Plays (or clears) an animation on a node of every map that has it;
     /// used by the Debug window to preview the node effects.
     NodeEffect((usize, NodeEffect)),

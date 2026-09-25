@@ -82,6 +82,11 @@ universe = "Universe"
 search_region = "Search region:"
 set_beacon = "Set beacon"
 settings = "⚙ Settings"
+# Number of pilots in an intel alert, in the node tooltips.
+alert_pilots_one = "1 neutral"
+alert_pilots_other = "%{count} neutrals"
+# Intel alerts a node tooltip has no room for.
+alert_more = "+%{count} more"
 
 [log]
 title = "Log (%{count})"

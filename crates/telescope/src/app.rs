@@ -41,6 +41,7 @@ mod database;
 mod database_updater;
 mod file;
 mod intel;
+mod map_alerts;
 mod messages;
 mod notifications;
 pub mod patterns;
@@ -830,11 +831,17 @@ mod font_tests {
     // holding its replacement glyph (NotoEmoji, `◻`) as missing, emoji
     // included. Instead, check the icon isn't painted as that `◻`.
     #[test]
-    fn character_icon_is_drawn() {
+    fn tooltip_icons_are_drawn() {
         let ctx = context_with(TelescopeApp::font_definitions());
-        let icon = glyph_uv(&ctx, tiles::CHARACTER_ICON);
-        assert_ne!(icon.0, icon.1);
-        assert_ne!(icon, glyph_uv(&ctx, "◻"));
+        for text in [
+            tiles::CHARACTER_ICON,
+            map_alerts::ALERT_ICON,
+            map_alerts::CLEAR_ICON,
+        ] {
+            let icon = glyph_uv(&ctx, text);
+            assert_ne!(icon.0, icon.1, "{text}");
+            assert_ne!(icon, glyph_uv(&ctx, "◻"), "{text}");
+        }
         // A code point no font has, to show the check tells them apart.
         assert_eq!(glyph_uv(&ctx, "\u{10FFFD}"), glyph_uv(&ctx, "◻"));
     }

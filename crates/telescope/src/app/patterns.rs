@@ -32,6 +32,7 @@
 //! | `channels` | list of strings | `[]` | Restrict the rule to the given channel names (allowed chars: `[A-Za-z0-9_.+ -]`, max 64 each); empty means every monitored channel. |
 //! | `enabled` | bool | `true` | Disabled rules are skipped silently at load time. |
 //! | `action` | table | `{ type = "notify" }` | What to do when the rule matches; see *Available actions*. |
+//! | `category` | string | *(none)* | What the match tells the map tooltip about its line; see *Tooltip categories*. |
 //!
 //! Unknown fields are rejected at load time (`deny_unknown_fields`).
 //!
@@ -49,7 +50,7 @@
 //! | `type` | Extra fields | Effect |
 //! |--------|--------------|--------|
 //! | `notify` | — | Sends the matched line to the application notification log. |
-//! | `map_alert` | `system_group` | Resolves the named capture group as a solar system and highlights it on the maps. The group must exist in the pattern (validated at load time). |
+//! | `map_alert` | `system_group` | Resolves the named capture group as a solar system and highlights it on the maps. The group must exist in the pattern (validated at load time). Every match in the line is a candidate (up to [`MAX_SYSTEM_CANDIDATES`]); those that are not a real system are dropped. |
 //! | `ignore` | — | Drops the whole line: no other rule (pattern or dictionary) is evaluated on it, whatever the declaration order. Use it for lines that are never intel, such as the channel's message of the day. Only for `[[patterns]]`. |
 //!
 //! # Dictionary rules
@@ -74,6 +75,7 @@
 //! | `channels` | list of strings | `[]` | Same semantics as `[[patterns]]`'s `channels`. |
 //! | `enabled` | bool | `true` | Disabled dictionaries are skipped silently at load time. |
 //! | `action` | table | `{ type = "notify" }` | `{ type = "notify" }` or `{ type = "map_alert" }`. Unlike `[[patterns]]`'s `map_alert`, no `system_group` is needed: the matched word itself is the resolved solar system name. |
+//! | `category` | string | *(none)* | Same as `[[patterns]]`'s `category`, except `count` (a dictionary has no capture groups). |
 //!
 //! Unknown fields are rejected at load time (`deny_unknown_fields`).
 //!
@@ -86,6 +88,24 @@
 //! action = { type = "notify" }
 //! ```
 //!
+//! # Tooltip categories
+//!
+//! When a line raises a map alert, the node tooltip shows a one-line summary
+//! of it (see `crate::app::map_alerts`). A rule's `category` says what its
+//! match contributes to that summary:
+//!
+//! | `category` | Effect on the summary |
+//! |------------|-----------------------|
+//! | `ship` | The matched text is a ship name; ships are listed, grouped (`Drake ×2`). |
+//! | `count` | The pattern's `count` capture group (required, validated at load time) is the number of pilots reported. |
+//! | `clear` | The line reports the system clear: it is listed with a check mark and raises no visual alert or sound. |
+//! | `keyword` | Shorthand with nothing to show (e.g. `nv`): only removed from the leftover text. |
+//! | `query` | The line asks about the system (e.g. `status?`) instead of reporting it: no map alert at all -- no visual alert, no sound, no tooltip entry. |
+//!
+//! Lines with no ship and no count show their leftover text instead: the
+//! line minus the reported system and every categorized match, usually the
+//! pilot names.
+//!
 //! # Default rules shipped in the template
 //!
 //! The embedded template (the repository's own `patterns.toml`) ships these
@@ -96,7 +116,11 @@
 //! | `channel_motd` | The `Channel MOTD:` line EVE writes when a channel is joined. | `ignore` | active |
 //! | `intel_line` | Every parsed intel line. | `notify` | active |
 //! | `system_reported` | Any EVE solar system name; the pattern covers 100% of the 8436 `solarSystemName` values in `assets/sde.db` (wormholes `J\d{6}`, nullsec-style `1DQ1-A`/`B-R5RB`, coded `AD001`, named systems like `Jita` or `Tash-Murkon Prime`). | `map_alert` | active |
-//! | `clear_report` | `clear` / `clr` keywords (case-insensitive). | `notify` | active |
+//! | `clear_report` | `clear` / `clr` keywords (case-insensitive); category `clear`. | `notify` | active |
+//! | `neutral_spotted` | The `nv` report shorthand; category `keyword`. | `notify` | active |
+//! | `pilot_count_prefix` / `pilot_count_suffix` | A pilot count such as `+3`, `x3`, `3x` or `3 neuts`; category `count`. | `notify` | active |
+//! | `status_query` | A question such as `H-5GUI status?`; category `query`. | `notify` | active |
+//! | `ship_report_*` | Ship names (a dictionary per client language, a shape rule for Chinese); category `ship`. | `notify` | active |
 //! | `hostile_report` | `hostile` / `neut` / `red` keywords (case-insensitive). | `notify` | commented out |
 //! | `capital_report` | Capital hull / `cyno` keywords (case-insensitive). | `notify` | commented out |
 //!
@@ -138,6 +162,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::Read;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// Maximum number of rules allowed in a configuration file.
@@ -156,6 +181,9 @@ const REGEX_SIZE_LIMIT: usize = 10 * (1 << 20);
 const MAX_LINE_LEN: usize = 2048;
 /// Maximum number of matches reported per evaluated chunk.
 const MAX_MATCHES_PER_CHUNK: usize = 100;
+/// Maximum number of candidate systems a `map_alert` pattern reports per
+/// line (see [`PatternMatch`]).
+pub const MAX_SYSTEM_CANDIDATES: usize = 8;
 /// Maximum length of captured text displayed in notifications.
 const MAX_DISPLAY_LEN: usize = 200;
 /// Maximum number of `[[dictionaries]]` entries allowed in a configuration
@@ -222,6 +250,32 @@ pub enum ActionConfig {
     Ignore,
 }
 
+/// What a match tells the map tooltip about its line; see the
+/// ["Tooltip categories"](self#tooltip-categories) section of the module
+/// docs.
+///
+/// ```toml
+/// category = "ship"
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntelCategory {
+    /// The matched text is a ship name.
+    Ship,
+    /// The rule's `count` capture group is the number of pilots reported.
+    Count,
+    /// The line reports the system clear: no visual alert, no sound.
+    Clear,
+    /// Shorthand with nothing to show; only dropped from the leftover text.
+    Keyword,
+    /// The line asks about the system instead of reporting it: it raises no
+    /// map alert at all (no visual alert, no sound, no tooltip entry).
+    Query,
+}
+
+/// Name of the capture group read by [`IntelCategory::Count`] rules.
+pub const COUNT_GROUP: &str = "count";
+
 /// Action executed when a [`DictionaryRuleConfig`] matches.
 ///
 /// Unlike [`ActionConfig`], `map_alert` here needs no `system_group`: a
@@ -262,6 +316,7 @@ pub enum DictionaryActionConfig {
 ///     channels: vec!["my-intel-channel".to_string()],
 ///     enabled: true,
 ///     action: ActionConfig::Notify,
+///     category: None,
 /// };
 /// ```
 #[derive(Debug, Clone, Deserialize)]
@@ -284,6 +339,9 @@ pub struct PatternRuleConfig {
     /// Action executed when the rule matches.
     #[serde(default)]
     pub action: ActionConfig,
+    /// What a match contributes to the map tooltip summary of its line.
+    #[serde(default)]
+    pub category: Option<IntelCategory>,
 }
 
 impl PatternRuleConfig {
@@ -341,6 +399,7 @@ impl PatternRuleConfig {
 ///     channels: vec!["my-intel-channel".to_string()],
 ///     enabled: true,
 ///     action: DictionaryActionConfig::Notify,
+///     category: None,
 /// };
 /// ```
 #[derive(Debug, Clone, Deserialize)]
@@ -371,6 +430,10 @@ pub struct DictionaryRuleConfig {
     /// Action executed when the rule matches.
     #[serde(default)]
     pub action: DictionaryActionConfig,
+    /// What a match contributes to the map tooltip summary of its line.
+    /// Never [`IntelCategory::Count`]: a dictionary has no capture groups.
+    #[serde(default)]
+    pub category: Option<IntelCategory>,
 }
 
 impl DictionaryRuleConfig {
@@ -378,6 +441,9 @@ impl DictionaryRuleConfig {
     fn validate(&self) -> Result<(), PatternError> {
         if !is_valid_id(&self.id) {
             return Err(PatternError::InvalidId(self.id.clone()));
+        }
+        if self.category == Some(IntelCategory::Count) {
+            return Err(PatternError::MissingCountGroup(self.id.clone()));
         }
         if self.words.is_empty() || self.words.len() > MAX_DICTIONARY_WORDS {
             return Err(PatternError::InvalidDictionarySize(self.id.clone()));
@@ -444,8 +510,11 @@ impl Display for IntelLine {
 
 /// A rule match over a parsed line. All captured text is already sanitized.
 ///
-/// Produced by [`PatternEngine::evaluate`]; at most one match per rule per
-/// line is reported.
+/// Produced by [`PatternEngine::evaluate`]. A `[[patterns]]` rule reports
+/// at most one match per line, except a `map_alert` one, which reports every
+/// candidate system of the line (up to [`MAX_SYSTEM_CANDIDATES`]): a pilot
+/// name written before the system also fits the system pattern, and only
+/// resolving each candidate tells them apart.
 #[derive(Debug, Clone)]
 pub struct PatternMatch {
     /// Id of the rule that matched.
@@ -458,6 +527,16 @@ pub struct PatternMatch {
     pub named: HashMap<String, String>,
     /// Action configured for the matching rule.
     pub action: ActionConfig,
+    /// Category configured for the matching rule.
+    pub category: Option<IntelCategory>,
+    /// Position of the line within the evaluated chunk: matches of the same
+    /// line share it.
+    pub line_index: usize,
+    /// Byte range of the relevant text in [`IntelLine::text`]: the system
+    /// group for a `map_alert` pattern, the whole match otherwise.
+    pub span: Range<usize>,
+    /// The text at [`Self::span`], sanitized with [`sanitize_display`].
+    pub matched: String,
 }
 
 /// A rule with its regex already compiled.
@@ -467,6 +546,7 @@ struct CompiledRule {
     /// `None` means the rule applies to every channel.
     channels: Option<HashSet<String>>,
     action: ActionConfig,
+    category: Option<IntelCategory>,
 }
 
 /// A dictionary rule with its [`AhoCorasick`] automaton already built.
@@ -476,6 +556,7 @@ struct CompiledDictionary {
     /// `None` means the rule applies to every channel.
     channels: Option<HashSet<String>>,
     action: DictionaryActionConfig,
+    category: Option<IntelCategory>,
 }
 
 /// Errors produced while loading or validating pattern rules.
@@ -534,6 +615,9 @@ pub enum PatternError {
         /// The offending word (truncated for display if very long).
         word: String,
     },
+    /// A `category = "count"` rule has no `count` capture group (always the
+    /// case for a dictionary).
+    MissingCountGroup(String),
     /// The automaton for a dictionary could not be built.
     DictionaryBuildFailed {
         /// Id of the offending dictionary.
@@ -598,6 +682,10 @@ impl Display for PatternError {
             Self::DictionaryBuildFailed { id, reason } => {
                 write!(f, "dictionary '{id}' could not be built: {reason}")
             }
+            Self::MissingCountGroup(id) => write!(
+                f,
+                "rule '{id}' has category \"count\" but no '{COUNT_GROUP}' capture group (dictionaries cannot use it)"
+            ),
         }
     }
 }
@@ -779,6 +867,7 @@ impl PatternEngine {
     ///         channels: vec![],
     ///         enabled: true,
     ///         action: ActionConfig::Notify,
+    ///         category: None,
     ///     }],
     ///     dictionaries: vec![],
     /// };
@@ -881,6 +970,14 @@ impl PatternEngine {
                 group: system_group.clone(),
             });
         }
+        if rule_config.category == Some(IntelCategory::Count)
+            && !regex
+                .capture_names()
+                .flatten()
+                .any(|name| name == COUNT_GROUP)
+        {
+            return Err(PatternError::MissingCountGroup(rule_config.id.clone()));
+        }
         Ok(CompiledRule {
             id: rule_config.id.clone(),
             regex,
@@ -890,6 +987,7 @@ impl PatternEngine {
                 Some(rule_config.channels.iter().cloned().collect())
             },
             action: rule_config.action.clone(),
+            category: rule_config.category,
         })
     }
 
@@ -919,6 +1017,7 @@ impl PatternEngine {
                 Some(dict_config.channels.iter().cloned().collect())
             },
             action: dict_config.action.clone(),
+            category: dict_config.category,
         })
     }
 
@@ -934,6 +1033,7 @@ impl PatternEngine {
                 channels: Vec::new(),
                 enabled: true,
                 action: ActionConfig::Notify,
+                category: None,
             }],
             dictionaries: Vec::new(),
         };
@@ -1001,6 +1101,7 @@ impl PatternEngine {
     ///         action: ActionConfig::MapAlert {
     ///             system_group: "system".to_string(),
     ///         },
+    ///         category: None,
     ///     }],
     ///     dictionaries: vec![],
     /// };
@@ -1014,7 +1115,7 @@ impl PatternEngine {
     #[tracing::instrument(skip(self, data))]
     pub fn evaluate(&self, channel: &str, data: &str) -> Vec<PatternMatch> {
         let mut results = Vec::new();
-        for raw_line in data.lines() {
+        for (line_index, raw_line) in data.lines().enumerate() {
             if results.len() >= MAX_MATCHES_PER_CHUNK {
                 break;
             }
@@ -1046,7 +1147,19 @@ impl PatternEngine {
                 {
                     continue;
                 }
-                if let Some(caps) = rule.regex.captures(&line.text) {
+                let candidates = match rule.action {
+                    ActionConfig::MapAlert { .. } => MAX_SYSTEM_CANDIDATES,
+                    _ => 1,
+                };
+                for caps in rule.regex.captures_iter(&line.text).take(candidates) {
+                    if results.len() >= MAX_MATCHES_PER_CHUNK {
+                        break;
+                    }
+                    let span_group = match &rule.action {
+                        ActionConfig::MapAlert { system_group } => caps.name(system_group),
+                        _ => caps.get(0),
+                    };
+                    let span = span_group.map_or(0..0, |m| m.range());
                     let named = rule
                         .regex
                         .capture_names()
@@ -1061,6 +1174,10 @@ impl PatternEngine {
                         line: line.clone(),
                         named,
                         action: rule.action.clone(),
+                        category: rule.category,
+                        line_index,
+                        matched: sanitize_display(&line.text[span.clone()]),
+                        span,
                     });
                 }
             }
@@ -1081,6 +1198,7 @@ impl PatternEngine {
                         continue;
                     }
                     let matched_text = sanitize_display(&line.text[m.start()..m.end()]);
+                    let matched = matched_text.clone();
                     let (named, action) = match dict.action {
                         DictionaryActionConfig::Notify => (HashMap::new(), ActionConfig::Notify),
                         DictionaryActionConfig::MapAlert => {
@@ -1099,6 +1217,10 @@ impl PatternEngine {
                         line: line.clone(),
                         named,
                         action,
+                        category: dict.category,
+                        line_index,
+                        span: m.range(),
+                        matched,
                     });
                 }
             }
@@ -1189,6 +1311,18 @@ fn is_valid_group_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// An engine with the rules of the shipped template (the repository's own
+/// `patterns.toml`), for tests elsewhere in the crate.
+#[cfg(test)]
+pub(crate) fn template_engine() -> PatternEngine {
+    let config: PatternConfig =
+        toml::from_str(DEFAULT_PATTERNS_TOML).expect("the shipped template must parse");
+    let (engine, errors) =
+        PatternEngine::from_config(&config).expect("the shipped template must build");
+    assert!(errors.is_empty(), "{errors:?}");
+    engine
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,6 +1338,7 @@ mod tests {
             channels: Vec::new(),
             enabled: true,
             action: ActionConfig::Notify,
+            category: None,
         }
     }
 
@@ -1215,6 +1350,7 @@ mod tests {
             channels: Vec::new(),
             enabled: true,
             action: DictionaryActionConfig::Notify,
+            category: None,
         }
     }
 
@@ -1809,5 +1945,135 @@ mod tests {
         let (engine, _) = PatternEngine::from_config(&config).unwrap();
         let data = "[ 2023.04.03 18:01:14 ] EVE System > Channel MOTD: Welcome to Jita\n";
         assert!(engine.evaluate("wc.Vale+Tribute", data).is_empty());
+    }
+
+    #[test]
+    fn matches_carry_their_category_line_and_span() {
+        let mut system = rule(
+            "system_reported",
+            r"\b(?P<system>[A-Z0-9]{1,5}-[A-Z0-9]{1,4})\*?",
+        );
+        system.action = ActionConfig::MapAlert {
+            system_group: String::from("system"),
+        };
+        let mut nv = rule("nv", r"\bnv\b");
+        nv.category = Some(IntelCategory::Keyword);
+        let mut ships = dict("ships", &["Drake"]);
+        ships.category = Some(IntelCategory::Ship);
+        let (engine, errors) = engine_with_dicts(vec![system, nv], vec![ships]);
+        assert!(errors.is_empty());
+        let data = "[ 2023.04.03 18:01:14 ] Pilot > hello\n\
+                    [ 2023.04.03 18:02:00 ] Pilot > H-5GUI* Drake nv\n";
+        let matches = engine.evaluate("intel", data);
+        assert_eq!(matches.len(), 3);
+        assert!(matches.iter().all(|m| m.line_index == 1));
+
+        // The span of a map alert is its system group, not the whole match.
+        assert_eq!(matches[0].span, 0..6);
+        assert_eq!(matches[0].matched, "H-5GUI");
+        assert_eq!(matches[0].category, None);
+        assert_eq!(matches[1].matched, "nv");
+        assert_eq!(matches[1].category, Some(IntelCategory::Keyword));
+        assert_eq!(matches[2].matched, "Drake");
+        assert_eq!(matches[2].span, 8..13);
+        assert_eq!(matches[2].category, Some(IntelCategory::Ship));
+    }
+
+    #[test]
+    fn a_map_alert_reports_every_candidate_system() {
+        let engine = template_engine();
+        let candidates = |text: &str| -> Vec<String> {
+            engine
+                .evaluate(
+                    "wc.Vale+Tribute",
+                    &format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"),
+                )
+                .into_iter()
+                .filter(|m| m.rule_id == "system_reported")
+                .map(|m| m.matched)
+                .collect()
+        };
+        assert_eq!(
+            candidates("Floris Saucus H-5GUI nv"),
+            ["Floris Saucus", "H-5GUI"]
+        );
+        assert_eq!(candidates("1DQ1-A to H-5GUI"), ["1DQ1-A", "H-5GUI"]);
+        let many = "A1-B1 A2-B2 A3-B3 A4-B4 A5-B5 A6-B6 A7-B7 A8-B8 A9-B9 A10-B10";
+        assert_eq!(candidates(many).len(), MAX_SYSTEM_CANDIDATES);
+    }
+
+    #[test]
+    fn a_count_rule_needs_a_count_group() {
+        let mut without = rule("count_without_group", r"\+\d+");
+        without.category = Some(IntelCategory::Count);
+        let mut with = rule("count_with_group", r"\+(?P<count>\d+)");
+        with.category = Some(IntelCategory::Count);
+        let (engine, errors) = engine_with(vec![without, with]);
+        assert_eq!(
+            errors,
+            vec![PatternError::MissingCountGroup(String::from(
+                "count_without_group"
+            ))]
+        );
+        let matches = engine.evaluate("intel", "[ 2023.04.03 18:02:00 ] Pilot > +3 Drake");
+        assert_eq!(matches[0].named["count"], "3");
+    }
+
+    #[test]
+    fn a_dictionary_cannot_be_a_count() {
+        let mut counts = dict("counts", &["three"]);
+        counts.category = Some(IntelCategory::Count);
+        let (_, errors) = engine_with_dicts(vec![rule("any", ".+")], vec![counts]);
+        assert_eq!(
+            errors,
+            vec![PatternError::MissingCountGroup(String::from("counts"))]
+        );
+    }
+
+    #[test]
+    fn categories_are_read_from_toml() {
+        let config: PatternConfig = toml::from_str(
+            r#"
+            [[patterns]]
+            id = "clear_report"
+            pattern = 'clr'
+            category = "clear"
+
+            [[dictionaries]]
+            id = "ships"
+            words = ["Drake"]
+            category = "ship"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.patterns[0].category, Some(IntelCategory::Clear));
+        assert_eq!(config.dictionaries[0].category, Some(IntelCategory::Ship));
+        assert!(
+            toml::from_str::<PatternConfig>(
+                "[[patterns]]\nid = \"a\"\npattern = 'a'\ncategory = \"nope\""
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_template_counts_pilots_but_not_digits_in_names() {
+        let engine = template_engine();
+        let counts = |text: &str| -> Vec<String> {
+            engine
+                .evaluate(
+                    "wc.Vale+Tribute",
+                    &format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"),
+                )
+                .into_iter()
+                .filter(|m| m.category == Some(IntelCategory::Count))
+                .map(|m| m.named[COUNT_GROUP].clone())
+                .collect()
+        };
+        assert_eq!(counts("1DQ1-A +3"), ["3"]);
+        assert_eq!(counts("1DQ1-A x5 Drake"), ["5"]);
+        assert_eq!(counts("1DQ1-A 4 neuts"), ["4"]);
+        assert_eq!(counts("1DQ1-A 2x Sabre"), ["2"]);
+        assert!(counts("1DQ1-A J123456 Ki11-Shot nv").is_empty());
     }
 }
