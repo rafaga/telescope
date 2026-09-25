@@ -47,6 +47,9 @@ impl TelescopeApp {
                     sde_cache_dir.join("sde"),
                     Arc::clone(&self.app_msg.0),
                     false,
+                    self.settings.get_sde_url().to_string(),
+                    self.settings.get_maps_url().to_string(),
+                    self.settings.get_sde_variant().to_string(),
                 );
             }
         });

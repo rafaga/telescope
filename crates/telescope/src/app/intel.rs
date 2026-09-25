@@ -189,6 +189,7 @@ impl TelescopeApp {
                         let _ = self.map_msg.0.send(MapSync::SystemNotification((
                             system_id,
                             tokio::time::Instant::now(),
+                            self.settings.get_alert_duration(),
                         )));
                         if let Some(character_system) = self.nearest_character_in_range(system_id) {
                             self.audio.play_alarm(&self.settings.get_alert_sound_path());

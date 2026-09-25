@@ -7,18 +7,20 @@
 //! renders.
 
 use crate::app::messages::{MapSync, Message, Target, Type};
+use crate::app::settings::NodeStyle;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Style,
-    TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::CircleShape, text::Galley, vec2,
+    TextStyle, TextWrapMode, Ui, Vec2, WidgetText, epaint::RectShape, text::Galley, vec2,
 };
 use egui::PopupCloseBehavior;
 use egui::containers::menu::{MenuButton, MenuConfig};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
+    animation::Animation,
     objects::{
-        ContextMenuManager, MapPoint, MapSegment, MapSettings, MarkerContext, NodeContext,
-        NodeTemplate, NotificationContext, RegionLabel, SelectionContext, VisibilitySetting,
+        ContextMenuManager, HitContext, MapPoint, MapSegment, MapSettings, MarkerContext,
+        NodeContext, NodeOutline, NodeTemplate, RegionLabel, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
@@ -27,7 +29,7 @@ use sde::SdeManager;
 use sde::objects::{ProjectedAxis, SdePoint, SdeSegment};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
@@ -108,11 +110,52 @@ pub trait TabPane {
     fn event_manager(&mut self);
     fn center_on_target(&mut self, message: (usize, Target));
     /// Places (or moves) the marker of a linked character on its solar
-    /// system. Called directly by the app for every pane, visible or not --
-    /// see `TelescopeApp::update_player_location`.
-    fn update_marker(&mut self, player_id: usize, system_id: usize);
+    /// system, and remembers its name for the node tooltip. Called directly
+    /// by the app for every pane, visible or not -- see
+    /// `TelescopeApp::update_player_location`.
+    fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str);
     /// Removes the marker of a character that is no longer linked.
     fn remove_marker(&mut self, player_id: usize);
+}
+
+/// Linked characters on a map, by character id: their solar system and name.
+/// Each pane keeps its own copy for the node tooltips (the map itself only
+/// knows the markers' ids).
+type CharactersOnMap = HashMap<usize, (usize, String)>;
+
+/// Icon shown to the left of each character name in the node tooltips.
+pub(crate) const CHARACTER_ICON: &str = "👤";
+
+/// The tooltip of the node under the pointer, only on nodes that have
+/// something to show: for now, the linked characters in that system, one per
+/// line with [`CHARACTER_ICON`] as a marker (no header, to keep it short).
+fn show_node_tooltip(response: Response, map: &Map, characters: &CharactersOnMap) {
+    let Some(system_id) = map.hovered_node() else {
+        return;
+    };
+    let mut names: Vec<&str> = characters
+        .values()
+        .filter(|(system, _)| *system == system_id)
+        .map(|(_, name)| name.as_str())
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    names.sort_unstable();
+    response.on_hover_ui_at_pointer(|ui| {
+        for name in names {
+            ui.label(format!("{CHARACTER_ICON} {name}"));
+        }
+    });
+}
+
+/// Starts the visual alert of an intel report on `system_id`: a pulse
+/// repeated for `duration`, fading out over that time (egui-map's lasting
+/// notifications).
+fn start_alert(map: &mut Map, system_id: usize, time: Instant, duration: Duration) {
+    if let Some(node) = map.node(system_id) {
+        node.lasting(duration).pulse(time);
+    }
 }
 
 pub struct UniversePane {
@@ -124,6 +167,8 @@ pub struct UniversePane {
     /// in the marker loop). An empty map has nowhere to put them anyway.
     has_points: bool,
     mapsync_reciever: Receiver<MapSync>,
+    /// See [`CharactersOnMap`].
+    characters: CharactersOnMap,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
     factor: f64,
@@ -146,6 +191,7 @@ impl UniversePane {
             factor,
             task_msg,
             has_points: false,
+            characters: HashMap::new(),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -201,20 +247,24 @@ impl UniversePane {
 }
 
 impl TabPane for UniversePane {
-    fn update_marker(&mut self, player_id: usize, system_id: usize) {
+    fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str) {
+        self.characters
+            .insert(player_id, (system_id, name.to_owned()));
         if self.has_points {
             self.map.update_marker(player_id, system_id);
         }
     }
 
     fn remove_marker(&mut self, player_id: usize) {
+        self.characters.remove(&player_id);
         self.map.remove_marker(player_id);
     }
 
     #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
-        ui.add(&mut self.map);
+        let response = ui.add(&mut self.map);
+        show_node_tooltip(response, &self.map, &self.characters);
         UiResponse::None
     }
 
@@ -239,11 +289,8 @@ impl TabPane for UniversePane {
                         effect.apply(node);
                     }
                 }
-                MapSync::SystemNotification((system_id, time)) => {
-                    if let Some(node) = self.map.node(system_id) {
-                        node.pulse(time.into());
-                    }
-                    //self.map.notify(system_id, time.into());
+                MapSync::SystemNotification((system_id, time, duration)) => {
+                    start_alert(&mut self.map, system_id, time.into(), duration);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -307,6 +354,8 @@ pub struct RegionPane {
     region_id: usize,
     tab_name: String,
     task_msg: Arc<MessageSpawner>,
+    /// See [`CharactersOnMap`].
+    characters: CharactersOnMap,
 }
 
 impl RegionPane {
@@ -317,6 +366,7 @@ impl RegionPane {
         factor: f64,
         region_id: usize,
         task_msg: Arc<MessageSpawner>,
+        node_style: NodeStyle,
     ) -> Self {
         let mut object = Self {
             map: Map::new(),
@@ -327,12 +377,13 @@ impl RegionPane {
             tab_name: String::from("Region"),
             task_msg,
             has_points: false,
+            characters: HashMap::new(),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
-        object.map.set_node_template(Rc::new(Template::new()));
+        object.map.set_node_template(Rc::new(Template::new(node_style)));
         object
     }
 
@@ -378,13 +429,19 @@ impl RegionPane {
 }
 
 impl TabPane for RegionPane {
-    fn update_marker(&mut self, player_id: usize, system_id: usize) {
+    // Characters are painted by `Template::node_ui` (a glow over the node,
+    // from `NodeContext::marker`), not by `marker_ui`, which egui-map draws
+    // after every node, on top of the node's label.
+    fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str) {
+        self.characters
+            .insert(player_id, (system_id, name.to_owned()));
         if self.has_points {
             self.map.update_marker(player_id, system_id);
         }
     }
 
     fn remove_marker(&mut self, player_id: usize) {
+        self.characters.remove(&player_id);
         self.map.remove_marker(player_id);
     }
 
@@ -401,10 +458,8 @@ impl TabPane for RegionPane {
                         effect.apply(node);
                     }
                 }
-                MapSync::SystemNotification((system_id, time)) => {
-                    if let Some(node) = self.map.node(system_id) {
-                        node.pulse(time.into());
-                    }
+                MapSync::SystemNotification((system_id, time, duration)) => {
+                    start_alert(&mut self.map, system_id, time.into(), duration);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -422,7 +477,8 @@ impl TabPane for RegionPane {
     #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
-        ui.add(&mut self.map);
+        let response = ui.add(&mut self.map);
+        show_node_tooltip(response, &self.map, &self.characters);
         UiResponse::None
     }
 
@@ -795,6 +851,7 @@ struct Template {
     // changed since last frame -- the common case unless the map is being
     // actively zoomed, renamed, or re-themed.
     label_cache: RefCell<HashMap<usize, CachedLabel>>,
+    node_style: NodeStyle,
 }
 
 /// One entry in [`Template::label_cache`]: the inputs that produced
@@ -812,12 +869,30 @@ struct CachedLabel {
 }
 
 impl Template {
-    #[tracing::instrument]
-    fn new() -> Self {
+    #[tracing::instrument(skip(node_style))]
+    fn new(node_style: NodeStyle) -> Self {
         Self {
             label_cache: RefCell::new(HashMap::new()),
+            node_style,
         }
     }
+}
+
+/// A node's box, without its border. Every hook of [`Template`] derives its
+/// geometry from `style`, so the box drawn, its hit area and the rings
+/// around it always agree.
+fn node_rect(position: Pos2, zoom: f32, style: NodeStyle) -> Rect {
+    Rect::from_center_size(position, Vec2::new(style.width, style.height) * zoom)
+}
+
+/// Corner radius of a node's box.
+fn node_corner_radius(zoom: f32, style: NodeStyle) -> CornerRadius {
+    CornerRadius::same((style.corner_radius * zoom).round() as u8)
+}
+
+/// A node's box including its border: what the user sees and points at.
+fn node_outer_rect(position: Pos2, zoom: f32, style: NodeStyle) -> Rect {
+    node_rect(position, zoom, style).expand(style.border * zoom)
 }
 
 impl NodeTemplate for Template {
@@ -834,30 +909,45 @@ impl NodeTemplate for Template {
     #[tracing::instrument(skip_all)]
     fn node_ui(&self, ui: &mut Ui, ctx: NodeContext) {
         let mut shapes = Vec::new();
-        let rect =
-            Rect::from_center_size(ctx.position, Vec2::new(90.0 * ctx.zoom, 35.0 * ctx.zoom));
+        let rect = node_rect(ctx.position, ctx.zoom, self.node_style);
         // `ctx.color`: the same per-node color (a system's own star-color
         // override, falling back to the theme's node color) the built-in
         // circle paints with when no template is installed -- see
         // `Map::paint_map_points`'s `node_color` and `NodeContext::color`'s
         // doc comment. Using the theme's flat `theme.node` here instead would
         // silently drop every star-color override reaching this node.
-        shapes.push(Shape::rect_stroke(
+        let corner_radius = node_corner_radius(ctx.zoom, self.node_style);
+        // Background and border as one shape: drawn as two, each with its
+        // own anti-aliased edge meeting at `rect`'s outline, a faint seam
+        // showed between them. `ctx.background_color` is the surrounding
+        // UI's own faint background (`extreme_bg_color`), so the chip suits
+        // both light and dark themes.
+        shapes.push(Shape::Rect(RectShape::new(
             rect,
-            CornerRadius::same((10.0 * ctx.zoom).round() as u8),
-            Stroke::new(4.0 * ctx.zoom, ctx.theme.node),
-            egui::StrokeKind::Middle,
-        ));
-        // `ctx.background_color`: the chip background behind the node,
-        // matching the surrounding UI's own faint background -- exactly what
-        // `ui.visuals().extreme_bg_color` did before `NodeContext` grew this
-        // field. A fixed `Color32::BLACK` here would paint an opaque black
-        // chip under a light theme.
-        shapes.push(Shape::rect_filled(
-            rect,
-            CornerRadius::same((10.0 * ctx.zoom).round() as u8),
+            corner_radius,
             ctx.background_color,
-        ));
+            Stroke::new(self.node_style.border * ctx.zoom, ctx.theme.node),
+            egui::StrokeKind::Outside,
+        )));
+        ui.painter().extend(std::mem::take(&mut shapes));
+        // A linked character here (a marker, in egui-map's terms): a pulsing
+        // tint over the background and under the label, faded in and out by
+        // `ctx.marker` when the character arrives or leaves. Drawn over an
+        // opaque background, the map behind never shows through, and the
+        // label's `Galley` is untouched.
+        if ctx.marker > 0.0 {
+            Animation::glow_outline(
+                ui.painter(),
+                &NodeOutline::RoundedRect {
+                    rect,
+                    corner_radius: self.node_style.corner_radius * ctx.zoom,
+                },
+                ui.input(|input| input.time) as f32,
+                ctx.theme.marker.gamma_multiply(self.node_style.glow_max_alpha),
+                ctx.marker,
+            );
+            ui.ctx().request_repaint();
+        }
         // Snap to the nearest half-pixel: egui's font atlas caches rasterized
         // glyphs keyed on the exact `FontId` size, and `12.0 * ctx.zoom` is
         // continuous in `ctx.zoom` -- during a zoom gesture it changes on
@@ -925,101 +1015,22 @@ impl NodeTemplate for Template {
         ui.painter().extend(shapes);
     }
 
-    #[tracing::instrument(skip_all)]
-    fn selection_ui(&self, ui: &mut Ui, ctx: SelectionContext) {
-        /// Gap between the node's border and the selection stroke, in screen points.
-        const SELECTION_GAP: f32 = 2.0;
+    /// Nothing to draw. `egui-map` calls this for its markers and for a
+    /// node's lasting state (halo, blink, orbit), always after or before
+    /// `node_ui` on the same node, so anything drawn here would either
+    /// cover the label or be covered by the node's background. Linked
+    /// characters are drawn by `node_ui` instead, from `NodeContext::marker`.
+    fn marker_ui(&self, _ui: &mut Ui, _ctx: MarkerContext) {}
 
-        let zoom = ctx.zoom;
-        // Same rect and border as `node_ui` (90x35, 4.0 stroke with `Middle`):
-        // the node's outer edge sits 2.0 * zoom outside its rect.
-        let node_rect = Rect::from_center_size(ctx.position, Vec2::new(90.0 * zoom, 35.0 * zoom));
-        let node_outer = node_rect.expand(2.0 * zoom);
-        // The stroke starts exactly SELECTION_GAP points further out and grows outward.
-        let rect = node_outer.expand(SELECTION_GAP);
-        // Concentric radius: node radius + half its border + the gap.
-        let radius = (10.0 * zoom + 2.0 * zoom + SELECTION_GAP).round() as u8;
-
-        ui.painter().add(Shape::rect_stroke(
-            rect,
-            CornerRadius::same(radius),
-            Stroke::new(2.0 * zoom, ctx.theme.selected),
-            egui::StrokeKind::Outside,
-        ));
-    }
-
-    #[tracing::instrument(skip_all)]
-    fn marker_ui(&self, ui: &mut Ui, ctx: MarkerContext) {
-        let viewport_point = ctx.position;
-        let zoom = ctx.zoom;
-        let mut shapes = Vec::new();
-        let led_position = Pos2::new(
-            viewport_point.x + (45.0 * zoom),
-            viewport_point.y - (17.0 * zoom),
-        );
-        let color = if ui.visuals().dark_mode {
-            Color32::LIGHT_GREEN
-        } else {
-            Color32::GREEN
-        };
-        let mut transparency = (chrono::Local::now().timestamp_millis() % 2550) / 5;
-        if transparency > 255 {
-            transparency = 255 - (transparency - 255)
+    /// The node's box as the user sees it, border included. egui-map
+    /// derives everything else from it: the hit area for the node tooltips
+    /// (`Map::hovered_node`), the selection ring, and the intel alert pulse
+    /// (the default `notification_ui`), which grows in the node's own shape.
+    fn outline(&self, ctx: HitContext) -> NodeOutline {
+        NodeOutline::RoundedRect {
+            rect: node_outer_rect(ctx.position, ctx.zoom, self.node_style),
+            corner_radius: (self.node_style.corner_radius + self.node_style.border) * ctx.zoom,
         }
-        let corrected_color =
-            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), transparency as u8);
-        shapes.push(Shape::Circle(CircleShape::stroke(
-            led_position,
-            6.5 * zoom,
-            Stroke::new(4.0 * zoom, corrected_color),
-        )));
-        shapes.push(Shape::Circle(CircleShape::filled(
-            led_position,
-            6.0 * zoom,
-            ui.visuals().extreme_bg_color,
-        )));
-        shapes.push(Shape::Circle(CircleShape::filled(
-            led_position,
-            6.0 * zoom,
-            corrected_color,
-        )));
-        ui.ctx().request_repaint();
-        ui.painter().extend(shapes);
-    }
-
-    #[tracing::instrument(skip_all)]
-    fn notification_ui(&self, ui: &mut Ui, ctx: NotificationContext) -> bool {
-        let viewport_point = ctx.position;
-        let zoom = ctx.zoom;
-        let initial_time = ctx.initial_time;
-        let color = ctx.color;
-        let mut shapes = Vec::new();
-        let current_instant = Instant::now();
-        let time_diff = current_instant.duration_since(initial_time);
-        let secs_played = time_diff.as_secs_f32();
-        let mut transparency: f32 = 1.00 - (secs_played / 2.00).abs();
-        if transparency < 0.00 {
-            transparency = 0.00;
-        }
-        let corrected_color = Color32::from_rgba_unmultiplied(
-            color.r(),
-            color.g(),
-            color.b(),
-            (255.00 * transparency).round() as u8,
-        );
-        let rect = Rect::from_center_size(viewport_point, Vec2::new(90.0 * zoom, 35.0 * zoom));
-        shapes.push(Shape::rect_stroke(
-            rect,
-            CornerRadius::same((10.0 * zoom).round() as u8),
-            Stroke::new((4.00 + (25.00 * secs_played)) * zoom, corrected_color),
-            egui::StrokeKind::Middle,
-        ));
-        ui.painter().extend(shapes);
-        ui.ctx().request_repaint();
-        if secs_played < 2.00 {
-            return true;
-        }
-        false
     }
 }
 
@@ -1069,11 +1080,33 @@ mod no_sde_tests {
 
         let mut universe =
             UniversePane::new(sender.subscribe(), missing.clone(), 1.0, spawner.clone());
-        universe.update_marker(1, 30000142);
+        universe.update_marker(1, 30000142, "Pilot");
         draw(&mut universe);
 
-        let mut region = RegionPane::new(sender.subscribe(), missing, 1.0, 10000002, spawner);
-        region.update_marker(1, 30000142);
+        let mut region = RegionPane::new(
+            sender.subscribe(),
+            missing,
+            1.0,
+            10000002,
+            spawner,
+            NodeStyle::default(),
+        );
+        region.update_marker(1, 30000142, "Pilot");
         draw(&mut region);
+    }
+
+    #[test]
+    fn the_outline_is_the_node_box_with_its_border() {
+        let zoom = 2.0;
+        let center = Pos2::new(100.0, 100.0);
+        let style = NodeStyle::default();
+        let outer = node_outer_rect(center, zoom, style);
+        let outline = NodeOutline::RoundedRect {
+            rect: outer,
+            corner_radius: (style.corner_radius + style.border) * zoom,
+        };
+        assert!(outline.contains(outer.center_top() + Vec2::new(0.0, 0.5)));
+        assert!(!outline.contains(outer.center_top() - Vec2::new(0.0, 1.0)));
+        assert_eq!(outline.bounding_rect(), outer);
     }
 }

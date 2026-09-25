@@ -27,7 +27,9 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub enum MapSync {
     CenterOn((usize, Target)),
-    SystemNotification((usize, Instant)),
+    /// An intel report on a solar system: when it happened and how long its
+    /// visual alert lasts (Settings -> Intelligence).
+    SystemNotification((usize, Instant, std::time::Duration)),
     /// Plays (or clears) an animation on a node of every map that has it;
     /// used by the Debug window to preview the node effects.
     NodeEffect((usize, NodeEffect)),

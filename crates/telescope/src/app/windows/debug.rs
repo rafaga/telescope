@@ -158,6 +158,7 @@ impl TelescopeApp {
                                                         tx_map.send(MapSync::SystemNotification((
                                                             system_id.try_into().unwrap(),
                                                             tokio::time::Instant::now(),
+                                                            self.settings.get_alert_duration(),
                                                         )));
                                                 }
                                             }
@@ -174,6 +175,7 @@ impl TelescopeApp {
                                                     tx_map.send(MapSync::SystemNotification((
                                                         system_id.try_into().unwrap(),
                                                         tokio::time::Instant::now(),
+                                                        self.settings.get_alert_duration(),
                                                     )));
                                             }
                                         }

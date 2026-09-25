@@ -1,5 +1,5 @@
 //! The on-screen status log: turns incoming `GenericNotification` messages into
-//! colored log entries (capped at `MAX_APP_MESSAGES`) and reports errors changing
+//! colored log entries (capped at `Settings::get_max_app_messages`) and reports errors changing
 //! the intel directory.
 
 use crate::app::TelescopeApp;
@@ -9,49 +9,16 @@ use eframe::egui::{
     self, Color32, FontFamily, FontId, Margin, TextFormat, epaint::text::LayoutJob,
 };
 
-/// Maximum number of entries kept in [`TelescopeApp::app_messages`], the
-/// notification log shown at the bottom of the window.
-///
-/// Every `GenericNotification` the app ever emits -- intel matches, ESI
-/// errors, debug traces -- ends up here via `update_status_with_error`,
-/// which only ever pushes, never trims. Across a long play session that is
-/// an unbounded `Vec<LayoutJob>` growing for as long as the app stays open;
-/// the on-screen list is already virtualized (`show_rows` in `update()`
-/// only lays out the visible rows), so the cost is pure memory growth, not
-/// rendering time, but it still never comes back down. Oldest entries are
-/// dropped once this cap is reached -- see `update_status_with_error`.
-const MAX_APP_MESSAGES: usize = 500;
-
-/// How long an incoming `GenericNotification` must differ from the one
-/// immediately before it (in the on-screen log, not necessarily the one
-/// most recently *received*, since a dedup'd notification never updates
-/// this) to be shown, rather than silently collapsed.
-///
-/// Two independent upstream sources can each emit back-to-back duplicates
-/// of what is, to the user, the exact same event: the file watcher can
-/// report more than one filesystem event for a single write (see
-/// `file.rs`'s combined `EventKind` handling), and the pattern engine can
-/// match more than one rule against the same intel line, each producing
-/// its own `Message::GenericNotification` (see
-/// `patterns::PatternEngine::evaluate`). Both paths funnel through
-/// [`TelescopeApp::update_status_with_error`], so a single exact-match
-/// check here -- same [`Type`], source, context and text, within this
-/// window -- covers both without either upstream needing to know about
-/// the other or de-duplicate itself. `ActionConfig::MapAlert` matches
-/// never reach this function on their success path, so they are
-/// unaffected.
-///
-/// A short window rather than an unconditional "collapse repeats of the
-/// last entry" keeps this a duplicate-*burst* filter, not a general
-/// throttle: the same text reappearing minutes apart (e.g. the same
-/// pattern matching again on a later intel line) is still shown.
-const NOTIFICATION_DEDUP_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// The pure comparison behind the dedup check in
 /// [`TelescopeApp::update_status_with_error`], split out so it can be unit
 /// tested without spinning up a whole `TelescopeApp`. `true` means
 /// `message` would show exactly the same log entry as `last` and arrived
-/// within [`NOTIFICATION_DEDUP_WINDOW`] of it, and should be collapsed.
+/// within `window` of it (see `Settings::get_notification_dedup_window` --
+/// two independent upstream sources can each emit back-to-back duplicates
+/// of what is, to the user, the exact same event: the file watcher can
+/// report more than one filesystem event for a single write, and the
+/// pattern engine can match more than one rule against the same intel
+/// line), and should be collapsed.
 ///
 /// Source and context only count for errors, the only type whose entry
 /// prints them. For the rest they are invisible, and comparing them let
@@ -62,6 +29,7 @@ fn is_duplicate_notification(
     last: Option<&(Type, String, String, String, std::time::Instant)>,
     message: &(Type, String, String, String),
     now: std::time::Instant,
+    window: std::time::Duration,
 ) -> bool {
     match last {
         Some((last_type, last_source, last_context, last_text, last_time)) => {
@@ -70,7 +38,7 @@ fn is_duplicate_notification(
             *last_type == message.0
                 && same_origin
                 && *last_text == message.3
-                && now.duration_since(*last_time) < NOTIFICATION_DEDUP_WINDOW
+                && now.duration_since(*last_time) < window
         }
         None => false,
     }
@@ -99,10 +67,15 @@ impl TelescopeApp {
     #[tracing::instrument(skip(self, message))]
     pub(crate) fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
         let now = std::time::Instant::now();
-        if is_duplicate_notification(self.last_notification.as_ref(), &message, now) {
+        if is_duplicate_notification(
+            self.last_notification.as_ref(),
+            &message,
+            now,
+            self.settings.get_notification_dedup_window(),
+        ) {
             // Exact repeat of the immediately-preceding notification,
             // arrived within the dedup window -- collapse it. See
-            // `NOTIFICATION_DEDUP_WINDOW`'s doc comment for why this one
+            // `is_duplicate_notification`'s doc comment for why this one
             // check covers both the watcher-duplication and the
             // multi-rule-match cases.
             return;
@@ -174,9 +147,10 @@ impl TelescopeApp {
         self.app_messages.push(job);
         // Drop the oldest entry once we're over the cap, so this log stays
         // bounded no matter how long the app runs. `remove(0)` shifts at
-        // most `MAX_APP_MESSAGES` elements -- bounded by the cap itself, not
-        // by session length -- so this stays cheap even though it's O(n).
-        if self.app_messages.len() > MAX_APP_MESSAGES {
+        // most `Settings::get_max_app_messages` elements -- bounded by the
+        // cap itself, not by session length -- so this stays cheap even
+        // though it's O(n).
+        if self.app_messages.len() > self.settings.get_max_app_messages() {
             self.app_messages.remove(0);
         }
     }
@@ -184,8 +158,6 @@ impl TelescopeApp {
 
 /// Id of the expanded log panel (its size is persisted under it by egui).
 const LOG_PANEL_ID: &str = "log_panel";
-/// Smallest height the expanded log panel can be dragged to, in points.
-const LOG_PANEL_MIN_HEIGHT: f32 = 60.0;
 
 impl TelescopeApp {
     /// The status log at the bottom of the window. Collapsed, it is a single
@@ -200,7 +172,7 @@ impl TelescopeApp {
         let collapsed_panel = egui::Panel::bottom("log_panel_collapsed").resizable(false);
         let expanded_panel = egui::Panel::bottom(LOG_PANEL_ID)
             .resizable(true)
-            .min_size(LOG_PANEL_MIN_HEIGHT)
+            .min_size(self.settings.get_log_panel_min_height())
             .default_size(saved.log_height);
         let messages = &self.app_messages;
         egui::Panel::show_switched(
@@ -290,7 +262,8 @@ mod dedup_tests {
         assert!(!is_duplicate_notification(
             None,
             &message(Type::Info, "hello"),
-            Instant::now()
+            Instant::now(),
+            Duration::from_secs(1)
         ));
     }
 
@@ -307,7 +280,8 @@ mod dedup_tests {
         assert!(is_duplicate_notification(
             Some(&last),
             &message(Type::Info, "hello"),
-            now
+            now,
+            Duration::from_secs(1)
         ));
     }
 
@@ -327,7 +301,12 @@ mod dedup_tests {
             String::from("ship_report_en"),
             String::from("hello"),
         );
-        assert!(is_duplicate_notification(Some(&last), &other_rule, now));
+        assert!(is_duplicate_notification(
+            Some(&last),
+            &other_rule,
+            now,
+            Duration::from_secs(1)
+        ));
     }
 
     #[test]
@@ -346,7 +325,12 @@ mod dedup_tests {
             String::from("x"),
             String::from("failed"),
         );
-        assert!(!is_duplicate_notification(Some(&last), &other, now));
+        assert!(!is_duplicate_notification(
+            Some(&last),
+            &other,
+            now,
+            Duration::from_secs(1)
+        ));
     }
 
     #[test]
@@ -362,7 +346,8 @@ mod dedup_tests {
         assert!(!is_duplicate_notification(
             Some(&last),
             &message(Type::Info, "goodbye"),
-            now
+            now,
+            Duration::from_secs(1)
         ));
     }
 
@@ -379,7 +364,8 @@ mod dedup_tests {
         assert!(!is_duplicate_notification(
             Some(&last),
             &message(Type::Info, "hello"),
-            now
+            now,
+            Duration::from_secs(1)
         ));
     }
 
@@ -393,11 +379,12 @@ mod dedup_tests {
             String::from("hello"),
             now,
         );
-        let later = now + NOTIFICATION_DEDUP_WINDOW + Duration::from_millis(1);
+        let later = now + Duration::from_secs(1) + Duration::from_millis(1);
         assert!(!is_duplicate_notification(
             Some(&last),
             &message(Type::Info, "hello"),
-            later
+            later,
+            Duration::from_secs(1)
         ));
     }
 }

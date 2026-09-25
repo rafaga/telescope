@@ -4,27 +4,22 @@
 //! This file only renders; the linking logic lives in `app/character_link.rs`.
 
 use crate::app::TelescopeApp;
+use crate::app::settings::CharacterCardStyle;
 use eframe::egui;
 use eframe::egui::FontId;
 use eframe::egui::RichText;
 use webb::objects::Character;
 
-/// Side of the square character portrait, in points.
-const PORTRAIT_SIZE: f32 = 80.0;
-/// Height of the placeholder shown when no character is linked.
-const EMPTY_STATE_HEIGHT: f32 = 200.0;
-/// Vertical gap between character cards.
-const CARD_SPACING: f32 = 4.0;
-
 impl TelescopeApp {
     pub(super) fn show_characters_page(&mut self, ui: &mut egui::Ui) {
+        let style = self.settings.get_character_card_style();
         ui.label(RichText::new(t!("settings.characters.heading")).font(FontId::proportional(20.0)));
         ui.label(t!("settings.characters.help"));
         self.character_toolbar(ui);
-        ui.add_space(CARD_SPACING);
+        ui.add_space(style.card_spacing);
 
         if self.esi.characters.is_empty() {
-            empty_state(ui);
+            empty_state(ui, style);
             return;
         }
 
@@ -32,10 +27,10 @@ impl TelescopeApp {
         let mut clicked = None;
         for character in &self.esi.characters {
             let selected = self.esi.active_character == Some(character.id);
-            if character_card(ui, character, selected).clicked() {
+            if character_card(ui, character, selected, style).clicked() {
                 clicked = Some(character.id);
             }
-            ui.add_space(CARD_SPACING);
+            ui.add_space(style.card_spacing);
         }
         if clicked.is_some() {
             self.esi.active_character = clicked;
@@ -80,7 +75,12 @@ impl TelescopeApp {
 
 /// One linked character: portrait, name, alliance, corporation and last logon.
 /// Returns a clickable response covering the whole card.
-fn character_card(ui: &mut egui::Ui, character: &Character, selected: bool) -> egui::Response {
+fn character_card(
+    ui: &mut egui::Ui,
+    character: &Character,
+    selected: bool,
+    style: CharacterCardStyle,
+) -> egui::Response {
     let visuals = ui.visuals();
     let (fill, stroke) = if selected {
         (
@@ -101,7 +101,7 @@ fn character_card(ui: &mut egui::Ui, character: &Character, selected: bool) -> e
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        let portrait_size = egui::Vec2::splat(PORTRAIT_SIZE);
+                        let portrait_size = egui::Vec2::splat(style.portrait_size);
                         match &character.photo {
                             Some(photo) => {
                                 ui.add(
@@ -161,9 +161,9 @@ fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.end_row();
 }
 
-fn empty_state(ui: &mut egui::Ui) {
+fn empty_state(ui: &mut egui::Ui, style: CharacterCardStyle) {
     ui.add_sized(
-        [ui.available_width(), EMPTY_STATE_HEIGHT],
+        [ui.available_width(), style.empty_state_height],
         egui::Label::new(t!("settings.characters.empty")),
     );
 }

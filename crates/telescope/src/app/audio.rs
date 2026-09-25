@@ -27,7 +27,7 @@
 //! [`Self::play_alarm`] the path, which it gets from
 //! `Settings::get_alert_sound_path`: the file the user picked on the
 //! Settings -> Intelligence page (`windows::settings::intelligence`),
-//! resolved against `settings::ALERTS_DIR`. That constant is also where
+//! resolved against `Settings::alerts_dir`. That's also where
 //! the "relative to wherever Telescope is run from" convention lives
 //! (`settings::FilePaths::default`'s doc comment explains why: same as
 //! `sde.db`, `patterns.toml` and `telescope.toml`, it's meant to sit
@@ -191,7 +191,7 @@ mod tests {
         // say). `CARGO_MANIFEST_DIR` is a compile-time constant (this
         // crate's own directory on disk), not the test binary's working
         // directory -- `cargo test` sets that to the package root
-        // (`crates/telescope`), not the workspace root `settings::ALERTS_DIR`
+        // (`crates/telescope`), not the workspace root `Settings::alerts_dir`
         // is actually relative to (see
         // `Settings::set_alert_sound_for_test`'s doc comment for the same
         // issue on the settings side) -- so this resolves correctly

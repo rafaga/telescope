@@ -19,29 +19,6 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-/// Directory the bundled alarm sounds live in (see `app::audio`'s module
-/// docs), relative to wherever Telescope is run from -- same convention as
-/// `sde.db`/`patterns.toml`/`telescope.toml`. The one place both
-/// `Settings::set_alert_sound`'s validation and
-/// `Settings::get_alert_sound_path` build a real path against, and
-/// `windows::settings::intelligence`'s picker reads to list the choices --
-/// previously each of those three (plus `app::audio`'s now-removed
-/// `ALARM_SOUND_PATH`) hardcoded their own copy of this string.
-pub(crate) const ALERTS_DIR: &str = "assets/alerts";
-
-/// Where the alarm sounds actually are: [`ALERTS_DIR`] under the first
-/// place Telescope's shipped files are found (the working directory, or the
-/// executable's folder once installed -- see `crate::app_dirs`), or
-/// `ALERTS_DIR` itself if none has it.
-pub(crate) fn alerts_dir() -> PathBuf {
-    crate::app_dirs::find_resource(Path::new(ALERTS_DIR))
-        .unwrap_or_else(|| PathBuf::from(ALERTS_DIR))
-}
-
-/// Default file name of the player (ESI) database, relative to the working
-/// directory (next to `telescope.toml`).
-pub(crate) const DEFAULT_PLAYER_DB: &str = "telescope.db";
-
 // `default`: a settings file may leave out any path (the shipped template
 // leaves out `intel`, whose default depends on the user's home folder).
 #[derive(Serialize, Deserialize, Clone)]
@@ -52,9 +29,15 @@ struct FilePaths {
     intel: PathBuf,
     sde: PathBuf,
     db: PathBuf,
+    /// Directory the bundled alarm sounds live in (see `app::audio`'s module
+    /// docs), relative to wherever Telescope is run from -- same convention
+    /// as `sde.db`/`patterns.toml`/`telescope.toml`. Not user-editable, so
+    /// it isn't persisted to `telescope.toml`.
+    #[serde(skip)]
+    alerts_dir: PathBuf,
     // Just the file name (e.g. "1_campana_info.wav"), resolved against
-    // `ALERTS_DIR` by `Settings::get_alert_sound_path` -- not the full path,
-    // so a future change to `ALERTS_DIR` doesn't require migrating every
+    // `alerts_dir` by `Settings::get_alert_sound_path` -- not the full path,
+    // so a future change to `alerts_dir` doesn't require migrating every
     // `telescope.toml` already on disk.
     alert_sound: PathBuf,
 }
@@ -88,16 +71,21 @@ impl Default for FilePaths {
             settings: Path::new("telescope.toml").to_path_buf(),
             intel: tpath,
             sde: Path::new("sde.db").to_path_buf(),
-            db: PathBuf::from(DEFAULT_PLAYER_DB),
+            db: PathBuf::from(Self::DEFAULT_DB),
+            alerts_dir: PathBuf::from("assets/alerts"),
             alert_sound: PathBuf::from("1_campana_info.wav"),
         }
     }
 }
 
-impl FilePaths {}
+impl FilePaths {
+    /// Default file name of the player (ESI) database, relative to the
+    /// working directory (next to `telescope.toml`).
+    pub(crate) const DEFAULT_DB: &str = "telescope.db";
+}
 
 #[derive(Serialize, Deserialize, Clone)]
-struct Mapping {
+pub(crate) struct Mapping {
     pub startup_regions: Vec<usize>,
     pub warning_area: u8,
     /// Center every map on the linked character an alert sounded for.
@@ -105,6 +93,15 @@ struct Mapping {
     /// load with it off.
     #[serde(default)]
     pub center_on_alert: bool,
+    /// How long the visual alert of an intel report stays on the maps, in
+    /// seconds (it fades out over that time). `serde(default)`: settings
+    /// files written before this option existed get the default.
+    #[serde(default = "default_alert_duration_secs")]
+    pub alert_duration_secs: u32,
+}
+
+fn default_alert_duration_secs() -> u32 {
+    Mapping::DEFAULT_ALERT_DURATION_SECS
 }
 
 impl Default for Mapping {
@@ -113,11 +110,19 @@ impl Default for Mapping {
             startup_regions: vec![],
             warning_area: 4,
             center_on_alert: false,
+            alert_duration_secs: Mapping::DEFAULT_ALERT_DURATION_SECS,
         }
     }
 }
 
-impl Mapping {}
+impl Mapping {
+    /// Default of [`Mapping::alert_duration_secs`]: four minutes.
+    pub(crate) const DEFAULT_ALERT_DURATION_SECS: u32 = 240;
+    /// Shortest visual alert the Settings slider allows, in seconds.
+    pub(crate) const MIN_ALERT_DURATION_SECS: u32 = 10;
+    /// Longest visual alert the Settings slider allows, in seconds.
+    pub(crate) const MAX_ALERT_DURATION_SECS: u32 = 600;
+}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Channels {
@@ -154,6 +159,120 @@ impl Default for UiState {
     }
 }
 
+/// Where `DatabaseUpdater` fetches the SDE from. Not user-editable (there's
+/// nowhere in Settings' UI to change it), so it isn't persisted to
+/// `telescope.toml` -- see [`Settings::get_sde_url`]/[`Settings::get_maps_url`]/
+/// [`Settings::get_sde_variant`].
+pub(crate) struct DataSourceUrls {
+    pub(crate) sde_url: String,
+    pub(crate) maps_url: String,
+    pub(crate) sde_variant: String,
+}
+
+impl Default for DataSourceUrls {
+    fn default() -> Self {
+        Self {
+            // CCP's official SDE index/download root.
+            sde_url: String::from("https://developers.eveonline.com/static-data/tranquility/"),
+            // dotlan's map SVGs, only fetched when `with_third_party` is
+            // enabled (used to build `mapAbstractSystems`, see
+            // `sde::builder::parser::ParserConfig::with_third_party`).
+            maps_url: String::from("http://evemaps.dotlan.net/svg/"),
+            // The `sde-builder` CLI also offers `"yaml"`; Telescope only
+            // ever needs the smaller `jsonl` export the parser reads.
+            sde_variant: String::from("jsonl"),
+        }
+    }
+}
+
+/// Tuning for the on-screen notification log (`app::notifications`). Not
+/// user-editable, so not persisted to `telescope.toml`.
+pub(crate) struct NotificationLimits {
+    /// Maximum number of entries kept in `TelescopeApp::app_messages`
+    /// before the oldest are dropped.
+    pub(crate) max_app_messages: usize,
+    /// How long an incoming notification must differ from the one
+    /// immediately before it to be shown, rather than collapsed as a
+    /// duplicate.
+    pub(crate) dedup_window: std::time::Duration,
+    /// Smallest height the expanded log panel can be dragged to, in points.
+    pub(crate) log_panel_min_height: f32,
+}
+
+impl Default for NotificationLimits {
+    fn default() -> Self {
+        Self {
+            max_app_messages: 500,
+            dedup_window: std::time::Duration::from_secs(1),
+            log_panel_min_height: 60.0,
+        }
+    }
+}
+
+/// Geometry of a node's box on the regional maps (`app::tiles::Template`),
+/// before the map's `zoom` multiplier. Not user-editable, so not persisted
+/// to `telescope.toml`. `Copy`: read once per [`app::tiles::Template`]
+/// (constructed per pane, not per frame) and handed around by value.
+/// `Debug`: recorded as a field by the `#[tracing::instrument]` on
+/// `RegionPane::new`/`TelescopeApp::generate_pane`, which don't skip it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NodeStyle {
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) corner_radius: f32,
+    /// Width of the border (drawn outside the box).
+    pub(crate) border: f32,
+    /// Strongest opacity of the character glow over the node background,
+    /// so the label on top of it stays readable.
+    pub(crate) glow_max_alpha: f32,
+}
+
+impl Default for NodeStyle {
+    fn default() -> Self {
+        Self {
+            width: 90.0,
+            height: 35.0,
+            corner_radius: 10.0,
+            border: 2.0,
+            glow_max_alpha: 0.6,
+        }
+    }
+}
+
+/// Layout of the Settings -> Characters page (`windows::settings::characters`).
+/// Not user-editable, so not persisted to `telescope.toml`.
+#[derive(Clone, Copy)]
+pub(crate) struct CharacterCardStyle {
+    /// Side of the square character portrait, in points.
+    pub(crate) portrait_size: f32,
+    /// Height of the placeholder shown when no character is linked.
+    pub(crate) empty_state_height: f32,
+    /// Vertical gap between character cards.
+    pub(crate) card_spacing: f32,
+}
+
+impl Default for CharacterCardStyle {
+    fn default() -> Self {
+        Self {
+            portrait_size: 80.0,
+            empty_state_height: 200.0,
+            card_spacing: 4.0,
+        }
+    }
+}
+
+/// Internal tuning values that live alongside the user-facing settings for
+/// discoverability, but aren't part of `telescope.toml` and aren't shown in
+/// the Settings window -- each field has its own `Default`, reproducing the
+/// value a plain `const` used to hold before it moved here.
+#[derive(Default)]
+pub(crate) struct InternalDefaults {
+    pub(crate) data_sources: DataSourceUrls,
+    pub(crate) notifications: NotificationLimits,
+    pub(crate) node_style: NodeStyle,
+    pub(crate) character_card: CharacterCardStyle,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Settings {
     paths: FilePaths,
@@ -162,6 +281,8 @@ pub(crate) struct Settings {
     // `default`: `telescope.toml` files from before this section existed.
     #[serde(default)]
     ui: UiState,
+    #[serde(skip)]
+    internal: InternalDefaults,
     #[serde(skip)]
     factor: f64,
     #[serde(skip)]
@@ -186,7 +307,7 @@ impl TryFrom<PathBuf> for Settings {
                         // real default carry `db = ""`; see
                         // `FilePaths::default` for why that can't be kept.
                         if toml_manager.paths.db.as_os_str().is_empty() {
-                            toml_manager.paths.db = PathBuf::from(DEFAULT_PLAYER_DB);
+                            toml_manager.paths.db = PathBuf::from(FilePaths::DEFAULT_DB);
                         }
                         toml_manager.factor = 50000000000000.0;
                         toml_manager.region_factor = -2.0;
@@ -215,6 +336,7 @@ impl Default for Settings {
             region_factor: -2.0,
             saved: false,
             ui: UiState::default(),
+            internal: InternalDefaults::default(),
             channels: Channels {
                 available: HashMap::new(),
                 log_files: HashMap::new(),
@@ -423,6 +545,26 @@ impl Settings {
         self.saved = false;
     }
 
+    /// How long the visual alert of an intel report lasts on the maps.
+    pub(crate) fn get_alert_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.get_alert_duration_secs()))
+    }
+
+    pub(crate) fn get_alert_duration_secs(&self) -> u32 {
+        self.mapping.alert_duration_secs.clamp(
+            Mapping::MIN_ALERT_DURATION_SECS,
+            Mapping::MAX_ALERT_DURATION_SECS,
+        )
+    }
+
+    pub(crate) fn set_alert_duration_secs(&mut self, secs: u32) {
+        self.mapping.alert_duration_secs = secs.clamp(
+            Mapping::MIN_ALERT_DURATION_SECS,
+            Mapping::MAX_ALERT_DURATION_SECS,
+        );
+        self.saved = false;
+    }
+
     pub(crate) fn get_center_on_alert(&self) -> bool {
         self.mapping.center_on_alert
     }
@@ -474,6 +616,15 @@ impl Settings {
         }
     }
 
+    /// Where the alarm sounds actually are: `paths.alerts_dir` under the
+    /// first place Telescope's shipped files are found (the working
+    /// directory, or the executable's folder once installed -- see
+    /// `crate::app_dirs`), or `paths.alerts_dir` itself if none has it.
+    pub(crate) fn alerts_dir(&self) -> PathBuf {
+        crate::app_dirs::find_resource(&self.paths.alerts_dir)
+            .unwrap_or_else(|| self.paths.alerts_dir.clone())
+    }
+
     /// The selected alarm sound's file name (e.g. `"1_campana_info.wav"`),
     /// not a path you can open directly -- see [`Self::get_alert_sound_path`]
     /// for that.
@@ -481,19 +632,61 @@ impl Settings {
         self.paths.alert_sound.as_path()
     }
 
-    /// [`Self::get_alert_sound`] resolved against [`ALERTS_DIR`], ready to
-    /// hand to `File::open` -- what `app::audio::AlarmPlayer::play_alarm`
+    /// [`Self::get_alert_sound`] resolved against [`Self::alerts_dir`], ready
+    /// to hand to `File::open` -- what `app::audio::AlarmPlayer::play_alarm`
     /// actually plays.
     pub(crate) fn get_alert_sound_path(&self) -> PathBuf {
-        alerts_dir().join(&self.paths.alert_sound)
+        self.alerts_dir().join(&self.paths.alert_sound)
+    }
+
+    /// CCP's SDE index/download root `DatabaseUpdater` fetches from.
+    pub(crate) fn get_sde_url(&self) -> &str {
+        &self.internal.data_sources.sde_url
+    }
+
+    /// dotlan's map SVG root `DatabaseUpdater` fetches from when built with
+    /// third-party data.
+    pub(crate) fn get_maps_url(&self) -> &str {
+        &self.internal.data_sources.maps_url
+    }
+
+    /// The SDE export variant `DatabaseUpdater` downloads (`"jsonl"`).
+    pub(crate) fn get_sde_variant(&self) -> &str {
+        &self.internal.data_sources.sde_variant
+    }
+
+    /// Cap on `TelescopeApp::app_messages`, the on-screen notification log.
+    pub(crate) fn get_max_app_messages(&self) -> usize {
+        self.internal.notifications.max_app_messages
+    }
+
+    /// How close together two notifications have to arrive to be collapsed
+    /// as duplicates.
+    pub(crate) fn get_notification_dedup_window(&self) -> std::time::Duration {
+        self.internal.notifications.dedup_window
+    }
+
+    /// Smallest height the expanded log panel can be dragged to.
+    pub(crate) fn get_log_panel_min_height(&self) -> f32 {
+        self.internal.notifications.log_panel_min_height
+    }
+
+    /// Geometry of a node's box on the regional maps.
+    pub(crate) fn get_node_style(&self) -> NodeStyle {
+        self.internal.node_style
+    }
+
+    /// Layout of the Settings -> Characters page.
+    pub(crate) fn get_character_card_style(&self) -> CharacterCardStyle {
+        self.internal.character_card
     }
 
     /// `name` is just a file name (what `windows::settings::intelligence`'s
-    /// picker lists from reading [`ALERTS_DIR`]), not a path -- this joins
-    /// it against `ALERTS_DIR` itself to check it really exists before
+    /// picker lists from reading [`Self::alerts_dir`]), not a path -- this
+    /// joins it against that directory to check it really exists before
     /// accepting it.
     pub fn set_alert_sound(&mut self, name: &str) -> Result<()> {
-        let full = alerts_dir().join(name);
+        let full = self.alerts_dir().join(name);
         if !full.exists() {
             return Err(SettingsError::InvalidDirectory(
                 full.to_string_lossy().to_string(),
@@ -508,7 +701,7 @@ impl Settings {
     /// check, for the same reason [`Self::set_sde_for_test`] exists: `cargo
     /// test` runs this crate's test binary with its working directory set
     /// to the package root (`crates/telescope`), not the workspace root
-    /// [`ALERTS_DIR`] is actually relative to, so the real check can never
+    /// `alerts_dir` is actually relative to, so the real check can never
     /// pass in a test without reaching outside the test process to change
     /// its working directory -- which this deliberately avoids, to not
     /// risk interfering with any other test that (now or later) reads a
@@ -669,7 +862,7 @@ mod tests {
 
     #[test]
     fn db_defaults_to_a_real_file_next_to_the_app() {
-        assert_eq!(Settings::default().get_db(), Path::new(DEFAULT_PLAYER_DB));
+        assert_eq!(Settings::default().get_db(), Path::new(FilePaths::DEFAULT_DB));
     }
 
     // Regression test: a `telescope.toml` from before `db` had a default
@@ -684,7 +877,7 @@ mod tests {
         assert!(fs::read_to_string(&path).unwrap().contains("db = \"\""));
 
         let loaded = Settings::try_from(path).unwrap();
-        assert_eq!(loaded.get_db(), Path::new(DEFAULT_PLAYER_DB));
+        assert_eq!(loaded.get_db(), Path::new(FilePaths::DEFAULT_DB));
     }
 
     #[test]
@@ -704,7 +897,7 @@ mod tests {
         assert!(settings.set_db(&dir.join("missing").join("x.db")).is_err());
         assert!(settings.set_db(&dir).is_err());
         assert!(settings.set_db(Path::new("")).is_err());
-        assert_eq!(settings.get_db(), Path::new(DEFAULT_PLAYER_DB));
+        assert_eq!(settings.get_db(), Path::new(FilePaths::DEFAULT_DB));
     }
 
     #[test]
@@ -720,13 +913,13 @@ mod tests {
 
         assert_eq!(
             settings.get_alert_sound_path(),
-            Path::new(ALERTS_DIR).join("9_trino_marimba.wav")
+            FilePaths::default().alerts_dir.join("9_trino_marimba.wav")
         );
     }
 
     // `set_alert_sound` itself can't be exercised against a real,
     // known-good file name here -- see `set_alert_sound_for_test`'s doc
-    // comment for why -- but a name that doesn't exist under `ALERTS_DIR`
+    // comment for why -- but a name that doesn't exist under `alerts_dir`
     // has to fail regardless of the test binary's working directory, so
     // this much of the real function is still safe to cover directly.
     #[test]
@@ -773,5 +966,26 @@ mod tests {
         assert_eq!(settings.ui.language, crate::i18n::AUTO);
         assert!(settings.get_startup_regions().is_empty());
         assert!(!settings.get_center_on_alert());
+    }
+
+    #[test]
+    fn the_alert_duration_defaults_and_is_clamped() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            settings.get_alert_duration_secs(),
+            Mapping::DEFAULT_ALERT_DURATION_SECS
+        );
+        settings.set_alert_duration_secs(1);
+        assert_eq!(
+            settings.get_alert_duration_secs(),
+            Mapping::MIN_ALERT_DURATION_SECS
+        );
+        settings.set_alert_duration_secs(100_000);
+        assert_eq!(
+            settings.get_alert_duration_secs(),
+            Mapping::MAX_ALERT_DURATION_SECS
+        );
+        let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
+        assert_eq!(old.alert_duration_secs, Mapping::DEFAULT_ALERT_DURATION_SECS);
     }
 }

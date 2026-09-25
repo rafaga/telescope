@@ -76,8 +76,7 @@ pub struct TelescopeApp {
 
     // the ESI Manager
     esi: EsiManager,
-    // Capped at `MAX_APP_MESSAGES` by `update_status_with_error` -- see that
-    // constant's doc comment.
+    // Capped at `Settings::get_max_app_messages` by `update_status_with_error`.
     app_messages: Vec<LayoutJob>,
     search_text: String,
     emit_notification: bool,
@@ -113,7 +112,7 @@ pub struct TelescopeApp {
     // Last `GenericNotification` accepted by `update_status_with_error`,
     // plus when it was accepted -- lets that function collapse an
     // immediate repeat (same type/source/context/text) arriving within
-    // `notifications::NOTIFICATION_DEDUP_WINDOW`. Two independent upstream
+    // `Settings::get_notification_dedup_window`. Two independent upstream
     // sources can each emit back-to-back duplicates of the same
     // notification: the file watcher can report more than one event for a
     // single write, and the pattern engine can match more than one rule
@@ -215,6 +214,9 @@ impl Default for TelescopeApp {
             sde_cache_dir.join("sde"),
             Arc::clone(&arc_msg_sender),
             true,
+            settings.get_sde_url().to_string(),
+            settings.get_maps_url().to_string(),
+            settings.get_sde_variant().to_string(),
         );
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
@@ -570,7 +572,11 @@ impl TelescopeApp {
     fn seed_player_markers(&self, pane: &mut dyn TabPane) {
         for character in &self.esi.characters {
             if character.location > 0 {
-                pane.update_marker(character.id as usize, character.location as usize);
+                pane.update_marker(
+                    character.id as usize,
+                    character.location as usize,
+                    &character.name,
+                );
             }
         }
     }
@@ -583,6 +589,7 @@ impl TelescopeApp {
             self.settings.get_region_factor(),
             Some(region_id),
             Arc::clone(&self.task_msg),
+            self.settings.get_node_style(),
         );
         self.seed_player_markers(pane.as_mut());
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
@@ -677,9 +684,12 @@ impl TelescopeApp {
         factor: f64,
         region_id: Option<usize>,
         task_msg: Arc<MessageSpawner>,
+        node_style: crate::app::settings::NodeStyle,
     ) -> Box<dyn TabPane> {
         let pane: Box<dyn TabPane> = if let Some(region) = region_id {
-            Box::new(RegionPane::new(receiver, path, factor, region, task_msg))
+            Box::new(RegionPane::new(
+                receiver, path, factor, region, task_msg, node_style,
+            ))
         } else {
             Box::new(UniversePane::new(receiver, path, factor, task_msg))
         };
@@ -714,6 +724,7 @@ impl TelescopeApp {
             self.settings.get_factor(),
             None,
             Arc::clone(&self.task_msg),
+            self.settings.get_node_style(),
         );
         self.seed_player_markers(pane.as_mut());
         let id = tiles.insert_pane(pane);
@@ -724,6 +735,13 @@ impl TelescopeApp {
 
     #[tracing::instrument(skip(self))]
     fn update_player_location(&mut self, player_id: i32, solar_system_id: i32) {
+        let name = self
+            .esi
+            .characters
+            .iter()
+            .find(|character| character.id == player_id)
+            .map(|character| character.name.clone())
+            .unwrap_or_default();
         // Straight to every pane (visible or not) instead of through the
         // `MapSync` broadcast: panes only drain that channel while they are
         // drawn, so a hidden tab fell behind, lost the one-off location
@@ -732,7 +750,7 @@ impl TelescopeApp {
         if let Some(tree) = self.tree.as_mut() {
             for tile in tree.tiles.tiles_mut() {
                 if let Tile::Pane(pane) = tile {
-                    pane.update_marker(player_id as usize, solar_system_id as usize);
+                    pane.update_marker(player_id as usize, solar_system_id as usize, &name);
                 }
             }
         }
@@ -795,6 +813,30 @@ mod font_tests {
             .textures_delta
             .clear();
         ctx
+    }
+
+    /// The atlas region (top left and bottom right corners) of the one glyph
+    /// `text` is laid out with.
+    fn glyph_uv(ctx: &egui::Context, text: &str) -> ([u16; 2], [u16; 2]) {
+        ctx.fonts_mut(|fonts| {
+            let galley =
+                fonts.layout_no_wrap(text.to_owned(), FontId::proportional(14.0), Color32::WHITE);
+            let uv = galley.rows[0].glyphs[0].uv_rect;
+            (uv.min, uv.max)
+        })
+    }
+
+    // `draws` can't be used for the icon: egui reports every glyph of the font
+    // holding its replacement glyph (NotoEmoji, `◻`) as missing, emoji
+    // included. Instead, check the icon isn't painted as that `◻`.
+    #[test]
+    fn character_icon_is_drawn() {
+        let ctx = context_with(TelescopeApp::font_definitions());
+        let icon = glyph_uv(&ctx, tiles::CHARACTER_ICON);
+        assert_ne!(icon.0, icon.1);
+        assert_ne!(icon, glyph_uv(&ctx, "◻"));
+        // A code point no font has, to show the check tells them apart.
+        assert_eq!(glyph_uv(&ctx, "\u{10FFFD}"), glyph_uv(&ctx, "◻"));
     }
 
     #[test]

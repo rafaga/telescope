@@ -50,15 +50,6 @@ use tokio::sync::mpsc::Sender;
 
 use super::messages::{Message, Type, send_app_message, try_send_app_message};
 
-/// CCP's official SDE index/download root.
-const SDE_URL: &str = "https://developers.eveonline.com/static-data/tranquility/";
-/// dotlan's map SVGs, only fetched when `with_third_party` is enabled
-/// (used to build `mapAbstractSystems`, see [`ParserConfig::with_third_party`]).
-const MAPS_URL: &str = "http://evemaps.dotlan.net/svg/";
-/// The `sde-builder` CLI also offers `"yaml"`; Telescope only ever needs
-/// the smaller `jsonl` export the parser reads.
-const SDE_VARIANT: &str = "jsonl";
-
 /// Guards against two update runs racing each other (e.g. the automatic
 /// startup check and a manual "Check for updates" click in Settings). A
 /// second call to [`DatabaseUpdater::spawn`] while one is already
@@ -141,6 +132,9 @@ impl DatabaseUpdater {
         sde_dir: PathBuf,
         app_msg: Arc<Sender<Message>>,
         with_third_party: bool,
+        sde_url: String,
+        maps_url: String,
+        sde_variant: String,
     ) {
         // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
@@ -208,8 +202,17 @@ impl DatabaseUpdater {
                 .expect("failed to build the database-updater runtime");
             runtime.block_on(async move {
                 let _span = tracing::info_span!("spawned database updater").entered();
-                let result =
-                    Self::run(&sde_path, &data_dir, &sde_dir, with_third_party, &app_msg).await;
+                let result = Self::run(
+                    &sde_path,
+                    &data_dir,
+                    &sde_dir,
+                    with_third_party,
+                    &sde_url,
+                    &maps_url,
+                    &sde_variant,
+                    &app_msg,
+                )
+                .await;
                 match result {
                     Ok(rebuilt) => {
                         if rebuilt {
@@ -288,6 +291,9 @@ impl DatabaseUpdater {
         data_dir: &std::path::Path,
         sde_dir: &std::path::Path,
         with_third_party: bool,
+        sde_url: &str,
+        maps_url: &str,
+        sde_variant: &str,
         app_msg: &Sender<Message>,
     ) -> Result<bool, Error> {
         send_app_message(
@@ -298,7 +304,7 @@ impl DatabaseUpdater {
         .ok();
 
         let client = http::build_client()?;
-        let changed = sde_index::update_as_needed(&client, data_dir, SDE_URL, SDE_VARIANT).await?;
+        let changed = sde_index::update_as_needed(&client, data_dir, sde_url, sde_variant).await?;
 
         let db_exists = sde_path.exists();
         if !changed && db_exists {
@@ -321,18 +327,18 @@ impl DatabaseUpdater {
             std::fs::create_dir_all(parent)?;
         }
 
-        let zip_path = data_dir.join(format!("sde-{SDE_VARIANT}.zip"));
+        let zip_path = data_dir.join(format!("sde-{sde_variant}.zip"));
         extract::prepare_sde_directory(&zip_path, sde_dir)?;
 
         // Read back the build number `sde_index::update_as_needed` just
-        // wrote (or confirmed unchanged) to `sde-{SDE_VARIANT}.build`,
+        // wrote (or confirmed unchanged) to `sde-{sde_variant}.build`,
         // purely to record it in `sdeFingerprint` below -- mirrors
         // `sde-builder`'s own CLI. `Ok` on read failure rather than
         // propagating it: a database with no recorded build number
         // (`sdeFingerprint.sdeBuild = NULL`) is still valid, so this
         // shouldn't abort the whole build.
         let build_number =
-            std::fs::read_to_string(data_dir.join(format!("sde-{SDE_VARIANT}.build")))
+            std::fs::read_to_string(data_dir.join(format!("sde-{sde_variant}.build")))
                 .ok()
                 .map(|s| s.trim().to_string());
 
@@ -370,7 +376,7 @@ impl DatabaseUpdater {
         };
         let sde_parser = Parser::new(sde_dir, parser_config);
         sde_parser
-            .build_database(&mut connection, &client, MAPS_URL, build_number.as_deref())
+            .build_database(&mut connection, &client, maps_url, build_number.as_deref())
             .await?;
 
         Ok(true)

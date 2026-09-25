@@ -3,7 +3,7 @@
 
 use crate::app::TelescopeApp;
 use crate::app::messages::{Message, send_app_message};
-use crate::app::settings::alerts_dir;
+use crate::app::settings::Mapping;
 use eframe::egui;
 use eframe::egui::{Button, FontId, IntoAtoms, RichText, TextEdit};
 use egui_extras::{Column, TableBuilder};
@@ -48,7 +48,7 @@ impl TelescopeApp {
             egui::ComboBox::new("alert_sound", "")
                 .selected_text(current.clone())
                 .show_ui(ui, |ui| {
-                    if let Ok(obj_dir) = alerts_dir().read_dir() {
+                    if let Ok(obj_dir) = self.settings.alerts_dir().read_dir() {
                         for file in obj_dir.flatten() {
                             if let Some(name) = file.file_name().to_str()
                                 && ui
@@ -70,6 +70,32 @@ impl TelescopeApp {
                 self.audio.play_alarm(&self.settings.get_alert_sound_path());
             }
             ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            let mut secs = self.settings.get_alert_duration_secs();
+            ui.label(t!("settings.intelligence.alert_duration"));
+            let slider = egui::Slider::new(
+                &mut secs,
+                Mapping::MIN_ALERT_DURATION_SECS..=Mapping::MAX_ALERT_DURATION_SECS,
+            )
+            .step_by(10.0)
+            .custom_formatter(|value, _| {
+                let secs = value.round() as u32;
+                format!("{}:{:02}", secs / 60, secs % 60)
+            })
+            .custom_parser(|text| {
+                let (minutes, seconds) = text.trim().split_once(':')?;
+                let minutes: f64 = minutes.trim().parse().ok()?;
+                let seconds: f64 = seconds.trim().parse().ok()?;
+                Some(minutes * 60.0 + seconds)
+            });
+            if ui
+                .add(slider)
+                .on_hover_text(t!("settings.intelligence.alert_duration_hint"))
+                .changed()
+            {
+                self.settings.set_alert_duration_secs(secs);
+            }
         });
         let mut center_on_alert = self.settings.get_center_on_alert();
         if ui
