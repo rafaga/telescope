@@ -426,6 +426,14 @@ impl eframe::App for TelescopeApp {
                     if ui.button(t!("menu.preferences")).clicked() {
                         self.open[2] = true;
                     }
+                    // Testing/inspection tools (simulate intel lines, move a
+                    // character's marker, poke the internal state directly)
+                    // have no business being reachable in a build we ship --
+                    // debug_assertions is off for `cargo build --release`
+                    // (the profile `cargo packager`/release.yml build with)
+                    // and on for everything else, same switch Cargo itself
+                    // uses, so this needs no separate feature/env var.
+                    #[cfg(debug_assertions)]
                     if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;
                     }
@@ -449,7 +457,11 @@ impl eframe::App for TelescopeApp {
             self.open_about_window(ui.ctx());
         }
 
-        // Debug menu
+        // Debug menu -- see the cfg on the menu.debug button above for why.
+        // `open[1]` can only become true from that button, so this is belt
+        // and suspenders rather than load-bearing, but it keeps the window
+        // itself unreachable in a release build even if that ever changes.
+        #[cfg(debug_assertions)]
         if self.open[1] {
             self.open_debug_menu(ui.ctx());
         }
