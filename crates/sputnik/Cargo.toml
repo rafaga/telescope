@@ -1,0 +1,21 @@
+[package]
+name = "sputnik"
+description = "Pattern-matching engine that turns EVE Online intel chat lines into notifications and map alerts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aho-corasick = "1.1"
+chrono = "0.4.45"
+regex = "1.12.1"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"
+# Only the macros/API (`#[tracing::instrument]` on PatternEngine::evaluate) --
+# no `tracing-tracy` here. Same pattern already settled for webb/native_tools
+# (see the project's tracy-logging-migration notes): a lib crate with no
+# bin/example of its own never depends on tracing-tracy directly, its spans
+# reach whatever subscriber telescope's binary installs (Tracy, when its own
+# `profile` feature is on) for free via Cargo's feature unification on this
+# same `tracing` dependency.
+tracing = "0.1"

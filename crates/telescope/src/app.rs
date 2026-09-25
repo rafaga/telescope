@@ -18,9 +18,9 @@ use data::AppData;
 use eframe::egui::{self, epaint::text::LayoutJob};
 use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
-use patterns::PatternEngine;
 use sde::{SdeManager, objects::Universe};
 use settings::Settings;
+use sputnik::patterns::PatternEngine;
 use std::{
     path::Path,
     path::PathBuf,
@@ -41,10 +41,8 @@ mod database;
 mod database_updater;
 mod file;
 mod intel;
-mod map_alerts;
 mod messages;
 mod notifications;
-pub mod patterns;
 mod persistence;
 mod settings;
 mod tiles;
@@ -215,9 +213,7 @@ impl Default for TelescopeApp {
             sde_cache_dir.join("sde"),
             Arc::clone(&arc_msg_sender),
             true,
-            settings.get_sde_url().to_string(),
-            settings.get_maps_url().to_string(),
-            settings.get_sde_variant().to_string(),
+            settings.get_data_source_urls().clone(),
         );
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
@@ -835,8 +831,8 @@ mod font_tests {
         let ctx = context_with(TelescopeApp::font_definitions());
         for text in [
             tiles::CHARACTER_ICON,
-            map_alerts::ALERT_ICON,
-            map_alerts::CLEAR_ICON,
+            sputnik::map_alerts::ALERT_ICON,
+            sputnik::map_alerts::CLEAR_ICON,
         ] {
             let icon = glyph_uv(&ctx, text);
             assert_ne!(icon.0, icon.1, "{text}");

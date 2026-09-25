@@ -39,7 +39,7 @@
 use eframe::egui::{self, Align2, Vec2};
 use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
-use sde::builder::{extract, http, schema, sde_index};
+use sde::builder::{BuildUrls, extract, http, schema, sde_index};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -132,9 +132,7 @@ impl DatabaseUpdater {
         sde_dir: PathBuf,
         app_msg: Arc<Sender<Message>>,
         with_third_party: bool,
-        sde_url: String,
-        maps_url: String,
-        sde_variant: String,
+        urls: BuildUrls,
     ) {
         // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
@@ -207,9 +205,7 @@ impl DatabaseUpdater {
                     &data_dir,
                     &sde_dir,
                     with_third_party,
-                    &sde_url,
-                    &maps_url,
-                    &sde_variant,
+                    &urls,
                     &app_msg,
                 )
                 .await;
@@ -291,9 +287,7 @@ impl DatabaseUpdater {
         data_dir: &std::path::Path,
         sde_dir: &std::path::Path,
         with_third_party: bool,
-        sde_url: &str,
-        maps_url: &str,
-        sde_variant: &str,
+        urls: &BuildUrls,
         app_msg: &Sender<Message>,
     ) -> Result<bool, Error> {
         send_app_message(
@@ -304,7 +298,9 @@ impl DatabaseUpdater {
         .ok();
 
         let client = http::build_client()?;
-        let changed = sde_index::update_as_needed(&client, data_dir, sde_url, sde_variant).await?;
+        let changed =
+            sde_index::update_as_needed(&client, data_dir, &urls.sde_url, &urls.sde_variant)
+                .await?;
 
         let db_exists = sde_path.exists();
         if !changed && db_exists {
@@ -327,7 +323,7 @@ impl DatabaseUpdater {
             std::fs::create_dir_all(parent)?;
         }
 
-        let zip_path = data_dir.join(format!("sde-{sde_variant}.zip"));
+        let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
         extract::prepare_sde_directory(&zip_path, sde_dir)?;
 
         // Read back the build number `sde_index::update_as_needed` just
@@ -338,7 +334,7 @@ impl DatabaseUpdater {
         // (`sdeFingerprint.sdeBuild = NULL`) is still valid, so this
         // shouldn't abort the whole build.
         let build_number =
-            std::fs::read_to_string(data_dir.join(format!("sde-{sde_variant}.build")))
+            std::fs::read_to_string(data_dir.join(format!("sde-{}.build", urls.sde_variant)))
                 .ok()
                 .map(|s| s.trim().to_string());
 
@@ -376,7 +372,12 @@ impl DatabaseUpdater {
         };
         let sde_parser = Parser::new(sde_dir, parser_config);
         sde_parser
-            .build_database(&mut connection, &client, maps_url, build_number.as_deref())
+            .build_database(
+                &mut connection,
+                &client,
+                &urls.maps_url,
+                build_number.as_deref(),
+            )
             .await?;
 
         Ok(true)

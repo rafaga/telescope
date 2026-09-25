@@ -5,7 +5,6 @@
 //! internal state.
 
 use crate::app::TelescopeApp;
-use crate::app::map_alerts::{AlertSummary, IntelAlert};
 use crate::app::messages::CharacterSync;
 use crate::app::messages::MapSync;
 use crate::app::messages::Message;
@@ -17,6 +16,7 @@ use eframe::egui::RichText;
 use egui_extras::Column;
 use egui_extras::TableBuilder;
 use sde::SdeManager;
+use sputnik::map_alerts::{AlertSummary, IntelAlert};
 use std::sync::Arc;
 use webb::esi::{SCHEMA_VERSION, SchemaStatus};
 

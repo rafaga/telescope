@@ -46,6 +46,10 @@ kdtree = { version = "0.8.0" }
 egui-map = { version = "0.9.5" }
 open = "5.3.2"
 webb = { path = "../webb/", default-features = false, features = []}
+# The pattern-matching engine (patterns.toml rules -> notifications/map
+# alerts), split out because it has no dependency on TelescopeApp/egui/sde
+# and stays buildable for wasm32 on its own. See crates/sputnik/src/lib.rs.
+sputnik = { path = "../sputnik/" }
 chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.36", features = ["all_loaders"] }

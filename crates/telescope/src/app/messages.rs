@@ -3,9 +3,9 @@
 //! character sync messages, and the [`MessageSpawner`] / [`send_app_message`]
 //! helpers that deliver them.
 
-use crate::app::map_alerts::IntelAlert;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
+use sputnik::map_alerts::IntelAlert;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;

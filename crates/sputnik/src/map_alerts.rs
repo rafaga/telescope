@@ -14,17 +14,17 @@
 //! the node's animation, so the node keeps pulsing while any of its entries
 //! is still listed.
 
-use crate::app::patterns::{COUNT_GROUP, IntelCategory, PatternMatch, sanitize_display};
+use crate::patterns::{COUNT_GROUP, IntelCategory, PatternMatch, sanitize_display};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
 /// Icon of an alert line in the tooltip (painted red).
-pub(crate) const ALERT_ICON: &str = "🔥";
+pub const ALERT_ICON: &str = "🔥";
 /// Icon of a `clear` report in the tooltip (painted green).
-pub(crate) const CLEAR_ICON: &str = "✔";
+pub const CLEAR_ICON: &str = "✔";
 /// Most alert lines a tooltip lists; the rest are summed up as "+N more".
-pub(crate) const MAX_TOOLTIP_ALERTS: usize = 5;
+pub const MAX_TOOLTIP_ALERTS: usize = 5;
 /// Longest leftover text shown, in characters (ellipsis included).
 const MAX_LEFTOVER_CHARS: usize = 40;
 /// Most entries kept per system. A channel flooding one system can't grow
@@ -33,7 +33,7 @@ const MAX_ALERTS_PER_SYSTEM: usize = 20;
 
 /// What the tooltip shows about one intel line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct AlertSummary {
+pub struct AlertSummary {
     /// The word of a `clear` report, as typed (`clr`, `clear`, ...).
     pub clear: Option<String>,
     /// Ship names in order of appearance, with how many times each was
@@ -52,7 +52,7 @@ impl AlertSummary {
     /// of the candidates that resolved to a real system: only those are
     /// dropped from the leftover text, so a pilot name that merely fit the
     /// system pattern stays.
-    pub(crate) fn from_line(
+    pub fn from_line(
         text: &str,
         matches: &[&PatternMatch],
         system_spans: Vec<Range<usize>>,
@@ -100,14 +100,14 @@ impl AlertSummary {
 
     /// Whether the line reports the system clear (no visual alert, no
     /// sound).
-    pub(crate) fn is_clear(&self) -> bool {
+    pub fn is_clear(&self) -> bool {
         self.clear.is_some()
     }
 
     /// The text shown after the icon and the age: the clear word; else the
     /// ships and the pilot count (`pilots` words it, so it can be
     /// localized); else the leftover text. May be empty.
-    pub(crate) fn detail(&self, pilots: impl Fn(u32) -> String) -> String {
+    pub fn detail(&self, pilots: impl Fn(u32) -> String) -> String {
         if let Some(word) = &self.clear {
             return word.clone();
         }
@@ -167,14 +167,14 @@ fn leftover(text: &str, mut spans: Vec<Range<usize>>) -> String {
 /// instead of reporting it (`category = "query"`, e.g. `H-5GUI status?`).
 /// Such a line raises no map alert at all: no visual alert, no sound, no
 /// tooltip entry.
-pub(crate) fn is_query(matches: &[&PatternMatch]) -> bool {
+pub fn is_query(matches: &[&PatternMatch]) -> bool {
     matches
         .iter()
         .any(|intel_match| intel_match.category == Some(IntelCategory::Query))
 }
 
 /// How long ago something happened, condensed: `5s`, `4m`, `2h`.
-pub(crate) fn format_age(age: Duration) -> String {
+pub fn format_age(age: Duration) -> String {
     let secs = age.as_secs();
     match secs {
         0..60 => format!("{secs}s"),
@@ -185,7 +185,7 @@ pub(crate) fn format_age(age: Duration) -> String {
 
 /// An intel report on a solar system, as sent to the maps.
 #[derive(Debug, Clone)]
-pub(crate) struct IntelAlert {
+pub struct IntelAlert {
     pub system_id: usize,
     /// When Telescope read the line.
     pub received: Instant,
@@ -199,7 +199,7 @@ pub(crate) struct IntelAlert {
 }
 
 impl IntelAlert {
-    pub(crate) fn new(
+    pub fn new(
         system_id: usize,
         received: Instant,
         duration: Duration,
@@ -222,7 +222,7 @@ impl IntelAlert {
 
     /// Whether the node pulses (and the alarm may sound): every report but a
     /// `clear` one.
-    pub(crate) fn raises_visual(&self) -> bool {
+    pub fn raises_visual(&self) -> bool {
         !self.summary.is_clear()
     }
 
@@ -233,7 +233,7 @@ impl IntelAlert {
 
 /// The alerts of a map, by solar system, for its node tooltips.
 #[derive(Debug, Default)]
-pub(crate) struct AlertLog {
+pub struct AlertLog {
     /// Oldest first.
     by_system: HashMap<usize, Vec<IntelAlert>>,
 }
@@ -241,7 +241,7 @@ pub(crate) struct AlertLog {
 impl AlertLog {
     /// Adds `alert`, replacing a still active entry of the same report, and
     /// drops every expired entry (as of `alert.received`).
-    pub(crate) fn push(&mut self, alert: IntelAlert) {
+    pub fn push(&mut self, alert: IntelAlert) {
         let now = alert.received;
         self.by_system.retain(|_, alerts| {
             alerts.retain(|entry| entry.is_active(now));
@@ -258,7 +258,7 @@ impl AlertLog {
 
     /// The entries of `system_id` still active at `now`, newest first.
     /// Expired ones are dropped.
-    pub(crate) fn active(&mut self, system_id: usize, now: Instant) -> Vec<&IntelAlert> {
+    pub fn active(&mut self, system_id: usize, now: Instant) -> Vec<&IntelAlert> {
         let Some(alerts) = self.by_system.get_mut(&system_id) else {
             return Vec::new();
         };
@@ -277,7 +277,7 @@ impl AlertLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::patterns::{ActionConfig, template_engine};
+    use crate::patterns::{ActionConfig, template_engine};
 
     const CHANNEL: &str = "wc.Vale+Tribute";
     /// The systems these tests treat as real (resolving needs the SDE).

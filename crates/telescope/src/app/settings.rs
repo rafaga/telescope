@@ -245,8 +245,7 @@ pub(crate) struct InternalDefaults {
     /// Where `DatabaseUpdater` fetches the SDE from. Not user-editable
     /// (there's nowhere in Settings' UI to change it), so it isn't
     /// persisted to `telescope.toml` -- see
-    /// [`Settings::get_sde_url`]/[`Settings::get_maps_url`]/
-    /// [`Settings::get_sde_variant`].
+    /// [`Settings::get_data_source_urls`].
     ///
     /// [`sde::builder::BuildUrls`] rather than a Telescope-owned struct:
     /// as of `sde` 0.5.0 (already a dependency, with the `builder` feature
@@ -626,20 +625,14 @@ impl Settings {
         self.alerts_dir().join(&self.paths.alert_sound)
     }
 
-    /// CCP's SDE index/download root `DatabaseUpdater` fetches from.
-    pub(crate) fn get_sde_url(&self) -> &str {
-        &self.internal.data_sources.sde_url
-    }
-
-    /// dotlan's map SVG root `DatabaseUpdater` fetches from when built with
-    /// third-party data.
-    pub(crate) fn get_maps_url(&self) -> &str {
-        &self.internal.data_sources.maps_url
-    }
-
-    /// The SDE export variant `DatabaseUpdater` downloads (`"jsonl"`).
-    pub(crate) fn get_sde_variant(&self) -> &str {
-        &self.internal.data_sources.sde_variant
+    /// CCP's SDE index/download root, dotlan's map SVG root, and the SDE
+    /// export variant (`"jsonl"`) `DatabaseUpdater` fetches from -- bundled
+    /// as a single [`sde::builder::BuildUrls`] (rather than three separate
+    /// getters) so `DatabaseUpdater::spawn`/`run` can each take one param
+    /// for this instead of three, keeping both under clippy's
+    /// `too_many_arguments` threshold.
+    pub(crate) fn get_data_source_urls(&self) -> &BuildUrls {
+        &self.internal.data_sources
     }
 
     /// Cap on `TelescopeApp::app_messages`, the on-screen notification log.

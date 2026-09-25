@@ -91,7 +91,7 @@
 //! # Tooltip categories
 //!
 //! When a line raises a map alert, the node tooltip shows a one-line summary
-//! of it (see `crate::app::map_alerts`). A rule's `category` says what its
+//! of it (see `crate::map_alerts`). A rule's `category` says what its
 //! match contributes to that summary:
 //!
 //! | `category` | Effect on the summary |
@@ -215,7 +215,7 @@ const DEFAULT_RULE_PATTERN: &str = ".+";
 /// Embedded template used to (re)generate `patterns.toml` when the file is
 /// missing or corrupted. This is the repository's own `patterns.toml`, so
 /// the regenerated file always matches the shipped template.
-const DEFAULT_PATTERNS_TOML: &str = include_str!("../../../../patterns.toml");
+const DEFAULT_PATTERNS_TOML: &str = include_str!("../../../patterns.toml");
 
 fn default_true() -> bool {
     true
@@ -307,7 +307,7 @@ pub enum DictionaryActionConfig {
 /// # Examples
 ///
 /// ```
-/// use telescope::patterns::{ActionConfig, PatternRuleConfig};
+/// use sputnik::patterns::{ActionConfig, PatternRuleConfig};
 ///
 /// let rule = PatternRuleConfig {
 ///     id: "clear_report".to_string(),
@@ -390,7 +390,7 @@ impl PatternRuleConfig {
 /// # Examples
 ///
 /// ```
-/// use telescope::patterns::{DictionaryActionConfig, DictionaryRuleConfig};
+/// use sputnik::patterns::{DictionaryActionConfig, DictionaryRuleConfig};
 ///
 /// let rule = DictionaryRuleConfig {
 ///     id: "ship_names_en".to_string(),
@@ -720,7 +720,7 @@ pub struct LoadReport {
 /// # Examples
 ///
 /// ```
-/// use telescope::patterns::PatternEngine;
+/// use sputnik::patterns::PatternEngine;
 ///
 /// // Fallback engine: notifies every parsed intel line.
 /// let engine = PatternEngine::with_defaults();
@@ -776,7 +776,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```no_run
-    /// use telescope::patterns::PatternEngine;
+    /// use sputnik::patterns::PatternEngine;
     /// use std::path::Path;
     ///
     /// let report = PatternEngine::load_or_create(Path::new("patterns.toml"));
@@ -857,7 +857,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```
-    /// use telescope::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
+    /// use sputnik::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
     ///
     /// let config = PatternConfig {
     ///     patterns: vec![PatternRuleConfig {
@@ -1049,7 +1049,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```
-    /// use telescope::patterns::PatternEngine;
+    /// use sputnik::patterns::PatternEngine;
     ///
     /// let engine = PatternEngine::with_defaults();
     /// let line = engine
@@ -1089,7 +1089,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```
-    /// use telescope::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
+    /// use sputnik::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
     ///
     /// let config = PatternConfig {
     ///     patterns: vec![PatternRuleConfig {
@@ -1257,7 +1257,7 @@ fn has_word_boundaries(text: &str, start: usize, end: usize) -> bool {
 /// # Examples
 ///
 /// ```
-/// use telescope::patterns::sanitize_display;
+/// use sputnik::patterns::sanitize_display;
 ///
 /// assert_eq!(sanitize_display("hello\x1b[31m world\n"), "hello[31m world");
 /// ```

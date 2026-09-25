@@ -7,14 +7,14 @@
 //! file, decode it and dispatch pattern matches.
 
 use crate::app::TelescopeApp;
-use crate::app::map_alerts::{AlertSummary, IntelAlert, is_query};
 use crate::app::messages::{MapSync, Message, Target, Type};
-use crate::app::patterns::{ActionConfig, PatternMatch};
 use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
 use regex::Regex;
 use sde::SdeManager;
 use sde::objects::SolarSystem;
+use sputnik::map_alerts::{AlertSummary, IntelAlert, is_query};
+use sputnik::patterns::{ActionConfig, PatternMatch};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -403,7 +403,7 @@ fn monitored_channel_names(available: &HashMap<String, bool>) -> Vec<String> {
 /// not only at the start of the file but at the start of every appended
 /// line (each flush is encoded as its own fragment, BOM included) -- every
 /// occurrence is stripped here, not just a single leading one, since
-/// [`crate::app::patterns::PatternEngine::parse_line`]'s line regex is anchored on a
+/// [`sputnik::patterns::PatternEngine::parse_line`]'s line regex is anchored on a
 /// literal `[` and would otherwise fail to match every line but the first.
 ///
 /// Returns the decoded text and the number of bytes actually consumed from

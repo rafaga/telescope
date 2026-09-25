@@ -6,9 +6,6 @@
 //! It also bridges the `sde` map points and connections into the types `egui-map`
 //! renders.
 
-use crate::app::map_alerts::{
-    ALERT_ICON, AlertLog, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
-};
 use crate::app::messages::{MapSync, Message, Target, Type};
 use crate::app::settings::NodeStyle;
 use eframe::egui::{
@@ -28,6 +25,9 @@ use egui_map::map::{
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
+use sputnik::map_alerts::{
+    ALERT_ICON, AlertLog, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
+};
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
 use sde::objects::{ProjectedAxis, SdePoint, SdeSegment};

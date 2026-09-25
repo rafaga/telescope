@@ -4,6 +4,7 @@ members = [
     "crates/telescope",
     "crates/webb",
     "crates/native_tools",
+    "crates/sputnik",
 ]
 
 [workspace.package]

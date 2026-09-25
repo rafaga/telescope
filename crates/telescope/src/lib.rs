@@ -16,4 +16,4 @@ pub mod app_dirs;
 mod i18n;
 pub mod log_bridge;
 pub use app::TelescopeApp;
-pub use app::patterns;
+pub use sputnik::patterns;
