@@ -2,7 +2,7 @@ direction: down
 
 entry: "Entry points" {
   main: "main.rs\n(logging setup, opens the window)"
-  lib: "lib.rs\n(exports TelescopeApp and patterns)"
+  lib: "lib.rs\n(exports TelescopeApp,\nre-exports sputnik::patterns)"
 }
 
 app: "app.rs: TelescopeApp\n(state, construction, ui(), event_manager(), map panes)"
@@ -18,9 +18,12 @@ ui: "User interface" {
 intel: "Intel pipeline" {
   file: "file.rs\nIntelEventHandler (notify)"
   reader: "intel.rs\nIntelLogName, log reading,\napply_intel_settings()"
-  patterns: "patterns.rs\nPatternEngine, patterns.toml"
   file -> reader
-  reader -> patterns
+}
+
+sputnik: "sputnik crate\n(pattern-matching engine)" {
+  patterns: "patterns.rs\nPatternEngine, patterns.toml"
+  map_alerts: "map_alerts.rs\nAlertSummary, IntelAlert, AlertLog"
 }
 
 eve: "EVE / ESI" {
@@ -43,3 +46,5 @@ app -> ui
 app -> intel
 app -> eve
 app -> core
+intel.reader -> sputnik.patterns
+ui.tiles -> sputnik.map_alerts

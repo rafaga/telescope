@@ -1,7 +1,8 @@
 direction: right
 
-workspace: "This workspace" {
+workspace: "telescope workspace" {
   telescope: "telescope\n(application: UI, settings,\nfile watching, alerting)"
+  sputnik: "sputnik\n(pattern-matching engine:\nintel text -> alerts)"
   webb: "webb\n(ESI client, OAuth callback,\nplayer database)"
   native_tools: "native_tools\n(native dialogs,\nmachine identification)"
 }
@@ -11,6 +12,7 @@ siblings: "External crates\n(crates.io)" {
   egui-map: "egui-map\n(map widget)"
 }
 
+workspace.telescope -> workspace.sputnik
 workspace.telescope -> workspace.webb
 workspace.telescope -> workspace.native_tools
 workspace.telescope -> siblings.sde
