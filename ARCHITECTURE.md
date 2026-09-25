@@ -20,15 +20,6 @@ each other. For how to build and run it see [BUILD.md](BUILD.md).
 
 ![Crate dependencies: telescope depends on webb, sputnik and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
 
-All the diagrams in this document are generated with [D2](https://d2lang.com/)
-from the `.d2` files in [`docs/architecture`](docs/architecture). Edit the
-source and regenerate the SVGs (the sequence diagrams ignore the layout
-option):
-
-```sh
-for f in docs/architecture/*.d2; do d2 --pad 24 --layout=elk "$f" "${f%.d2}.svg"; done
-```
-
 Two more crates by the same author, published on crates.io, are used from outside this workspace:
 
 * `sde`: parses CCP's Static Data Export, builds the SDE database and answers

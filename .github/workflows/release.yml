@@ -1,0 +1,72 @@
+name: Release installers
+
+# Builds the Windows MSI (WiX) and macOS dmg with `cargo packager` and
+# attaches them to the GitHub release that triggered the run. `formats` in
+# `packager.json` is ["wix", "dmg"]; cargo-packager only builds the format(s)
+# valid for the host OS it's running on and skips the rest (it logs "ignoring
+# wix" on macOS, "ignoring dmg" on Windows) -- so one job per OS, no extra
+# format selection needed.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # packager.json's "version" is a hand-maintained literal (currently
+      # "0.0.1", already out of sync with the workspace Cargo.toml's 0.1.0)
+      # -- cargo-packager stamps the MSI/dmg with it, it isn't picked up
+      # from Cargo.toml. Overwrite it from the release tag so every release
+      # ships installers versioned to match it, instead of relying on
+      # someone remembering to bump packager.json by hand before tagging.
+      - name: Sync packager.json version with the release tag
+        shell: bash
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#v}"
+          jq --arg v "$version" '.version = $v' packager.json > packager.json.tmp
+          mv packager.json.tmp packager.json
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      # packager.json's beforePackagingCommand already runs
+      # `cargo build --release -p telescope`, so this alone builds the
+      # binary and packages it. `--release` here (packager's own flag, not
+      # cargo's) makes cargo-packager point at target/release to match --
+      # see the doc comment on this workflow.
+      #
+      # ESI_CLIENT_ID/ESI_SECRET_KEY are baked into the binary at compile
+      # time (see crates/telescope/src/app/data.rs and BUILD.md) -- without
+      # them the build still succeeds (option_env! just yields None), but
+      # the resulting installer panics for every user the moment
+      # TelescopeApp::new() calls AppData::new(). Sourced from repo secrets
+      # (Settings -> Secrets and variables -> Actions), never committed.
+      - name: Build installer
+        env:
+          ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
+          ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
+        run: cargo packager --release
+
+      - name: Upload installer to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: false
+          files: |
+            target/release/*.msi
+            target/release/*.dmg
