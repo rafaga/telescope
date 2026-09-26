@@ -102,6 +102,8 @@ pub struct TelescopeApp {
     dlg_intel_dir: Dialog,
     /// Live detection engine, shared with the detection thread.
     intel_engine: intel::detection::EngineHandle,
+    /// The rules the engine was built from (source of truth for the editor).
+    intel_rules: RulesConfig,
     /// Output-rule router, rebuilt when the rules change.
     intel_router: intel::router::Router,
     /// UI -> detection thread.
@@ -328,6 +330,7 @@ impl Default for TelescopeApp {
             intel_channels,
             dlg_intel_dir,
             intel_engine,
+            intel_rules,
             intel_router,
             intel_input,
             intel_output,
@@ -372,6 +375,7 @@ impl eframe::App for TelescopeApp {
             intel_channels: _,
             dlg_intel_dir: _,
             intel_engine: _,
+            intel_rules: _,
             intel_router: _,
             intel_input: _,
             intel_output: _,

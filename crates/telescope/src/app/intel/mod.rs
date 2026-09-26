@@ -316,6 +316,7 @@ impl TelescopeApp {
             }
         }
         self.intel_router = Router::new(&rules);
+        self.intel_rules = rules;
     }
 }
 

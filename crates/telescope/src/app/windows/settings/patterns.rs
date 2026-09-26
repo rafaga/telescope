@@ -1,583 +1,824 @@
-//! Settings page "Patterns": add, edit, delete and enable/disable the rules
-//! declared in `patterns.toml`, then save the file and reload the matching
-//! engine.
+//! Settings -> Patterns: visual editor of the three-class intel rules
+//! (input -> detection -> output).
 //!
-//! The page keeps its own in-memory copy of the rules ([`PatternsEditor`]),
-//! loaded the first time it is shown. Changes are written to `patterns.toml`
-//! -- and the engine reloaded -- only when Save is pressed; validation also
-//! happens then, so a rule that does not compile never reaches the file.
+//! The graph is a view over a [`RulesConfig`]: each rule is a node and each
+//! wire goes from a detection's tag output to an output's single input,
+//! meaning "this output fires when this tag is present". Connecting a wire
+//! rewrites the output's condition to `all_true` over its connected tags;
+//! the full boolean condition (combinators, `not`, quantifiers) is edited in
+//! the inspector below the graph.
 
 use crate::app::TelescopeApp;
 use crate::app::messages::{Message, Type};
-use crate::app_dirs::PATTERNS_FILE;
-use eframe::egui::{self, Button, Color32, FontId, RichText};
-use egui_extras::{Column, TableBuilder};
-use webb::patterns::{
-    ActionConfig, DictionaryActionConfig, DictionaryRuleConfig, IntelCategory, PatternConfig,
-    PatternEngine, PatternRuleConfig,
+use eframe::egui::{self, Color32, Pos2, RichText, Ui};
+use egui_snarl::{
+    InPin, InPinId, NodeId, OutPin, OutPinId, Snarl,
+    ui::{PinInfo, SnarlPin, SnarlViewer, SnarlWidget},
 };
-use webb::rules::RulesConfig;
-use std::path::Path;
+use webb::patterns::IntelCategory;
+use webb::rules::{
+    Condition, DetectionKind, DetectionRule, InputKind, InputRule, OutputKind, OutputMode,
+    OutputRule, RulesConfig, Tag,
+};
 
-/// In-memory editing state of the Patterns page.
+/// A node of the rules graph.
+enum RuleNode {
+    Input(InputRule),
+    Detection(DetectionRule),
+    Output(OutputRule),
+}
+
+/// In-memory editing state of the Rules page.
 #[derive(Default)]
 pub(crate) struct PatternsEditor {
-    /// The rules being edited; `None` until the page is first shown, or when
-    /// the file could not be read.
-    config: Option<PatternConfig>,
-    /// Which rule the form edits: `(is_dictionary, index)`.
-    selected: Option<(bool, usize)>,
-    /// Whether the in-memory rules differ from the file.
+    snarl: Snarl<RuleNode>,
+    state: GraphState,
+    loaded: bool,
+}
+
+#[derive(Default)]
+struct GraphState {
     dirty: bool,
-    /// Errors of the last load or save attempt, shown above the table.
     errors: Vec<String>,
+    selected: Option<NodeId>,
 }
 
 impl PatternsEditor {
-    /// Loads the rules from disk the first time the page is shown.
-    fn ensure_loaded(&mut self) {
-        if self.config.is_none() && self.errors.is_empty() {
-            self.reload();
+    fn ensure_loaded(&mut self, rules: &RulesConfig) {
+        if self.loaded {
+            return;
         }
+        self.rebuild(rules);
+        self.loaded = true;
     }
 
-    /// (Re)loads the rules from `patterns.toml`, discarding unsaved edits.
-    fn reload(&mut self) {
-        self.errors.clear();
-        self.selected = None;
-        self.dirty = false;
-        match PatternConfig::load(Path::new(PATTERNS_FILE)) {
-            Ok(config) => self.config = Some(config),
-            Err(error) => {
-                self.config = None;
-                self.errors.push(error.to_string());
-            }
+    fn rebuild(&mut self, rules: &RulesConfig) {
+        self.snarl = Snarl::new();
+        self.state.selected = None;
+        self.state.dirty = false;
+
+        let mut y = 0.0;
+        for input in &rules.inputs {
+            self.snarl
+                .insert_node(Pos2::new(0.0, y), RuleNode::Input(input.clone()));
+            y += 180.0;
         }
-    }
-
-    /// Appends a new regex rule and selects it.
-    fn add_pattern(&mut self) {
-        let Some(config) = self.config.as_mut() else {
-            return;
-        };
-        let id = unique_id(config, "new_pattern");
-        config.patterns.push(PatternRuleConfig {
-            id,
-            pattern: String::new(),
-            case_insensitive: false,
-            channels: Vec::new(),
-            enabled: true,
-            action: ActionConfig::Notify,
-            category: None,
-        });
-        self.selected = Some((false, config.patterns.len() - 1));
-        self.dirty = true;
-    }
-
-    /// Appends a new dictionary rule and selects it.
-    fn add_dictionary(&mut self) {
-        let Some(config) = self.config.as_mut() else {
-            return;
-        };
-        let id = unique_id(config, "new_dictionary");
-        config.dictionaries.push(DictionaryRuleConfig {
-            id,
-            words: Vec::new(),
-            case_insensitive: false,
-            channels: Vec::new(),
-            enabled: true,
-            action: DictionaryActionConfig::Notify,
-            category: None,
-        });
-        self.selected = Some((true, config.dictionaries.len() - 1));
-        self.dirty = true;
-    }
-
-    /// Removes the selected rule.
-    fn delete_selected(&mut self) {
-        let Some((is_dict, index)) = self.selected else {
-            return;
-        };
-        let Some(config) = self.config.as_mut() else {
-            return;
-        };
-        if is_dict {
-            if index < config.dictionaries.len() {
-                config.dictionaries.remove(index);
-            }
-        } else if index < config.patterns.len() {
-            config.patterns.remove(index);
+        y = 0.0;
+        for detection in &rules.detections {
+            self.snarl
+                .insert_node(Pos2::new(360.0, y), RuleNode::Detection(detection.clone()));
+            y += 260.0;
         }
-        self.selected = None;
-        self.dirty = true;
-    }
-
-    /// The table of every rule (patterns first, then dictionaries).
-    fn table(&mut self, ui: &mut egui::Ui) {
-        let Some(config) = self.config.as_mut() else {
-            return;
-        };
-        let pattern_count = config.patterns.len();
-        let total = pattern_count + config.dictionaries.len();
-        let mut selected = self.selected;
-        let mut dirty = self.dirty;
-        ui.push_id("patterns_table", |ui| {
-            TableBuilder::new(ui)
-                .column(Column::exact(24.0))
-                .column(Column::exact(170.0))
-                .column(Column::exact(80.0))
-                .column(Column::remainder())
-                .striped(true)
-                .vscroll(true)
-                .max_scroll_height(180.0)
-                .body(|mut body| {
-                    for index in 0..total {
-                        let is_dict = index >= pattern_count;
-                        let local = if is_dict {
-                            index - pattern_count
-                        } else {
-                            index
-                        };
-                        let row_selected = selected == Some((is_dict, local));
-                        body.row(18.0, |mut row| {
-                            row.col(|ui| {
-                                let mut enabled = if is_dict {
-                                    config.dictionaries[local].enabled
-                                } else {
-                                    config.patterns[local].enabled
-                                };
-                                if ui.checkbox(&mut enabled, "").changed() {
-                                    if is_dict {
-                                        config.dictionaries[local].enabled = enabled;
-                                    } else {
-                                        config.patterns[local].enabled = enabled;
-                                    }
-                                    dirty = true;
-                                }
-                            });
-                            row.col(|ui| {
-                                let id = if is_dict {
-                                    &config.dictionaries[local].id
-                                } else {
-                                    &config.patterns[local].id
-                                };
-                                if ui.selectable_label(row_selected, id).clicked() {
-                                    selected = Some((is_dict, local));
-                                }
-                            });
-                            row.col(|ui| {
-                                let kind = if is_dict {
-                                    t!("settings.patterns.kind_dictionary")
-                                } else {
-                                    t!("settings.patterns.kind_pattern")
-                                };
-                                ui.label(kind);
-                            });
-                            row.col(|ui| {
-                                if is_dict {
-                                    let rule = &config.dictionaries[local];
-                                    let summary = format!(
-                                        "{} · {}",
-                                        action_label_dict(&rule.action),
-                                        category_label(rule.category)
-                                    );
-                                    ui.label(summary)
-                                        .on_hover_text(format!("{} words", rule.words.len()));
-                                } else {
-                                    let rule = &config.patterns[local];
-                                    let summary = format!(
-                                        "{} · {}",
-                                        action_label_pattern(&rule.action),
-                                        category_label(rule.category)
-                                    );
-                                    ui.label(summary).on_hover_text(&rule.pattern);
-                                }
-                            });
-                        });
+        y = 0.0;
+        for output in &rules.outputs {
+            let node = self
+                .snarl
+                .insert_node(Pos2::new(780.0, y), RuleNode::Output(output.clone()));
+            if let Condition::AllTrue { tags } = &output.when {
+                for tag in tags {
+                    if let Some((detection_node, pin)) = self.find_tag_output(tag) {
+                        self.snarl.connect(
+                            OutPinId {
+                                node: detection_node,
+                                output: pin,
+                            },
+                            InPinId { node, input: 0 },
+                        );
                     }
-                });
-        });
-        self.selected = selected;
-        self.dirty = dirty;
+                }
+            }
+            y += 260.0;
+        }
     }
 
-    /// The edit form for the selected rule.
-    fn form(&mut self, ui: &mut egui::Ui) {
-        let Some((is_dict, index)) = self.selected else {
-            ui.separator();
-            ui.label(t!("settings.patterns.no_selection"));
-            return;
-        };
-        let Some(config) = self.config.as_mut() else {
-            return;
-        };
-        let mut dirty = self.dirty;
-        let mut delete = false;
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(t!("settings.patterns.edit")).strong());
-            if ui.button(t!("settings.patterns.delete")).clicked() {
-                delete = true;
+    fn find_tag_output(&self, tag: &str) -> Option<(NodeId, usize)> {
+        for (id, node) in self.snarl.node_ids() {
+            if let RuleNode::Detection(detection) = node
+                && let Some(index) = detection.tags.iter().position(|known| known == tag)
+            {
+                return Some((id, index));
             }
-        });
-        if is_dict {
-            let Some(rule) = config.dictionaries.get_mut(index) else {
-                return;
-            };
-            dirty |= dictionary_form(ui, rule);
-        } else {
-            let Some(rule) = config.patterns.get_mut(index) else {
-                return;
-            };
-            dirty |= pattern_form(ui, rule);
         }
-        self.dirty = dirty;
-        if delete {
-            self.delete_selected();
+        None
+    }
+
+    fn to_config(&self) -> RulesConfig {
+        let mut config = RulesConfig::default();
+        for node in self.snarl.nodes() {
+            match node {
+                RuleNode::Input(input) => config.inputs.push(input.clone()),
+                RuleNode::Detection(detection) => config.detections.push(detection.clone()),
+                RuleNode::Output(output) => config.outputs.push(output.clone()),
+            }
         }
+        config
     }
 }
 
+/// File the rules are imported from / exported to (next to the app, same as
+/// the legacy `patterns.toml`).
+const RULES_FILE: &str = "rules.toml";
+
 impl TelescopeApp {
-    pub(super) fn show_patterns_page(&mut self, ui: &mut egui::Ui) {
-        self.patterns_editor.ensure_loaded();
+    /// Draws the Rules page: the graph plus the inspector of the selected node.
+    pub(crate) fn show_patterns_page(&mut self, ui: &mut egui::Ui) {
+        let rules = self.intel_rules.clone();
+        self.patterns_editor.ensure_loaded(&rules);
 
-        ui.label(RichText::new(t!("settings.patterns.heading")).font(FontId::proportional(20.0)));
-        ui.label(t!("settings.patterns.help"));
-
-        let mut reload = false;
-        let mut save = false;
-        {
-            let editor = &mut self.patterns_editor;
-            ui.horizontal(|ui| {
-                if ui.button(t!("settings.patterns.add_pattern")).clicked() {
-                    editor.add_pattern();
-                }
-                if ui.button(t!("settings.patterns.add_dictionary")).clicked() {
-                    editor.add_dictionary();
-                }
-                if ui.button(t!("settings.patterns.reload")).clicked() {
-                    reload = true;
-                }
-                save = ui
-                    .add_enabled(editor.dirty, Button::new(t!("settings.patterns.save")))
-                    .clicked();
-                if editor.dirty {
-                    ui.colored_label(Color32::YELLOW, t!("settings.unsaved"));
-                }
-            });
-            for error in &editor.errors {
-                ui.colored_label(Color32::LIGHT_RED, error);
+        ui.horizontal(|ui| {
+            if ui.button(t!("settings.patterns.save")).clicked() {
+                self.save_patterns();
             }
-            editor.table(ui);
-            editor.form(ui);
+            if ui.button(t!("settings.patterns.discard")).clicked() {
+                let rules = self.intel_rules.clone();
+                self.patterns_editor.rebuild(&rules);
+            }
+            if ui.button(t!("settings.patterns.import")).clicked() {
+                self.import_rules();
+            }
+            if ui.button(t!("settings.patterns.export")).clicked() {
+                self.export_rules();
+            }
+            if self.patterns_editor.state.dirty {
+                ui.colored_label(Color32::YELLOW, t!("settings.patterns.unsaved"));
+            }
+        });
+        ui.label(t!("settings.patterns.graph_hint"));
+        for error in &self.patterns_editor.state.errors {
+            ui.colored_label(Color32::RED, error);
+        }
+        ui.separator();
+
+        {
+            let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
+            let mut viewer = RulesViewer { state };
+            SnarlWidget::new()
+                .id(egui::Id::new("rules_graph"))
+                .min_size(egui::vec2(640.0, 380.0))
+                .show(snarl, &mut viewer, ui);
         }
 
-        if reload {
-            self.patterns_editor.reload();
-        }
-        if save {
-            self.save_patterns();
+        let selected = self.patterns_editor.state.selected;
+        if let Some(node) = selected {
+            ui.separator();
+            ui.label(RichText::new(t!("settings.patterns.selected")).strong());
+            let mut changed = false;
+            if let Some(RuleNode::Output(output)) = self.patterns_editor.snarl.get_node_mut(node) {
+                ui.label(t!("settings.patterns.condition_help"));
+                changed |= condition_editor(ui, &mut output.when);
+            }
+            if changed {
+                self.patterns_editor.state.dirty = true;
+            }
         }
     }
 
-    /// Validates the edited rules, writes `patterns.toml` and reloads the
-    /// engine. On any error nothing is written and the errors are shown on the
-    /// page, so the file always holds a set of rules that compiles.
+    /// Validates the edited rules, persists them to the database and reloads
+    /// the live engine/router. On any error nothing is written and the errors
+    /// are shown on the page.
     pub(crate) fn save_patterns(&mut self) {
-        let Some(config) = self.patterns_editor.config.clone() else {
+        let rules = self.patterns_editor.to_config();
+        let errors = rules.validate();
+        if !errors.is_empty() {
+            self.patterns_editor.state.errors =
+                errors.iter().map(|error| error.to_string()).collect();
             return;
-        };
+        }
+        self.patterns_editor.state.errors.clear();
+        self.patterns_editor.state.dirty = false;
+        self.apply_rules(rules);
+        self.task_msg.spawn(Message::GenericNotification((
+            Type::Info,
+            String::from("Intel"),
+            String::from("save_rules"),
+            String::from("rules were saved and the engine reloaded"),
+        )));
+    }
 
-        let (_engine, rule_errors) = match PatternEngine::from_config(&config) {
-            Ok(built) => built,
+    /// Loads `rules.toml` (a serialized [`RulesConfig`]) into the editor.
+    pub(crate) fn import_rules(&mut self) {
+        let text = match std::fs::read_to_string(RULES_FILE) {
+            Ok(text) => text,
             Err(error) => {
-                self.patterns_editor.errors = vec![error.to_string()];
+                self.patterns_editor.state.errors = vec![format!("cannot read {RULES_FILE}: {error}")];
                 return;
             }
         };
-        if !rule_errors.is_empty() {
-            self.patterns_editor.errors = rule_errors.iter().map(|e| e.to_string()).collect();
+        let rules = match toml::from_str::<RulesConfig>(&text) {
+            Ok(rules) => rules,
+            Err(error) => {
+                self.patterns_editor.state.errors = vec![error.to_string()];
+                return;
+            }
+        };
+        let errors = rules.validate();
+        if !errors.is_empty() {
+            self.patterns_editor.state.errors =
+                errors.iter().map(|error| error.to_string()).collect();
             return;
         }
-
-        if let Err(error) = config.save(Path::new(PATTERNS_FILE)) {
-            self.patterns_editor.errors = vec![error.to_string()];
-            return;
-        }
-
-        // The database is the source of truth now: translate the edited
-        // patterns into the three-class model, persist it and reload the
-        // live engine/router.
-        let rules = RulesConfig::from_pattern_config(&config);
-        self.apply_rules(rules);
-        self.patterns_editor.errors.clear();
-        self.patterns_editor.dirty = false;
+        self.patterns_editor.state.errors.clear();
+        self.patterns_editor.rebuild(&rules);
+        self.patterns_editor.loaded = true;
+        self.patterns_editor.state.dirty = true;
         self.task_msg.spawn(Message::GenericNotification((
             Type::Info,
-            String::from("PatternEngine"),
-            String::from("save_patterns"),
-            format!("{} was saved and the rules reloaded", PATTERNS_FILE),
+            String::from("Intel"),
+            String::from("import_rules"),
+            format!("{RULES_FILE} was loaded into the editor; press Save rules to apply it"),
+        )));
+    }
+
+    /// Writes the editor's current rules to `rules.toml`.
+    pub(crate) fn export_rules(&mut self) {
+        let rules = self.patterns_editor.to_config();
+        let text = match toml::to_string(&rules) {
+            Ok(text) => text,
+            Err(error) => {
+                self.patterns_editor.state.errors = vec![error.to_string()];
+                return;
+            }
+        };
+        if let Err(error) = std::fs::write(RULES_FILE, text) {
+            self.patterns_editor.state.errors = vec![format!("cannot write {RULES_FILE}: {error}")];
+            return;
+        }
+        self.task_msg.spawn(Message::GenericNotification((
+            Type::Info,
+            String::from("Intel"),
+            String::from("export_rules"),
+            format!("{RULES_FILE} was written"),
         )));
     }
 }
 
-/// Unique id for a new rule, derived from `base` and the ids already in use.
-fn unique_id(config: &PatternConfig, base: &str) -> String {
-    let taken = |id: &str| {
-        config.patterns.iter().any(|rule| rule.id == id)
-            || config.dictionaries.iter().any(|rule| rule.id == id)
-    };
-    if !taken(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|n| format!("{base}_{n}"))
-        .find(|id| !taken(id))
-        .unwrap()
+struct RulesViewer<'a> {
+    state: &'a mut GraphState,
 }
 
-/// The edit fields of a regex rule. Returns whether anything changed.
-fn pattern_form(ui: &mut egui::Ui, rule: &mut PatternRuleConfig) -> bool {
-    let mut changed = false;
-    egui::Grid::new("pattern_form")
-        .num_columns(2)
-        .show(ui, |ui| {
-            ui.label(t!("settings.patterns.id"));
-            changed |= ui.text_edit_singleline(&mut rule.id).changed();
-            ui.end_row();
-
-            ui.label(t!("settings.patterns.pattern"));
-            changed |= ui.text_edit_multiline(&mut rule.pattern).changed();
-            ui.end_row();
-
-            ui.label(t!("settings.patterns.channels"));
-            changed |= channels_edit(ui, &mut rule.channels);
-            ui.end_row();
-        });
-    changed |= ui
-        .checkbox(
-            &mut rule.case_insensitive,
-            t!("settings.patterns.case_insensitive"),
-        )
-        .changed();
-    changed |= action_edit_pattern(ui, &mut rule.action);
-    changed |= category_edit(ui, &mut rule.category, true);
-    changed
-}
-
-/// The edit fields of a dictionary rule. Returns whether anything changed.
-fn dictionary_form(ui: &mut egui::Ui, rule: &mut DictionaryRuleConfig) -> bool {
-    let mut changed = false;
-    egui::Grid::new("dictionary_form")
-        .num_columns(2)
-        .show(ui, |ui| {
-            ui.label(t!("settings.patterns.id"));
-            changed |= ui.text_edit_singleline(&mut rule.id).changed();
-            ui.end_row();
-
-            ui.label(t!("settings.patterns.words"));
-            let mut words = rule.words.join("\n");
-            if ui.text_edit_multiline(&mut words).changed() {
-                rule.words = words
-                    .lines()
-                    .map(|line| line.trim().to_string())
-                    .filter(|line| !line.is_empty())
-                    .collect();
-                changed = true;
+impl SnarlViewer<RuleNode> for RulesViewer<'_> {
+    fn title(&mut self, node: &RuleNode) -> String {
+        match node {
+            RuleNode::Input(input) => {
+                format!("{} · {}", t!("settings.patterns.node_input"), input.id)
             }
-            ui.end_row();
-
-            ui.label(t!("settings.patterns.channels"));
-            changed |= channels_edit(ui, &mut rule.channels);
-            ui.end_row();
-        });
-    changed |= ui
-        .checkbox(
-            &mut rule.case_insensitive,
-            t!("settings.patterns.case_insensitive"),
-        )
-        .changed();
-    changed |= action_edit_dictionary(ui, &mut rule.action);
-    changed |= category_edit(ui, &mut rule.category, false);
-    changed
-}
-
-/// Comma-separated channel filter. Returns whether anything changed.
-fn channels_edit(ui: &mut egui::Ui, channels: &mut Vec<String>) -> bool {
-    let mut text = channels.join(", ");
-    if ui
-        .text_edit_singleline(&mut text)
-        .on_hover_text(t!("settings.patterns.channels_hint"))
-        .changed()
-    {
-        *channels = text
-            .split(',')
-            .map(|channel| channel.trim().to_string())
-            .filter(|channel| !channel.is_empty())
-            .collect();
-        return true;
-    }
-    false
-}
-
-/// Action editor for a regex rule. Returns whether anything changed.
-fn action_edit_pattern(ui: &mut egui::Ui, action: &mut ActionConfig) -> bool {
-    let mut choice = match action {
-        ActionConfig::Notify => 0,
-        ActionConfig::MapAlert { .. } => 1,
-        ActionConfig::Ignore => 2,
-    };
-    let before = choice;
-    ui.horizontal(|ui| {
-        ui.label(t!("settings.patterns.action"));
-        egui::ComboBox::from_id_salt("pattern_action")
-            .selected_text(action_label_pattern(action))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut choice, 0, t!("settings.patterns.action_notify"));
-                ui.selectable_value(&mut choice, 1, t!("settings.patterns.action_map_alert"));
-                ui.selectable_value(&mut choice, 2, t!("settings.patterns.action_ignore"));
-            });
-    });
-    let mut changed = choice != before;
-    match choice {
-        0 => {
-            if !matches!(action, ActionConfig::Notify) {
-                *action = ActionConfig::Notify;
-                changed = true;
-            }
-        }
-        1 => {
-            let group = match action {
-                ActionConfig::MapAlert { system_group } => system_group.clone(),
-                _ => String::from("system"),
-            };
-            if !matches!(action, ActionConfig::MapAlert { .. }) {
-                *action = ActionConfig::MapAlert {
-                    system_group: group,
-                };
-                changed = true;
-            }
-        }
-        _ => {
-            if !matches!(action, ActionConfig::Ignore) {
-                *action = ActionConfig::Ignore;
-                changed = true;
-            }
+            RuleNode::Detection(detection) => format!(
+                "{} · {}",
+                t!("settings.patterns.node_detection"),
+                detection.id
+            ),
+            RuleNode::Output(output) => format!(
+                "{} · {} · {}",
+                t!("settings.patterns.node_output"),
+                output.id,
+                output_kind_label(output.kind)
+            ),
         }
     }
-    if let ActionConfig::MapAlert { system_group } = action {
-        ui.horizontal(|ui| {
-            ui.label(t!("settings.patterns.system_group"));
-            changed |= ui.text_edit_singleline(system_group).changed();
-        });
+
+    fn inputs(&mut self, node: &RuleNode) -> usize {
+        match node {
+            RuleNode::Output(_) => 1,
+            _ => 0,
+        }
     }
-    changed
+
+    fn outputs(&mut self, node: &RuleNode) -> usize {
+        match node {
+            RuleNode::Detection(detection) => detection.tags.len(),
+            _ => 0,
+        }
+    }
+
+    fn show_input(
+        &mut self,
+        pin: &InPin,
+        ui: &mut Ui,
+        snarl: &mut Snarl<RuleNode>,
+    ) -> impl SnarlPin + 'static {
+        if let RuleNode::Output(output) = &snarl[pin.id.node] {
+            ui.label(condition_summary(&output.when));
+        }
+        PinInfo::circle().with_fill(Color32::LIGHT_GREEN)
+    }
+
+    fn show_output(
+        &mut self,
+        pin: &OutPin,
+        ui: &mut Ui,
+        snarl: &mut Snarl<RuleNode>,
+    ) -> impl SnarlPin + 'static {
+        if let RuleNode::Detection(detection) = &snarl[pin.id.node] {
+            let tag = detection
+                .tags
+                .get(pin.id.output)
+                .cloned()
+                .unwrap_or_default();
+            ui.label(tag);
+        }
+        PinInfo::circle().with_fill(Color32::LIGHT_BLUE)
+    }
+
+    fn has_body(&mut self, _node: &RuleNode) -> bool {
+        true
+    }
+
+    fn show_body(
+        &mut self,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut Ui,
+        snarl: &mut Snarl<RuleNode>,
+    ) {
+        self.state.selected = Some(node);
+        let mut changed = false;
+        match &mut snarl[node] {
+            RuleNode::Input(input) => changed |= input_body(ui, input),
+            RuleNode::Detection(detection) => changed |= detection_body(ui, detection),
+            RuleNode::Output(output) => changed |= output_body(ui, output),
+        }
+        if changed {
+            self.state.dirty = true;
+        }
+    }
+
+    fn has_graph_menu(&mut self, _pos: Pos2, _snarl: &mut Snarl<RuleNode>) -> bool {
+        true
+    }
+
+    fn show_graph_menu(&mut self, pos: Pos2, ui: &mut Ui, snarl: &mut Snarl<RuleNode>) {
+        if ui.button(t!("settings.patterns.add_input")).clicked() {
+            snarl.insert_node(pos, RuleNode::Input(default_input()));
+            self.state.dirty = true;
+            ui.close();
+        }
+        if ui.button(t!("settings.patterns.add_detection")).clicked() {
+            snarl.insert_node(pos, RuleNode::Detection(default_detection()));
+            self.state.dirty = true;
+            ui.close();
+        }
+        if ui.button(t!("settings.patterns.add_output")).clicked() {
+            snarl.insert_node(pos, RuleNode::Output(default_output()));
+            self.state.dirty = true;
+            ui.close();
+        }
+    }
+
+    fn has_node_menu(&mut self, _node: &RuleNode) -> bool {
+        true
+    }
+
+    fn show_node_menu(
+        &mut self,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut Ui,
+        snarl: &mut Snarl<RuleNode>,
+    ) {
+        if ui.button(t!("settings.patterns.delete_node")).clicked() {
+            snarl.remove_node(node);
+            if self.state.selected == Some(node) {
+                self.state.selected = None;
+            }
+            self.state.dirty = true;
+            ui.close();
+        }
+    }
+
+    fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<RuleNode>) {
+        snarl.connect(from.id, to.id);
+        sync_output_condition(to.id.node, snarl);
+        self.state.dirty = true;
+    }
+
+    fn disconnect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<RuleNode>) {
+        snarl.disconnect(from.id, to.id);
+        sync_output_condition(to.id.node, snarl);
+        self.state.dirty = true;
+    }
 }
 
-/// Action editor for a dictionary rule. Returns whether anything changed.
-fn action_edit_dictionary(ui: &mut egui::Ui, action: &mut DictionaryActionConfig) -> bool {
-    let mut choice = match action {
-        DictionaryActionConfig::Notify => 0,
-        DictionaryActionConfig::MapAlert => 1,
-    };
-    let before = choice;
-    ui.horizontal(|ui| {
-        ui.label(t!("settings.patterns.action"));
-        egui::ComboBox::from_id_salt("dictionary_action")
-            .selected_text(action_label_dict(action))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut choice, 0, t!("settings.patterns.action_notify"));
-                ui.selectable_value(&mut choice, 1, t!("settings.patterns.action_map_alert"));
-            });
-    });
-    if choice != before {
-        *action = if choice == 0 {
-            DictionaryActionConfig::Notify
+/// Rewrites `output_node`'s condition as `all_true` over the tags of the
+/// detection outputs wired into its input (or `always` when nothing is
+/// connected).
+fn sync_output_condition(output_node: NodeId, snarl: &mut Snarl<RuleNode>) {
+    let tags: Vec<Tag> = snarl
+        .wires()
+        .filter(|(_, to)| to.node == output_node && to.input == 0)
+        .filter_map(|(from, _)| match &snarl[from.node] {
+            RuleNode::Detection(detection) => detection.tags.get(from.output).cloned(),
+            _ => None,
+        })
+        .collect();
+    if let RuleNode::Output(output) = &mut snarl[output_node] {
+        output.when = if tags.is_empty() {
+            Condition::Always
         } else {
-            DictionaryActionConfig::MapAlert
+            Condition::AllTrue { tags }
         };
-        return true;
     }
-    false
 }
 
-/// Category editor. `allow_count` is false for dictionaries, which have no
-/// capture groups and so cannot be a `count`.
-fn category_edit(
-    ui: &mut egui::Ui,
-    category: &mut Option<IntelCategory>,
-    allow_count: bool,
-) -> bool {
-    let mut choice = *category;
-    let before = choice;
+fn input_body(ui: &mut Ui, input: &mut InputRule) -> bool {
+    let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(t!("settings.patterns.category"));
-        egui::ComboBox::from_id_salt("pattern_category")
-            .selected_text(category_label(*category))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut choice, None, t!("settings.patterns.category_none"));
-                ui.selectable_value(
-                    &mut choice,
-                    Some(IntelCategory::Ship),
-                    t!("settings.patterns.category_ship"),
-                );
-                if allow_count {
-                    ui.selectable_value(
-                        &mut choice,
-                        Some(IntelCategory::Count),
-                        t!("settings.patterns.category_count"),
-                    );
-                }
-                ui.selectable_value(
-                    &mut choice,
-                    Some(IntelCategory::Clear),
-                    t!("settings.patterns.category_clear"),
-                );
-                ui.selectable_value(
-                    &mut choice,
-                    Some(IntelCategory::Keyword),
-                    t!("settings.patterns.category_keyword"),
-                );
-                ui.selectable_value(
-                    &mut choice,
-                    Some(IntelCategory::Query),
-                    t!("settings.patterns.category_query"),
-                );
-            });
+        ui.label(t!("settings.patterns.field_id"));
+        changed |= ui.text_edit_singleline(&mut input.id).changed();
     });
-    if choice != before {
-        *category = choice;
-        return true;
-    }
-    false
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.patterns.field_path"));
+        changed |= ui.text_edit_singleline(&mut input.path).changed();
+    });
+    ui.label(format!(
+        "{}: {}",
+        t!("settings.patterns.field_kind"),
+        input_kind_label(input.kind)
+    ));
+    changed |= string_list_editor(
+        ui,
+        &t!("settings.patterns.field_channels"),
+        &mut input.channels,
+    );
+    changed |= ui
+        .checkbox(&mut input.enabled, t!("settings.patterns.field_enabled"))
+        .changed();
+    changed
 }
 
-fn action_label_pattern(action: &ActionConfig) -> String {
-    match action {
-        ActionConfig::Notify => t!("settings.patterns.action_notify"),
-        ActionConfig::MapAlert { .. } => t!("settings.patterns.action_map_alert"),
-        ActionConfig::Ignore => t!("settings.patterns.action_ignore"),
+fn detection_body(ui: &mut Ui, detection: &mut DetectionRule) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.patterns.field_id"));
+        changed |= ui.text_edit_singleline(&mut detection.id).changed();
+    });
+    ui.horizontal(|ui| {
+        let is_dictionary = matches!(detection.kind, DetectionKind::Dictionary { .. });
+        if ui
+            .selectable_label(!is_dictionary, t!("settings.patterns.kind_regex"))
+            .clicked()
+            && is_dictionary
+        {
+            detection.kind = DetectionKind::Regex {
+                pattern: String::new(),
+            };
+            changed = true;
+        }
+        if ui
+            .selectable_label(is_dictionary, t!("settings.patterns.kind_dictionary"))
+            .clicked()
+            && !is_dictionary
+        {
+            detection.kind = DetectionKind::Dictionary { words: Vec::new() };
+            changed = true;
+        }
+    });
+    match &mut detection.kind {
+        DetectionKind::Regex { pattern } => {
+            ui.horizontal(|ui| {
+                ui.label(t!("settings.patterns.field_pattern"));
+                changed |= ui.text_edit_singleline(pattern).changed();
+            });
+        }
+        DetectionKind::Dictionary { words } => {
+            changed |= string_list_editor(ui, &t!("settings.patterns.field_words"), words);
+        }
     }
-    .into_owned()
+    changed |= ui
+        .checkbox(
+            &mut detection.case_insensitive,
+            t!("settings.patterns.field_case_insensitive"),
+        )
+        .changed();
+    changed |= string_list_editor(
+        ui,
+        &t!("settings.patterns.field_channels"),
+        &mut detection.channels,
+    );
+    changed |= ui
+        .checkbox(&mut detection.enabled, t!("settings.patterns.field_enabled"))
+        .changed();
+    changed |= ui
+        .checkbox(&mut detection.drop, t!("settings.patterns.field_drop"))
+        .changed();
+    changed |= category_editor(ui, &mut detection.category);
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.patterns.field_system_group"));
+        let mut group = detection.system_group.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut group).changed() {
+            detection.system_group = if group.is_empty() { None } else { Some(group) };
+            changed = true;
+        }
+    });
+    changed |= string_list_editor(ui, &t!("settings.patterns.field_tags"), &mut detection.tags);
+    changed
 }
 
-fn action_label_dict(action: &DictionaryActionConfig) -> String {
-    match action {
-        DictionaryActionConfig::Notify => t!("settings.patterns.action_notify"),
-        DictionaryActionConfig::MapAlert => t!("settings.patterns.action_map_alert"),
+fn output_body(ui: &mut Ui, output: &mut OutputRule) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.patterns.field_id"));
+        changed |= ui.text_edit_singleline(&mut output.id).changed();
+    });
+    changed |= output_kind_editor(ui, &mut output.kind);
+    changed |= output_mode_editor(ui, &mut output.mode);
+    changed |= string_list_editor(
+        ui,
+        &t!("settings.patterns.field_channels"),
+        &mut output.channels,
+    );
+    changed |= ui
+        .checkbox(&mut output.enabled, t!("settings.patterns.field_enabled"))
+        .changed();
+    ui.label(format!(
+        "{}: {}",
+        t!("settings.patterns.field_when"),
+        condition_summary(&output.when)
+    ));
+    changed
+}
+
+fn string_list_editor(ui: &mut Ui, label: &str, values: &mut Vec<String>) -> bool {
+    let mut text = values.join(", ");
+    let changed = ui
+        .horizontal(|ui| {
+            ui.label(label);
+            ui.text_edit_singleline(&mut text).changed()
+        })
+        .inner;
+    if changed {
+        *values = text
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
     }
-    .into_owned()
+    changed
+}
+
+fn category_editor(ui: &mut Ui, category: &mut Option<IntelCategory>) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_label(t!("settings.patterns.field_category"))
+        .selected_text(category_label(*category))
+        .show_ui(ui, |ui| {
+            for option in [
+                None,
+                Some(IntelCategory::Ship),
+                Some(IntelCategory::Count),
+                Some(IntelCategory::Clear),
+                Some(IntelCategory::Keyword),
+                Some(IntelCategory::Query),
+            ] {
+                if ui
+                    .selectable_label(*category == option, category_label(option))
+                    .clicked()
+                {
+                    *category = option;
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+fn output_kind_editor(ui: &mut Ui, kind: &mut OutputKind) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_label(t!("settings.patterns.field_kind"))
+        .selected_text(output_kind_label(*kind))
+        .show_ui(ui, |ui| {
+            for option in [OutputKind::Visual, OutputKind::Sound, OutputKind::Log] {
+                if ui
+                    .selectable_label(*kind == option, output_kind_label(option))
+                    .clicked()
+                {
+                    *kind = option;
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+fn output_mode_editor(ui: &mut Ui, mode: &mut OutputMode) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_label(t!("settings.patterns.field_mode"))
+        .selected_text(output_mode_label(*mode))
+        .show_ui(ui, |ui| {
+            for option in [OutputMode::Emit, OutputMode::Suppress] {
+                if ui
+                    .selectable_label(*mode == option, output_mode_label(option))
+                    .clicked()
+                {
+                    *mode = option;
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+fn condition_editor(ui: &mut Ui, condition: &mut Condition) -> bool {
+    let mut changed = false;
+    let current = condition_op(condition);
+    egui::ComboBox::from_label(t!("settings.patterns.field_condition"))
+        .selected_text(op_label(current))
+        .show_ui(ui, |ui| {
+            for op in [
+                "always",
+                "all_true",
+                "any_true",
+                "none_true",
+                "at_least_one_false",
+                "at_least_n_true",
+                "and",
+                "or",
+                "not",
+            ] {
+                if ui
+                    .selectable_label(current == op, op_label(op))
+                    .clicked()
+                    && current != op
+                {
+                    *condition = default_condition(op);
+                    changed = true;
+                }
+            }
+        });
+    match condition {
+        Condition::Always => {}
+        Condition::AllTrue { tags }
+        | Condition::AnyTrue { tags }
+        | Condition::NoneTrue { tags }
+        | Condition::AtLeastOneFalse { tags } => {
+            changed |= string_list_editor(ui, &t!("settings.patterns.field_tags"), tags);
+        }
+        Condition::AtLeastNTrue { n, tags } => {
+            ui.horizontal(|ui| {
+                ui.label("n");
+                changed |= ui.add(egui::DragValue::new(n)).changed();
+            });
+            changed |= string_list_editor(ui, &t!("settings.patterns.field_tags"), tags);
+        }
+        Condition::And { all } => changed |= conditions_list_editor(ui, all),
+        Condition::Or { any } => changed |= conditions_list_editor(ui, any),
+        Condition::Not { not } => changed |= condition_editor(ui, not),
+    }
+    changed
+}
+
+fn conditions_list_editor(ui: &mut Ui, list: &mut Vec<Condition>) -> bool {
+    let mut changed = false;
+    let mut remove = None;
+    for (index, child) in list.iter_mut().enumerate() {
+        ui.push_id(index, |ui| {
+            ui.horizontal(|ui| {
+                changed |= condition_editor(ui, child);
+                if ui.button(t!("settings.patterns.remove")).clicked() {
+                    remove = Some(index);
+                }
+            });
+        });
+    }
+    if let Some(index) = remove {
+        list.remove(index);
+        changed = true;
+    }
+    if ui.button(t!("settings.patterns.add_subcondition")).clicked() {
+        list.push(Condition::AllTrue { tags: Vec::new() });
+        changed = true;
+    }
+    changed
+}
+
+fn condition_op(condition: &Condition) -> &'static str {
+    match condition {
+        Condition::Always => "always",
+        Condition::AllTrue { .. } => "all_true",
+        Condition::AnyTrue { .. } => "any_true",
+        Condition::NoneTrue { .. } => "none_true",
+        Condition::AtLeastOneFalse { .. } => "at_least_one_false",
+        Condition::AtLeastNTrue { .. } => "at_least_n_true",
+        Condition::And { .. } => "and",
+        Condition::Or { .. } => "or",
+        Condition::Not { .. } => "not",
+    }
+}
+
+fn default_condition(op: &str) -> Condition {
+    match op {
+        "all_true" => Condition::AllTrue { tags: Vec::new() },
+        "any_true" => Condition::AnyTrue { tags: Vec::new() },
+        "none_true" => Condition::NoneTrue { tags: Vec::new() },
+        "at_least_one_false" => Condition::AtLeastOneFalse { tags: Vec::new() },
+        "at_least_n_true" => Condition::AtLeastNTrue {
+            n: 1,
+            tags: Vec::new(),
+        },
+        "and" => Condition::And { all: Vec::new() },
+        "or" => Condition::Or { any: Vec::new() },
+        "not" => Condition::Not {
+            not: Box::new(Condition::Always),
+        },
+        _ => Condition::Always,
+    }
+}
+
+fn condition_summary(condition: &Condition) -> String {
+    let op = op_label(condition_op(condition));
+    match condition {
+        Condition::Always => op,
+        Condition::AllTrue { tags }
+        | Condition::AnyTrue { tags }
+        | Condition::NoneTrue { tags }
+        | Condition::AtLeastOneFalse { tags } => format!("{op} [{}]", tags.join(", ")),
+        Condition::AtLeastNTrue { n, tags } => format!("{op}({n}) [{}]", tags.join(", ")),
+        Condition::And { all } => format!("{op} ({})", all.len()),
+        Condition::Or { any } => format!("{op} ({})", any.len()),
+        Condition::Not { .. } => format!("{op} (...)"),
+    }
+}
+
+fn op_label(op: &str) -> String {
+    match op {
+        "always" => t!("settings.patterns.op_always").into_owned(),
+        "all_true" => t!("settings.patterns.op_all_true").into_owned(),
+        "any_true" => t!("settings.patterns.op_any_true").into_owned(),
+        "none_true" => t!("settings.patterns.op_none_true").into_owned(),
+        "at_least_one_false" => t!("settings.patterns.op_at_least_one_false").into_owned(),
+        "at_least_n_true" => t!("settings.patterns.op_at_least_n_true").into_owned(),
+        "and" => t!("settings.patterns.op_and").into_owned(),
+        "or" => t!("settings.patterns.op_or").into_owned(),
+        "not" => t!("settings.patterns.op_not").into_owned(),
+        other => other.to_string(),
+    }
 }
 
 fn category_label(category: Option<IntelCategory>) -> String {
     match category {
-        None => t!("settings.patterns.category_none"),
-        Some(IntelCategory::Ship) => t!("settings.patterns.category_ship"),
-        Some(IntelCategory::Count) => t!("settings.patterns.category_count"),
-        Some(IntelCategory::Clear) => t!("settings.patterns.category_clear"),
-        Some(IntelCategory::Keyword) => t!("settings.patterns.category_keyword"),
-        Some(IntelCategory::Query) => t!("settings.patterns.category_query"),
+        None => t!("settings.patterns.category_none").into_owned(),
+        Some(IntelCategory::Ship) => t!("settings.patterns.category_ship").into_owned(),
+        Some(IntelCategory::Count) => t!("settings.patterns.category_count").into_owned(),
+        Some(IntelCategory::Clear) => t!("settings.patterns.category_clear").into_owned(),
+        Some(IntelCategory::Keyword) => t!("settings.patterns.category_keyword").into_owned(),
+        Some(IntelCategory::Query) => t!("settings.patterns.category_query").into_owned(),
     }
-    .into_owned()
+}
+
+fn output_kind_label(kind: OutputKind) -> String {
+    match kind {
+        OutputKind::Visual => t!("settings.patterns.kind_visual").into_owned(),
+        OutputKind::Sound => t!("settings.patterns.kind_sound").into_owned(),
+        OutputKind::Log => t!("settings.patterns.kind_log").into_owned(),
+    }
+}
+
+fn output_mode_label(mode: OutputMode) -> String {
+    match mode {
+        OutputMode::Emit => t!("settings.patterns.mode_emit").into_owned(),
+        OutputMode::Suppress => t!("settings.patterns.mode_suppress").into_owned(),
+    }
+}
+
+fn input_kind_label(kind: InputKind) -> String {
+    match kind {
+        InputKind::ChatLog => t!("settings.patterns.input_kind_chat_log").into_owned(),
+    }
+}
+
+fn default_input() -> InputRule {
+    InputRule {
+        id: String::from("new_input"),
+        kind: InputKind::ChatLog,
+        path: String::new(),
+        channels: Vec::new(),
+        enabled: true,
+    }
+}
+
+fn default_detection() -> DetectionRule {
+    DetectionRule {
+        id: String::from("new_detection"),
+        kind: DetectionKind::Regex {
+            pattern: String::new(),
+        },
+        case_insensitive: false,
+        channels: Vec::new(),
+        enabled: true,
+        drop: false,
+        category: None,
+        system_group: None,
+        tags: Vec::new(),
+    }
+}
+
+fn default_output() -> OutputRule {
+    OutputRule {
+        id: String::from("new_output"),
+        kind: OutputKind::Log,
+        mode: OutputMode::Emit,
+        when: Condition::Always,
+        channels: Vec::new(),
+        enabled: true,
+    }
 }
