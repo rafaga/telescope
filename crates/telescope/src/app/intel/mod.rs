@@ -1,54 +1,23 @@
 //! Intel (EVE chat log) handling.
 //!
-//! Two parts live here: [`IntelLogName`], the single place that knows the
-//! chatlog file naming format (the directory scan, the file watcher and the
-//! log reader all go through [`IntelLogName::parse`], so a format change only
-//! needs to be made here), and the `TelescopeApp` methods that read a log
-//! file, decode it and dispatch pattern matches.
+//! The input half lives in [`input`] (chatlog name parsing, reading and
+//! decoding) and the shared resolvers in [`resolve`]; this module keeps the
+//! `TelescopeApp` methods that read a log file and dispatch its matches.
 
+use self::input::{ChatLogSource, monitored_channel_names};
+use self::resolve::{allows_partial_match, exact_system, nearest_origin_within};
 use crate::app::TelescopeApp;
 use crate::app::messages::{MapSync, Message, Target, Type};
 use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
-use regex::Regex;
 use sde::SdeManager;
-use sde::objects::SolarSystem;
 use webb::map_alerts::{AlertSummary, IntelAlert, is_query};
 use webb::patterns::{ActionConfig, PatternMatch};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::sync::OnceLock;
 
-/// A chatlog file name split into its channel and the rest.
-///
-/// EVE names chatlogs `<channel>_<YYYYMMDD>_<HHMMSS>[_<charid>].txt`. The
-/// channel itself may contain underscores, so it can't be found by splitting
-/// on the first `_`.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct IntelLogName<'a> {
-    /// Channel name, e.g. `Local` or `wc.Vale+Tribute`.
-    pub channel: &'a str,
-    /// Everything after the channel's trailing underscore:
-    /// `<YYYYMMDD>_<HHMMSS>[_<charid>].txt`.
-    pub suffix: &'a str,
-}
+mod input;
+mod resolve;
 
-impl<'a> IntelLogName<'a> {
-    /// Parses a chatlog file name, or returns `None` if `file_name` is not one.
-    pub(crate) fn parse(file_name: &'a str) -> Option<Self> {
-        static LOG_NAME: OnceLock<Regex> = OnceLock::new();
-        let re = LOG_NAME.get_or_init(|| {
-            Regex::new(r"^(?P<channel>.+?)_(?P<suffix>\d{8}_\d{6}(?:_\d+)?\.txt)$")
-                .expect("hardcoded chatlog name regex must compile")
-        });
-        let caps = re.captures(file_name)?;
-        Some(Self {
-            channel: caps.name("channel")?.as_str(),
-            suffix: caps.name("suffix")?.as_str(),
-        })
-    }
-}
+pub(crate) use self::input::IntelLogName;
 
 impl TelescopeApp {
     /// Applies the channel selection made in the Settings window: pushes it
@@ -91,43 +60,20 @@ impl TelescopeApp {
 
     #[tracing::instrument(skip(self))]
     pub(crate) fn load_intel_file(&mut self, file_name: String) {
-        let path = self.settings.get_intel();
-        let path = &path.join(file_name.as_str());
+        let dir = self.settings.get_intel().to_path_buf();
         let mut log_files_map = self.settings.get_log_files_channels();
-
-        //getting the first byte to read from the last recorded file lenght
-        let mut start = 0;
-        if let Some(log_entry) = log_files_map.get(&file_name) {
-            start = log_entry.0;
-        }
-
-        let channel = IntelLogName::parse(&file_name)
-            .map(|log| log.channel.to_string())
-            .unwrap_or_default();
-
-        if let Ok(mut intel_file) = File::open(path) {
-            let file_length = intel_file.metadata().map(|meta| meta.len()).unwrap_or(0);
-            //if the file shrank (log rotation), read it from the beginning
-            if file_length < start {
-                start = 0;
-            }
-            if file_length > start && intel_file.seek(SeekFrom::Start(start)).is_ok() {
-                // EVE Online writes chat logs as UTF-16LE, never UTF-8, so
-                // this cannot use read_to_string (it requires valid UTF-8
-                // and fails on the very first byte of every real log file,
-                // silently, since the caller only checks `is_ok()`). Read
-                // the raw bytes and decode them ourselves.
-                let mut chunk = intel_file.take(file_length - start);
-                let mut raw = Vec::new();
-                if let Ok(bytes_read) = chunk.read_to_end(&mut raw) {
-                    let (new_data, consumed) = decode_utf16le_chunk(&raw[..bytes_read]);
-                    let _ = self.parse_intel_data(&channel, &new_data);
-                    log_files_map.entry(file_name).and_modify(|hash_entry| {
-                        hash_entry.0 = start + consumed as u64;
-                        hash_entry.1 = Utc::now();
-                    });
-                }
-            }
+        // Offset recorded by the last read; 0 for a file seen for the first
+        // time.
+        let start = log_files_map
+            .get(&file_name)
+            .map(|log_entry| log_entry.0)
+            .unwrap_or(0);
+        if let Some(event) = ChatLogSource::read_new(&dir, &file_name, start) {
+            let _ = self.parse_intel_data(&event.channel, &event.text);
+            log_files_map.entry(file_name).and_modify(|hash_entry| {
+                hash_entry.0 = event.end_offset;
+                hash_entry.1 = Utc::now();
+            });
         }
         self.settings.set_log_files_channels(log_files_map);
     }
@@ -337,320 +283,3 @@ impl TelescopeApp {
     }
 }
 
-/// The id of the system in `systems` (id, name) named exactly `name`,
-/// ignoring ASCII case.
-fn exact_system<'a>(systems: impl IntoIterator<Item = (u32, &'a str)>, name: &str) -> Option<u32> {
-    systems
-        .into_iter()
-        .find(|(_, system)| system.eq_ignore_ascii_case(name))
-        .map(|(id, _)| id)
-}
-
-/// Whether `name` may resolve to a system whose name only contains it:
-/// code-like text (a digit or a dash, as in "H-5GU", "4-h" or "J1234"),
-/// never plain words such as a pilot name.
-fn allows_partial_match(name: &str) -> bool {
-    name.chars().any(|c| c.is_ascii_digit() || c == '-')
-}
-
-/// The member of `origins` closest to `target` in stargate jumps, if it is at
-/// most `max_jumps` away (breadth-first search over
-/// [`SolarSystem::connections`], so the first origin to reach `target` is the
-/// nearest one; ties go to the earlier origin in the list).
-fn nearest_origin_within(
-    systems: &HashMap<u32, SolarSystem>,
-    origins: &[u32],
-    target: u32,
-    max_jumps: u8,
-) -> Option<u32> {
-    let mut seen: HashSet<u32> = origins.iter().copied().collect();
-    // (system reached, origin it was reached from, jumps from that origin)
-    let mut queue: VecDeque<(u32, u32, u8)> = origins.iter().map(|&id| (id, id, 0)).collect();
-    while let Some((system, origin, jumps)) = queue.pop_front() {
-        if system == target {
-            return Some(origin);
-        }
-        if jumps == max_jumps {
-            continue;
-        }
-        let Some(solar_system) = systems.get(&system) else {
-            continue;
-        };
-        for &next in &solar_system.connections {
-            if seen.insert(next) {
-                queue.push_back((next, origin, jumps + 1));
-            }
-        }
-    }
-    None
-}
-
-/// Names of the channels flagged as monitored in `available`, sorted: the
-/// watcher's event handler binary-searches this list.
-fn monitored_channel_names(available: &HashMap<String, bool>) -> Vec<String> {
-    let mut names: Vec<String> = available
-        .iter()
-        .filter(|(_, monitored)| **monitored)
-        .map(|(name, _)| name.clone())
-        .collect();
-    names.sort_unstable();
-    names
-}
-
-/// Decodes a raw byte chunk read from an EVE Online chat log as UTF-16LE.
-///
-/// EVE writes chat logs as UTF-16LE and re-emits a byte-order mark (U+FEFF)
-/// not only at the start of the file but at the start of every appended
-/// line (each flush is encoded as its own fragment, BOM included) -- every
-/// occurrence is stripped here, not just a single leading one, since
-/// [`webb::patterns::PatternEngine::parse_line`]'s line regex is anchored on a
-/// literal `[` and would otherwise fail to match every line but the first.
-///
-/// Returns the decoded text and the number of bytes actually consumed from
-/// `raw`. If `raw`'s length is odd, the trailing byte is half of a UTF-16
-/// code unit split across two reads (the writer flushed mid-character); it
-/// is left unconsumed (excluded from the returned count) so the caller
-/// re-reads it, paired with its other half, on the next chunk instead of
-/// corrupting decoding here. Malformed code units (unpaired surrogates)
-/// are replaced with U+FFFD via [`String::from_utf16_lossy`] rather than
-/// failing the whole read.
-fn decode_utf16le_chunk(raw: &[u8]) -> (String, usize) {
-    let usable_len = raw.len() - (raw.len() % 2);
-    let code_units: Vec<u16> = raw[..usable_len]
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&pair| u16::from_le_bytes(pair))
-        .collect();
-    let text = String::from_utf16_lossy(&code_units).replace('\u{feff}', "");
-    (text, usable_len)
-}
-
-#[cfg(test)]
-mod decode_tests {
-    use super::decode_utf16le_chunk;
-
-    /// Encodes `s` as raw UTF-16LE bytes, the same wire format EVE writes,
-    /// without needing an encoding crate as a test dependency.
-    fn utf16le_bytes(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
-    }
-
-    #[test]
-    fn decodes_plain_ascii_line() {
-        let raw = utf16le_bytes("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear\r\n");
-        let (text, consumed) = decode_utf16le_chunk(&raw);
-        assert_eq!(
-            text,
-            "[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear\r\n"
-        );
-        assert_eq!(consumed, raw.len());
-    }
-
-    #[test]
-    fn strips_leading_file_bom() {
-        let raw = utf16le_bytes("\u{feff}[ 2021.09.08 22:56:47 ] A > hi\r\n");
-        let (text, _) = decode_utf16le_chunk(&raw);
-        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r\n");
-    }
-
-    #[test]
-    fn strips_every_per_line_bom_not_just_the_first() {
-        // Real EVE logs re-emit U+FEFF at the start of every appended
-        // line, not only once at the top of the file.
-        let raw = utf16le_bytes(
-            "\u{feff}[ 2021.09.08 22:56:47 ] A > line one\r\n\u{feff}[ 2021.09.08 22:56:48 ] B > line two\r\n",
-        );
-        let (text, _) = decode_utf16le_chunk(&raw);
-        assert_eq!(
-            text,
-            "[ 2021.09.08 22:56:47 ] A > line one\r\n[ 2021.09.08 22:56:48 ] B > line two\r\n"
-        );
-        assert!(!text.contains('\u{feff}'));
-    }
-
-    #[test]
-    fn decodes_non_latin_script_correctly() {
-        // The same corpus this fix was validated against has a large
-        // Chinese-speaking population; a naive UTF-8 read does not just
-        // mis-decode this text, it fails to decode the file at all (0xFF,
-        // the first byte of the UTF-16LE BOM, is never a valid UTF-8
-        // start byte).
-        let raw = utf16le_bytes("[ 2023.03.27 02:19:05 ] Algae Roben > 有萨沙甲亢的配置吗\r\n");
-        let (text, consumed) = decode_utf16le_chunk(&raw);
-        assert_eq!(
-            text,
-            "[ 2023.03.27 02:19:05 ] Algae Roben > 有萨沙甲亢的配置吗\r\n"
-        );
-        assert_eq!(consumed, raw.len());
-    }
-
-    #[test]
-    fn holds_back_a_trailing_split_code_unit() {
-        let full = utf16le_bytes("[ 2021.09.08 22:56:47 ] A > hi\r\n");
-        // Simulate a read landing mid-character: drop the last byte,
-        // leaving a dangling first byte of the final code unit ('\n').
-        let raw = &full[..full.len() - 1];
-        let (text, consumed) = decode_utf16le_chunk(raw);
-        // The dangling byte must not be consumed nor corrupt the decoded
-        // text.
-        assert_eq!(consumed, raw.len() - 1);
-        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r");
-    }
-
-    #[test]
-    fn empty_input_decodes_to_empty_output() {
-        let (text, consumed) = decode_utf16le_chunk(&[]);
-        assert_eq!(text, "");
-        assert_eq!(consumed, 0);
-    }
-}
-
-#[cfg(test)]
-mod log_name_tests {
-    use super::*;
-
-    #[test]
-    fn splits_channel_and_suffix() {
-        let log = IntelLogName::parse("Local_20230101_000000_12345.txt").unwrap();
-        assert_eq!(log.channel, "Local");
-        assert_eq!(log.suffix, "20230101_000000_12345.txt");
-    }
-
-    #[test]
-    fn accepts_a_name_without_character_id() {
-        let log = IntelLogName::parse("Local_20230101_000000.txt").unwrap();
-        assert_eq!(log.channel, "Local");
-        assert_eq!(log.suffix, "20230101_000000.txt");
-    }
-
-    #[test]
-    fn keeps_underscores_inside_the_channel_name() {
-        let log = IntelLogName::parse("My_Intel_Channel_20230101_000000_12345.txt").unwrap();
-        assert_eq!(log.channel, "My_Intel_Channel");
-        assert_eq!(log.suffix, "20230101_000000_12345.txt");
-    }
-
-    #[test]
-    fn keeps_channel_punctuation() {
-        let log = IntelLogName::parse("wc.Vale+Tribute_20230101_000000_12345.txt").unwrap();
-        assert_eq!(log.channel, "wc.Vale+Tribute");
-    }
-
-    #[test]
-    fn rejects_files_that_are_not_chatlogs() {
-        for name in [
-            "notes.txt",
-            "nounderscore",
-            ".DS_Store",
-            "Local_20230101_000000_12345.log",
-            "Local_2023_000000_12345.txt",
-            "_20230101_000000_12345.txt",
-            "",
-        ] {
-            assert!(
-                IntelLogName::parse(name).is_none(),
-                "{name:?} should not parse"
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod monitored_channel_names_tests {
-    use super::*;
-
-    #[test]
-    fn keeps_only_monitored_channels_sorted() {
-        let available = HashMap::from([
-            (String::from("Local"), false),
-            (String::from("wc.Vale"), true),
-            (String::from("Alliance"), true),
-        ]);
-        assert_eq!(
-            monitored_channel_names(&available),
-            vec![String::from("Alliance"), String::from("wc.Vale")]
-        );
-    }
-
-    #[test]
-    fn is_empty_when_nothing_is_monitored() {
-        let available = HashMap::from([(String::from("Local"), false)]);
-        assert!(monitored_channel_names(&available).is_empty());
-        assert!(monitored_channel_names(&HashMap::new()).is_empty());
-    }
-}
-
-#[cfg(test)]
-mod nearest_origin_tests {
-    use super::nearest_origin_within;
-    use sde::objects::SolarSystem;
-    use std::collections::HashMap;
-
-    /// A straight chain 1 - 2 - 3 - 4 - 5, plus 6 connected to nothing.
-    fn chain() -> HashMap<u32, SolarSystem> {
-        let links: [(u32, &[u32]); 6] = [
-            (1, &[2]),
-            (2, &[1, 3]),
-            (3, &[2, 4]),
-            (4, &[3, 5]),
-            (5, &[4]),
-            (6, &[]),
-        ];
-        links
-            .into_iter()
-            .map(|(id, connections)| {
-                let mut system = SolarSystem::new(1.0);
-                system.id = id;
-                system.connections = connections.to_vec();
-                (id, system)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_origin_itself_is_in_range() {
-        assert_eq!(nearest_origin_within(&chain(), &[3], 3, 0), Some(3));
-    }
-
-    #[test]
-    fn systems_up_to_the_radius_are_in_range() {
-        assert_eq!(nearest_origin_within(&chain(), &[1], 3, 2), Some(1));
-        assert_eq!(nearest_origin_within(&chain(), &[1], 4, 2), None);
-    }
-
-    #[test]
-    fn the_closest_origin_is_returned() {
-        assert_eq!(nearest_origin_within(&chain(), &[1, 5], 4, 7), Some(5));
-        assert_eq!(nearest_origin_within(&chain(), &[1, 5], 2, 7), Some(1));
-    }
-
-    #[test]
-    fn unconnected_systems_are_never_in_range() {
-        assert_eq!(nearest_origin_within(&chain(), &[1], 6, 7), None);
-    }
-}
-
-#[cfg(test)]
-mod system_lookup_tests {
-    use super::{allows_partial_match, exact_system};
-
-    const SYSTEMS: [(u32, &str); 3] = [(1, "H-5GUI"), (2, "Jita"), (3, "Old Man Star")];
-
-    #[test]
-    fn exact_names_match_in_any_case() {
-        assert_eq!(exact_system(SYSTEMS, "h-5gui"), Some(1));
-        assert_eq!(exact_system(SYSTEMS, "old man star"), Some(3));
-        assert_eq!(exact_system(SYSTEMS, "H-5GU"), None);
-        assert_eq!(exact_system(SYSTEMS, "Floris Saucus"), None);
-    }
-
-    #[test]
-    fn only_code_like_text_may_match_partially() {
-        assert!(allows_partial_match("H-5GU"));
-        assert!(allows_partial_match("4-h"));
-        assert!(allows_partial_match("J1234"));
-        assert!(!allows_partial_match("Floris Saucus"));
-        assert!(!allows_partial_match("Jit"));
-    }
-}
