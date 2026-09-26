@@ -20,9 +20,8 @@ use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sde::{SdeManager, objects::Universe};
 use settings::Settings;
-use webb::patterns::PatternEngine;
+use webb::rules::{DetectionEngine, RulesConfig};
 use std::{
-    path::Path,
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -101,7 +100,14 @@ pub struct TelescopeApp {
     // saved after startup is silently ignored until the app restarts.
     intel_channels: Arc<RwLock<Vec<String>>>,
     dlg_intel_dir: Dialog,
-    pattern_engine: PatternEngine,
+    /// Live detection engine, shared with the detection thread.
+    intel_engine: intel::detection::EngineHandle,
+    /// Output-rule router, rebuilt when the rules change.
+    intel_router: intel::router::Router,
+    /// UI -> detection thread.
+    intel_input: mpsc::Sender<intel::input::InputEvent>,
+    /// Detection thread -> UI.
+    intel_output: Receiver<intel::detection::DetectedLine>,
     /// In-memory state of the Settings -> Patterns page (rules being edited).
     patterns_editor: PatternsEditor,
     // Alarm sound for `ActionConfig::MapAlert` matches -- see the
@@ -228,36 +234,52 @@ impl Default for TelescopeApp {
         // before that move happens.
         let audio = audio::AlarmPlayer::new(Arc::clone(&msgmon));
 
-        // Compile the pattern matching engine once at startup. Rules that
-        // fail validation are reported and skipped; a missing or corrupted
-        // patterns.toml is regenerated from the embedded template.
-        let pattern_report = PatternEngine::load_or_create(Path::new("patterns.toml"));
-        for error in pattern_report.errors {
-            msgmon.spawn(Message::GenericNotification((
-                Type::Error,
-                String::from("PatternEngine"),
-                String::from("load"),
-                error.to_string(),
-            )));
-        }
-        if pattern_report.regenerated {
-            let detail = match &pattern_report.backup {
-                Some(backup_path) => format!(
-                    "patterns.toml was corrupted and has been regenerated with default content; previous file backed up as {}",
-                    backup_path.display()
-                ),
-                None => String::from(
-                    "patterns.toml was missing and has been created with default content",
-                ),
-            };
-            msgmon.spawn(Message::GenericNotification((
-                Type::Info,
-                String::from("PatternEngine"),
-                String::from("load_or_create"),
-                detail,
-            )));
-        }
-        let pattern_engine = pattern_report.engine;
+        // Load the intel rules from the player database (seeded from
+        // `patterns.toml` by the schema 1 -> 2 migration), compile the
+        // detection engine once, and start the detection thread that
+        // evaluates the lines the watcher reports.
+        let intel_rules = match esi.load_rules() {
+            Ok(rules) => rules,
+            Err(error) => {
+                msgmon.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("Intel"),
+                    String::from("load_rules"),
+                    error.to_string(),
+                )));
+                RulesConfig::default()
+            }
+        };
+        let intel_router = intel::router::Router::new(&intel_rules);
+        let intel_engine: intel::detection::EngineHandle = match DetectionEngine::from_config(&intel_rules) {
+            Ok((engine, errors)) => {
+                for error in errors {
+                    msgmon.spawn(Message::GenericNotification((
+                        Type::Error,
+                        String::from("Intel"),
+                        String::from("load_rules"),
+                        error.to_string(),
+                    )));
+                }
+                Arc::new(RwLock::new(engine))
+            }
+            Err(error) => {
+                msgmon.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("Intel"),
+                    String::from("load_rules"),
+                    error.to_string(),
+                )));
+                let (engine, _) = DetectionEngine::from_config(&RulesConfig::default())
+                    .expect("empty rules must compile");
+                Arc::new(RwLock::new(engine))
+            }
+        };
+        let (intel_input, intel_input_rx) =
+            mpsc::channel::<intel::input::InputEvent>(intel::detection::INPUT_CAPACITY);
+        let (intel_output_tx, intel_output) =
+            mpsc::channel::<intel::detection::DetectedLine>(intel::detection::OUTPUT_CAPACITY);
+        intel::detection::spawn(Arc::clone(&intel_engine), intel_input_rx, intel_output_tx);
 
         let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(
             (*settings.get_cloned_monitored_channels()).clone(),
@@ -305,7 +327,10 @@ impl Default for TelescopeApp {
             watcher,
             intel_channels,
             dlg_intel_dir,
-            pattern_engine,
+            intel_engine,
+            intel_router,
+            intel_input,
+            intel_output,
             patterns_editor: PatternsEditor::default(),
             audio,
             database_updater: database_updater::DatabaseUpdater::default(),
@@ -346,7 +371,10 @@ impl eframe::App for TelescopeApp {
             watcher: _,
             intel_channels: _,
             dlg_intel_dir: _,
-            pattern_engine: _,
+            intel_engine: _,
+            intel_router: _,
+            intel_input: _,
+            intel_output: _,
             patterns_editor: _,
             audio: _,
             database_updater: _,
@@ -555,6 +583,10 @@ impl TelescopeApp {
                     let _ = self.settings.scan_channels_logs();
                 }
             };
+        }
+        // Lines evaluated by the detection thread since the last frame.
+        while let Ok(detected) = self.intel_output.try_recv() {
+            self.process_detected_line(detected);
         }
     }
 

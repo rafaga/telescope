@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::OnceLock;
+use webb::rules::{IntelLine, parse_line};
 
 /// A chatlog file name split into its channel and the rest.
 ///
@@ -43,15 +44,23 @@ impl<'a> IntelLogName<'a> {
     }
 }
 
-/// One chunk of newly-appended, decoded intel text from a source file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One parsed chat-log line, ready for the detection stage.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InputEvent {
-    /// Name of the log file the text came from.
+    /// Name of the log file the line came from.
     pub source: String,
     /// Channel parsed from the file name.
     pub channel: String,
-    /// Decoded text appended since the last read.
-    pub text: String,
+    /// The parsed line (timestamp, author, text).
+    pub line: IntelLine,
+}
+
+/// What a read of a chat log produced: the new lines (as [`InputEvent`]s) and
+/// the file offset to resume from next time.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InputRead {
+    /// The lines appended since the last read that parse as chat-log lines.
+    pub events: Vec<InputEvent>,
     /// File length after this read; the next read starts here.
     pub end_offset: u64,
 }
@@ -61,14 +70,14 @@ pub(crate) struct ChatLogSource;
 
 impl ChatLogSource {
     /// Reads the bytes of `file_name` (inside `dir`) appended after `start`,
-    /// decodes them and returns the resulting [`InputEvent`], or `None` when
-    /// there is nothing new to read.
+    /// decodes them and returns the parsed lines as [`InputRead`], or `None`
+    /// when there is nothing new to read.
     ///
     /// A file that shrank below `start` (log rotation) is read from the
     /// beginning. A trailing byte that is half of a UTF-16 code unit split
     /// across two reads is left unconsumed (see [`decode_utf16le_chunk`]) and
     /// re-read, paired with its other half, next time.
-    pub(crate) fn read_new(dir: &Path, file_name: &str, start: u64) -> Option<InputEvent> {
+    pub(crate) fn read_new(dir: &Path, file_name: &str, start: u64) -> Option<InputRead> {
         let mut file = File::open(dir.join(file_name)).ok()?;
         let file_length = file.metadata().map(|meta| meta.len()).unwrap_or(0);
         let start = if file_length < start { 0 } else { start };
@@ -85,10 +94,18 @@ impl ChatLogSource {
         let channel = IntelLogName::parse(file_name)
             .map(|log| log.channel.to_string())
             .unwrap_or_default();
-        Some(InputEvent {
-            source: file_name.to_string(),
-            channel,
-            text,
+        let source = file_name.to_string();
+        let events = text
+            .lines()
+            .filter_map(parse_line)
+            .map(|line| InputEvent {
+                source: source.clone(),
+                channel: channel.clone(),
+                line,
+            })
+            .collect();
+        Some(InputRead {
+            events,
             end_offset: start + consumed as u64,
         })
     }
@@ -112,7 +129,7 @@ pub(crate) fn monitored_channel_names(available: &HashMap<String, bool>) -> Vec<
 /// not only at the start of the file but at the start of every appended
 /// line (each flush is encoded as its own fragment, BOM included) -- every
 /// occurrence is stripped here, not just a single leading one, since
-/// [`webb::patterns::PatternEngine::parse_line`]'s line regex is anchored on a
+/// [`webb::rules::parse_line`]'s line regex is anchored on a
 /// literal `[` and would otherwise fail to match every line but the first.
 ///
 /// Returns the decoded text and the number of bytes actually consumed from

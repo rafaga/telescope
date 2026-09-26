@@ -21,18 +21,20 @@
 //! to TOML.
 
 use crate::patterns::{
-    ActionConfig, COUNT_GROUP, DictionaryActionConfig, IntelCategory, IntelLine, LINE_PATTERN,
+    ActionConfig, COUNT_GROUP, DictionaryActionConfig, IntelCategory, LINE_PATTERN,
     LINE_TIMESTAMP_FORMAT, MAX_CHANNELS, MAX_DICTIONARIES, MAX_DICTIONARY_WORD_LEN,
     MAX_DICTIONARY_WORDS, MAX_LINE_LEN, MAX_MATCHES_PER_CHUNK, MAX_PATTERN_LEN, MAX_RULES,
     MAX_SYSTEM_CANDIDATES, PatternConfig, PatternError, REGEX_SIZE_LIMIT, has_word_boundaries,
     is_valid_channel, is_valid_group_name, is_valid_id, sanitize_display, truncate_str,
 };
+pub use crate::patterns::IntelLine;
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use chrono::NaiveDateTime;
 use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::OnceLock;
 
 /// Maximum number of tags on a single detection rule.
 const MAX_TAGS: usize = 64;
@@ -518,6 +520,15 @@ impl RulesConfig {
 
         for rule in &config.dictionaries {
             let tags = detection_tags(&rule.id, rule.category);
+            let (system_group, action) = match rule.action {
+                DictionaryActionConfig::Notify => (None, ActionConfig::Notify),
+                DictionaryActionConfig::MapAlert => (
+                    Some("word".to_string()),
+                    ActionConfig::MapAlert {
+                        system_group: "word".to_string(),
+                    },
+                ),
+            };
             detections.push(DetectionRule {
                 id: rule.id.clone(),
                 kind: DetectionKind::Dictionary {
@@ -528,15 +539,9 @@ impl RulesConfig {
                 enabled: rule.enabled,
                 drop: false,
                 category: rule.category,
-                system_group: None,
+                system_group,
                 tags: tags.clone(),
             });
-            let action = match rule.action {
-                DictionaryActionConfig::Notify => ActionConfig::Notify,
-                DictionaryActionConfig::MapAlert => ActionConfig::MapAlert {
-                    system_group: "word".to_string(),
-                },
-            };
             push_outputs(
                 &mut outputs,
                 &rule.id,
@@ -582,15 +587,24 @@ fn push_outputs(
     channels: &[String],
     enabled: bool,
 ) {
-    let when = Condition::AllTrue {
+    // A `query` line raises no map alert at all, and a `clear` report raises
+    // no sound (only the visual "clear" entry). Both are encoded as extra
+    // `NoneTrue` guards so the migrated outputs behave like the old actions.
+    let fires = Condition::AllTrue {
         tags: tags.to_vec(),
+    };
+    let not_query = Condition::NoneTrue {
+        tags: vec![String::from("query")],
+    };
+    let not_query_or_clear = Condition::NoneTrue {
+        tags: vec![String::from("query"), String::from("clear")],
     };
     match action {
         ActionConfig::Notify => outputs.push(OutputRule {
             id: format!("{id}_log"),
             kind: OutputKind::Log,
             mode: OutputMode::Emit,
-            when,
+            when: fires,
             channels: channels.to_vec(),
             enabled,
         }),
@@ -599,7 +613,9 @@ fn push_outputs(
                 id: format!("{id}_visual"),
                 kind: OutputKind::Visual,
                 mode: OutputMode::Emit,
-                when: when.clone(),
+                when: Condition::And {
+                    all: vec![fires.clone(), not_query],
+                },
                 channels: channels.to_vec(),
                 enabled,
             });
@@ -607,7 +623,9 @@ fn push_outputs(
                 id: format!("{id}_sound"),
                 kind: OutputKind::Sound,
                 mode: OutputMode::Emit,
-                when,
+                when: Condition::And {
+                    all: vec![fires, not_query_or_clear],
+                },
                 channels: channels.to_vec(),
                 enabled,
             });
@@ -618,21 +636,22 @@ fn push_outputs(
 
 /// A single rule match over a parsed line, carrying its tags.
 ///
-/// Produced by [`DetectionEngine::evaluate`]. All captured text is already
-/// sanitized.
+/// Produced by [`DetectionEngine::evaluate_line`]. All captured text is
+/// already sanitized.
 #[derive(Debug, Clone)]
 pub struct Detection {
     /// Id of the detection rule that matched.
     pub rule_id: String,
-    /// Position of the line within the evaluated chunk: detections of the
-    /// same line share it.
-    pub line_index: usize,
     /// Named capture groups of the match, sanitized with
     /// [`sanitize_display`]. Dictionary matches expose the matched word under
     /// the `word` key.
     pub captures: HashMap<String, String>,
     /// Category configured for the matching rule.
     pub category: Option<IntelCategory>,
+    /// Named capture group holding the reported solar system, for a rule that
+    /// declares one; `None` for a dictionary match (its `word` capture is the
+    /// system) or a rule with no system.
+    pub system_group: Option<String>,
     /// Tags emitted by the matching rule.
     pub tags: Vec<Tag>,
     /// Byte range of the relevant text in the line's payload: the
@@ -640,6 +659,28 @@ pub struct Detection {
     pub span: Range<usize>,
     /// The text at [`Self::span`], sanitized with [`sanitize_display`].
     pub matched: String,
+}
+
+/// The detections of one parsed input line.
+///
+/// The routing stage joins the detections of an input line into a batch before
+/// the output rules decide what to do with it.
+#[derive(Debug, Clone)]
+pub struct DetectionBatch {
+    /// The parsed line the detections belong to.
+    pub line: IntelLine,
+    /// Detections of that line, in evaluation order.
+    pub detections: Vec<Detection>,
+}
+
+impl DetectionBatch {
+    /// The union of the tags of every detection in the batch.
+    pub fn tags(&self) -> HashSet<Tag> {
+        self.detections
+            .iter()
+            .flat_map(|detection| detection.tags.iter().cloned())
+            .collect()
+    }
 }
 
 /// A rule with its regex already compiled.
@@ -678,7 +719,6 @@ fn channels_set(channels: &[String]) -> Option<HashSet<String>> {
 /// Building an engine compiles every regex once; reuse the same instance for
 /// every chunk of intel data.
 pub struct DetectionEngine {
-    line_re: Regex,
     set: RegexSet,
     rules: Vec<CompiledRule>,
     dictionaries: Vec<CompiledDictionary>,
@@ -755,7 +795,6 @@ impl DetectionEngine {
         }
 
         let engine = Self {
-            line_re: Regex::new(LINE_PATTERN).expect("hardcoded line regex must compile"),
             set,
             rules,
             dictionaries,
@@ -835,134 +874,174 @@ impl DetectionEngine {
         })
     }
 
-    /// Parses a raw log line into an [`IntelLine`]. Returns `None` when the
-    /// line does not follow the EVE chat log format.
-    pub fn parse_line(&self, raw: &str) -> Option<IntelLine> {
-        let caps = self.line_re.captures(raw)?;
-        let naive_ts =
-            NaiveDateTime::parse_from_str(caps.name("ts")?.as_str(), LINE_TIMESTAMP_FORMAT).ok()?;
-        Some(IntelLine {
-            timestamp: naive_ts.and_utc(),
-            author: caps.name("author")?.as_str().to_string(),
-            text: caps.name("text")?.as_str().to_string(),
-        })
-    }
-
-    /// Evaluates a chunk of log data from a given channel and returns every
+    /// Evaluates a single parsed line from a given channel and returns every
     /// detection, without running any action.
     ///
     /// A rule marked `drop` that applies to the channel drops the whole line
-    /// before any other rule runs on it. Lines are truncated to 2 KiB and at
-    /// most 100 detections are reported per chunk.
-    #[tracing::instrument(skip(self, data))]
-    pub fn evaluate(&self, channel: &str, data: &str) -> Vec<Detection> {
+    /// before any other rule runs on it. At most 100 detections are reported
+    /// per line.
+    #[tracing::instrument(skip(self, line))]
+    pub fn evaluate_line(&self, channel: &str, line: &IntelLine) -> Vec<Detection> {
         let mut results = Vec::new();
-        for (line_index, raw_line) in data.lines().enumerate() {
+        let candidates = self.set.matches(&line.text);
+        let dropped = candidates.iter().any(|index| {
+            let rule = &self.rules[index];
+            rule.drop
+                && rule
+                    .channels
+                    .as_ref()
+                    .is_none_or(|channels| channels.contains(channel))
+        }) || self.dictionaries.iter().any(|dict| {
+            dict.drop
+                && dict
+                    .channels
+                    .as_ref()
+                    .is_none_or(|channels| channels.contains(channel))
+                && dict
+                    .automaton
+                    .find_iter(&line.text)
+                    .any(|m| has_word_boundaries(&line.text, m.start(), m.end()))
+        });
+        if dropped {
+            return results;
+        }
+        for index in candidates.iter() {
             if results.len() >= MAX_MATCHES_PER_CHUNK {
                 break;
             }
-            let Some(line) = self.parse_line(truncate_str(raw_line, MAX_LINE_LEN)) else {
+            let rule = &self.rules[index];
+            if let Some(channels) = &rule.channels
+                && !channels.contains(channel)
+            {
                 continue;
+            }
+            let candidate_count = if rule.system_group.is_some() {
+                MAX_SYSTEM_CANDIDATES
+            } else {
+                1
             };
-            let candidates = self.set.matches(&line.text);
-            let dropped = candidates.iter().any(|index| {
-                let rule = &self.rules[index];
-                rule.drop
-                    && rule
-                        .channels
-                        .as_ref()
-                        .is_none_or(|channels| channels.contains(channel))
-            }) || self.dictionaries.iter().any(|dict| {
-                dict.drop
-                    && dict
-                        .channels
-                        .as_ref()
-                        .is_none_or(|channels| channels.contains(channel))
-                    && dict
-                        .automaton
-                        .find_iter(&line.text)
-                        .any(|m| has_word_boundaries(&line.text, m.start(), m.end()))
-            });
-            if dropped {
+            for caps in rule.regex.captures_iter(&line.text).take(candidate_count) {
+                if results.len() >= MAX_MATCHES_PER_CHUNK {
+                    break;
+                }
+                let span_group = match &rule.system_group {
+                    Some(group) => caps.name(group),
+                    None => caps.get(0),
+                };
+                let span = span_group.map_or(0..0, |m| m.range());
+                let captures = rule
+                    .regex
+                    .capture_names()
+                    .flatten()
+                    .filter_map(|name| {
+                        caps.name(name)
+                            .map(|m| (name.to_string(), sanitize_display(m.as_str())))
+                    })
+                    .collect();
+                results.push(Detection {
+                    rule_id: rule.id.clone(),
+                    captures,
+                    category: rule.category,
+                    system_group: rule.system_group.clone(),
+                    tags: rule.tags.clone(),
+                    matched: sanitize_display(&line.text[span.clone()]),
+                    span,
+                });
+            }
+        }
+        for dict in &self.dictionaries {
+            if results.len() >= MAX_MATCHES_PER_CHUNK {
+                break;
+            }
+            if let Some(channels) = &dict.channels
+                && !channels.contains(channel)
+            {
                 continue;
             }
-            for index in candidates.iter() {
+            for m in dict.automaton.find_iter(&line.text) {
                 if results.len() >= MAX_MATCHES_PER_CHUNK {
                     break;
                 }
-                let rule = &self.rules[index];
-                if let Some(channels) = &rule.channels
-                    && !channels.contains(channel)
-                {
+                if !has_word_boundaries(&line.text, m.start(), m.end()) {
                     continue;
                 }
-                let candidate_count = if rule.system_group.is_some() {
-                    MAX_SYSTEM_CANDIDATES
-                } else {
-                    1
-                };
-                for caps in rule.regex.captures_iter(&line.text).take(candidate_count) {
-                    if results.len() >= MAX_MATCHES_PER_CHUNK {
-                        break;
-                    }
-                    let span_group = match &rule.system_group {
-                        Some(group) => caps.name(group),
-                        None => caps.get(0),
-                    };
-                    let span = span_group.map_or(0..0, |m| m.range());
-                    let captures = rule
-                        .regex
-                        .capture_names()
-                        .flatten()
-                        .filter_map(|name| {
-                            caps.name(name)
-                                .map(|m| (name.to_string(), sanitize_display(m.as_str())))
-                        })
-                        .collect();
-                    results.push(Detection {
-                        rule_id: rule.id.clone(),
-                        line_index,
-                        captures,
-                        category: rule.category,
-                        tags: rule.tags.clone(),
-                        matched: sanitize_display(&line.text[span.clone()]),
-                        span,
-                    });
-                }
-            }
-            for dict in &self.dictionaries {
-                if results.len() >= MAX_MATCHES_PER_CHUNK {
-                    break;
-                }
-                if let Some(channels) = &dict.channels
-                    && !channels.contains(channel)
-                {
-                    continue;
-                }
-                for m in dict.automaton.find_iter(&line.text) {
-                    if results.len() >= MAX_MATCHES_PER_CHUNK {
-                        break;
-                    }
-                    if !has_word_boundaries(&line.text, m.start(), m.end()) {
-                        continue;
-                    }
-                    let matched = sanitize_display(&line.text[m.start()..m.end()]);
-                    let mut captures = HashMap::new();
-                    captures.insert("word".to_string(), matched.clone());
-                    results.push(Detection {
-                        rule_id: dict.id.clone(),
-                        line_index,
-                        captures,
-                        category: dict.category,
-                        tags: dict.tags.clone(),
-                        matched,
-                        span: m.range(),
-                    });
-                }
+                let matched = sanitize_display(&line.text[m.start()..m.end()]);
+                let mut captures = HashMap::new();
+                captures.insert("word".to_string(), matched.clone());
+                results.push(Detection {
+                    rule_id: dict.id.clone(),
+                    captures,
+                    category: dict.category,
+                    system_group: None,
+                    tags: dict.tags.clone(),
+                    matched,
+                    span: m.range(),
+                });
             }
         }
         results
     }
+
+    /// Parses and evaluates a chunk of log data from a given channel and
+    /// returns every detection, without running any action. Lines are
+    /// truncated to 2 KiB and at most 100 detections are reported per chunk.
+    #[tracing::instrument(skip(self, data))]
+    pub fn evaluate(&self, channel: &str, data: &str) -> Vec<Detection> {
+        let mut results = Vec::new();
+        for raw_line in data.lines() {
+            if results.len() >= MAX_MATCHES_PER_CHUNK {
+                break;
+            }
+            let Some(line) = parse_line(truncate_str(raw_line, MAX_LINE_LEN)) else {
+                continue;
+            };
+            for detection in self.evaluate_line(channel, &line) {
+                if results.len() >= MAX_MATCHES_PER_CHUNK {
+                    break;
+                }
+                results.push(detection);
+            }
+        }
+        results
+    }
+}
+
+/// Parses a raw log line into an [`IntelLine`]. Returns `None` when the line
+/// does not follow the EVE chat log format
+/// (`[ yyyy.MM.dd hh:mm:ss ] Author > message`).
+///
+/// # Examples
+///
+/// ```
+/// use webb::rules::parse_line;
+///
+/// let line = parse_line("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear").unwrap();
+/// assert_eq!(line.author, "Some Pilot");
+/// assert_eq!(line.text, "1DQ1-A clear");
+/// assert!(parse_line("not a log line").is_none());
+/// ```
+pub fn parse_line(raw: &str) -> Option<IntelLine> {
+    static LINE_RE: OnceLock<Regex> = OnceLock::new();
+    let re = LINE_RE
+        .get_or_init(|| Regex::new(LINE_PATTERN).expect("hardcoded line regex must compile"));
+    let caps = re.captures(raw)?;
+    let naive_ts =
+        NaiveDateTime::parse_from_str(caps.name("ts")?.as_str(), LINE_TIMESTAMP_FORMAT).ok()?;
+    Some(IntelLine {
+        timestamp: naive_ts.and_utc(),
+        author: caps.name("author")?.as_str().to_string(),
+        text: caps.name("text")?.as_str().to_string(),
+    })
+}
+
+/// The rules configuration of the shipped template, for tests elsewhere in
+/// the crate.
+#[cfg(test)]
+pub(crate) fn template_rules_config() -> RulesConfig {
+    use crate::patterns::DEFAULT_PATTERNS_TOML;
+    let legacy: PatternConfig =
+        toml::from_str(DEFAULT_PATTERNS_TOML).expect("the shipped template must parse");
+    RulesConfig::from_pattern_config(&legacy)
 }
 
 #[cfg(test)]

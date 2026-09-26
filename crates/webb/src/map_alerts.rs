@@ -14,7 +14,8 @@
 //! the node's animation, so the node keeps pulsing while any of its entries
 //! is still listed.
 
-use crate::patterns::{COUNT_GROUP, IntelCategory, PatternMatch, sanitize_display};
+use crate::patterns::{COUNT_GROUP, IntelCategory, sanitize_display};
+use crate::rules::Detection;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -54,7 +55,7 @@ impl AlertSummary {
     /// system pattern stays.
     pub fn from_line(
         text: &str,
-        matches: &[&PatternMatch],
+        matches: &[&Detection],
         system_spans: Vec<Range<usize>>,
     ) -> Self {
         let mut summary = Self::default();
@@ -69,7 +70,7 @@ impl AlertSummary {
                 IntelCategory::Count => {
                     if summary.count.is_none() {
                         summary.count = intel_match
-                            .named
+                            .captures
                             .get(COUNT_GROUP)
                             .and_then(|count| count.parse().ok());
                     }
@@ -167,7 +168,7 @@ fn leftover(text: &str, mut spans: Vec<Range<usize>>) -> String {
 /// instead of reporting it (`category = "query"`, e.g. `H-5GUI status?`).
 /// Such a line raises no map alert at all: no visual alert, no sound, no
 /// tooltip entry.
-pub fn is_query(matches: &[&PatternMatch]) -> bool {
+pub fn is_query(matches: &[&Detection]) -> bool {
     matches
         .iter()
         .any(|intel_match| intel_match.category == Some(IntelCategory::Query))
@@ -277,21 +278,29 @@ impl AlertLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::patterns::{ActionConfig, template_engine};
+    use crate::rules::{Detection, DetectionEngine, parse_line, template_rules_config};
 
     const CHANNEL: &str = "wc.Vale+Tribute";
     /// The systems these tests treat as real (resolving needs the SDE).
     const KNOWN_SYSTEMS: [&str; 2] = ["H-5GUI", "1DQ1-A"];
 
-    /// The summary of `text` with the rules of the shipped `patterns.toml`,
-    /// counting only [`KNOWN_SYSTEMS`] as resolved.
+    /// The detections of `text` with the rules of the shipped `patterns.toml`.
+    fn detections(text: &str) -> Vec<Detection> {
+        let rules = template_rules_config();
+        let (engine, errors) = DetectionEngine::from_config(&rules).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let line = parse_line(&format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"))
+            .expect("valid chat line");
+        engine.evaluate_line(CHANNEL, &line)
+    }
+
+    /// The summary of `text`, counting only [`KNOWN_SYSTEMS`] as resolved.
     fn summarize(text: &str) -> AlertSummary {
-        let engine = template_engine();
-        let matches = engine.evaluate(CHANNEL, &format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"));
-        let refs: Vec<&PatternMatch> = matches.iter().collect();
+        let matches = detections(text);
+        let refs: Vec<&Detection> = matches.iter().collect();
         let systems: Vec<Range<usize>> = refs
             .iter()
-            .filter(|m| matches!(m.action, ActionConfig::MapAlert { .. }))
+            .filter(|m| m.system_group.is_some())
             .filter(|m| KNOWN_SYSTEMS.contains(&m.matched.as_str()))
             .map(|m| m.span.clone())
             .collect();
@@ -346,10 +355,8 @@ mod tests {
 
     #[test]
     fn a_status_question_is_a_query() {
-        let engine = template_engine();
         let query = |text: &str| {
-            let matches =
-                engine.evaluate(CHANNEL, &format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"));
+            let matches = detections(text);
             is_query(&matches.iter().collect::<Vec<_>>())
         };
         assert!(query("H-5GUI status?"));

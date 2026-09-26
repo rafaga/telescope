@@ -16,6 +16,7 @@ use webb::patterns::{
     ActionConfig, DictionaryActionConfig, DictionaryRuleConfig, IntelCategory, PatternConfig,
     PatternEngine, PatternRuleConfig,
 };
+use webb::rules::RulesConfig;
 use std::path::Path;
 
 /// In-memory editing state of the Patterns page.
@@ -288,7 +289,7 @@ impl TelescopeApp {
             return;
         };
 
-        let (engine, rule_errors) = match PatternEngine::from_config(&config) {
+        let (_engine, rule_errors) = match PatternEngine::from_config(&config) {
             Ok(built) => built,
             Err(error) => {
                 self.patterns_editor.errors = vec![error.to_string()];
@@ -305,7 +306,11 @@ impl TelescopeApp {
             return;
         }
 
-        self.pattern_engine = engine;
+        // The database is the source of truth now: translate the edited
+        // patterns into the three-class model, persist it and reload the
+        // live engine/router.
+        let rules = RulesConfig::from_pattern_config(&config);
+        self.apply_rules(rules);
         self.patterns_editor.errors.clear();
         self.patterns_editor.dirty = false;
         self.task_msg.spawn(Message::GenericNotification((
