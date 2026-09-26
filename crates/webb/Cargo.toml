@@ -12,7 +12,10 @@ crypted-db = ["rusqlite/bundled-sqlcipher"]
 native-auth-flow = []
 
 [dependencies]
+aho-corasick = "1.1"
 chrono = "0.4.45"
+regex = "1.12.1"
+toml = "1.1.2"
 hyper = { version = "1.10.1", features = ["server", "client", "http1"] }
 hyper-tls = "0.6.0"
 open = "5.3.5"

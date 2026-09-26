@@ -2,7 +2,7 @@ direction: down
 
 entry: "Entry points" {
   main: "main.rs\n(logging setup, opens the window)"
-  lib: "lib.rs\n(exports TelescopeApp,\nre-exports sputnik::patterns)"
+  lib: "lib.rs\n(exports TelescopeApp,\nre-exports webb::patterns)"
 }
 
 app: "app.rs: TelescopeApp\n(state, construction, ui(), event_manager(), map panes)"
@@ -21,7 +21,7 @@ intel: "Intel pipeline" {
   file -> reader
 }
 
-sputnik: "sputnik crate\n(pattern-matching engine)" {
+webb: "webb crate\n(patterns, map_alerts)" {
   patterns: "patterns.rs\nPatternEngine, patterns.toml"
   map_alerts: "map_alerts.rs\nAlertSummary, IntelAlert, AlertLog"
 }
@@ -46,5 +46,5 @@ app -> ui
 app -> intel
 app -> eve
 app -> core
-intel.reader -> sputnik.patterns
-ui.tiles -> sputnik.map_alerts
+intel.reader -> webb.patterns
+ui.tiles -> webb.map_alerts

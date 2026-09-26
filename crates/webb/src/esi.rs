@@ -9,6 +9,7 @@
 use crate::objects::AuthData;
 use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPublicInfo};
 use crate::objects::{Corporation, TokenSet};
+use crate::rules::RulesConfig;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Body;
 use hyper_tls::HttpsConnector;
@@ -333,6 +334,23 @@ impl<T: EsiApi> EsiManagerCore<T> {
 
         statement.finalize()?;
         Ok(connection)
+    }
+
+    /// Loads the intel rules stored in the player database.
+    #[tracing::instrument(skip(self))]
+    pub fn load_rules(&self) -> Result<RulesConfig, Error> {
+        let connection = self.get_standard_connection()?;
+        PlayerDatabase::load_rules(&connection)
+    }
+
+    /// Replaces the intel rules stored in the player database, atomically.
+    #[tracing::instrument(skip(self, rules))]
+    pub fn save_rules(&self, rules: &RulesConfig) -> Result<(), Error> {
+        let mut connection = self.get_standard_connection()?;
+        let transaction = connection.transaction()?;
+        PlayerDatabase::save_rules(&transaction, rules)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     #[cfg(all(target_os = "macos", feature = "crypted-db"))]

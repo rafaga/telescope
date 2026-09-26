@@ -14,11 +14,10 @@ each other. For how to build and run it see [BUILD.md](BUILD.md).
 | Crate | Path | Role |
 |-------|------|------|
 | `telescope` | `crates/telescope` | The application: a binary plus a small library (`TelescopeApp`). UI, settings, file watching and alerting. |
-| `sputnik` | `crates/sputnik` | The pattern-matching engine: `patterns.toml` rules/dictionaries evaluated against raw chat-log text, condensed into map-tooltip alerts (`patterns`, `map_alerts`). No dependency on `TelescopeApp`, `egui`, `sde` or `notify` -- reading the file, resolving a system name against the SDE and deciding whether to sound the alarm stays in `telescope` (`app/intel.rs`). |
-| `webb` | `crates/webb` | EVE back end with no UI: the local OAuth callback server, the ESI client and the local player database. |
+| `webb` | `crates/webb` | EVE back end with no UI: the local OAuth callback server, the ESI client, the local player database, and the intel pattern-matching engine (`patterns`, `map_alerts`). |
 | `native_tools` | `crates/native_tools` | OS-specific code: native file / folder dialogs and per-machine identification. |
 
-![Crate dependencies: telescope depends on webb, sputnik and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
+![Crate dependencies: telescope depends on webb and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
 
 Two more crates by the same author, published on crates.io, are used from outside this workspace:
 
@@ -31,13 +30,6 @@ commented-out `[patch.crates-io]` entries that point at sibling checkouts
 (`../sde` and `../egui-map`): uncomment them to develop those crates together
 with Telescope.
 
-### `crates/sputnik`
-
-| Module | Purpose |
-|--------|---------|
-| `patterns` | `PatternEngine`: loads and validates `patterns.toml` (`[[patterns]]`/`[[dictionaries]]`), evaluates chat-log text against a combined `regex::RegexSet` plus one `aho_corasick::AhoCorasick` automaton per dictionary, and produces `PatternMatch`es (rule id, category, action, captured text). |
-| `map_alerts` | `AlertSummary::from_line` condenses a line's matches into what a map node's tooltip shows (ships, pilot count, or leftover text); `AlertLog` keeps each system's active alerts, deduplicated and expiring on their own. |
-
 ### `crates/webb`
 
 | Module | Purpose |
@@ -47,6 +39,8 @@ with Telescope.
 | `esi/player_database` | SQLite schema and queries of the player database (encrypted with SQLCipher under the default `crypted-db` feature). |
 | `esi/data` | ESI client configuration. |
 | `objects` | Domain types: tokens and the `Character`, `Corporation` and `Alliance` entities. |
+| `patterns` | `PatternEngine`: loads and validates `patterns.toml` (`[[patterns]]`/`[[dictionaries]]`), evaluates chat-log text against a combined `regex::RegexSet` plus one `aho_corasick::AhoCorasick` automaton per dictionary, and produces `PatternMatch`es (rule id, category, action, captured text). |
+| `map_alerts` | `AlertSummary::from_line` condenses a line's matches into what a map node's tooltip shows (ships, pilot count, or leftover text); `AlertLog` keeps each system's active alerts, deduplicated and expiring on their own. |
 
 ### `crates/native_tools`
 
@@ -230,7 +224,7 @@ file.
 * **A settings page:** add a variant to `SettingsPage` and to `SettingsPage::ALL`
   and `title()` (`messages.rs`), write `show_<name>_page` in a new file under
   `windows/settings/`, and add its arm to the `match` in `windows/settings.rs`.
-* **A pattern action:** add a variant to `ActionConfig` (`crates/sputnik/src/patterns.rs`)
+* **A pattern action:** add a variant to `ActionConfig` (`crates/webb/src/patterns.rs`)
   and handle it in `parse_intel_data` (`telescope`'s `app/intel.rs`).
 * **A message:** add a variant to `Message` and to `Message::kind()`
   (`messages.rs`), and handle it in `event_manager` (`app.rs`).

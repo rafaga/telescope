@@ -156,7 +156,7 @@
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -166,21 +166,21 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// Maximum number of rules allowed in a configuration file.
-const MAX_RULES: usize = 64;
+pub(crate) const MAX_RULES: usize = 64;
 /// Maximum length of a rule id.
-const MAX_ID_LEN: usize = 64;
+pub(crate) const MAX_ID_LEN: usize = 64;
 /// Maximum length of a regex pattern source.
-const MAX_PATTERN_LEN: usize = 1024;
+pub(crate) const MAX_PATTERN_LEN: usize = 1024;
 /// Maximum number of channels in a single rule filter.
-const MAX_CHANNELS: usize = 32;
+pub(crate) const MAX_CHANNELS: usize = 32;
 /// Maximum length of a channel name.
-const MAX_CHANNEL_LEN: usize = 64;
+pub(crate) const MAX_CHANNEL_LEN: usize = 64;
 /// Compiled regex size limit (bytes) to prevent memory exhaustion.
-const REGEX_SIZE_LIMIT: usize = 10 * (1 << 20);
+pub(crate) const REGEX_SIZE_LIMIT: usize = 10 * (1 << 20);
 /// Maximum length of a single log line evaluated by the engine.
-const MAX_LINE_LEN: usize = 2048;
+pub(crate) const MAX_LINE_LEN: usize = 2048;
 /// Maximum number of matches reported per evaluated chunk.
-const MAX_MATCHES_PER_CHUNK: usize = 100;
+pub(crate) const MAX_MATCHES_PER_CHUNK: usize = 100;
 /// Maximum number of candidate systems a `map_alert` pattern reports per
 /// line (see [`PatternMatch`]).
 pub const MAX_SYSTEM_CANDIDATES: usize = 8;
@@ -190,23 +190,23 @@ const MAX_DISPLAY_LEN: usize = 200;
 /// file. Kept far lower than [`MAX_RULES`] because, unlike regex rules,
 /// nothing about a dictionary forces it to be split across several entries
 /// -- one per language/topic is the expected shape, not one per chunk.
-const MAX_DICTIONARIES: usize = 16;
+pub(crate) const MAX_DICTIONARIES: usize = 16;
 /// Maximum number of words in a single dictionary. An
 /// [`aho_corasick::AhoCorasick`] automaton is linear in total pattern size,
 /// so this exists only as a sanity ceiling against a corrupted or hostile
 /// config file, not a real usage constraint (a few thousand localized ship
 /// names comfortably fit under it).
-const MAX_DICTIONARY_WORDS: usize = 4096;
+pub(crate) const MAX_DICTIONARY_WORDS: usize = 4096;
 /// Maximum length (bytes) of a single dictionary word.
-const MAX_DICTIONARY_WORD_LEN: usize = 128;
+pub(crate) const MAX_DICTIONARY_WORD_LEN: usize = 128;
 
 /// Regex that parses a standard EVE Online chat log line:
 /// `[ 2021.09.08 22:56:47 ] Character Name > message`
-const LINE_PATTERN: &str =
+pub(crate) const LINE_PATTERN: &str =
     r"^\[\s(?P<ts>\d{4}\.\d{2}\.\d{2}\s\d{2}:\d{2}:\d{2})\s\]\s(?P<author>.+?)\s>\s(?P<text>.+)$";
 
 /// Timestamp format used by EVE Online chat logs (UTC).
-const LINE_TIMESTAMP_FORMAT: &str = "%Y.%m.%d %H:%M:%S";
+pub(crate) const LINE_TIMESTAMP_FORMAT: &str = "%Y.%m.%d %H:%M:%S";
 
 /// Default configuration used when `patterns.toml` cannot be regenerated.
 const DEFAULT_RULE_ID: &str = "intel_line";
@@ -215,7 +215,18 @@ const DEFAULT_RULE_PATTERN: &str = ".+";
 /// Embedded template used to (re)generate `patterns.toml` when the file is
 /// missing or corrupted. This is the repository's own `patterns.toml`, so
 /// the regenerated file always matches the shipped template.
-const DEFAULT_PATTERNS_TOML: &str = include_str!("../../../patterns.toml");
+pub(crate) const DEFAULT_PATTERNS_TOML: &str = include_str!("../../../patterns.toml");
+
+/// Header prepended when [`PatternConfig::save`] rewrites the file from the
+/// Settings UI. The shipped template's own comments are not preserved (the
+/// file is regenerated from the parsed rules), so this points at where the
+/// field reference lives instead.
+const MANAGED_FILE_HEADER: &str = "\
+# This file is managed by Telescope's Settings -> Patterns page.
+# Saving from there rewrites it from the parsed rules and does not keep the
+# comments the shipped template carries. See the `webb::patterns` docs for the
+# field reference.
+";
 
 fn default_true() -> bool {
     true
@@ -231,7 +242,7 @@ fn default_true() -> bool {
 /// action = { type = "map_alert", system_group = "system" }
 /// action = { type = "ignore" }
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActionConfig {
     /// Send the matched line to the application notification log.
@@ -257,7 +268,7 @@ pub enum ActionConfig {
 /// ```toml
 /// category = "ship"
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntelCategory {
     /// The matched text is a ship name.
@@ -286,7 +297,7 @@ pub const COUNT_GROUP: &str = "count";
 /// action = { type = "notify" }
 /// action = { type = "map_alert" }
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DictionaryActionConfig {
     /// Send the matched line to the application notification log.
@@ -307,7 +318,7 @@ pub enum DictionaryActionConfig {
 /// # Examples
 ///
 /// ```
-/// use sputnik::patterns::{ActionConfig, PatternRuleConfig};
+/// use webb::patterns::{ActionConfig, PatternRuleConfig};
 ///
 /// let rule = PatternRuleConfig {
 ///     id: "clear_report".to_string(),
@@ -319,7 +330,7 @@ pub enum DictionaryActionConfig {
 ///     category: None,
 /// };
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatternRuleConfig {
     /// Unique rule identifier (`[A-Za-z0-9_-]`, max 64 chars).
@@ -390,7 +401,7 @@ impl PatternRuleConfig {
 /// # Examples
 ///
 /// ```
-/// use sputnik::patterns::{DictionaryActionConfig, DictionaryRuleConfig};
+/// use webb::patterns::{DictionaryActionConfig, DictionaryRuleConfig};
 ///
 /// let rule = DictionaryRuleConfig {
 ///     id: "ship_names_en".to_string(),
@@ -402,7 +413,7 @@ impl PatternRuleConfig {
 ///     category: None,
 /// };
 /// ```
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DictionaryRuleConfig {
     /// Unique rule identifier (`[A-Za-z0-9_-]`, max 64 chars). Shares its
@@ -469,7 +480,7 @@ impl DictionaryRuleConfig {
 }
 
 /// Root structure of the `patterns.toml` configuration file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PatternConfig {
     /// The list of declared regex rules (max 64; at least one rule --
@@ -480,6 +491,33 @@ pub struct PatternConfig {
     /// with this defaulting to empty.
     #[serde(default)]
     pub dictionaries: Vec<DictionaryRuleConfig>,
+}
+
+impl PatternConfig {
+    /// Reads and parses a `patterns.toml` file.
+    ///
+    /// Only the syntax is checked here; individual rules are validated when
+    /// the engine is built (see [`PatternEngine::from_config`]).
+    pub fn load(path: &Path) -> Result<PatternConfig, PatternError> {
+        let mut data = String::new();
+        File::open(path)
+            .and_then(|mut file| file.read_to_string(&mut data))
+            .map_err(|_| PatternError::IoError(path.display().to_string()))?;
+        toml::from_str::<PatternConfig>(&data).map_err(|e| PatternError::ParseError(e.to_string()))
+    }
+
+    /// Writes this configuration to `path`.
+    ///
+    /// The file is regenerated from the parsed rules, so the free-form
+    /// comments the shipped template carries are **not** preserved; a short
+    /// header marks the file as managed by the Settings UI and points at the
+    /// field reference (see the [module docs](self)).
+    pub fn save(&self, path: &Path) -> Result<(), PatternError> {
+        let body = toml::to_string(self).map_err(|e| PatternError::ParseError(e.to_string()))?;
+        let contents = format!("{MANAGED_FILE_HEADER}\n{body}");
+        std::fs::write(path, contents)
+            .map_err(|e| PatternError::IoError(format!("cannot write {}: {e}", path.display())))
+    }
 }
 
 /// A parsed EVE Online chat log line.
@@ -625,6 +663,31 @@ pub enum PatternError {
         /// Builder diagnostic.
         reason: String,
     },
+    /// A detection rule declares a tag that is empty, too long or contains
+    /// characters outside `[A-Za-z0-9_.-]`.
+    InvalidTag {
+        /// Id of the offending rule.
+        id: String,
+        /// The offending tag.
+        tag: String,
+    },
+    /// A rule declares more tags than allowed (max 64).
+    TooManyTags(String),
+    /// An output rule condition is invalid: a bad tag, or a quantifier larger
+    /// than the tag list it applies to.
+    InvalidCondition {
+        /// Id of the offending output rule.
+        id: String,
+        /// Description of the problem.
+        reason: String,
+    },
+    /// An input rule is invalid (empty path or similar).
+    InvalidInput {
+        /// Id of the offending input rule.
+        id: String,
+        /// Description of the problem.
+        reason: String,
+    },
 }
 
 impl Display for PatternError {
@@ -686,6 +749,19 @@ impl Display for PatternError {
                 f,
                 "rule '{id}' has category \"count\" but no '{COUNT_GROUP}' capture group (dictionaries cannot use it)"
             ),
+            Self::InvalidTag { id, tag } => write!(
+                f,
+                "rule '{id}' declares an invalid tag '{tag}' (use [A-Za-z0-9_.-], max 64 chars)"
+            ),
+            Self::TooManyTags(id) => {
+                write!(f, "rule '{id}' declares too many tags (max 64)")
+            }
+            Self::InvalidCondition { id, reason } => {
+                write!(f, "output rule '{id}' has an invalid condition: {reason}")
+            }
+            Self::InvalidInput { id, reason } => {
+                write!(f, "input rule '{id}' is invalid: {reason}")
+            }
         }
     }
 }
@@ -720,7 +796,7 @@ pub struct LoadReport {
 /// # Examples
 ///
 /// ```
-/// use sputnik::patterns::PatternEngine;
+/// use webb::patterns::PatternEngine;
 ///
 /// // Fallback engine: notifies every parsed intel line.
 /// let engine = PatternEngine::with_defaults();
@@ -776,7 +852,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```no_run
-    /// use sputnik::patterns::PatternEngine;
+    /// use webb::patterns::PatternEngine;
     /// use std::path::Path;
     ///
     /// let report = PatternEngine::load_or_create(Path::new("patterns.toml"));
@@ -857,7 +933,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```
-    /// use sputnik::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
+    /// use webb::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
     ///
     /// let config = PatternConfig {
     ///     patterns: vec![PatternRuleConfig {
@@ -1049,7 +1125,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```
-    /// use sputnik::patterns::PatternEngine;
+    /// use webb::patterns::PatternEngine;
     ///
     /// let engine = PatternEngine::with_defaults();
     /// let line = engine
@@ -1089,7 +1165,7 @@ impl PatternEngine {
     /// # Examples
     ///
     /// ```
-    /// use sputnik::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
+    /// use webb::patterns::{ActionConfig, PatternConfig, PatternEngine, PatternRuleConfig};
     ///
     /// let config = PatternConfig {
     ///     patterns: vec![PatternRuleConfig {
@@ -1238,7 +1314,7 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn has_word_boundaries(text: &str, start: usize, end: usize) -> bool {
+pub(crate) fn has_word_boundaries(text: &str, start: usize, end: usize) -> bool {
     let before_ok = match text[..start].chars().next_back() {
         Some(c) => !is_word_char(c),
         None => true,
@@ -1257,7 +1333,7 @@ fn has_word_boundaries(text: &str, start: usize, end: usize) -> bool {
 /// # Examples
 ///
 /// ```
-/// use sputnik::patterns::sanitize_display;
+/// use webb::patterns::sanitize_display;
 ///
 /// assert_eq!(sanitize_display("hello\x1b[31m world\n"), "hello[31m world");
 /// ```
@@ -1271,7 +1347,7 @@ pub fn sanitize_display(input: &str) -> String {
 
 /// Truncates a string to at most `max` bytes without splitting a UTF-8
 /// character boundary.
-fn truncate_str(input: &str, max: usize) -> &str {
+pub(crate) fn truncate_str(input: &str, max: usize) -> &str {
     if input.len() <= max {
         return input;
     }
@@ -1282,7 +1358,7 @@ fn truncate_str(input: &str, max: usize) -> &str {
     &input[..end]
 }
 
-fn is_valid_id(id: &str) -> bool {
+pub(crate) fn is_valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID_LEN
         && id
@@ -1290,7 +1366,7 @@ fn is_valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-fn is_valid_channel(name: &str) -> bool {
+pub(crate) fn is_valid_channel(name: &str) -> bool {
     // Real EVE channel names (as extracted verbatim from the log file name
     // prefix by `load_intel_file`) commonly contain '.' and '+', e.g. an
     // alliance channel literally named "wc.Vale+Tribute". A plain
@@ -1307,7 +1383,7 @@ fn is_valid_channel(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | ' '))
 }
 
-fn is_valid_group_name(name: &str) -> bool {
+pub(crate) fn is_valid_group_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -1760,6 +1836,81 @@ mod tests {
         assert_eq!(matches[0].rule_id, "only_rule");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_round_trips_through_save_and_load() {
+        let path = temp_patterns_path("round_trip");
+        let original = PatternConfig {
+            patterns: vec![
+                PatternRuleConfig {
+                    id: "clear_report".to_string(),
+                    pattern: "\\b(clear|clr)\\b".to_string(),
+                    case_insensitive: true,
+                    channels: vec!["intel".to_string()],
+                    enabled: true,
+                    action: ActionConfig::MapAlert {
+                        system_group: "system".to_string(),
+                    },
+                    category: Some(IntelCategory::Clear),
+                },
+                PatternRuleConfig {
+                    id: "noise".to_string(),
+                    pattern: "spam".to_string(),
+                    case_insensitive: false,
+                    channels: vec![],
+                    enabled: false,
+                    action: ActionConfig::Ignore,
+                    category: None,
+                },
+            ],
+            dictionaries: vec![DictionaryRuleConfig {
+                id: "ships_en".to_string(),
+                words: vec!["Sabre".to_string(), "Vedmak".to_string()],
+                case_insensitive: true,
+                channels: vec![],
+                enabled: true,
+                action: DictionaryActionConfig::Notify,
+                category: Some(IntelCategory::Ship),
+            }],
+        };
+
+        original.save(&path).unwrap();
+        let reloaded = PatternConfig::load(&path).unwrap();
+
+        assert_eq!(reloaded.patterns.len(), original.patterns.len());
+        assert_eq!(reloaded.dictionaries.len(), original.dictionaries.len());
+        assert_eq!(reloaded.patterns[0].id, "clear_report");
+        assert_eq!(
+            reloaded.patterns[0].action,
+            ActionConfig::MapAlert {
+                system_group: "system".to_string()
+            }
+        );
+        assert_eq!(reloaded.patterns[0].category, Some(IntelCategory::Clear));
+        assert!(!reloaded.patterns[1].enabled);
+        assert_eq!(reloaded.patterns[1].action, ActionConfig::Ignore);
+        assert_eq!(reloaded.dictionaries[0].words, vec!["Sabre", "Vedmak"]);
+        // The saved file carries the managed-file header.
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .starts_with("# This file is managed")
+        );
+        // And it still builds an engine.
+        assert!(PatternEngine::from_config(&reloaded).is_ok());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn config_load_reports_a_missing_file() {
+        let path = temp_patterns_path("load_missing");
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            PatternConfig::load(&path),
+            Err(PatternError::IoError(_))
+        ));
     }
 
     #[test]

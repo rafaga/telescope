@@ -6,4 +6,4 @@ mod about;
 // fields and the "menu.debug" button in app.rs for the rest of this.
 #[cfg(debug_assertions)]
 pub(crate) mod debug;
-mod settings;
+pub(crate) mod settings;

@@ -18,14 +18,13 @@ use egui::containers::menu::{MenuButton, MenuConfig};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
-    animation::Animation,
     objects::{
         ContextMenuManager, HitContext, MapPoint, MapSegment, MapSettings, MarkerContext,
         NodeContext, NodeOutline, NodeTemplate, RegionLabel, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
-use sputnik::map_alerts::{
+use webb::map_alerts::{
     ALERT_ICON, AlertLog, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
 };
 //use futures::executor::ThreadPool;
@@ -447,6 +446,11 @@ impl RegionPane {
         object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        // A region is a much smaller area than the whole universe, so the
+        // intel alert pulse spreads over a shorter radius here (default is
+        // 40.0) -- otherwise it covers the neighbouring systems on the
+        // tighter regional view.
+        object.map.settings.animation.pulse.spread = 12.0;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
             .map
@@ -1003,7 +1007,7 @@ impl NodeTemplate for Template {
         // opaque background, the map behind never shows through, and the
         // label's `Galley` is untouched.
         if ctx.marker > 0.0 {
-            Animation::glow_outline(
+            ctx.animation.glow_outline(
                 ui.painter(),
                 &NodeOutline::RoundedRect {
                     rect,

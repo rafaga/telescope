@@ -5,7 +5,7 @@
 
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use sputnik::map_alerts::IntelAlert;
+use webb::map_alerts::IntelAlert;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -131,6 +131,7 @@ pub enum Target {
 pub enum SettingsPage {
     General,
     Intelligence,
+    Patterns,
     Characters,
 }
 
@@ -138,9 +139,10 @@ impl SettingsPage {
     /// Every settings page, in the order the Settings window menu lists
     /// them. A new page is one variant above, one entry here, one arm in
     /// `title` and one arm in the Settings window's page `match`.
-    pub const ALL: [SettingsPage; 3] = [
+    pub const ALL: [SettingsPage; 4] = [
         SettingsPage::General,
         SettingsPage::Intelligence,
+        SettingsPage::Patterns,
         SettingsPage::Characters,
     ];
 
@@ -149,6 +151,7 @@ impl SettingsPage {
         match self {
             SettingsPage::General => t!("settings.pages.general"),
             SettingsPage::Intelligence => t!("settings.pages.intelligence"),
+            SettingsPage::Patterns => t!("settings.pages.patterns"),
             SettingsPage::Characters => t!("settings.pages.characters"),
         }
         .into_owned()

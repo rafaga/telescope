@@ -20,7 +20,7 @@ use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sde::{SdeManager, objects::Universe};
 use settings::Settings;
-use sputnik::patterns::PatternEngine;
+use webb::patterns::PatternEngine;
 use std::{
     path::Path,
     path::PathBuf,
@@ -32,6 +32,7 @@ use webb::esi::EsiManager;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
+use self::windows::settings::patterns::PatternsEditor;
 use native_tools::dialog::*;
 
 mod audio;
@@ -77,19 +78,11 @@ pub struct TelescopeApp {
     esi: EsiManager,
     // Capped at `Settings::get_max_app_messages` by `update_status_with_error`.
     app_messages: Vec<LayoutJob>,
-    // Debug window's SDE-search state and its own state -- see the cfg on
-    // the "menu.debug" button/window-render call above `fn ui` for why
-    // these only exist in a non-release build.
-    #[cfg(debug_assertions)]
     search_text: String,
-    #[cfg(debug_assertions)]
     emit_notification: bool,
-    #[cfg(debug_assertions)]
     search_selected_row: Option<usize>,
-    #[cfg(debug_assertions)]
     search_results: Vec<(isize, String, isize, String)>,
     // State of the Debug window's "Advanced" section.
-    #[cfg(debug_assertions)]
     debug: windows::debug::DebugState,
     universe: Universe,
     selected_settings_page: SettingsPage,
@@ -109,6 +102,8 @@ pub struct TelescopeApp {
     intel_channels: Arc<RwLock<Vec<String>>>,
     dlg_intel_dir: Dialog,
     pattern_engine: PatternEngine,
+    /// In-memory state of the Settings -> Patterns page (rules being edited).
+    patterns_editor: PatternsEditor,
     // Alarm sound for `ActionConfig::MapAlert` matches -- see the
     // `audio` module docs for why this has to be a long-lived field
     // rather than something opened per alert.
@@ -291,20 +286,15 @@ impl Default for TelescopeApp {
             open: [false; 3],
             esi,
             app_messages: Vec::new(),
-            #[cfg(debug_assertions)]
             search_text: String::new(),
-            #[cfg(debug_assertions)]
             search_selected_row: None,
-            #[cfg(debug_assertions)]
             emit_notification: false,
             behavior: TreeBehavior::new(
                 Arc::clone(&msgmon),
                 settings.get_factor(),
                 settings.get_sde().to_path_buf(),
             ),
-            #[cfg(debug_assertions)]
             search_results: Vec::new(),
-            #[cfg(debug_assertions)]
             debug: windows::debug::DebugState::default(),
             tree: None,
             universe,
@@ -316,6 +306,7 @@ impl Default for TelescopeApp {
             intel_channels,
             dlg_intel_dir,
             pattern_engine,
+            patterns_editor: PatternsEditor::default(),
             audio,
             database_updater: database_updater::DatabaseUpdater::default(),
             last_notification: None,
@@ -332,11 +323,35 @@ impl eframe::App for TelescopeApp {
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     #[tracing::instrument(skip_all)]
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // No `let Self { .. } = self;` here: every field was bound as `_`
-        // (nothing used the bindings) and `..` makes the list unable to act
-        // as an exhaustiveness reminder anyway, so the whole destructuring
-        // was dead code -- and clippy::unneeded_wildcard_pattern flagged it.
-        // Fields are accessed through `self.` below.
+        let Self {
+            initialized: _,
+            app_msg: _,
+            map_msg: _,
+            char_msg: _,
+            open: _,
+            esi: _,
+            app_messages: _,
+            search_text: _,
+            emit_notification: _,
+            search_selected_row: _,
+            search_results: _,
+            debug: _,
+            tree: _,
+            universe: _,
+            selected_settings_page: _,
+            behavior: _,
+            task_msg: _,
+            task_auth: _,
+            settings: _,
+            watcher: _,
+            intel_channels: _,
+            dlg_intel_dir: _,
+            pattern_engine: _,
+            patterns_editor: _,
+            audio: _,
+            database_updater: _,
+            last_notification: _,
+        } = self;
 
         if !self.initialized {
             let _span = tracing::info_span!("telescope_init").entered();
@@ -416,14 +431,6 @@ impl eframe::App for TelescopeApp {
                     if ui.button(t!("menu.preferences")).clicked() {
                         self.open[2] = true;
                     }
-                    // Testing/inspection tools (simulate intel lines, move a
-                    // character's marker, poke the internal state directly)
-                    // have no business being reachable in a build we ship --
-                    // debug_assertions is off for `cargo build --release`
-                    // (the profile `cargo packager`/release.yml build with)
-                    // and on for everything else, same switch Cargo itself
-                    // uses, so this needs no separate feature/env var.
-                    #[cfg(debug_assertions)]
                     if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;
                     }
@@ -447,11 +454,7 @@ impl eframe::App for TelescopeApp {
             self.open_about_window(ui.ctx());
         }
 
-        // Debug menu -- see the cfg on the menu.debug button above for why.
-        // `open[1]` can only become true from that button, so this is belt
-        // and suspenders rather than load-bearing, but it keeps the window
-        // itself unreachable in a release build even if that ever changes.
-        #[cfg(debug_assertions)]
+        // Debug menu
         if self.open[1] {
             self.open_debug_menu(ui.ctx());
         }
@@ -833,8 +836,8 @@ mod font_tests {
         let ctx = context_with(TelescopeApp::font_definitions());
         for text in [
             tiles::CHARACTER_ICON,
-            sputnik::map_alerts::ALERT_ICON,
-            sputnik::map_alerts::CLEAR_ICON,
+            webb::map_alerts::ALERT_ICON,
+            webb::map_alerts::CLEAR_ICON,
         ] {
             let icon = glyph_uv(&ctx, text);
             assert_ne!(icon.0, icon.1, "{text}");

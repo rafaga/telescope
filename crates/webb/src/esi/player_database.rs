@@ -3,7 +3,13 @@
 
 use crate::esi::Error;
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
+use crate::patterns::{DEFAULT_PATTERNS_TOML, IntelCategory, PatternConfig};
+use crate::rules::{
+    Condition, DetectionKind, DetectionRule, InputKind, InputRule, OutputKind, OutputMode,
+    OutputRule, RulesConfig,
+};
 use chrono::{DateTime, Utc};
+use rusqlite::types::Type;
 use rusqlite::{Connection, ToSql, params};
 use std::collections::HashMap;
 
@@ -18,13 +24,16 @@ pub(crate) struct PlayerDatabase {}
 ///
 /// - 0: one token set for every character, in `metadata`.
 /// - 1: one token set per character, in the `auth` table.
-pub const SCHEMA_VERSION: i32 = 1;
+/// - 2: the intel rule tables (`input_rule`, `detection_rule`, `output_rule`
+///   and their `*_channel`/`*_word`/`*_tag` children), seeded from the
+///   embedded `patterns.toml` template.
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
 
 /// `MIGRATIONS[n]` takes a database from schema version `n` to `n + 1`.
-const MIGRATIONS: &[Migration] = &[PlayerDatabase::migrate_0_to_1];
+const MIGRATIONS: &[Migration] = &[PlayerDatabase::migrate_0_to_1, PlayerDatabase::migrate_1_to_2];
 
 // One migration per version step, always.
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
@@ -33,6 +42,62 @@ const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 const CREATE_AUTH_TABLE: &str = "CREATE TABLE auth (id INTEGER PRIMARY KEY \
     REFERENCES char(id) ON DELETE CASCADE ON UPDATE CASCADE, \
     token TEXT NOT NULL, refresh_token TEXT NOT NULL, expiration TEXT NOT NULL)";
+
+/// Creation script of the intel rule tables (1 -> 2 migration). The model is
+/// normalized: one table per rule class plus a child table per list field.
+/// `detection_rule_word` keeps an `ordinal` so dictionary word order (which
+/// affects `AhoCorasick`'s leftmost-longest picks) survives a round-trip.
+const CREATE_RULE_TABLES: &str = "
+    CREATE TABLE input_rule (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        path TEXT NOT NULL,
+        enabled INTEGER NOT NULL
+    );
+    CREATE TABLE input_rule_channel (
+        input_id TEXT NOT NULL REFERENCES input_rule(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL,
+        PRIMARY KEY (input_id, channel)
+    );
+    CREATE TABLE detection_rule (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        pattern TEXT,
+        case_insensitive INTEGER NOT NULL,
+        enabled INTEGER NOT NULL,
+        drop_line INTEGER NOT NULL,
+        category TEXT,
+        system_group TEXT
+    );
+    CREATE TABLE detection_rule_word (
+        detection_id TEXT NOT NULL REFERENCES detection_rule(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        word TEXT NOT NULL,
+        PRIMARY KEY (detection_id, ordinal)
+    );
+    CREATE TABLE detection_rule_channel (
+        detection_id TEXT NOT NULL REFERENCES detection_rule(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL,
+        PRIMARY KEY (detection_id, channel)
+    );
+    CREATE TABLE detection_tag (
+        detection_id TEXT NOT NULL REFERENCES detection_rule(id) ON DELETE CASCADE,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (detection_id, tag)
+    );
+    CREATE TABLE output_rule (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        condition TEXT NOT NULL,
+        enabled INTEGER NOT NULL
+    );
+    CREATE TABLE output_rule_channel (
+        output_id TEXT NOT NULL REFERENCES output_rule(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL,
+        PRIMARY KEY (output_id, channel)
+    );
+";
 
 /// What [`PlayerDatabase::ensure_schema`] found and did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +200,20 @@ impl PlayerDatabase {
 
         let query = "DELETE FROM metadata WHERE id IN ('token', 'refresh_token', 'expiration')";
         conn.execute(query, [])?;
+        Ok(())
+    }
+
+    /// 1 -> 2: creates the intel rule tables and seeds them from the embedded
+    /// `patterns.toml` template, translated to the three-class model by
+    /// [`RulesConfig::from_pattern_config`] (each pattern/dictionary becomes a
+    /// detection, each action becomes its output rules).
+    #[tracing::instrument]
+    fn migrate_1_to_2(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(CREATE_RULE_TABLES)?;
+        let legacy: PatternConfig = toml::from_str(DEFAULT_PATTERNS_TOML)
+            .map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+        let rules = RulesConfig::from_pattern_config(&legacy);
+        PlayerDatabase::save_rules(conn, &rules)?;
         Ok(())
     }
 
@@ -558,6 +637,332 @@ impl PlayerDatabase {
     }
 }
 
+/// Repository of the intel rules stored in the player database.
+impl PlayerDatabase {
+    /// Loads the whole three-class rule configuration.
+    #[tracing::instrument(skip(conn))]
+    pub(crate) fn load_rules(conn: &Connection) -> Result<RulesConfig, Error> {
+        Ok(RulesConfig {
+            inputs: load_inputs(conn)?,
+            detections: load_detections(conn)?,
+            outputs: load_outputs(conn)?,
+        })
+    }
+
+    /// Replaces every intel rule stored in the database. The caller is
+    /// expected to wrap this in a transaction for atomicity.
+    #[tracing::instrument(skip(conn, rules))]
+    pub(crate) fn save_rules(conn: &Connection, rules: &RulesConfig) -> Result<(), Error> {
+        conn.execute_batch(
+            "DELETE FROM input_rule;
+             DELETE FROM input_rule_channel;
+             DELETE FROM detection_rule;
+             DELETE FROM detection_rule_word;
+             DELETE FROM detection_rule_channel;
+             DELETE FROM detection_tag;
+             DELETE FROM output_rule;
+             DELETE FROM output_rule_channel;",
+        )?;
+
+        for input in &rules.inputs {
+            conn.execute(
+                "INSERT INTO input_rule (id, kind, path, enabled) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    input.id,
+                    input_kind_str(input.kind),
+                    input.path,
+                    input.enabled as i64
+                ],
+            )?;
+            for channel in &input.channels {
+                conn.execute(
+                    "INSERT INTO input_rule_channel (input_id, channel) VALUES (?1, ?2)",
+                    params![input.id, channel],
+                )?;
+            }
+        }
+
+        for rule in &rules.detections {
+            let (kind, pattern) = match &rule.kind {
+                DetectionKind::Regex { pattern } => ("regex", Some(pattern.clone())),
+                DetectionKind::Dictionary { .. } => ("dictionary", None),
+            };
+            conn.execute(
+                "INSERT INTO detection_rule \
+                 (id, kind, pattern, case_insensitive, enabled, drop_line, category, system_group) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    rule.id,
+                    kind,
+                    pattern,
+                    rule.case_insensitive as i64,
+                    rule.enabled as i64,
+                    rule.drop as i64,
+                    rule.category.map(category_str),
+                    rule.system_group,
+                ],
+            )?;
+            if let DetectionKind::Dictionary { words } = &rule.kind {
+                for (ordinal, word) in words.iter().enumerate() {
+                    conn.execute(
+                        "INSERT INTO detection_rule_word (detection_id, ordinal, word) \
+                         VALUES (?1, ?2, ?3)",
+                        params![rule.id, ordinal as i64, word],
+                    )?;
+                }
+            }
+            for channel in &rule.channels {
+                conn.execute(
+                    "INSERT INTO detection_rule_channel (detection_id, channel) VALUES (?1, ?2)",
+                    params![rule.id, channel],
+                )?;
+            }
+            for tag in &rule.tags {
+                conn.execute(
+                    "INSERT INTO detection_tag (detection_id, tag) VALUES (?1, ?2)",
+                    params![rule.id, tag],
+                )?;
+            }
+        }
+
+        for output in &rules.outputs {
+            let condition = serde_json::to_string(&output.when)
+                .map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+            conn.execute(
+                "INSERT INTO output_rule (id, kind, mode, condition, enabled) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    output.id,
+                    output_kind_str(output.kind),
+                    output_mode_str(output.mode),
+                    condition,
+                    output.enabled as i64,
+                ],
+            )?;
+            for channel in &output.channels {
+                conn.execute(
+                    "INSERT INTO output_rule_channel (output_id, channel) VALUES (?1, ?2)",
+                    params![output.id, channel],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn conversion_error(message: String) -> Error {
+    Error::FromSqlConversionFailure(
+        0,
+        Type::Text,
+        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, message)),
+    )
+}
+
+fn input_kind_str(kind: InputKind) -> &'static str {
+    match kind {
+        InputKind::ChatLog => "chat_log",
+    }
+}
+
+fn input_kind_from_str(value: &str) -> Result<InputKind, Error> {
+    match value {
+        "chat_log" => Ok(InputKind::ChatLog),
+        other => Err(conversion_error(format!("unknown input kind '{other}'"))),
+    }
+}
+
+fn output_kind_str(kind: OutputKind) -> &'static str {
+    match kind {
+        OutputKind::Visual => "visual",
+        OutputKind::Sound => "sound",
+        OutputKind::Log => "log",
+    }
+}
+
+fn output_kind_from_str(value: &str) -> Result<OutputKind, Error> {
+    match value {
+        "visual" => Ok(OutputKind::Visual),
+        "sound" => Ok(OutputKind::Sound),
+        "log" => Ok(OutputKind::Log),
+        other => Err(conversion_error(format!("unknown output kind '{other}'"))),
+    }
+}
+
+fn output_mode_str(mode: OutputMode) -> &'static str {
+    match mode {
+        OutputMode::Emit => "emit",
+        OutputMode::Suppress => "suppress",
+    }
+}
+
+fn output_mode_from_str(value: &str) -> Result<OutputMode, Error> {
+    match value {
+        "emit" => Ok(OutputMode::Emit),
+        "suppress" => Ok(OutputMode::Suppress),
+        other => Err(conversion_error(format!("unknown output mode '{other}'"))),
+    }
+}
+
+fn category_str(category: IntelCategory) -> &'static str {
+    match category {
+        IntelCategory::Ship => "ship",
+        IntelCategory::Count => "count",
+        IntelCategory::Clear => "clear",
+        IntelCategory::Keyword => "keyword",
+        IntelCategory::Query => "query",
+    }
+}
+
+fn category_from_str(value: &str) -> Result<IntelCategory, Error> {
+    match value {
+        "ship" => Ok(IntelCategory::Ship),
+        "count" => Ok(IntelCategory::Count),
+        "clear" => Ok(IntelCategory::Clear),
+        "keyword" => Ok(IntelCategory::Keyword),
+        "query" => Ok(IntelCategory::Query),
+        other => Err(conversion_error(format!("unknown category '{other}'"))),
+    }
+}
+
+fn load_inputs(conn: &Connection) -> Result<Vec<InputRule>, Error> {
+    let mut statement =
+        conn.prepare("SELECT id, kind, path, enabled FROM input_rule ORDER BY rowid")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<usize, String>(0)?,
+            row.get::<usize, String>(1)?,
+            row.get::<usize, String>(2)?,
+            row.get::<usize, i64>(3)?,
+        ))
+    })?;
+    let mut inputs = Vec::new();
+    for row in rows {
+        let (id, kind, path, enabled) = row?;
+        let channels = load_strings(conn, "input_rule_channel", "input_id", "channel", &id)?;
+        inputs.push(InputRule {
+            id,
+            kind: input_kind_from_str(&kind)?,
+            path,
+            channels,
+            enabled: enabled != 0,
+        });
+    }
+    Ok(inputs)
+}
+
+fn load_detections(conn: &Connection) -> Result<Vec<DetectionRule>, Error> {
+    let mut statement = conn.prepare(
+        "SELECT id, kind, pattern, case_insensitive, enabled, drop_line, category, system_group \
+         FROM detection_rule ORDER BY rowid",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<usize, String>(0)?,
+            row.get::<usize, String>(1)?,
+            row.get::<usize, Option<String>>(2)?,
+            row.get::<usize, i64>(3)?,
+            row.get::<usize, i64>(4)?,
+            row.get::<usize, i64>(5)?,
+            row.get::<usize, Option<String>>(6)?,
+            row.get::<usize, Option<String>>(7)?,
+        ))
+    })?;
+    let mut detections = Vec::new();
+    for row in rows {
+        let (id, kind, pattern, case_insensitive, enabled, drop, category, system_group) = row?;
+        let channels =
+            load_strings(conn, "detection_rule_channel", "detection_id", "channel", &id)?;
+        let tags = load_strings(conn, "detection_tag", "detection_id", "tag", &id)?;
+        let detection_kind = match kind.as_str() {
+            "regex" => DetectionKind::Regex {
+                pattern: pattern.unwrap_or_default(),
+            },
+            "dictionary" => DetectionKind::Dictionary {
+                words: load_dictionary_words(conn, &id)?,
+            },
+            other => {
+                return Err(conversion_error(format!(
+                    "unknown detection kind '{other}'"
+                )));
+            }
+        };
+        detections.push(DetectionRule {
+            id,
+            kind: detection_kind,
+            case_insensitive: case_insensitive != 0,
+            channels,
+            enabled: enabled != 0,
+            drop: drop != 0,
+            category: match category {
+                Some(value) => Some(category_from_str(&value)?),
+                None => None,
+            },
+            system_group,
+            tags,
+        });
+    }
+    Ok(detections)
+}
+
+fn load_outputs(conn: &Connection) -> Result<Vec<OutputRule>, Error> {
+    let mut statement =
+        conn.prepare("SELECT id, kind, mode, condition, enabled FROM output_rule ORDER BY rowid")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<usize, String>(0)?,
+            row.get::<usize, String>(1)?,
+            row.get::<usize, String>(2)?,
+            row.get::<usize, String>(3)?,
+            row.get::<usize, i64>(4)?,
+        ))
+    })?;
+    let mut outputs = Vec::new();
+    for row in rows {
+        let (id, kind, mode, condition, enabled) = row?;
+        let channels = load_strings(conn, "output_rule_channel", "output_id", "channel", &id)?;
+        let when: Condition = serde_json::from_str(&condition)
+            .map_err(|e| conversion_error(format!("invalid condition for output '{id}': {e}")))?;
+        outputs.push(OutputRule {
+            id,
+            kind: output_kind_from_str(&kind)?,
+            mode: output_mode_from_str(&mode)?,
+            when,
+            channels,
+            enabled: enabled != 0,
+        });
+    }
+    Ok(outputs)
+}
+
+fn load_strings(
+    conn: &Connection,
+    table: &str,
+    id_column: &str,
+    value_column: &str,
+    id: &str,
+) -> Result<Vec<String>, Error> {
+    let query = format!("SELECT {value_column} FROM {table} WHERE {id_column} = ?1 ORDER BY rowid");
+    let mut statement = conn.prepare(&query)?;
+    let rows = statement.query_map([id], |row| row.get::<usize, String>(0))?;
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(row?);
+    }
+    Ok(values)
+}
+
+fn load_dictionary_words(conn: &Connection, id: &str) -> Result<Vec<String>, Error> {
+    let mut statement = conn
+        .prepare("SELECT word FROM detection_rule_word WHERE detection_id = ?1 ORDER BY ordinal")?;
+    let rows = statement.query_map([id], |row| row.get::<usize, String>(0))?;
+    let mut words = Vec::new();
+    for row in rows {
+        words.push(row?);
+    }
+    Ok(words)
+}
+
 /// Character id from the `sub` claim (`CHARACTER:EVE:<id>`) of an EVE SSO
 /// access token (a JWT), without verifying it: only used to tell which
 /// character an already stored token belongs to.
@@ -861,6 +1266,81 @@ mod tests {
     fn update_auth_without_schema_is_an_error_not_a_panic() {
         let conn = memory_connection();
         assert!(PlayerDatabase::update_auth(&conn, 1, &AuthData::new()).is_err());
+    }
+
+    // ---------------------------------------------------------------------
+    // Intel rules
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn migration_seeds_the_default_rules() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        assert!(table_names(&conn).contains(&String::from("detection_rule")));
+        let rules = PlayerDatabase::load_rules(&conn).unwrap();
+        assert!(!rules.detections.is_empty());
+        assert!(!rules.outputs.is_empty());
+        assert!(rules.validate().is_empty(), "{:?}", rules.validate());
+    }
+
+    #[test]
+    fn rules_round_trip_through_the_database() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        let rules = RulesConfig {
+            inputs: vec![InputRule {
+                id: "chat".to_string(),
+                kind: InputKind::ChatLog,
+                path: "logs".to_string(),
+                channels: vec!["intel".to_string()],
+                enabled: true,
+            }],
+            detections: vec![
+                DetectionRule {
+                    id: "sys".to_string(),
+                    kind: DetectionKind::Regex {
+                        pattern: "(?P<system>[A-Z0-9-]+)".to_string(),
+                    },
+                    case_insensitive: true,
+                    channels: vec!["intel".to_string()],
+                    enabled: true,
+                    drop: false,
+                    category: Some(IntelCategory::Ship),
+                    system_group: Some("system".to_string()),
+                    tags: vec!["ship".to_string(), "rule_sys".to_string()],
+                },
+                DetectionRule {
+                    id: "ships".to_string(),
+                    kind: DetectionKind::Dictionary {
+                        words: vec!["Sabre".to_string(), "Vedmak".to_string()],
+                    },
+                    case_insensitive: false,
+                    channels: Vec::new(),
+                    enabled: true,
+                    drop: true,
+                    category: None,
+                    system_group: None,
+                    tags: Vec::new(),
+                },
+            ],
+            outputs: vec![OutputRule {
+                id: "sys_visual".to_string(),
+                kind: OutputKind::Visual,
+                mode: OutputMode::Emit,
+                when: Condition::AtLeastNTrue {
+                    n: 1,
+                    tags: vec!["ship".to_string(), "hostile".to_string()],
+                },
+                channels: vec!["intel".to_string()],
+                enabled: true,
+            }],
+        };
+
+        PlayerDatabase::save_rules(&conn, &rules).unwrap();
+        let loaded = PlayerDatabase::load_rules(&conn).unwrap();
+        assert_eq!(loaded, rules);
     }
 
     // ---------------------------------------------------------------------

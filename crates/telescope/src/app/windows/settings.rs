@@ -14,6 +14,7 @@ mod characters;
 mod data_sources;
 mod general;
 mod intelligence;
+pub(crate) mod patterns;
 
 impl TelescopeApp {
     #[tracing::instrument(skip(self, ctx))]
@@ -66,6 +67,7 @@ impl TelescopeApp {
                                 match self.selected_settings_page {
                                     SettingsPage::General => self.show_general_page(ui),
                                     SettingsPage::Intelligence => self.show_intelligence_page(ui),
+                                    SettingsPage::Patterns => self.show_patterns_page(ui),
                                     SettingsPage::Characters => self.show_characters_page(ui),
                                 }
                             });
