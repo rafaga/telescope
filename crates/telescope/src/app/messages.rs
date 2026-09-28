@@ -276,7 +276,7 @@ impl MessageSpawner {
         // self.app_msg.1.try_recv()` -- also runs on that same UI thread,
         // once, near the top of that same `update()`. If a single frame
         // ever queued more messages than the channel's capacity (`app.rs`'s
-        // `mpsc::channel::<messages::Message>(40)`), a `blocking_send` here
+        // `APP_MESSAGE_CAPACITY`), a `blocking_send` here
         // would block the UI thread waiting for room that only a `recv()`
         // on this same, now-blocked thread could free -- a self-deadlock
         // that freezes the whole app. `try_send` trades that hang for the

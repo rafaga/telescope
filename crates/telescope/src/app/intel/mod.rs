@@ -42,21 +42,28 @@ impl TelescopeApp {
         if let Ok(mut guard) = self.intel_channels.write() {
             *guard = monitored_channels.clone();
         }
-        if monitored_channels.is_empty() {
-            let _ = self.watcher.unwatch(self.settings.get_intel());
-        } else {
-            // `watch` doesn't dedupe: calling it again on a path that's
-            // already watched stacks a second OS-level registration instead
-            // of replacing the first one, so every real filesystem event then
-            // gets delivered once per accumulated registration -- e.g.
-            // clicking "Save" three times with a channel checked makes every
-            // log line for that channel repeat three times. `unwatch` first
-            // (ignoring the "wasn't watched yet" error, e.g. on the very
-            // first Save) keeps re-saving idempotent.
-            let _ = self.watcher.unwatch(self.settings.get_intel());
-            let _ = self
-                .watcher
-                .watch(self.settings.get_intel(), RecursiveMode::NonRecursive);
+        // `watch` doesn't dedupe: calling it again on a path that's already
+        // watched stacks a second OS-level registration instead of replacing
+        // the first one, so every real filesystem event then gets delivered
+        // once per accumulated registration -- e.g. clicking "Save" three
+        // times with a channel checked makes every log line for that channel
+        // repeat three times. The folder watched until now (which is not the
+        // one in the settings when the user picked another) is unwatched
+        // first, so re-applying is idempotent.
+        if let Some(previous) = self.intel_watched.take() {
+            let _ = self.watcher.unwatch(&previous);
+        }
+        if !monitored_channels.is_empty() {
+            let dir = self.settings.get_intel().to_path_buf();
+            match self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                Ok(()) => self.intel_watched = Some(dir),
+                Err(error) => self.task_msg.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("Intel"),
+                    String::from("watch intel folder"),
+                    error.to_string(),
+                ))),
+            }
         }
         self.settings.set_monitored_channels(monitored_channels);
         // Newly monitored channels start at the end of their current logs.
@@ -68,7 +75,11 @@ impl TelescopeApp {
 
     #[tracing::instrument(skip(self))]
     pub(crate) fn load_intel_file(&mut self, file_name: String) {
-        let dir = self.settings.get_intel().to_path_buf();
+        // The watched folder, not the one in the settings: that one can be a
+        // draft the watcher doesn't report on yet.
+        let Some(dir) = self.intel_watched.clone() else {
+            return;
+        };
         // Offset recorded by the last read (see `IntelOffsets`).
         let start = self.intel_offsets.get(&file_name);
         if let Some(read) = ChatLogSource::read_new(&dir, &file_name, start) {
@@ -91,15 +102,18 @@ impl TelescopeApp {
         }
     }
 
-    /// Rescans the intel directory: the channel list shown in Settings and
-    /// the read offsets of the monitored channels' logs (see
-    /// [`input::IntelOffsets::sync`]).
+    /// Rescans the chat logs: the channel list shown in Settings (from the
+    /// folder in the settings, possibly a draft) and the read offsets of the
+    /// monitored channels' logs in the watched folder (see
+    /// [`input::IntelOffsets::sync`]). Offsets never follow a draft folder:
+    /// the lines written meanwhile in the watched one would be skipped if the
+    /// draft were cancelled.
     pub(crate) fn scan_intel_files(&mut self) -> Result<(), crate::app::settings::SettingsError> {
         let result = self.settings.scan_channels_logs();
-        self.intel_offsets.sync(
-            self.settings.get_intel(),
-            &self.settings.get_cloned_monitored_channels(),
-        );
+        if let Some(dir) = &self.intel_watched {
+            self.intel_offsets
+                .sync(dir, &self.settings.get_cloned_monitored_channels());
+        }
         result
     }
 
@@ -245,15 +259,17 @@ impl TelescopeApp {
 
     /// Sounds the alarm when any reported system is within the warning radius
     /// of a linked character, and centers the maps on the closest one when
-    /// `center_on_alert` is on.
+    /// `center_on_alert` is on. A report repeated within the alarm's cooldown
+    /// (see `AlarmPlayer::play_alert`) neither sounds nor moves the maps
+    /// again.
     #[tracing::instrument(skip(self, systems))]
     fn dispatch_sound(&self, systems: &[usize]) {
         if let Some(character_system) = systems
             .iter()
             .find_map(|system_id| self.nearest_character_in_range(*system_id))
         {
-            self.audio.play_alarm(&self.settings.get_alert_sound_path());
-            if self.settings.get_center_on_alert() {
+            let played = self.audio.play_alert(&self.settings.get_alert_sound_path());
+            if played && self.settings.get_center_on_alert() {
                 let _ = self.map_msg.0.send(MapSync::CenterOn((
                     character_system as usize,
                     Target::System,

@@ -63,18 +63,13 @@ impl EventHandler for IntelEventHandler {
                             channels.binary_search(&log.channel.to_string()).is_ok()
                         });
                         if is_monitored {
+                            // Only traced: a line in the on-screen log for
+                            // every write buried the useful entries and
+                            // took room in the message channel.
+                            tracing::debug!(file = %file_name, "chat log changed");
                             let _ = try_send_app_message(
                                 &app_sender_file,
-                                Message::IntelFileChanged(file_name.clone()),
-                            );
-                            let _ = try_send_app_message(
-                                &app_sender_file,
-                                Message::GenericNotification((
-                                    Type::Debug,
-                                    String::from("Telescope"),
-                                    String::from("IntelWatcher"),
-                                    file_name + " Changed",
-                                )),
+                                Message::IntelFileChanged(file_name),
                             );
                         }
                     }

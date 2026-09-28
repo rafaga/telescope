@@ -13,6 +13,7 @@
 
 use eframe::egui;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 
 static CONTEXT: OnceLock<egui::Context> = OnceLock::new();
@@ -20,6 +21,10 @@ static CONTEXT: OnceLock<egui::Context> = OnceLock::new();
 /// The UI thread's id, recorded alongside the context. See [`request`] for
 /// why `request` needs to tell that thread apart from every other one.
 static UI_THREAD: OnceLock<ThreadId> = OnceLock::new();
+
+/// A frame asked for from the UI thread, granted at the end of the current
+/// one by [`take_pending`] (see [`request`]).
+static PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Stores the UI context. Called on the first frame; later calls are ignored.
 pub fn set_context(ctx: &egui::Context) {
@@ -44,11 +49,25 @@ pub fn set_context(ctx: &egui::Context) {
 /// acquire RwLock read after 10s" debug panic. Background threads (the
 /// intel detection thread, the file watcher, log records from dependencies)
 /// are exactly what this function exists for, and still go through as before.
+///
+/// A message queued on the UI thread after the queue was drained for this
+/// frame (a file picked in a dialog, a button that sends a message) would
+/// otherwise wait for the next input: the request is only recorded, and the
+/// app asks for the frame at the end of `ui()`, outside any context lock (see
+/// [`take_pending`]).
 pub fn request() {
     if UI_THREAD.get().copied() == Some(std::thread::current().id()) {
+        PENDING.store(true, Ordering::Relaxed);
         return;
     }
     if let Some(ctx) = CONTEXT.get() {
         ctx.request_repaint();
     }
+}
+
+/// Whether the UI thread asked for a frame since the last call (see
+/// [`request`]). Called by the app at the end of each frame, where asking
+/// the context for a repaint is safe.
+pub fn take_pending() -> bool {
+    PENDING.swap(false, Ordering::Relaxed)
 }

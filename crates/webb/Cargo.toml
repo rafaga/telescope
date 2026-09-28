@@ -8,7 +8,9 @@ license.workspace = true
 [features]
 default = ["crypted-db"]
 esi-api-test = []
-crypted-db = ["rusqlite/bundled-sqlcipher"]
+# SQLCipher encryption of the player database, keyed from the machine
+# identifier `native_tools` reads (see `esi/cipher.rs`).
+crypted-db = ["rusqlite/bundled-sqlcipher", "dep:native_tools", "dep:sha2"]
 native-auth-flow = []
 
 [dependencies]
@@ -28,17 +30,13 @@ bytes = "1.11.1"
 http-body-util = "0.1.3"
 hyper-util = { version = "0.1.20", features = ["full"] }
 rusqlite = { version = "0.40.1", features = ["backup", "blob", "array"] }
+native_tools = { path = "../native_tools/", optional = true }
+sha2 = { version = "0.10", optional = true }
 tracing = "0.1"
 
 # Windows:
 [target.'cfg(target_os = "windows")'.dependencies]
 rusqlite = { version = "0.40.1", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"]}
-windows = { version = "0.62.2", features = ["System_Profile","Storage_Streams"]}
-
-# MacOS:
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-io-kit = { version = "0.3.2", features = ["libc"], default-features = false}
-objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
 
 [dev-dependencies]
 mockall = "0.15.0"

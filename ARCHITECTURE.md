@@ -38,6 +38,7 @@ with Telescope.
 | `auth_service` | Tiny `hyper` server that receives the SSO redirect (`/login?code=...&state=...`) and hands both values to the application. |
 | `esi` | `EsiManagerCore`: authorization, token refresh, location and portrait queries, and reading / writing characters, corporations and alliances. |
 | `esi/player_database` | SQLite schema and queries of the player database (encrypted with SQLCipher under the default `crypted-db` feature). |
+| `esi/cipher` | Encryption of the player database (`crypted-db`, enabled by Telescope): a raw SQLCipher key, SHA-256 of the machine identifier from `native_tools`; before the first open it encrypts a plain file or re-keys one under the older passphrase key. |
 | `esi/data` | ESI client configuration. |
 | `objects` | Domain types: tokens and the `Character`, `Corporation` and `Alliance` entities. |
 | `graph` | The intel node graph: typed `Node`s (Input/Detection/Output/Aggregator/Gate/Formatter) and `Edge`s, `RuleGraph` validation, the per-line `Executor` (which propagates a true / false / absent signal per pin: a Detection's T is true when it matched, F when it did not; absent means "not evaluated", and a `not` of it stays absent), the embedded default graph (`default_graph`, from `rules.toml`) and the `SystemResolver`. This is the model persisted in the player database and edited by *Settings -> Rules*. |

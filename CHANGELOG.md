@@ -92,6 +92,13 @@ period it happened in.
 
 ### Security
 
+* The player database (tokens included) is always encrypted: Telescope now
+  enables `webb`'s `crypted-db` itself (before, whether it was depended on
+  the cargo command used to build). The key is a raw SQLCipher key derived
+  from the machine identifier `native_tools` reads (on Linux it was a fixed
+  placeholder), so opening a connection no longer runs the passphrase
+  derivation. An existing plain database is encrypted and one under the old
+  passphrase key is re-keyed on the first start (September 2026).
 * EVE SSO login: the `state` of the callback is checked against the one sent
   in the login URL, and a callback with any other value is rejected before
   its code is used. Before, any web page could send the browser to the local
@@ -108,6 +115,18 @@ period it happened in.
 * An SDE update builds the new database next to the old one and replaces it
   only once complete: a failed download or build no longer leaves Telescope
   without `sde.db` (September 2026).
+* Chat logs are read from the folder being watched, not from a folder picked
+  in Settings but not applied yet; applying a new folder stops watching the
+  old one (both used to stay watched), and a cancelled folder change no
+  longer skips lines (September 2026).
+* A report repeated within 3 seconds doesn't sound the alarm (or center the
+  maps) again over the one still playing (September 2026).
+* Each chat log write no longer adds a "Changed" line to the on-screen log,
+  and the app message channel has room for bursts (40 -> 256) (September
+  2026).
+* No panics when a region's map was never created, when a portrait download
+  breaks, or when the intel folder can't be watched at start-up (it is
+  reported instead) (September 2026).
 * The player database uses write-ahead logging (`journal_mode` was misspelt,
   so SQLite ignored it), and with `crypted-db` the key is set first, quoted,
   and a missing machine id falls back instead of panicking (September 2026).

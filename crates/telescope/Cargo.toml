@@ -45,7 +45,11 @@ kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
 egui-map = { version = "0.11.0" }
 open = "5.3.2"
-webb = { path = "../webb/", default-features = false, features = []}
+# `crypted-db` explicitly: with `default-features = false` alone the player
+# database was encrypted or not depending on whether the build also selected
+# `webb` itself (its default features), e.g. `cargo build` at the workspace
+# root vs `cargo build -p telescope`.
+webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
 chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }

@@ -58,6 +58,11 @@ const CJK_FONT: &str = "Noto Sans CJK";
 /// changes.
 const CJK_FONT_INDEX: u32 = 2;
 
+/// Capacity of the app message channel. Senders never wait on it (a full
+/// channel drops the message), so it has room for bursts: every write to a
+/// watched chat log is one `IntelFileChanged`.
+pub(crate) const APP_MESSAGE_CAPACITY: usize = 256;
+
 /// Capacity of the `MapSync` broadcast channel. Every pane drains it each
 /// frame (see `drain_map_messages`); the room is for bursts, since each intel
 /// line can send an alert and a tooltip per reported system.
@@ -107,6 +112,10 @@ pub struct TelescopeApp {
     // shared, interior-mutable storage; otherwise every channel selected or
     // saved after startup is silently ignored until the app restarts.
     intel_channels: Arc<RwLock<Vec<String>>>,
+    /// The chat log folder the watcher watches, if any. It changes only when
+    /// the settings are applied, while the folder in `settings` can be a
+    /// draft of the Settings screen: logs are read from this one.
+    intel_watched: Option<PathBuf>,
     /// Live graph executor, shared with the detection thread.
     intel_executor: intel::detection::ExecutorHandle,
     /// System resolver injected into the executor (backed by the SDE).
@@ -153,7 +162,7 @@ impl Default for TelescopeApp {
         let _ = settings.save();
 
         // generic message handler
-        let (gtx, grx) = mpsc::channel::<messages::Message>(40);
+        let (gtx, grx) = mpsc::channel::<messages::Message>(APP_MESSAGE_CAPACITY);
         // map synchronization handler
         let (mtx, mrx) = broadcast::channel::<messages::MapSync>(MAP_SYNC_CAPACITY);
         // Wrapped in an Arc immediately (rather than after the sde/esi
@@ -330,16 +339,27 @@ impl Default for TelescopeApp {
             &settings.get_cloned_monitored_channels(),
         );
 
-        let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(
-            (*settings.get_cloned_monitored_channels()).clone(),
-        ));
+        // Sorted: the watcher's event handler binary-searches it, and a
+        // hand-edited `telescope.toml` may list the channels in any order.
+        let mut monitored = (*settings.get_cloned_monitored_channels()).clone();
+        monitored.sort_unstable();
+        let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(monitored));
         let intel_event_handler =
             IntelEventHandler::new(Arc::clone(&intel_channels), Arc::clone(&arc_msg_sender));
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
+        let mut intel_watched = None;
         if settings.get_intel().exists() && !settings.get_cloned_monitored_channels().is_empty() {
-            watcher
-                .watch(settings.get_intel(), RecursiveMode::NonRecursive)
-                .expect("Error monitoring intel file path");
+            match watcher.watch(settings.get_intel(), RecursiveMode::NonRecursive) {
+                Ok(()) => intel_watched = Some(settings.get_intel().to_path_buf()),
+                // Reported, not fatal: the maps work without intel, and
+                // applying the Sources page tries again.
+                Err(error) => msgmon.spawn(Message::GenericNotification((
+                    Type::Error,
+                    String::from("TelescopeApp"),
+                    String::from("watch intel folder"),
+                    error.to_string(),
+                ))),
+            }
         }
 
         Self {
@@ -370,6 +390,7 @@ impl Default for TelescopeApp {
             settings_snapshot: None,
             watcher,
             intel_channels,
+            intel_watched,
             intel_executor,
             intel_resolver,
             intel_graph,
@@ -417,6 +438,7 @@ impl eframe::App for TelescopeApp {
             settings_snapshot: _,
             watcher: _,
             intel_channels: _,
+            intel_watched: _,
             intel_executor: _,
             intel_resolver: _,
             intel_graph: _,
@@ -440,11 +462,6 @@ impl eframe::App for TelescopeApp {
             crate::repaint::set_context(ui.ctx());
 
             self.tree = Some(self.create_tree());
-            let mut vec_chars = Vec::new();
-            for pchar in self.esi.characters.iter() {
-                vec_chars.push((pchar.id, pchar.photo.as_ref().unwrap().clone()));
-            }
-
             let regions: Vec<u32> = self
                 .universe
                 .regions
@@ -507,7 +524,7 @@ impl eframe::App for TelescopeApp {
         // maps, the log panel and the menu.
         if self.open[2] {
             self.show_settings_screen(ui);
-            tracing::info!(tracy.frame_mark = true);
+            Self::finish_frame(ui);
             return;
         }
 
@@ -562,7 +579,7 @@ impl eframe::App for TelescopeApp {
                 tree.ui(&mut self.behavior, ui);
             }
         });
-        tracing::info!(tracy.frame_mark = true);
+        Self::finish_frame(ui);
     }
 }
 
@@ -727,6 +744,15 @@ impl TelescopeApp {
         }
     }
 
+    /// End of a frame: a message queued on the UI thread during it gets the
+    /// frame that drains it (see `repaint::request`).
+    fn finish_frame(ui: &egui::Ui) {
+        if crate::repaint::take_pending() {
+            ui.ctx().request_repaint();
+        }
+        tracing::info!(tracy.frame_mark = true);
+    }
+
     /// Lets every map pane take the `MapSync` messages waiting for it.
     fn drain_map_messages(&mut self) {
         if let Some(tree) = self.tree.as_mut() {
@@ -815,11 +841,11 @@ impl TelescopeApp {
             .tile_data
             .entry(region_id)
             .and_modify(|region| {
-                self.tree
-                    .as_mut()
-                    .unwrap()
-                    .set_visible(region.get_tile_id().unwrap(), true);
-                region.set_visible(true);
+                // A region whose map was never created has nothing to show.
+                if let (Some(tile_id), Some(tree)) = (region.get_tile_id(), self.tree.as_mut()) {
+                    tree.set_visible(tile_id, true);
+                    region.set_visible(true);
+                }
             });
     }
 
@@ -902,14 +928,13 @@ impl TelescopeApp {
 
     #[tracing::instrument(skip(self))]
     fn hide_abstract_map(&mut self, region_id: usize) {
-        if let Some(tile_id) = self
+        let tile_id = self
             .behavior
             .tile_data
             .get(&region_id)
-            .unwrap()
-            .get_tile_id()
-        {
-            self.tree.as_mut().unwrap().tiles.toggle_visibility(tile_id);
+            .and_then(|data| data.get_tile_id());
+        if let (Some(tile_id), Some(tree)) = (tile_id, self.tree.as_mut()) {
+            tree.tiles.toggle_visibility(tile_id);
             self.behavior
                 .tile_data
                 .entry(region_id)

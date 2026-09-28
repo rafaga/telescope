@@ -53,10 +53,12 @@
 use super::messages::{Message, MessageSpawner, Type};
 use rodio::Decoder;
 use rodio::MixerDeviceSink;
+use std::cell::Cell;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Opens and decodes the alarm sound at `path`. Split out of
 /// [`AlarmPlayer::play_alarm`] as its own free function specifically so it
@@ -85,7 +87,14 @@ fn open_alarm_sound(path: &Path) -> Result<Decoder<BufReader<File>>, String> {
 pub(crate) struct AlarmPlayer {
     sink: Option<MixerDeviceSink>,
     task_msg: Arc<MessageSpawner>,
+    /// When an intel alarm last started (see [`Self::play_alert`]).
+    last_alert: Cell<Option<Instant>>,
 }
+
+/// Shortest time between two intel alarms: a report is usually repeated by
+/// several pilots within seconds, and each repeat would start the sound
+/// again on top of the one still playing.
+const ALERT_COOLDOWN: Duration = Duration::from_secs(3);
 
 impl AlarmPlayer {
     /// Opens the default output device. Never panics: a machine with no
@@ -110,7 +119,11 @@ impl AlarmPlayer {
                 None
             }
         };
-        Self { sink, task_msg }
+        Self {
+            sink,
+            task_msg,
+            last_alert: Cell::new(None),
+        }
     }
 
     /// Plays `sound_path` (see `Settings::get_alert_sound_path`) on the
@@ -121,6 +134,22 @@ impl AlarmPlayer {
     /// device doesn't also get a spurious "file not found" if
     /// `assets/alerts/` happens to be missing too -- or if
     /// [`open_alarm_sound`] fails for any reason.
+    /// Plays the alarm of an intel alert, unless one started less than
+    /// [`ALERT_COOLDOWN`] ago. Returns whether it played.
+    pub(crate) fn play_alert(&self, sound_path: &Path) -> bool {
+        let now = Instant::now();
+        if self
+            .last_alert
+            .get()
+            .is_some_and(|last| now.duration_since(last) < ALERT_COOLDOWN)
+        {
+            return false;
+        }
+        self.last_alert.set(Some(now));
+        self.play_alarm(sound_path);
+        true
+    }
+
     #[tracing::instrument(skip(self))]
     pub(crate) fn play_alarm(&self, sound_path: &Path) {
         let Some(sink) = &self.sink else {
@@ -216,6 +245,7 @@ mod tests {
         let player = AlarmPlayer {
             sink: None,
             task_msg,
+            last_alert: Cell::new(None),
         };
 
         // Must not panic, and -- since `new()` already reported the
@@ -226,5 +256,23 @@ mod tests {
         ));
 
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn an_alert_repeated_within_the_cooldown_does_not_play_again() {
+        let (task_msg, _rx) = task_msg_with_receiver();
+        let player = AlarmPlayer {
+            sink: None,
+            task_msg,
+            last_alert: Cell::new(None),
+        };
+        let sound = Path::new("alarm.wav");
+        assert!(player.play_alert(sound));
+        assert!(!player.play_alert(sound));
+        // Once the cooldown is over it plays again.
+        player.last_alert.set(Some(
+            Instant::now() - ALERT_COOLDOWN - Duration::from_millis(1),
+        ));
+        assert!(player.play_alert(sound));
     }
 }
