@@ -813,7 +813,11 @@ impl Display for PatternError {
                 write!(f, "node '{node}' does not expose the pin '{pin}'")
             }
             Self::GraphCycle(nodes) => {
-                write!(f, "the node graph has a cycle through: {}", nodes.join(" -> "))
+                write!(
+                    f,
+                    "the node graph has a cycle through: {}",
+                    nodes.join(" -> ")
+                )
             }
             Self::TooManyInputs(id) => {
                 write!(f, "aggregator '{id}' has more inputs than pins")

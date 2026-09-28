@@ -6,10 +6,10 @@
 //! `player_database`). With the `crypted-db` feature the database is encrypted
 //! (SQLCipher) with a key derived from a per-machine identifier.
 
+use crate::graph::RuleGraph;
 use crate::objects::AuthData;
 use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPublicInfo};
 use crate::objects::{Corporation, TokenSet};
-use crate::graph::RuleGraph;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Body;
 use hyper_tls::HttpsConnector;

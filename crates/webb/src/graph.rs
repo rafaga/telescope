@@ -538,8 +538,11 @@ impl RuleGraph {
 
     /// A topological order of the nodes, or `None` when the graph has a cycle.
     pub fn topological_order(&self) -> Option<Vec<String>> {
-        let mut indegree: HashMap<&str, usize> =
-            self.nodes.iter().map(|node| (node.id.as_str(), 0)).collect();
+        let mut indegree: HashMap<&str, usize> = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), 0))
+            .collect();
         for edge in &self.edges {
             if let Some(degree) = indegree.get_mut(edge.to.as_str()) {
                 *degree += 1;
@@ -704,8 +707,8 @@ impl RuleGraph {
     /// graph. It seeds a fresh or rebuilt database and is used whenever there
     /// are no rules.
     pub fn default_graph() -> Self {
-        let mut graph: Self = toml::from_str(DEFAULT_RULES_TOML)
-            .expect("the embedded default rules must parse");
+        let mut graph: Self =
+            toml::from_str(DEFAULT_RULES_TOML).expect("the embedded default rules must parse");
         // Input paths are machine-specific; leave them empty so the app fills
         // them from the settings.
         for node in &mut graph.nodes {
@@ -878,11 +881,7 @@ impl CompiledDetection {
         results
     }
 
-    fn process(
-        &self,
-        matches: &[MatchData],
-        resolver: &dyn SystemResolver,
-    ) -> Option<Mensaje> {
+    fn process(&self, matches: &[MatchData], resolver: &dyn SystemResolver) -> Option<Mensaje> {
         let tag = self.kind.type_name().to_string();
         match &self.kind {
             DetectionRuleKind::SystemReport => self.systems(matches, resolver),
@@ -890,13 +889,11 @@ impl CompiledDetection {
                 system_group: Some(_),
                 ..
             } => self.systems(matches, resolver),
-            DetectionRuleKind::ClearReport { .. } => {
-                matches.first().map(|found| Mensaje {
-                    tag,
-                    text: found.matched.clone(),
-                    data: Data::Words(vec![found.matched.clone()]),
-                })
-            }
+            DetectionRuleKind::ClearReport { .. } => matches.first().map(|found| Mensaje {
+                tag,
+                text: found.matched.clone(),
+                data: Data::Words(vec![found.matched.clone()]),
+            }),
             DetectionRuleKind::ShipNames { .. } | DetectionRuleKind::ShipNamesZh => {
                 let mut ships: Vec<(String, u32)> = Vec::new();
                 for found in matches {
@@ -931,10 +928,8 @@ impl CompiledDetection {
             DetectionRuleKind::Keyword { .. }
             | DetectionRuleKind::Query { .. }
             | DetectionRuleKind::Custom { .. } => {
-                let words: Vec<String> = matches
-                    .iter()
-                    .map(|found| found.matched.clone())
-                    .collect();
+                let words: Vec<String> =
+                    matches.iter().map(|found| found.matched.clone()).collect();
                 (!words.is_empty()).then(|| Mensaje {
                     tag,
                     text: words.join(", "),
@@ -1091,7 +1086,12 @@ impl Executor {
                         text: context.line.text.clone(),
                         data: Data::Text(context.line.text.clone()),
                     };
-                    self.route(&node.id, Pin::Out, Signal::True(vec![message]), &mut incoming);
+                    self.route(
+                        &node.id,
+                        Pin::Out,
+                        Signal::True(vec![message]),
+                        &mut incoming,
+                    );
                 }
                 NodeKind::Detection(_) => {
                     if !node.enabled {
@@ -1208,7 +1208,12 @@ impl Executor {
                         text: text.clone(),
                         data: Data::Text(text),
                     };
-                    self.route(&node.id, Pin::Out, Signal::True(vec![message]), &mut incoming);
+                    self.route(
+                        &node.id,
+                        Pin::Out,
+                        Signal::True(vec![message]),
+                        &mut incoming,
+                    );
                 }
                 NodeKind::Output(output) => {
                     if !node.enabled {
@@ -1357,10 +1362,12 @@ mod tests {
             to: String::from("det"),
             to_pin: 0,
         });
-        assert!(graph
-            .validate()
-            .iter()
-            .any(|error| matches!(error, PatternError::GraphCycle(_))));
+        assert!(
+            graph
+                .validate()
+                .iter()
+                .any(|error| matches!(error, PatternError::GraphCycle(_)))
+        );
     }
 
     #[test]
@@ -1452,7 +1459,9 @@ mod tests {
     fn an_and_gate_needs_every_input() {
         let mut graph = RuleGraph::default();
         graph.nodes.push(input_node("in"));
-        graph.nodes.push(detection_node("sys", DetectionRuleKind::SystemReport));
+        graph
+            .nodes
+            .push(detection_node("sys", DetectionRuleKind::SystemReport));
         graph.nodes.push(detection_node(
             "ship",
             DetectionRuleKind::ShipNames {
@@ -1486,7 +1495,9 @@ mod tests {
     fn a_not_gate_inverts_its_input() {
         let mut graph = RuleGraph::default();
         graph.nodes.push(input_node("in"));
-        graph.nodes.push(detection_node("sys", DetectionRuleKind::SystemReport));
+        graph
+            .nodes
+            .push(detection_node("sys", DetectionRuleKind::SystemReport));
         graph.nodes.push(Node {
             id: String::from("not"),
             enabled: true,
@@ -1504,14 +1515,19 @@ mod tests {
 
         let (executor, _) = Executor::new(graph);
         assert!(executor.run(&line("Jita"), &FixedResolver).is_empty());
-        assert_eq!(executor.run(&line("no system here"), &FixedResolver).len(), 1);
+        assert_eq!(
+            executor.run(&line("no system here"), &FixedResolver).len(),
+            1
+        );
     }
 
     #[test]
     fn a_formatter_renders_its_template() {
         let mut graph = RuleGraph::default();
         graph.nodes.push(input_node("in"));
-        graph.nodes.push(detection_node("sys", DetectionRuleKind::SystemReport));
+        graph
+            .nodes
+            .push(detection_node("sys", DetectionRuleKind::SystemReport));
         graph.nodes.push(detection_node(
             "ship",
             DetectionRuleKind::ShipNames {

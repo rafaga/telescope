@@ -20,8 +20,6 @@ use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sde::{SdeManager, objects::Universe};
 use settings::Settings;
-use webb::graph::{Executor, InputNode, Node, NodeKind, RuleGraph};
-use webb::rules::InputKind;
 use std::{
     path::PathBuf,
     sync::{Arc, RwLock},
@@ -29,6 +27,8 @@ use std::{
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use webb::esi::EsiManager;
+use webb::graph::{Executor, InputNode, Node, NodeKind, RuleGraph};
+use webb::rules::InputKind;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;

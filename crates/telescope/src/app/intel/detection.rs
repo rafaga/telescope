@@ -58,7 +58,9 @@ pub(crate) fn spawn(
                     channel: event.channel.clone(),
                 };
                 let activations = {
-                    let executor = executor.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let executor = executor
+                        .read()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     executor.run(&context, resolver.as_ref())
                 };
                 if activations.is_empty() {

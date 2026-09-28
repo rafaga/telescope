@@ -29,7 +29,10 @@ pub const SCHEMA_VERSION: i32 = 2;
 type Migration = fn(&Connection) -> Result<(), Error>;
 
 /// `MIGRATIONS[n]` takes a database from schema version `n` to `n + 1`.
-const MIGRATIONS: &[Migration] = &[PlayerDatabase::migrate_0_to_1, PlayerDatabase::migrate_1_to_2];
+const MIGRATIONS: &[Migration] = &[
+    PlayerDatabase::migrate_0_to_1,
+    PlayerDatabase::migrate_1_to_2,
+];
 
 // One migration per version step, always.
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
@@ -682,7 +685,10 @@ fn conversion_error(message: String) -> Error {
     Error::FromSqlConversionFailure(
         0,
         Type::Text,
-        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, message)),
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message,
+        )),
     )
 }
 
@@ -1004,14 +1010,18 @@ mod tests {
 
         assert!(table_names(&conn).contains(&String::from("node")));
         let graph = PlayerDatabase::load_graph(&conn).unwrap();
-        assert!(graph
-            .nodes
-            .iter()
-            .any(|node| matches!(node.kind, NodeKind::Detection(_))));
-        assert!(graph
-            .nodes
-            .iter()
-            .any(|node| matches!(node.kind, NodeKind::Output(_))));
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Detection(_)))
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Output(_)))
+        );
         assert!(graph.validate().is_empty(), "{:?}", graph.validate());
     }
 

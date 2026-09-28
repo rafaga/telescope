@@ -322,4 +322,3 @@ impl TelescopeApp {
         )
     }
 }
-

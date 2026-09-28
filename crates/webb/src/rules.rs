@@ -11,11 +11,11 @@
 //! * [`Dictionaries`]: the built-in `dictionaries.toml` word lists.
 //! * [`IntelLine`] and [`parse_line`]: the parsed chat-log line.
 
+pub use crate::patterns::IntelLine;
 use crate::patterns::{
     ActionConfig, IntelCategory, LINE_PATTERN, LINE_TIMESTAMP_FORMAT, MAX_DICTIONARY_WORD_LEN,
     MAX_DICTIONARY_WORDS, MAX_PATTERN_LEN, PatternError, PatternRuleConfig, is_valid_group_name,
 };
-pub use crate::patterns::IntelLine;
 use chrono::NaiveDateTime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -196,7 +196,9 @@ impl DetectionType for DetectionRuleKind {
             Self::ClearReport { keywords }
             | Self::Keyword { keywords }
             | Self::Query { keywords } => DetectionMatcher::Dictionary(keywords.clone()),
-            Self::ShipNames { dictionaries: names } => {
+            Self::ShipNames {
+                dictionaries: names,
+            } => {
                 let mut words = Vec::new();
                 for name in names {
                     if let Some(dictionary) = dictionaries.words(name) {

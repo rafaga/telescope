@@ -125,7 +125,11 @@ impl PatternsEditor {
     }
 
     fn rule_ids(&self) -> HashSet<String> {
-        self.graph.nodes.iter().map(|node| node.id.clone()).collect()
+        self.graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect()
     }
 
     fn add_input(&mut self) -> String {
@@ -236,9 +240,7 @@ impl PatternsEditor {
                 case_insensitive: false,
             }),
         };
-        let node_id = self
-            .snarl
-            .insert_node(Pos2::new(node.x, node.y), node);
+        let node_id = self.snarl.insert_node(Pos2::new(node.x, node.y), node);
         if let Some(input_id) = self.open_input.clone()
             && let Some(input_node) = self.find_node(&input_id)
         {
@@ -448,10 +450,7 @@ impl PatternsEditor {
                 Pin::F => 1,
             };
             self.snarl.connect(
-                OutPinId {
-                    node: from,
-                    output,
-                },
+                OutPinId { node: from, output },
                 InPinId {
                     node: to,
                     input: edge.to_pin as usize,
@@ -538,9 +537,9 @@ impl PatternsEditor {
             }
         }
         self.graph.edges.extend(edges);
-        self.graph
-            .edges
-            .sort_by(|a, b| (&a.from, a.from_pin as u8, &a.to).cmp(&(&b.from, b.from_pin as u8, &b.to)));
+        self.graph.edges.sort_by(|a, b| {
+            (&a.from, a.from_pin as u8, &a.to).cmp(&(&b.from, b.from_pin as u8, &b.to))
+        });
         self.graph.edges.dedup();
 
         self.state.dirty = true;
@@ -753,10 +752,7 @@ impl TelescopeApp {
             .response
             .on_hover_text(t!("settings.patterns.add_output"));
             ui.menu_button("🧩", |ui| {
-                if ui
-                    .button(t!("settings.patterns.kind_aggregator"))
-                    .clicked()
-                {
+                if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
                     self.patterns_editor.add_aggregator();
                     ui.close();
                 }
@@ -843,10 +839,7 @@ fn input_card(
                     }
                     let mut id_text = id.to_string();
                     if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut id_text)
-                                .desired_width(f32::INFINITY),
-                        )
+                        .add(egui::TextEdit::singleline(&mut id_text).desired_width(f32::INFINITY))
                         .changed()
                         && id_text != id
                     {
@@ -1078,10 +1071,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
             }
         });
         ui.menu_button(t!("settings.patterns.add_logic"), |ui| {
-            if ui
-                .button(t!("settings.patterns.kind_aggregator"))
-                .clicked()
-            {
+            if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
                 let id = unique_id(&collect_node_ids(snarl), "aggregator");
                 snarl.insert_node(
                     pos,

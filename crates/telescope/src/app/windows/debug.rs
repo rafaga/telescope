@@ -16,9 +16,9 @@ use eframe::egui::RichText;
 use egui_extras::Column;
 use egui_extras::TableBuilder;
 use sde::SdeManager;
-use webb::map_alerts::{AlertSummary, IntelAlert};
 use std::sync::Arc;
 use webb::esi::{SCHEMA_VERSION, SchemaStatus};
+use webb::map_alerts::{AlertSummary, IntelAlert};
 
 /// State of the Debug window's "Advanced" section.
 pub(crate) struct DebugState {

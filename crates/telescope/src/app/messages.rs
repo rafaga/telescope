@@ -5,7 +5,6 @@
 
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use webb::map_alerts::IntelAlert;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +17,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Duration, Instant, sleep_until, timeout_at};
 use webb::auth_service::AuthService2;
 use webb::esi::EsiManager;
+use webb::map_alerts::IntelAlert;
 use webb::objects::AuthorizeInfo;
 use webb::objects::Character;
 

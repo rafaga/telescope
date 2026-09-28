@@ -50,13 +50,11 @@ impl TelescopeApp {
                 }
             });
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                match self.selected_settings_page {
-                    SettingsPage::General => self.show_general_page(ui),
-                    SettingsPage::Intelligence => self.show_intelligence_page(ui),
-                    SettingsPage::Patterns => self.show_patterns_page(ui),
-                    SettingsPage::Characters => self.show_characters_page(ui),
-                }
+            egui::ScrollArea::vertical().show(ui, |ui| match self.selected_settings_page {
+                SettingsPage::General => self.show_general_page(ui),
+                SettingsPage::Intelligence => self.show_intelligence_page(ui),
+                SettingsPage::Patterns => self.show_patterns_page(ui),
+                SettingsPage::Characters => self.show_characters_page(ui),
             });
         });
     }
