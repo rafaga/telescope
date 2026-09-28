@@ -146,6 +146,7 @@ impl EsiApi for LiveEsiApi {
             .get_authorize_url()
             .map(|info| AuthorizeInfo {
                 url: info.authorization_url,
+                state: info.state,
                 pkce_verifier: info.pkce_verifier,
             })
             .map_err(|e| e.to_string())
@@ -312,27 +313,32 @@ impl<T: EsiApi> EsiManagerCore<T> {
         // we add the carray module disguised as rarray in rusqlite
         array::load_module(&connection)?;
 
-        let query = "PRAGMA journey_mode=WAL;";
-        let mut statement = connection.prepare(query)?;
-        let _ = statement.execute([])?;
-
+        // SQLCipher needs the key before anything else reads the file.
         #[cfg(feature = "crypted-db")]
         {
+            // Each of these returns the fallback id as its error.
             #[cfg(target_os = "windows")]
-            let value_txt = self.get_windows_unique_id().unwrap();
+            let value_txt = self
+                .get_windows_unique_id()
+                .unwrap_or_else(|fallback| fallback);
             #[cfg(target_os = "macos")]
-            let value_txt = self.get_macos_unique_id().unwrap();
+            let value_txt = self
+                .get_macos_unique_id()
+                .unwrap_or_else(|fallback| fallback);
             #[cfg(target_os = "linux")]
-            let value_txt = self.get_linux_unique_id().unwrap();
-            //let uuid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, value_txt.as_bytes());
-            //let query = ["PRAGMA key = '", uuid.to_string().as_str(), "'"].concat();
-            let query = ["PRAGMA key = '", value_txt.as_str(), "'"].concat();
-            let mut statement = connection.prepare(query.as_str())?;
-
-            let _ = statement.query([])?;
+            let value_txt = self
+                .get_linux_unique_id()
+                .unwrap_or_else(|fallback| fallback);
+            // A quoted literal, whatever characters the id has.
+            connection.pragma_update(None, "key", value_txt.as_str())?;
         }
 
-        statement.finalize()?;
+        // Write-ahead logging: the UI and the watchdog thread open their own
+        // connections, and WAL lets one read while the other writes instead
+        // of failing with "database is locked". The mode is stored in the
+        // file, so this only changes it the first time.
+        connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
         Ok(connection)
     }
 
@@ -762,12 +768,22 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(photo)
     }
 
+    /// Completes a login: `oauth_data` is the `(code, state)` pair of the
+    /// SSO callback. A callback whose `state` is not the one sent in
+    /// `_auth_info.url` is rejected before the code is used: any web page
+    /// can send the browser to the local callback URL, and without this
+    /// check it could link a character of its choosing (login CSRF).
     #[tracing::instrument(skip_all)]
     pub async fn auth_user(
         &mut self,
         _auth_info: AuthorizeInfo,
         oauth_data: (String, String),
     ) -> Result<Option<Character>, Box<dyn std::error::Error + Send + Sync>> {
+        if !same_secret(&oauth_data.1, &_auth_info.state) {
+            return Err(
+                "the EVE SSO callback does not belong to this login (state mismatch)".into(),
+            );
+        }
         #[cfg(not(feature = "native-auth-flow"))]
         let verifier = None;
 
@@ -823,6 +839,18 @@ impl<T: EsiApi> EsiManagerCore<T> {
             Ok(None)
         }
     }
+}
+
+/// Compares two secrets without stopping at the first difference, so the
+/// time taken says nothing about how much of `received` was right.
+fn same_secret(received: &str, expected: &str) -> bool {
+    let (received, expected) = (received.as_bytes(), expected.as_bytes());
+    received.len() == expected.len()
+        && received
+            .iter()
+            .zip(expected)
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
 }
 
 impl EsiManagerCore<LiveEsiApi> {
@@ -901,6 +929,12 @@ mod tests {
 
     fn cleanup(path: &Path) {
         let _ = std::fs::remove_file(path);
+        // The write-ahead log files next to it, if a connection left them.
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.as_os_str().to_owned();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
     }
 
     fn sample_character() -> Character {
@@ -1178,6 +1212,7 @@ mod tests {
     fn sample_authorize_info() -> AuthorizeInfo {
         AuthorizeInfo {
             url: String::from("https://login.eveonline.com/v2/oauth/authorize/?x=1"),
+            state: String::from("oauth-state"),
             pkce_verifier: None,
         }
     }
@@ -1383,6 +1418,39 @@ mod tests {
             PlayerDatabase::select_auth(&conn).unwrap()[&PILOT].token,
             "new-access-token"
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn connections_use_write_ahead_logging() {
+        let (manager, path) = mock_manager("wal", MockEsiApi::new());
+        let conn = manager.get_standard_connection().unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        drop(conn);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn auth_user_rejects_a_callback_with_another_state() {
+        let mut mock = MockEsiApi::new();
+        // The code must never be exchanged.
+        mock.expect_authenticate().never();
+        let (mut manager, path) = mock_manager("auth_state", mock);
+
+        for state in ["forged", "", "oauth-stat", "oauth-state2"] {
+            let result = manager
+                .auth_user(
+                    sample_authorize_info(),
+                    (String::from("oauth-code"), String::from(state)),
+                )
+                .await;
+            assert!(result.is_err(), "state {state:?} must be rejected");
+        }
+        assert!(manager.read_characters(None).unwrap().is_empty());
 
         cleanup(&path);
     }

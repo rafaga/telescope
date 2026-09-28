@@ -314,9 +314,6 @@ impl DatabaseUpdater {
         .await
         .ok();
 
-        if db_exists {
-            std::fs::remove_file(sde_path)?;
-        }
         if let Some(parent) = sde_path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -345,7 +342,13 @@ impl DatabaseUpdater {
         .await
         .ok();
 
-        let mut connection = rusqlite::Connection::open(sde_path)?;
+        // Built next to the database and moved over it only once complete:
+        // a failed download or build keeps the database there was.
+        let building = building_path(sde_path);
+        if building.exists() {
+            std::fs::remove_file(&building)?;
+        }
+        let mut connection = rusqlite::Connection::open(&building)?;
         schema::create_schema(&connection)?;
 
         // Local projection instead of CCP's precomputed `position2D`:
@@ -371,15 +374,50 @@ impl DatabaseUpdater {
             with_third_party,
         };
         let sde_parser = Parser::new(sde_dir, parser_config);
-        sde_parser
+        let built = sde_parser
             .build_database(
                 &mut connection,
                 &client,
                 &urls.maps_url,
                 build_number.as_deref(),
             )
-            .await?;
+            .await;
+        // Closed before the file is moved or removed.
+        drop(connection);
+        if let Err(error) = built {
+            let _ = std::fs::remove_file(&building);
+            return Err(error);
+        }
+        // One step on every platform: the old database stays whole until
+        // the new one replaces it.
+        std::fs::rename(&building, sde_path)?;
 
         Ok(true)
+    }
+}
+
+/// Where a new SDE database is built before it replaces `sde_path`
+/// (`sde.db` -> `sde.db.building`).
+fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = sde_path.as_os_str().to_owned();
+    name.push(".building");
+    std::path::PathBuf::from(name)
+}
+
+#[cfg(test)]
+mod building_path_tests {
+    use super::building_path;
+    use std::path::Path;
+
+    #[test]
+    fn the_new_database_is_built_next_to_the_old_one() {
+        assert_eq!(
+            building_path(Path::new("data/sde.db")),
+            Path::new("data/sde.db.building")
+        );
+        assert_eq!(
+            building_path(Path::new("sde.db")),
+            Path::new("sde.db.building")
+        );
     }
 }

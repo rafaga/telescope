@@ -201,7 +201,8 @@ callback server (`AuthSpawner`), the watchdog and the `DatabaseUpdater`.
 2. The `AuthSpawner` thread runs `webb::auth_service` on
    `http://localhost:56123/login`. When the redirect's `code` and `state`
    arrive, that same background thread completes the authorization with its
-   `EsiManager` clone (`EsiManager::auth_user`: token exchange, character,
+   `EsiManager` clone (`EsiManager::auth_user`: the `state` must be the one
+   sent in the login URL, then token exchange, character,
    corporation and alliance lookups, and storing the character), so the UI
    thread never waits on the network.
 3. The result comes back as `Message::CharacterAuthenticated`.
@@ -227,10 +228,12 @@ The task ends when no characters are left.
 ### SDE database
 
 `DatabaseUpdater` runs on its own thread: it checks CCP's SDE index, downloads
-and extracts it when needed, creates the schema and builds the database,
-reporting through `Message::DatabaseUpdateProgress` and
+and extracts it when needed, creates the schema and builds the database
+into `sde.db.building`, which replaces `sde.db` only once complete (a failed
+update keeps the previous database), reporting through `Message::DatabaseUpdateProgress` and
 `Message::DatabaseUpdated`. It starts automatically when the database does not
-exist and on demand from *Settings -> Application*.
+exist and on demand from *Settings -> Application* (its progress window shows
+over the Settings screen too).
 
 ### Saving settings
 

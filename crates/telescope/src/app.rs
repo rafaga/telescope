@@ -58,6 +58,11 @@ const CJK_FONT: &str = "Noto Sans CJK";
 /// changes.
 const CJK_FONT_INDEX: u32 = 2;
 
+/// Capacity of the `MapSync` broadcast channel. Every pane drains it each
+/// frame (see `drain_map_messages`); the room is for bursts, since each intel
+/// line can send an alert and a tooltip per reported system.
+const MAP_SYNC_CAPACITY: usize = 512;
+
 pub struct TelescopeApp {
     initialized: bool,
 
@@ -150,7 +155,7 @@ impl Default for TelescopeApp {
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(40);
         // map synchronization handler
-        let (mtx, mrx) = broadcast::channel::<messages::MapSync>(30);
+        let (mtx, mrx) = broadcast::channel::<messages::MapSync>(MAP_SYNC_CAPACITY);
         // Wrapped in an Arc immediately (rather than after the sde/esi
         // setup below, as before) so it can be handed to
         // `database_updater::DatabaseUpdater::spawn` here at startup.
@@ -490,6 +495,13 @@ impl eframe::App for TelescopeApp {
         }
 
         self.event_manager();
+        // Every map takes its messages each frame, drawn or not: a pane only
+        // reads them in its `ui()`, which isn't called while its tab is
+        // hidden or the Settings screen is open, and the broadcast channel
+        // drops the oldest ones once it is full.
+        self.drain_map_messages();
+        // Over the Settings screen too: its Application page starts updates.
+        self.database_updater.show(ui.ctx());
 
         // The Settings screen is full-window: while it is open it replaces the
         // maps, the log panel and the menu.
@@ -540,8 +552,6 @@ impl eframe::App for TelescopeApp {
         if self.open[1] {
             self.open_debug_menu(ui.ctx());
         }
-
-        self.database_updater.show(ui.ctx());
 
         egui::CentralPanel::default().show(ui, |ui| {
             let _span = tracing::info_span!("inserting map").entered();
@@ -714,6 +724,17 @@ impl TelescopeApp {
         // Lines evaluated by the detection thread since the last frame.
         while let Ok(detected) = self.intel_output.try_recv() {
             self.process_detected_line(detected);
+        }
+    }
+
+    /// Lets every map pane take the `MapSync` messages waiting for it.
+    fn drain_map_messages(&mut self) {
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.event_manager();
+                }
+            }
         }
     }
 

@@ -90,7 +90,27 @@ period it happened in.
 * `BUILD.md` documents Tracy v0.14.1 as the version verified to work, in line
   with `tracing-tracy` 0.12 and `tracy-client` 0.19 (September 2026).
 
+### Security
+
+* EVE SSO login: the `state` of the callback is checked against the one sent
+  in the login URL, and a callback with any other value is rejected before
+  its code is used. Before, any web page could send the browser to the local
+  callback during a login and link a character of its choosing (September
+  2026).
+
 ### Fixed
+
+* The maps take their intel alerts every frame, even while their tab is
+  hidden or the Settings screen is open: they used to read them only when
+  drawn, and the 30-message channel dropped the rest (September 2026).
+* The SDE update progress window shows over the Settings screen (September
+  2026).
+* An SDE update builds the new database next to the old one and replaces it
+  only once complete: a failed download or build no longer leaves Telescope
+  without `sde.db` (September 2026).
+* The player database uses write-ahead logging (`journal_mode` was misspelt,
+  so SQLite ignored it), and with `crypted-db` the key is set first, quoted,
+  and a missing machine id falls back instead of panicking (September 2026).
 
 * Settings: rescanning the chat log folder no longer unchecked every channel
   (Accept then stopped watching them all), and monitored channels without a

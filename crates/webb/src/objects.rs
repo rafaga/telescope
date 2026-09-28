@@ -34,6 +34,10 @@ pub struct TokenSet {
 pub struct AuthorizeInfo {
     /// URL to open in the browser to initiate the authentication.
     pub url: String,
+    /// The random `state` sent in [`Self::url`]. The SSO callback must bring
+    /// it back unchanged: a callback with any other value did not come from
+    /// this login (see `EsiManagerCore::auth_user`).
+    pub state: String,
     /// PKCE verifier needed to authenticate the received code, when the
     /// `native-auth-flow` feature is enabled.
     pub pkce_verifier: Option<String>,
