@@ -20,7 +20,8 @@ use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sde::{SdeManager, objects::Universe};
 use settings::Settings;
-use webb::rules::{DetectionEngine, RulesConfig};
+use webb::graph::{Executor, InputNode, Node, NodeKind, RuleGraph};
+use webb::rules::InputKind;
 use std::{
     path::PathBuf,
     sync::{Arc, RwLock},
@@ -91,6 +92,9 @@ pub struct TelescopeApp {
     task_msg: Arc<MessageSpawner>,
     task_auth: AuthSpawner,
     settings: Settings,
+    /// Snapshot of `settings` taken when the Settings screen opens, so
+    /// Cancel can revert every change made in the session.
+    settings_snapshot: Option<Settings>,
     watcher: RecommendedWatcher,
     // Live-shared handle for the set of channels the file watcher's event
     // handler filters on. `IntelEventHandler` is moved into `watcher` at
@@ -100,12 +104,12 @@ pub struct TelescopeApp {
     // saved after startup is silently ignored until the app restarts.
     intel_channels: Arc<RwLock<Vec<String>>>,
     dlg_intel_dir: Dialog,
-    /// Live detection engine, shared with the detection thread.
-    intel_engine: intel::detection::EngineHandle,
-    /// The rules the engine was built from (source of truth for the editor).
-    intel_rules: RulesConfig,
-    /// Output-rule router, rebuilt when the rules change.
-    intel_router: intel::router::Router,
+    /// Live graph executor, shared with the detection thread.
+    intel_executor: intel::detection::ExecutorHandle,
+    /// System resolver injected into the executor (backed by the SDE).
+    intel_resolver: intel::detection::ResolverHandle,
+    /// The graph the executor was built from (source of truth for the editor).
+    intel_graph: RuleGraph,
     /// UI -> detection thread.
     intel_input: mpsc::Sender<intel::input::InputEvent>,
     /// Detection thread -> UI.
@@ -236,52 +240,80 @@ impl Default for TelescopeApp {
         // before that move happens.
         let audio = audio::AlarmPlayer::new(Arc::clone(&msgmon));
 
-        // Load the intel rules from the player database (seeded from
+        // Load the intel node graph from the player database (seeded from
         // `patterns.toml` by the schema 1 -> 2 migration), compile the
-        // detection engine once, and start the detection thread that
-        // evaluates the lines the watcher reports.
-        let intel_rules = match esi.load_rules() {
-            Ok(rules) => rules,
+        // executor once, and start the detection thread that evaluates the
+        // lines the watcher reports.
+        let mut intel_graph = match esi.load_graph() {
+            Ok(graph) if !graph.nodes.is_empty() => graph,
+            // No rules yet (fresh or emptied database): fall back to the
+            // built-in default graph.
+            Ok(_) => RuleGraph::default_graph(),
             Err(error) => {
                 msgmon.spawn(Message::GenericNotification((
                     Type::Error,
                     String::from("Intel"),
-                    String::from("load_rules"),
+                    String::from("load_graph"),
                     error.to_string(),
                 )));
-                RulesConfig::default()
+                RuleGraph::default_graph()
             }
         };
-        let intel_router = intel::router::Router::new(&intel_rules);
-        let intel_engine: intel::detection::EngineHandle = match DetectionEngine::from_config(&intel_rules) {
-            Ok((engine, errors)) => {
-                for error in errors {
-                    msgmon.spawn(Message::GenericNotification((
-                        Type::Error,
-                        String::from("Intel"),
-                        String::from("load_rules"),
-                        error.to_string(),
-                    )));
-                }
-                Arc::new(RwLock::new(engine))
-            }
-            Err(error) => {
-                msgmon.spawn(Message::GenericNotification((
-                    Type::Error,
-                    String::from("Intel"),
-                    String::from("load_rules"),
-                    error.to_string(),
-                )));
-                let (engine, _) = DetectionEngine::from_config(&RulesConfig::default())
-                    .expect("empty rules must compile");
-                Arc::new(RwLock::new(engine))
-            }
-        };
+        // The Patterns page lists input nodes, so there must always be at
+        // least one. Create the chat-log input if none exists (and fill its
+        // path, left empty by the migration, from the settings).
+        let intel_dir = settings.get_intel().display().to_string();
+        let has_input = intel_graph
+            .nodes
+            .iter()
+            .any(|node| matches!(node.kind, NodeKind::Input(_)));
+        if !has_input {
+            intel_graph.nodes.push(Node {
+                id: String::from("chat_logs"),
+                enabled: true,
+                x: 0.0,
+                y: 0.0,
+                kind: NodeKind::Input(InputNode {
+                    description: String::from("chat logs"),
+                    kind: InputKind::ChatLog,
+                    path: intel_dir.clone(),
+                    channels: (*settings.get_cloned_monitored_channels()).clone(),
+                    exclude_motd: true,
+                }),
+            });
+        } else if let Some(Node {
+            kind: NodeKind::Input(input),
+            ..
+        }) = intel_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "chat_logs")
+            && input.path.is_empty()
+        {
+            input.path = intel_dir;
+        }
+        let intel_resolver: intel::detection::ResolverHandle =
+            Arc::new(intel::resolve::UniverseResolver::new(&universe));
+        let (executor, errors) = Executor::new(intel_graph.clone());
+        for error in errors {
+            msgmon.spawn(Message::GenericNotification((
+                Type::Error,
+                String::from("Intel"),
+                String::from("load_graph"),
+                error.to_string(),
+            )));
+        }
+        let intel_executor: intel::detection::ExecutorHandle = Arc::new(RwLock::new(executor));
         let (intel_input, intel_input_rx) =
             mpsc::channel::<intel::input::InputEvent>(intel::detection::INPUT_CAPACITY);
         let (intel_output_tx, intel_output) =
             mpsc::channel::<intel::detection::DetectedLine>(intel::detection::OUTPUT_CAPACITY);
-        intel::detection::spawn(Arc::clone(&intel_engine), intel_input_rx, intel_output_tx);
+        intel::detection::spawn(
+            Arc::clone(&intel_executor),
+            Arc::clone(&intel_resolver),
+            intel_input_rx,
+            intel_output_tx,
+        );
 
         let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(
             (*settings.get_cloned_monitored_channels()).clone(),
@@ -326,12 +358,13 @@ impl Default for TelescopeApp {
             task_msg: msgmon,
             task_auth: authmon,
             settings,
+            settings_snapshot: None,
             watcher,
             intel_channels,
             dlg_intel_dir,
-            intel_engine,
-            intel_rules,
-            intel_router,
+            intel_executor,
+            intel_resolver,
+            intel_graph,
             intel_input,
             intel_output,
             patterns_editor: PatternsEditor::default(),
@@ -371,12 +404,13 @@ impl eframe::App for TelescopeApp {
             task_msg: _,
             task_auth: _,
             settings: _,
+            settings_snapshot: _,
             watcher: _,
             intel_channels: _,
             dlg_intel_dir: _,
-            intel_engine: _,
-            intel_rules: _,
-            intel_router: _,
+            intel_executor: _,
+            intel_resolver: _,
+            intel_graph: _,
             intel_input: _,
             intel_output: _,
             patterns_editor: _,
@@ -449,6 +483,15 @@ impl eframe::App for TelescopeApp {
         }
 
         self.event_manager();
+
+        // The Settings screen is full-window: while it is open it replaces the
+        // maps, the log panel and the menu.
+        if self.open[2] {
+            self.show_settings_screen(ui);
+            tracing::info!(tracy.frame_mark = true);
+            return;
+        }
+
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
@@ -461,7 +504,7 @@ impl eframe::App for TelescopeApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button(t!("menu.file"), |ui| {
                     if ui.button(t!("menu.preferences")).clicked() {
-                        self.open[2] = true;
+                        self.open_settings();
                     }
                     if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;
@@ -491,10 +534,6 @@ impl eframe::App for TelescopeApp {
             self.open_debug_menu(ui.ctx());
         }
 
-        if self.open[2] {
-            self.open_settings_window(ui.ctx());
-        }
-
         self.database_updater.show(ui.ctx());
 
         egui::CentralPanel::default().show(ui, |ui| {
@@ -511,6 +550,57 @@ impl eframe::App for TelescopeApp {
 }
 
 impl TelescopeApp {
+    /// Opens the full-window Settings screen, snapshotting the settings so
+    /// Cancel can revert the session, and makes sure the rules editor is
+    /// loaded from the live rules.
+    pub(crate) fn open_settings(&mut self) {
+        if !self.open[2] {
+            self.settings_snapshot = Some(self.settings.clone());
+        }
+        let graph = self.intel_graph.clone();
+        self.patterns_editor.ensure_loaded(&graph);
+        self.open[2] = true;
+    }
+
+    /// Discards every change made while the Settings screen was open and
+    /// closes it.
+    pub(crate) fn cancel_settings(&mut self) {
+        if let Some(snapshot) = self.settings_snapshot.take() {
+            self.settings = snapshot;
+        }
+        self.apply_intel_settings();
+        let graph = self.intel_graph.clone();
+        self.patterns_editor.reset(&graph);
+        self.open[2] = false;
+    }
+
+    /// Validates the edited graph and persists the settings and the graph
+    /// without closing the Settings screen. An invalid graph keeps the errors
+    /// shown and returns `false`.
+    pub(crate) fn apply_settings(&mut self) -> bool {
+        let graph = self.patterns_editor.to_graph();
+        let errors = graph.validate();
+        if !errors.is_empty() {
+            self.patterns_editor
+                .set_errors(errors.iter().map(|error| error.to_string()).collect());
+            return false;
+        }
+        self.patterns_editor.clear_errors();
+        self.save_settings();
+        self.apply_graph(graph);
+        // What was just applied is the new baseline for Cancel.
+        self.settings_snapshot = Some(self.settings.clone());
+        true
+    }
+
+    /// Applies the settings and closes the screen.
+    pub(crate) fn accept_settings(&mut self) {
+        if self.apply_settings() {
+            self.settings_snapshot = None;
+            self.open[2] = false;
+        }
+    }
+
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
         // Warnings/errors that dependencies only reported through

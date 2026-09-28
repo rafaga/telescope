@@ -9,7 +9,7 @@ app: "app.rs: TelescopeApp\n(state, construction, ui(), event_manager(), map pan
 
 ui: "User interface" {
   windows: "windows/\nabout, debug, settings"
-  pages: "windows/settings/\nintelligence, data_sources, characters"
+  pages: "windows/settings/\nintelligence, data_sources, characters, patterns"
   tiles: "tiles.rs\nUniversePane, RegionPane, TreeBehavior"
   notifications: "notifications.rs\n(status log)"
   windows -> pages
@@ -17,12 +17,18 @@ ui: "User interface" {
 
 intel: "Intel pipeline" {
   file: "file.rs\nIntelEventHandler (notify)"
-  reader: "intel.rs\nIntelLogName, log reading,\napply_intel_settings()"
-  file -> reader
+  input: "intel/input.rs\nIntelLogName, ChatLogSource"
+  detection: "intel/detection.rs\nExecutor (thread)"
+  process: "intel/mod.rs\nprocess_detected_line"
+  file -> input
+  input -> detection
+  detection -> process
 }
 
-webb: "webb crate\n(patterns, map_alerts)" {
-  patterns: "patterns.rs\nPatternEngine, patterns.toml"
+webb: "webb crate\n(graph, rules, patterns, map_alerts)" {
+  graph: "graph.rs\nRuleGraph, Executor, Mensaje\n(Input/Detection/Output/Aggregator/\nGate/Formatter)"
+  rules: "rules.rs\nDetectionRuleKind, OutputKind"
+  patterns: "patterns.rs\nPatternEngine (legacy)"
   map_alerts: "map_alerts.rs\nAlertSummary, IntelAlert, AlertLog"
 }
 
@@ -46,5 +52,5 @@ app -> ui
 app -> intel
 app -> eve
 app -> core
-intel.reader -> webb.patterns
+intel.detection -> webb.rules
 ui.tiles -> webb.map_alerts

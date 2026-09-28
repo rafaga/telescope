@@ -9,7 +9,7 @@
 use crate::objects::AuthData;
 use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPublicInfo};
 use crate::objects::{Corporation, TokenSet};
-use crate::rules::RulesConfig;
+use crate::graph::RuleGraph;
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Body;
 use hyper_tls::HttpsConnector;
@@ -336,19 +336,19 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(connection)
     }
 
-    /// Loads the intel rules stored in the player database.
+    /// Loads the intel node graph stored in the player database.
     #[tracing::instrument(skip(self))]
-    pub fn load_rules(&self) -> Result<RulesConfig, Error> {
+    pub fn load_graph(&self) -> Result<RuleGraph, Error> {
         let connection = self.get_standard_connection()?;
-        PlayerDatabase::load_rules(&connection)
+        PlayerDatabase::load_graph(&connection)
     }
 
-    /// Replaces the intel rules stored in the player database, atomically.
-    #[tracing::instrument(skip(self, rules))]
-    pub fn save_rules(&self, rules: &RulesConfig) -> Result<(), Error> {
+    /// Replaces the intel node graph stored in the player database, atomically.
+    #[tracing::instrument(skip(self, graph))]
+    pub fn save_graph(&self, graph: &RuleGraph) -> Result<(), Error> {
         let mut connection = self.get_standard_connection()?;
         let transaction = connection.transaction()?;
-        PlayerDatabase::save_rules(&transaction, rules)?;
+        PlayerDatabase::save_graph(&transaction, graph)?;
         transaction.commit()?;
         Ok(())
     }

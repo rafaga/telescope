@@ -6,22 +6,19 @@
 
 use self::detection::DetectedLine;
 use self::input::{ChatLogSource, monitored_channel_names};
-use self::resolve::{allows_partial_match, exact_system, nearest_origin_within};
-use self::router::Router;
+use self::resolve::nearest_origin_within;
 use crate::app::TelescopeApp;
 use crate::app::messages::{MapSync, Message, Target, Type};
 use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
-use sde::SdeManager;
-use std::ops::Range;
 use std::time::Instant;
+use webb::graph::{Activation, Data, Executor, Mensaje, RuleGraph};
 use webb::map_alerts::{AlertSummary, IntelAlert};
-use webb::rules::{Detection, DetectionBatch, DetectionEngine, OutputKind, RulesConfig};
+use webb::rules::{IntelLine, OutputKind};
 
 pub(crate) mod detection;
 pub(crate) mod input;
-mod resolve;
-pub(crate) mod router;
+pub(crate) mod resolve;
 
 pub(crate) use self::input::IntelLogName;
 
@@ -97,85 +94,133 @@ impl TelescopeApp {
     /// Used by the Debug window's line tester.
     #[tracing::instrument(skip(self, data))]
     pub(crate) fn parse_intel_data(&self, channel: &str, data: &str) -> Vec<String> {
-        let engine = self
-            .intel_engine
+        let executor = self
+            .intel_executor
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        engine
-            .evaluate(channel, data)
-            .into_iter()
-            .map(|detection| detection.rule_id)
-            .collect()
-    }
-
-    /// Routes one detected line (a batch of detections of a single input
-    /// line) through the output rules and runs the resolvers of the kinds
-    /// that fire.
-    #[tracing::instrument(skip(self, detected))]
-    pub(crate) fn process_detected_line(&mut self, detected: DetectedLine) {
-        let actions = self
-            .intel_router
-            .actions(&detected.channel, &detected.batch);
-        if actions.is_empty() {
-            return;
-        }
-        let (systems, spans) = self.resolve_batch_systems(&detected.batch);
-        if actions.contains(&OutputKind::Visual) {
-            self.dispatch_visual(&detected.batch, &systems, spans);
-        }
-        if actions.contains(&OutputKind::Sound) {
-            self.dispatch_sound(&systems);
-        }
-        if actions.contains(&OutputKind::Log) {
-            self.dispatch_log(&detected.channel, &detected.batch);
-        }
-    }
-
-    /// The solar-system ids named by `batch` and the byte spans of the
-    /// candidates that resolved, so the tooltip summary can drop them from the
-    /// leftover text.
-    fn resolve_batch_systems(&self, batch: &DetectionBatch) -> (Vec<usize>, Vec<Range<usize>>) {
-        let mut systems = Vec::new();
-        let mut spans = Vec::new();
-        for detection in &batch.detections {
-            if let Some(system_group) = &detection.system_group
-                && let Some(system_id) = self.resolve_reported_system(detection, system_group)
-            {
-                spans.push(detection.span.clone());
-                if !systems.contains(&system_id) {
-                    systems.push(system_id);
+        let mut tags = Vec::new();
+        for raw in data.lines() {
+            let Some(line) = webb::rules::parse_line(raw) else {
+                continue;
+            };
+            let context = webb::graph::LineContext {
+                line,
+                channel: channel.to_string(),
+            };
+            for activation in executor.run(&context, self.intel_resolver.as_ref()) {
+                for message in activation.messages {
+                    if !tags.contains(&message.tag) {
+                        tags.push(message.tag);
+                    }
                 }
             }
         }
-        (systems, spans)
+        tags
     }
 
-    /// Sends the map alert of `batch` to every system it reports. A line may
-    /// name several candidates (a pilot name also fits the system pattern);
-    /// only those that resolve to a real system count.
-    #[tracing::instrument(skip(self, batch, systems, spans))]
-    fn dispatch_visual(
-        &self,
-        batch: &DetectionBatch,
-        systems: &[usize],
-        spans: Vec<Range<usize>>,
-    ) {
+    /// Dispatches the Output nodes that fired for one input line.
+    #[tracing::instrument(skip(self, detected))]
+    pub(crate) fn process_detected_line(&mut self, detected: DetectedLine) {
+        let DetectedLine {
+            channel,
+            line,
+            activations,
+        } = detected;
+        if activations.is_empty() {
+            return;
+        }
+        let suppress = activations
+            .iter()
+            .any(|activation| activation.kind == OutputKind::Suppress);
+        let mut systems: Vec<usize> = Vec::new();
+        for activation in &activations {
+            for message in &activation.messages {
+                if let Data::Systems(ids) = &message.data {
+                    for id in ids {
+                        if !systems.contains(id) {
+                            systems.push(*id);
+                        }
+                    }
+                }
+            }
+        }
+        let visual = activations
+            .iter()
+            .any(|activation| activation.kind == OutputKind::Visual);
+        let sound = activations
+            .iter()
+            .any(|activation| activation.kind == OutputKind::Sound);
+        if visual && !suppress {
+            self.dispatch_pulse(&line, &systems);
+        }
+        if sound && !suppress {
+            self.dispatch_sound(&systems);
+        }
+        for activation in activations
+            .iter()
+            .filter(|activation| activation.kind == OutputKind::Tooltip)
+        {
+            self.dispatch_tooltip(&line, &systems, activation);
+        }
+        if let Some(activation) = activations
+            .iter()
+            .find(|activation| activation.kind == OutputKind::Log)
+        {
+            self.dispatch_log(&channel, &line, activation.log.use_current_time);
+        }
+    }
+
+    /// Pulses the map node of every reported system (no tooltip entry). A
+    /// line may name several candidates; only those that resolved count.
+    #[tracing::instrument(skip(self, line, systems))]
+    fn dispatch_pulse(&self, line: &IntelLine, systems: &[usize]) {
         if systems.is_empty() {
             return;
         }
-        let text = &batch.line.text;
-        let detections: Vec<&Detection> = batch.detections.iter().collect();
-        let summary = AlertSummary::from_line(text, &detections, spans);
         let received = Instant::now();
         for system_id in systems {
             let alert = IntelAlert::new(
                 *system_id,
                 received,
                 self.settings.get_alert_duration(),
-                text,
-                summary.clone(),
+                &line.text,
+                AlertSummary::default(),
+                false,
             );
             let _ = self.map_msg.0.send(MapSync::SystemAlert(alert));
+        }
+    }
+
+    /// Lists `line` in the tooltip of every reported system (no visual alert),
+    /// as configured by the Tooltip output: the structured summary when there
+    /// is one, the processed text as fallback.
+    #[tracing::instrument(skip(self, line, systems, activation))]
+    fn dispatch_tooltip(&self, line: &IntelLine, systems: &[usize], activation: &Activation) {
+        if systems.is_empty() {
+            return;
+        }
+        let messages: Vec<&Mensaje> = activation.messages.iter().collect();
+        let mut summary = AlertSummary::from_messages(&messages);
+        // The fallback is the processed text; the reported system only anchors
+        // the entry, it is not shown.
+        summary.leftover = activation
+            .messages
+            .iter()
+            .filter(|message| !matches!(message.data, Data::Systems(_)))
+            .map(|message| message.text.clone())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let received = Instant::now();
+        for system_id in systems {
+            let alert = IntelAlert::new(
+                *system_id,
+                received,
+                self.settings.get_alert_duration(),
+                &line.text,
+                summary.clone(),
+                activation.tooltip.emojis,
+            );
+            let _ = self.map_msg.0.send(MapSync::SystemTooltip(alert));
         }
     }
 
@@ -198,125 +243,51 @@ impl TelescopeApp {
         }
     }
 
-    /// Appends the line to the status log.
-    #[tracing::instrument(skip(self, batch))]
-    fn dispatch_log(&self, channel: &str, batch: &DetectionBatch) {
+    /// Appends the line to the status log, optionally stamped with the current
+    /// time instead of the line's own timestamp.
+    #[tracing::instrument(skip(self, line))]
+    fn dispatch_log(&self, channel: &str, line: &IntelLine, use_current_time: bool) {
+        let text = if use_current_time {
+            let mut stamped = line.clone();
+            stamped.timestamp = Utc::now();
+            stamped.to_string()
+        } else {
+            line.to_string()
+        };
         self.task_msg.spawn(Message::GenericNotification((
             Type::Info,
             String::from("Intel"),
             channel.to_string(),
-            batch.line.to_string(),
+            text,
         )));
     }
 
-    /// The solar system named by the `system_group` capture of `detection`, if
-    /// the text is a plausible name of a real system.
-    ///
-    /// An exact name (any case) is looked up in the loaded universe. Only a
-    /// code-like text (see [`allows_partial_match`]) may also resolve to a
-    /// system whose name merely contains it (SQL `LIKE` against the SDE),
-    /// e.g. "H-5GU" or a nickname such as "4-h"; plain words never do, so a
-    /// pilot name next to the system can't turn into some unrelated system.
-    /// Without a loaded universe everything goes to the SDE as before.
-    fn resolve_reported_system(
-        &self,
-        detection: &Detection,
-        system_group: &str,
-    ) -> Option<usize> {
-        let system_name = detection.captures.get(system_group)?;
-        //validate the captured text before using it in any query; real
-        //solar system names are at most 17 chars and may contain spaces
-        //and dashes (e.g. "Old Man Star", "Tash-Murkon Prime")
-        if system_name.is_empty()
-            || system_name.len() > 20
-            || !system_name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == ' ')
-        {
-            return None;
-        }
-        let known = !self.universe.solar_systems.is_empty();
-        if known {
-            let exact = exact_system(
-                self.universe
-                    .solar_systems
-                    .values()
-                    .map(|system| (system.id, system.name.as_str())),
-                system_name,
-            );
-            if let Some(system_id) = exact {
-                return usize::try_from(system_id).ok();
-            }
-            if !allows_partial_match(system_name) {
-                return None;
-            }
-        }
-        let sde = SdeManager::new(self.settings.get_sde(), self.settings.get_factor());
-        match sde.and_then(|s| s.get_system_id(system_name.to_lowercase())) {
-            Ok(results) => {
-                //prefer an exact name match over partial (LIKE) results
-                let found = results
-                    .iter()
-                    .find(|entry| entry.1.eq_ignore_ascii_case(system_name))
-                    .or_else(|| {
-                        results
-                            .first()
-                            .filter(|_| !known || allows_partial_match(system_name))
-                    });
-                found
-                    .and_then(|entry| usize::try_from(entry.0).ok())
-                    .filter(|system_id| *system_id > 0)
-            }
-            Err(t_error) => {
-                self.task_msg.spawn(Message::GenericNotification((
-                    Type::Error,
-                    String::from("Intel"),
-                    String::from("resolve_reported_system"),
-                    t_error.to_string(),
-                )));
-                None
-            }
-        }
-    }
-
-    /// Persists `rules` to the player database and rebuilds the live engine
-    /// and router from them. Used at startup and whenever the rules change.
-    #[tracing::instrument(skip(self, rules))]
-    pub(crate) fn apply_rules(&mut self, rules: RulesConfig) {
-        if let Err(error) = self.esi.save_rules(&rules) {
+    /// Persists `graph` to the player database and rebuilds the live executor
+    /// from it. Used at startup and whenever the rules change.
+    #[tracing::instrument(skip(self, graph))]
+    pub(crate) fn apply_graph(&mut self, graph: RuleGraph) {
+        if let Err(error) = self.esi.save_graph(&graph) {
             self.task_msg.spawn(Message::GenericNotification((
                 Type::Error,
                 String::from("Intel"),
-                String::from("save_rules"),
+                String::from("save_graph"),
                 error.to_string(),
             )));
         }
-        match DetectionEngine::from_config(&rules) {
-            Ok((engine, errors)) => {
-                for error in errors {
-                    self.task_msg.spawn(Message::GenericNotification((
-                        Type::Error,
-                        String::from("Intel"),
-                        String::from("load_rules"),
-                        error.to_string(),
-                    )));
-                }
-                *self
-                    .intel_engine
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = engine;
-            }
-            Err(error) => {
-                self.task_msg.spawn(Message::GenericNotification((
-                    Type::Error,
-                    String::from("Intel"),
-                    String::from("load_rules"),
-                    error.to_string(),
-                )));
-            }
+        let (executor, errors) = Executor::new(graph.clone());
+        for error in errors {
+            self.task_msg.spawn(Message::GenericNotification((
+                Type::Error,
+                String::from("Intel"),
+                String::from("load_graph"),
+                error.to_string(),
+            )));
         }
-        self.intel_router = Router::new(&rules);
-        self.intel_rules = rules;
+        *self
+            .intel_executor
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = executor;
+        self.intel_graph = graph;
     }
 }
 

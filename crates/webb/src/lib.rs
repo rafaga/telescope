@@ -8,11 +8,14 @@
 //!   and evaluation against raw chat-log text.
 //! * [`rules`]: the three-class intel rule model (input -> detection ->
 //!   output) and the detection engine that supersedes [`patterns`]' actions.
+//! * [`graph`]: the node-graph intel model (a DAG of Input/Detection/Output
+//!   nodes) that supersedes [`rules`].
 //! * [`map_alerts`]: condenses a line's matches into what a map's node tooltip
 //!   shows.
 
 pub mod auth_service;
 pub mod esi;
+pub mod graph;
 pub mod map_alerts;
 pub mod objects;
 pub mod patterns;

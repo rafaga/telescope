@@ -125,7 +125,7 @@ impl Mapping {
     pub(crate) const MAX_ALERT_DURATION_SECS: u32 = 600;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Channels {
     #[serde(skip)]
     available: HashMap<String, bool>,
@@ -162,6 +162,7 @@ impl Default for UiState {
 
 /// Tuning for the on-screen notification log (`app::notifications`). Not
 /// user-editable, so not persisted to `telescope.toml`.
+#[derive(Clone)]
 pub(crate) struct NotificationLimits {
     /// Maximum number of entries kept in `TelescopeApp::app_messages`
     /// before the oldest are dropped.
@@ -240,7 +241,7 @@ impl Default for CharacterCardStyle {
 /// discoverability, but aren't part of `telescope.toml` and aren't shown in
 /// the Settings window -- each field has its own `Default`, reproducing the
 /// value a plain `const` used to hold before it moved here.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct InternalDefaults {
     /// Where `DatabaseUpdater` fetches the SDE from. Not user-editable
     /// (there's nowhere in Settings' UI to change it), so it isn't
@@ -259,7 +260,7 @@ pub(crate) struct InternalDefaults {
     pub(crate) character_card: CharacterCardStyle,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Settings {
     paths: FilePaths,
     mapping: Mapping,
@@ -918,8 +919,10 @@ mod tests {
 
     #[test]
     fn set_alert_sound_for_test_marks_settings_as_unsaved() {
-        let mut settings = Settings::default();
-        settings.saved = true;
+        let mut settings = Settings {
+            saved: true,
+            ..Settings::default()
+        };
 
         settings.set_alert_sound_for_test("7_gong_solemne.wav");
 

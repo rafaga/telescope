@@ -1,14 +1,12 @@
-//! The Settings window frame: the page menu, the selected page and the Save button.
-//! Each page lives in its own submodule (`general`, `intelligence`,
-//! `characters`); `data_sources` is a section of the General page.
+//! The Settings screen: a full-window frame with the page menu, the selected
+//! page and the global Cancel / Accept bar. Each page lives in its own
+//! submodule (`general`, `intelligence`, `characters`, `patterns`);
+//! `data_sources` is a section of the General page.
 
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
 use eframe::egui;
-use eframe::egui::Button;
 use eframe::egui::Color32;
-use egui_extras::Column;
-use egui_extras::TableBuilder;
 
 mod characters;
 mod data_sources;
@@ -17,75 +15,49 @@ mod intelligence;
 pub(crate) mod patterns;
 
 impl TelescopeApp {
-    #[tracing::instrument(skip(self, ctx))]
-    pub(crate) fn open_settings_window(&mut self, ctx: &egui::Context) {
-        // Copied out (and written back below) instead of borrowing
-        // `self.open[2]` for the whole `show` call: the page methods called
-        // inside the closure need `&mut self` as a whole.
-        let mut open = self.open[2];
-        // Fixed id: by default egui derives it from the title, which changes
-        // with the interface language.
-        egui::Window::new(t!("settings.title"))
-            .id(egui::Id::new("settings_window"))
-            .movable(true)
-            .resizable(false)
-            .fixed_size([700.0, 510.0])
-            .movable(true)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        let row_height = 25.0;
-                        let pages = SettingsPage::ALL;
-                        ui.push_id("settings_menu", |ui| {
-                            TableBuilder::new(ui)
-                                .column(Column::resizable(Column::exact(150.0), false))
-                                .striped(false)
-                                .vscroll(false)
-                                .body(|body| {
-                                    body.rows(row_height, pages.len(), |mut row| {
-                                        let current_page = pages[row.index()];
-                                        row.col(|ui: &mut egui::Ui| {
-                                            let selected =
-                                                self.selected_settings_page == current_page;
-                                            if ui
-                                                .selectable_label(selected, current_page.title())
-                                                .clicked()
-                                            {
-                                                self.selected_settings_page = current_page;
-                                            };
-                                        });
-                                    });
-                                });
-                        });
-                        ui.add_space(480.0 - (pages.len() as f32 * row_height));
-                    });
-                    ui.separator();
-                    ui.push_id("settings_config", |ui| {
-                        ui.vertical(|ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                match self.selected_settings_page {
-                                    SettingsPage::General => self.show_general_page(ui),
-                                    SettingsPage::Intelligence => self.show_intelligence_page(ui),
-                                    SettingsPage::Patterns => self.show_patterns_page(ui),
-                                    SettingsPage::Characters => self.show_characters_page(ui),
-                                }
-                            });
-                        });
-                    });
-                });
-                ui.horizontal(|ui| {
-                    ui.add_space(650.00);
-                });
-                ui.horizontal(|ui| {
-                    if ui.add(Button::new(t!("settings.save"))).clicked() {
-                        self.save_settings();
-                    }
-                    if !self.settings.its_saved() {
-                        ui.colored_label(Color32::YELLOW, t!("settings.unsaved"));
-                    }
-                });
+    /// Draws the Settings screen over the whole window: a left page menu, the
+    /// selected page and a bottom bar with Cancel and Accept.
+    #[tracing::instrument(skip(self, ui))]
+    pub(crate) fn show_settings_screen(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("settings_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(t!("settings.cancel")).clicked() {
+                    self.cancel_settings();
+                }
+                if ui.button(t!("settings.apply")).clicked() {
+                    self.apply_settings();
+                }
+                if ui.button(t!("settings.accept")).clicked() {
+                    self.accept_settings();
+                }
+                if !self.settings.its_saved() {
+                    ui.colored_label(Color32::YELLOW, t!("settings.unsaved"));
+                }
             });
-        self.open[2] = open;
+        });
+        egui::Panel::left("settings_nav")
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.set_min_width(180.0);
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(t!("settings.title")).strong());
+                ui.separator();
+                for page in SettingsPage::ALL {
+                    let selected = self.selected_settings_page == page;
+                    if ui.selectable_label(selected, page.title()).clicked() {
+                        self.selected_settings_page = page;
+                    }
+                }
+            });
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                match self.selected_settings_page {
+                    SettingsPage::General => self.show_general_page(ui),
+                    SettingsPage::Intelligence => self.show_intelligence_page(ui),
+                    SettingsPage::Patterns => self.show_patterns_page(ui),
+                    SettingsPage::Characters => self.show_characters_page(ui),
+                }
+            });
+        });
     }
 }

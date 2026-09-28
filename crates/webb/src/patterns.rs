@@ -113,7 +113,6 @@
 //!
 //! | Rule id | Matches | Action | State |
 //! |---------|---------|--------|-------|
-//! | `channel_motd` | The `Channel MOTD:` line EVE writes when a channel is joined. | `ignore` | active |
 //! | `intel_line` | Every parsed intel line. | `notify` | active |
 //! | `system_reported` | Any EVE solar system name; the pattern covers 100% of the 8436 `solarSystemName` values in `assets/sde.db` (wormholes `J\d{6}`, nullsec-style `1DQ1-A`/`B-R5RB`, coded `AD001`, named systems like `Jita` or `Tash-Murkon Prime`). | `map_alert` | active |
 //! | `clear_report` | `clear` / `clr` keywords (case-insensitive); category `clear`. | `notify` | active |
@@ -671,8 +670,6 @@ pub enum PatternError {
         /// The offending tag.
         tag: String,
     },
-    /// A rule declares more tags than allowed (max 64).
-    TooManyTags(String),
     /// An output rule condition is invalid: a bad tag, or a quantifier larger
     /// than the tag list it applies to.
     InvalidCondition {
@@ -688,6 +685,40 @@ pub enum PatternError {
         /// Description of the problem.
         reason: String,
     },
+    /// A detection references a source that is not a valid input id.
+    InvalidSource {
+        /// Id of the offending detection rule.
+        id: String,
+        /// The offending source id.
+        source: String,
+    },
+    /// An output is not wired to any detection.
+    OutputWithoutDetection(String),
+    /// A detection (other than a `drop` one) is not wired to any output.
+    DetectionWithoutOutput(String),
+    /// A rule references a dictionary that does not exist in
+    /// `dictionaries.toml`.
+    UnknownDictionary {
+        /// Id of the offending rule.
+        id: String,
+        /// The missing dictionary name.
+        name: String,
+    },
+    /// Two output rules share the same kind (there is at most one per kind).
+    DuplicateOutputKind(String),
+    /// A node is missing the input cable it requires.
+    MissingInput(String),
+    /// An edge uses a pin the node does not expose.
+    InvalidPin {
+        /// Id of the node.
+        node: String,
+        /// The offending pin name.
+        pin: String,
+    },
+    /// The node graph contains a cycle; it must be a DAG.
+    GraphCycle(Vec<String>),
+    /// An aggregator has more incoming cables than it has input pins.
+    TooManyInputs(String),
 }
 
 impl Display for PatternError {
@@ -753,14 +784,39 @@ impl Display for PatternError {
                 f,
                 "rule '{id}' declares an invalid tag '{tag}' (use [A-Za-z0-9_.-], max 64 chars)"
             ),
-            Self::TooManyTags(id) => {
-                write!(f, "rule '{id}' declares too many tags (max 64)")
-            }
             Self::InvalidCondition { id, reason } => {
                 write!(f, "output rule '{id}' has an invalid condition: {reason}")
             }
             Self::InvalidInput { id, reason } => {
                 write!(f, "input rule '{id}' is invalid: {reason}")
+            }
+            Self::InvalidSource { id, source } => write!(
+                f,
+                "detection rule '{id}' references an invalid source '{source}'"
+            ),
+            Self::OutputWithoutDetection(id) => {
+                write!(f, "output rule '{id}' is not wired to any detection")
+            }
+            Self::DetectionWithoutOutput(id) => {
+                write!(f, "detection rule '{id}' is not wired to any output")
+            }
+            Self::UnknownDictionary { id, name } => {
+                write!(f, "rule '{id}' references an unknown dictionary '{name}'")
+            }
+            Self::DuplicateOutputKind(kind) => {
+                write!(f, "more than one output rule of kind '{kind}'")
+            }
+            Self::MissingInput(id) => {
+                write!(f, "node '{id}' has no input cable")
+            }
+            Self::InvalidPin { node, pin } => {
+                write!(f, "node '{node}' does not expose the pin '{pin}'")
+            }
+            Self::GraphCycle(nodes) => {
+                write!(f, "the node graph has a cycle through: {}", nodes.join(" -> "))
+            }
+            Self::TooManyInputs(id) => {
+                write!(f, "aggregator '{id}' has more inputs than pins")
             }
         }
     }
@@ -2088,14 +2144,6 @@ mod tests {
         let data = "[ 2023.04.03 18:01:14 ] EVE System > Channel MOTD: hello\n";
         assert_eq!(engine.evaluate("intel", data).len(), 1);
         assert!(engine.evaluate("other", data).is_empty());
-    }
-
-    #[test]
-    fn the_template_ignores_the_channel_motd() {
-        let config: PatternConfig = toml::from_str(DEFAULT_PATTERNS_TOML).unwrap();
-        let (engine, _) = PatternEngine::from_config(&config).unwrap();
-        let data = "[ 2023.04.03 18:01:14 ] EVE System > Channel MOTD: Welcome to Jita\n";
-        assert!(engine.evaluate("wc.Vale+Tribute", data).is_empty());
     }
 
     #[test]

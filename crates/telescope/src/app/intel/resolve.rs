@@ -1,19 +1,50 @@
 //! Resolvers shared by the intel output stages: turning reported text into
 //! solar-system ids and measuring stargate distance.
 
-use sde::objects::SolarSystem;
+use sde::objects::{SolarSystem, Universe};
 use std::collections::{HashMap, HashSet, VecDeque};
+use webb::graph::SystemResolver;
 
-/// The id of the system in `systems` (id, name) named exactly `name`,
-/// ignoring ASCII case.
-pub(crate) fn exact_system<'a>(
-    systems: impl IntoIterator<Item = (u32, &'a str)>,
-    name: &str,
-) -> Option<u32> {
-    systems
-        .into_iter()
-        .find(|(_, system)| system.eq_ignore_ascii_case(name))
-        .map(|(id, _)| id)
+/// A [`SystemResolver`] backed by the loaded SDE universe: exact names (any
+/// case) first, and -- only for code-like text (see [`allows_partial_match`])
+/// -- a system whose name starts with it.
+pub(crate) struct UniverseResolver {
+    systems: Vec<(String, usize)>,
+}
+
+impl UniverseResolver {
+    /// Builds the resolver from the universe's solar systems.
+    pub(crate) fn new(universe: &Universe) -> Self {
+        let mut systems: Vec<(String, usize)> = universe
+            .solar_systems
+            .values()
+            .filter_map(|system| {
+                usize::try_from(system.id)
+                    .ok()
+                    .map(|id| (system.name.to_lowercase(), id))
+            })
+            .collect();
+        systems.sort();
+        Self { systems }
+    }
+}
+
+impl SystemResolver for UniverseResolver {
+    fn resolve(&self, name: &str) -> Option<usize> {
+        let lower = name.to_lowercase();
+        if let Some((_, id)) = self.systems.iter().find(|(known, _)| known == &lower) {
+            return Some(*id);
+        }
+        if allows_partial_match(name)
+            && let Some((_, id)) = self
+                .systems
+                .iter()
+                .find(|(known, _)| known.starts_with(&lower))
+        {
+            return Some(*id);
+        }
+        None
+    }
 }
 
 /// Whether `name` may resolve to a system whose name only contains it:
@@ -107,17 +138,7 @@ mod nearest_origin_tests {
 
 #[cfg(test)]
 mod system_lookup_tests {
-    use super::{allows_partial_match, exact_system};
-
-    const SYSTEMS: [(u32, &str); 3] = [(1, "H-5GUI"), (2, "Jita"), (3, "Old Man Star")];
-
-    #[test]
-    fn exact_names_match_in_any_case() {
-        assert_eq!(exact_system(SYSTEMS, "h-5gui"), Some(1));
-        assert_eq!(exact_system(SYSTEMS, "old man star"), Some(3));
-        assert_eq!(exact_system(SYSTEMS, "H-5GU"), None);
-        assert_eq!(exact_system(SYSTEMS, "Floris Saucus"), None);
-    }
+    use super::allows_partial_match;
 
     #[test]
     fn only_code_like_text_may_match_partially() {

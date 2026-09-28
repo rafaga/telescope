@@ -28,9 +28,11 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub enum MapSync {
     CenterOn((usize, Target)),
-    /// An intel report on a solar system: its visual alert (unless it is a
-    /// `clear` report) and its line in the node tooltip.
+    /// An intel report on a solar system: its visual alert (a pulse).
     SystemAlert(IntelAlert),
+    /// An intel line listed in the node tooltip of a solar system, with no
+    /// visual alert.
+    SystemTooltip(IntelAlert),
     /// Plays (or clears) an animation on a node of every map that has it;
     /// used by the Debug window to preview the node effects. Only the
     /// `#[cfg(debug_assertions)]` Debug window (see `app/windows.rs`'s

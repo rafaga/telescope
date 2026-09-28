@@ -161,6 +161,12 @@ impl TelescopeApp {
                                                             self.settings.get_alert_duration(),
                                                         )),
                                                     );
+                                                    let _result = tx_map.send(
+                                                        MapSync::SystemTooltip(debug_alert(
+                                                            system_id.try_into().unwrap(),
+                                                            self.settings.get_alert_duration(),
+                                                        )),
+                                                    );
                                                 }
                                             }
                                         });
@@ -177,6 +183,12 @@ impl TelescopeApp {
                                                         system_id.try_into().unwrap(),
                                                         self.settings.get_alert_duration(),
                                                     )));
+                                                let _result = tx_map.send(MapSync::SystemTooltip(
+                                                    debug_alert(
+                                                        system_id.try_into().unwrap(),
+                                                        self.settings.get_alert_duration(),
+                                                    ),
+                                                ));
                                             }
                                         }
                                         let col_data = row.col(|ui| {
@@ -535,5 +547,6 @@ fn debug_alert(system_id: usize, duration: std::time::Duration) -> IntelAlert {
         duration,
         text,
         summary,
+        true,
     )
 }

@@ -25,7 +25,7 @@ use egui_map::map::{
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use webb::map_alerts::{
-    ALERT_ICON, AlertLog, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
+    ALERT_ICON, AlertLog, AlertPart, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
 };
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
@@ -133,6 +133,14 @@ pub(crate) const CHARACTER_ICON: &str = "👤";
 const ALERT_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
 /// Color of [`CLEAR_ICON`] in the node tooltips.
 const CLEAR_ICON_COLOR: Color32 = Color32::from_rgb(90, 200, 90);
+/// Emoji/color of the ships section of a tooltip line.
+const SHIP_ICON: &str = "🚀";
+const SHIP_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
+/// Emoji/color of the pilot-count section of a tooltip line (a person
+/// silhouette, colored distinctly from [`CHARACTER_ICON`], which uses the
+/// default text color).
+const COUNT_ICON: &str = "👤";
+const COUNT_ICON_COLOR: Color32 = Color32::from_rgb(190, 130, 255);
 
 /// The tooltip of the node under the pointer, only on nodes that have
 /// something to show: the linked characters in that system, one per line
@@ -183,7 +191,9 @@ fn show_node_tooltip(
     });
 }
 
-/// One intel alert in a node tooltip: icon, age and summary.
+/// One intel alert in a node tooltip: icon, age and summary. Each section of
+/// the summary is prefixed with its own emoji (ships, pilot count) unless the
+/// alert was built with `emojis` off.
 fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
     ui.horizontal(|ui| {
         let (icon, color) = if alert.raises_visual() {
@@ -193,26 +203,48 @@ fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
         };
         ui.label(RichText::new(icon).color(color));
         ui.label(RichText::new(format_age(now.saturating_duration_since(alert.received))).weak());
-        let detail = alert.summary.detail(|count| match count {
+        let parts = alert.summary.parts(|count| match count {
             1 => t!("map.alert_pilots_one").into_owned(),
             _ => t!("map.alert_pilots_other", count = count).into_owned(),
         });
-        if !detail.is_empty() {
-            ui.label(detail);
+        for (index, part) in parts.into_iter().enumerate() {
+            if index > 0 {
+                ui.label(RichText::new("·").weak());
+            }
+            match part {
+                AlertPart::Clear(word) => {
+                    ui.label(word);
+                }
+                AlertPart::Ships(text) => {
+                    if alert.emojis {
+                        ui.label(RichText::new(SHIP_ICON).color(SHIP_ICON_COLOR));
+                    }
+                    ui.label(text);
+                }
+                AlertPart::Count(text) => {
+                    if alert.emojis {
+                        ui.label(RichText::new(COUNT_ICON).color(COUNT_ICON_COLOR));
+                    }
+                    ui.label(text);
+                }
+                AlertPart::Text(text) => {
+                    ui.label(text);
+                }
+            }
         }
     });
 }
 
-/// Handles an intel alert on a pane's map: starts its visual alert -- a
-/// pulse repeated for its duration, fading out over that time (egui-map's
-/// lasting notifications) -- unless it is a `clear` report, and lists it
-/// for the node tooltip.
-fn receive_alert(map: &mut Map, alerts: &mut AlertLog, alert: IntelAlert) {
-    if alert.raises_visual()
-        && let Some(node) = map.node(alert.system_id)
-    {
+/// Starts an intel alert's visual on a pane's map: a pulse repeated for its
+/// duration, fading out over that time (egui-map's lasting notifications).
+fn pulse_alert(map: &mut Map, alert: &IntelAlert) {
+    if let Some(node) = map.node(alert.system_id) {
         node.lasting(alert.duration).pulse(alert.received);
     }
+}
+
+/// Lists an intel line in a pane's node tooltips (no visual alert).
+fn push_alert(alerts: &mut AlertLog, alert: IntelAlert) {
     alerts.push(alert);
 }
 
@@ -351,7 +383,10 @@ impl TabPane for UniversePane {
                     }
                 }
                 MapSync::SystemAlert(alert) => {
-                    receive_alert(&mut self.map, &mut self.alerts, alert);
+                    pulse_alert(&mut self.map, &alert);
+                }
+                MapSync::SystemTooltip(alert) => {
+                    push_alert(&mut self.alerts, alert);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -530,7 +565,10 @@ impl TabPane for RegionPane {
                     }
                 }
                 MapSync::SystemAlert(alert) => {
-                    receive_alert(&mut self.map, &mut self.alerts, alert);
+                    pulse_alert(&mut self.map, &alert);
+                }
+                MapSync::SystemTooltip(alert) => {
+                    push_alert(&mut self.alerts, alert);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();

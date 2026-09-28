@@ -1,16 +1,17 @@
-//! Detection stage: runs the [`DetectionEngine`] off the UI thread.
+//! Detection stage: runs the graph [`Executor`] off the UI thread.
 //!
 //! A dedicated thread (with its own current-thread tokio runtime, the same
 //! pattern the rest of the app's background work uses) receives [`InputEvent`]s
-//! on a bounded channel, evaluates them against the engine and sends the
-//! resulting [`DetectionBatch`]es back to the UI thread. The engine sits
-//! behind an [`RwLock`] so the UI can swap it in place when the rules change,
-//! without restarting the thread.
+//! on a bounded channel, evaluates them through the executor and sends the
+//! resulting [`Activation`]s back to the UI thread. The executor sits behind an
+//! [`RwLock`] so the UI can swap it in place when the rules change, without
+//! restarting the thread.
 
 use super::input::InputEvent;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use webb::rules::{DetectionBatch, DetectionEngine};
+use webb::graph::{Activation, Executor, LineContext, SystemResolver};
+use webb::rules::IntelLine;
 
 /// Capacity of the UI -> detection channel. Bounded on purpose: if the UI
 /// ever produces lines faster than they can be evaluated, the extra ones are
@@ -21,21 +22,27 @@ pub(crate) const INPUT_CAPACITY: usize = 1024;
 /// drains it.
 pub(crate) const OUTPUT_CAPACITY: usize = 1024;
 
-/// Shared handle to the live engine; the UI replaces the engine behind it
+/// Shared handle to the live executor; the UI replaces it behind the lock
 /// when the rules change.
-pub(crate) type EngineHandle = Arc<RwLock<DetectionEngine>>;
+pub(crate) type ExecutorHandle = Arc<RwLock<Executor>>;
 
-/// One line's detections, as delivered to the UI thread.
+/// Shared system resolver injected into the executor (backed by the SDE).
+pub(crate) type ResolverHandle = Arc<dyn SystemResolver + Send + Sync>;
+
+/// One line's output activations, as delivered to the UI thread.
 pub(crate) struct DetectedLine {
     /// Channel the line came from.
     pub channel: String,
-    /// The parsed line and its detections.
-    pub batch: DetectionBatch,
+    /// The parsed line.
+    pub line: IntelLine,
+    /// The Output nodes that fired.
+    pub activations: Vec<Activation>,
 }
 
 /// Spawns the detection thread and returns immediately.
 pub(crate) fn spawn(
-    engine: EngineHandle,
+    executor: ExecutorHandle,
+    resolver: ResolverHandle,
     mut input: mpsc::Receiver<InputEvent>,
     output: mpsc::Sender<DetectedLine>,
 ) {
@@ -46,21 +53,23 @@ pub(crate) fn spawn(
             .expect("detection thread runtime");
         runtime.block_on(async move {
             while let Some(event) = input.recv().await {
-                let detections = {
-                    let engine = engine.read().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    engine.evaluate_line(&event.channel, &event.line)
+                let context = LineContext {
+                    line: event.line,
+                    channel: event.channel.clone(),
                 };
-                if detections.is_empty() {
+                let activations = {
+                    let executor = executor.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    executor.run(&context, resolver.as_ref())
+                };
+                if activations.is_empty() {
                     continue;
                 }
-                let batch = DetectionBatch {
-                    line: event.line,
-                    detections,
-                };
+                let line = context.line;
                 if output
                     .send(DetectedLine {
                         channel: event.channel,
-                        batch,
+                        line,
+                        activations,
                     })
                     .await
                     .is_err()
