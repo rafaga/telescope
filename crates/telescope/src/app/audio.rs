@@ -1,4 +1,4 @@
-//! Alarm sound for `ActionConfig::MapAlert` matches.
+//! Alarm sound for the intel rules' Sound output.
 //!
 //! [`AlarmPlayer`] opens the default audio output device once, at startup,
 //! and keeps it open for the app's lifetime -- rodio's output handle has to
@@ -26,11 +26,11 @@
 //! caller (`TelescopeApp::dispatch_map_alert`, in `intel.rs`) passes
 //! [`Self::play_alarm`] the path, which it gets from
 //! `Settings::get_alert_sound_path`: the file the user picked on the
-//! Settings -> Intelligence page (`windows::settings::intelligence`),
+//! Settings -> Alerts page (`windows::settings::alerts`),
 //! resolved against `Settings::alerts_dir`. That's also where
 //! the "relative to wherever Telescope is run from" convention lives
 //! (`settings::FilePaths::default`'s doc comment explains why: same as
-//! `sde.db`, `patterns.toml` and `telescope.toml`, it's meant to sit
+//! `sde.db` and `telescope.toml`, it's meant to sit
 //! alongside the app, not somewhere the user has to go look for it). The
 //! packaged installer has to actually ship `assets/alerts/` next to the
 //! executable for any of this to find it there -- see the `resources`

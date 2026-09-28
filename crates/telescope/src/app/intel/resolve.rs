@@ -3,47 +3,88 @@
 
 use sde::objects::{SolarSystem, Universe};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::RwLock;
 use webb::graph::SystemResolver;
 
 /// A [`SystemResolver`] backed by the loaded SDE universe: exact names (any
 /// case) first, and -- only for code-like text (see [`allows_partial_match`])
-/// -- a system whose name starts with it.
+/// -- the first system (alphabetically) whose name starts with it.
 pub(crate) struct UniverseResolver {
-    systems: Vec<(String, usize)>,
+    /// Lowercase name -> id, for exact lookups.
+    exact: HashMap<String, usize>,
+    /// Lowercase names sorted, for prefix lookups by binary search.
+    sorted: Vec<(String, usize)>,
 }
 
 impl UniverseResolver {
     /// Builds the resolver from the universe's solar systems.
     pub(crate) fn new(universe: &Universe) -> Self {
-        let mut systems: Vec<(String, usize)> = universe
-            .solar_systems
-            .values()
-            .filter_map(|system| {
-                usize::try_from(system.id)
-                    .ok()
-                    .map(|id| (system.name.to_lowercase(), id))
-            })
+        Self::from_names(
+            universe.solar_systems.values().filter_map(|system| {
+                Some((system.name.as_str(), usize::try_from(system.id).ok()?))
+            }),
+        )
+    }
+
+    fn from_names<'a>(names: impl IntoIterator<Item = (&'a str, usize)>) -> Self {
+        let mut sorted: Vec<(String, usize)> = names
+            .into_iter()
+            .map(|(name, id)| (name.to_lowercase(), id))
             .collect();
-        systems.sort();
-        Self { systems }
+        sorted.sort();
+        let exact = sorted.iter().cloned().collect();
+        Self { exact, sorted }
     }
 }
 
 impl SystemResolver for UniverseResolver {
     fn resolve(&self, name: &str) -> Option<usize> {
         let lower = name.to_lowercase();
-        if let Some((_, id)) = self.systems.iter().find(|(known, _)| known == &lower) {
+        if let Some(id) = self.exact.get(&lower) {
             return Some(*id);
         }
-        if allows_partial_match(name)
-            && let Some((_, id)) = self
-                .systems
-                .iter()
-                .find(|(known, _)| known.starts_with(&lower))
-        {
-            return Some(*id);
+        if !allows_partial_match(name) {
+            return None;
         }
-        None
+        // The first name >= `lower` is the smallest one that could start with
+        // it.
+        let first = self
+            .sorted
+            .partition_point(|(known, _)| known.as_str() < lower.as_str());
+        self.sorted
+            .get(first)
+            .filter(|(known, _)| known.starts_with(&lower))
+            .map(|(_, id)| *id)
+    }
+}
+
+/// The resolver the detection thread uses, replaceable in place: the SDE can
+/// be (re)built while Telescope runs (first run, an update from *Settings ->
+/// Application*), and the systems it adds must become resolvable without a
+/// restart.
+pub(crate) struct SharedResolver(RwLock<UniverseResolver>);
+
+impl SharedResolver {
+    pub(crate) fn new(universe: &Universe) -> Self {
+        Self(RwLock::new(UniverseResolver::new(universe)))
+    }
+
+    /// Rebuilds the lookup tables from `universe`.
+    pub(crate) fn replace(&self, universe: &Universe) {
+        let resolver = UniverseResolver::new(universe);
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = resolver;
+    }
+}
+
+impl SystemResolver for SharedResolver {
+    fn resolve(&self, name: &str) -> Option<usize> {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resolve(name)
     }
 }
 
@@ -138,7 +179,33 @@ mod nearest_origin_tests {
 
 #[cfg(test)]
 mod system_lookup_tests {
-    use super::allows_partial_match;
+    use super::{UniverseResolver, allows_partial_match};
+    use webb::graph::SystemResolver;
+
+    fn resolver() -> UniverseResolver {
+        UniverseResolver::from_names([
+            ("H-5GUI", 1),
+            ("H-5GUQ", 2),
+            ("Jita", 3),
+            ("Old Man Star", 4),
+        ])
+    }
+
+    #[test]
+    fn exact_names_resolve_in_any_case() {
+        assert_eq!(resolver().resolve("h-5gui"), Some(1));
+        assert_eq!(resolver().resolve("OLD MAN STAR"), Some(4));
+        assert_eq!(resolver().resolve("Floris Saucus"), None);
+    }
+
+    #[test]
+    fn code_like_prefixes_resolve_to_the_first_match() {
+        assert_eq!(resolver().resolve("H-5GU"), Some(1));
+        assert_eq!(resolver().resolve("h-5"), Some(1));
+        assert_eq!(resolver().resolve("H-6"), None);
+        // Plain words never match partially.
+        assert_eq!(resolver().resolve("Jit"), None);
+    }
 
     #[test]
     fn only_code_like_text_may_match_partially() {

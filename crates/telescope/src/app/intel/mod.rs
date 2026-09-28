@@ -12,8 +12,8 @@ use crate::app::messages::{MapSync, Message, Target, Type};
 use chrono::Utc;
 use notify::{RecursiveMode, Watcher};
 use std::time::Instant;
-use webb::graph::{Activation, Data, Executor, Mensaje, RuleGraph};
-use webb::map_alerts::{AlertSummary, IntelAlert};
+use webb::graph::{Activation, Data, Executor, FORMATTED_TAG, Mensaje, RuleGraph};
+use webb::map_alerts::{AlertSummary, IntelAlert, leftover};
 use webb::rules::{IntelLine, OutputKind};
 
 pub(crate) mod detection;
@@ -59,18 +59,18 @@ impl TelescopeApp {
                 .watch(self.settings.get_intel(), RecursiveMode::NonRecursive);
         }
         self.settings.set_monitored_channels(monitored_channels);
+        // Newly monitored channels start at the end of their current logs.
+        self.intel_offsets.sync(
+            self.settings.get_intel(),
+            &self.settings.get_cloned_monitored_channels(),
+        );
     }
 
     #[tracing::instrument(skip(self))]
     pub(crate) fn load_intel_file(&mut self, file_name: String) {
         let dir = self.settings.get_intel().to_path_buf();
-        let mut log_files_map = self.settings.get_log_files_channels();
-        // Offset recorded by the last read; 0 for a file seen for the first
-        // time.
-        let start = log_files_map
-            .get(&file_name)
-            .map(|log_entry| log_entry.0)
-            .unwrap_or(0);
+        // Offset recorded by the last read (see `IntelOffsets`).
+        let start = self.intel_offsets.get(&file_name);
         if let Some(read) = ChatLogSource::read_new(&dir, &file_name, start) {
             // Hand the parsed lines to the detection thread. `try_send`, not
             // `blocking_send`: this runs on the UI thread, and a full queue
@@ -81,12 +81,26 @@ impl TelescopeApp {
                     tracing::warn!("intel input channel rejected a line: {error}");
                 }
             }
-            log_files_map.entry(file_name).and_modify(|hash_entry| {
-                hash_entry.0 = read.end_offset;
-                hash_entry.1 = Utc::now();
-            });
+            self.intel_offsets.set(&file_name, read.end_offset);
+            // Last activity of the channel, for Settings -> Sources.
+            if let Some(log) = IntelLogName::parse(&file_name) {
+                let channel = log.channel.to_string();
+                self.settings
+                    .note_channel_activity(&channel, std::time::SystemTime::now());
+            }
         }
-        self.settings.set_log_files_channels(log_files_map);
+    }
+
+    /// Rescans the intel directory: the channel list shown in Settings and
+    /// the read offsets of the monitored channels' logs (see
+    /// [`input::IntelOffsets::sync`]).
+    pub(crate) fn scan_intel_files(&mut self) -> Result<(), crate::app::settings::SettingsError> {
+        let result = self.settings.scan_channels_logs();
+        self.intel_offsets.sync(
+            self.settings.get_intel(),
+            &self.settings.get_cloned_monitored_channels(),
+        );
+        result
     }
 
     /// Runs the detection engine over `data` (chat-log lines from `channel`)
@@ -201,15 +215,20 @@ impl TelescopeApp {
         }
         let messages: Vec<&Mensaje> = activation.messages.iter().collect();
         let mut summary = AlertSummary::from_messages(&messages);
-        // The fallback is the processed text; the reported system only anchors
-        // the entry, it is not shown.
-        summary.leftover = activation
-            .messages
+        // The fallback text, shown when there are no ships and no count: a
+        // Formatter's rendering when one feeds the tooltip, otherwise what is
+        // left of the line once the reported system and every other detection
+        // are removed (usually the pilot names).
+        let formatted: Vec<&str> = messages
             .iter()
-            .filter(|message| !matches!(message.data, Data::Systems(_)))
-            .map(|message| message.text.clone())
-            .collect::<Vec<_>>()
-            .join(" · ");
+            .filter(|message| message.tag == FORMATTED_TAG)
+            .map(|message| message.text.as_str())
+            .collect();
+        summary.leftover = if formatted.is_empty() {
+            leftover(&line.text, &messages)
+        } else {
+            formatted.join(" · ")
+        };
         let received = Instant::now();
         for system_id in systems {
             let alert = IntelAlert::new(

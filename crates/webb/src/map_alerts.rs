@@ -4,9 +4,8 @@
 //! condenses it into the few words the tooltip shows after the icon and the
 //! age of the report: the ships reported, how many pilots, or -- when the
 //! line has neither -- its leftover text, which is usually the pilot names.
-//! What each rule contributes is set by its `category` in `patterns.toml`
-//! (see [`IntelCategory`]). A `clear` report is listed with a check mark and
-//! raises no visual alert.
+//! What each detection contributes is set by its category (see
+//! [`IntelCategory`]). A `clear` report is listed with a check mark.
 //!
 //! Every map pane keeps an [`AlertLog`]. Each entry lives as long as its own
 //! visual alert would (received + the alert duration from Settings), no
@@ -15,7 +14,9 @@
 //! is still listed.
 
 use crate::graph::{Data, Mensaje};
+use crate::intel::{IntelCategory, sanitize_display};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 /// Icon of an alert line in the tooltip (painted red).
@@ -24,6 +25,8 @@ pub const ALERT_ICON: &str = "🔥";
 pub const CLEAR_ICON: &str = "✔";
 /// Most alert lines a tooltip lists; the rest are summed up as "+N more".
 pub const MAX_TOOLTIP_ALERTS: usize = 5;
+/// Longest leftover text shown, in characters (ellipsis included).
+const MAX_LEFTOVER_CHARS: usize = 40;
 /// Most entries kept per system. A channel flooding one system can't grow
 /// the log without bound before the entries expire.
 const MAX_ALERTS_PER_SYSTEM: usize = 20;
@@ -62,7 +65,7 @@ impl AlertSummary {
                     }
                 }
                 Data::Words(words) => {
-                    if message.tag == "clear_report" && summary.clear.is_none() {
+                    if message.category == Some(IntelCategory::Clear) && summary.clear.is_none() {
                         summary.clear = words.first().cloned();
                     }
                 }
@@ -130,6 +133,48 @@ pub enum AlertPart {
     Count(String),
     /// The leftover text.
     Text(String),
+}
+
+/// What is left of `line` once every span of `messages` is removed (the
+/// reported system, the ships, the count, keywords such as `nv`...): usually
+/// the pilot names. Whitespace is collapsed, punctuation trimmed from both
+/// ends, and the result cut to 40 characters (ellipsis included).
+///
+/// Messages that did not read the line itself carry no spans and remove
+/// nothing.
+pub fn leftover(line: &str, messages: &[&Mensaje]) -> String {
+    let mut spans: Vec<Range<usize>> = messages
+        .iter()
+        .flat_map(|message| message.spans.iter().cloned())
+        .filter(|span| {
+            span.end <= line.len()
+                && line.is_char_boundary(span.start)
+                && line.is_char_boundary(span.end)
+        })
+        .collect();
+    spans.sort_by_key(|span| span.start);
+    let mut kept = String::with_capacity(line.len());
+    let mut position = 0;
+    for span in spans {
+        if span.start > position {
+            kept.push_str(&line[position..span.start]);
+        }
+        kept.push(' ');
+        position = position.max(span.end);
+    }
+    if position < line.len() {
+        kept.push_str(&line[position..]);
+    }
+    let joined = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = joined.trim_matches(|c: char| !c.is_alphanumeric());
+    let clean = sanitize_display(trimmed);
+    if clean.chars().count() <= MAX_LEFTOVER_CHARS {
+        return clean;
+    }
+    let mut cut: String = clean.chars().take(MAX_LEFTOVER_CHARS - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
 }
 
 /// How long ago something happened, condensed: `5s`, `4m`, `2h`.
@@ -240,6 +285,43 @@ impl AlertLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A message standing for the bytes `start..end` of the line.
+    fn message(start: usize, end: usize) -> Mensaje {
+        Mensaje {
+            tag: String::from("keyword"),
+            text: String::new(),
+            data: Data::Words(Vec::new()),
+            spans: std::iter::once(start..end).collect(),
+            category: None,
+        }
+    }
+
+    #[test]
+    fn the_leftover_is_the_line_without_the_spans() {
+        let line = "H-5GUI*  Floris Saucus  nv";
+        let system = message(0, 6);
+        let nv = message(24, 26);
+        assert_eq!(leftover(line, &[&system, &nv]), "Floris Saucus");
+        // Without spans nothing is removed.
+        assert_eq!(leftover(line, &[]), line.replace("  ", " "));
+    }
+
+    #[test]
+    fn the_leftover_is_cut_to_40_characters() {
+        let line = "H-5GUI Aaron Bartholomew Cornelius Dmitri Evangeline";
+        let text = leftover(line, &[&message(0, 6)]);
+        assert!(text.chars().count() <= MAX_LEFTOVER_CHARS, "{text}");
+        assert!(
+            text.starts_with("Aaron Bartholomew") && text.ends_with('…'),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn spans_outside_the_line_are_ignored() {
+        assert_eq!(leftover("abc", &[&message(1, 99)]), "abc");
+    }
 
     #[test]
     fn ages_are_condensed() {

@@ -11,10 +11,11 @@
 //! * [`Dictionaries`]: the built-in `dictionaries.toml` word lists.
 //! * [`IntelLine`] and [`parse_line`]: the parsed chat-log line.
 
-pub use crate::patterns::IntelLine;
-use crate::patterns::{
-    ActionConfig, IntelCategory, LINE_PATTERN, LINE_TIMESTAMP_FORMAT, MAX_DICTIONARY_WORD_LEN,
-    MAX_DICTIONARY_WORDS, MAX_PATTERN_LEN, PatternError, PatternRuleConfig, is_valid_group_name,
+pub use crate::intel::IntelLine;
+use crate::intel::{
+    IntelCategory, LINE_PATTERN, LINE_TIMESTAMP_FORMAT, MAX_DICTIONARY_WORD_LEN,
+    MAX_DICTIONARY_WORDS, MAX_LINE_LEN, MAX_PATTERN_LEN, PatternError, is_valid_group_name,
+    truncate_str,
 };
 use chrono::NaiveDateTime;
 use regex::Regex;
@@ -66,8 +67,16 @@ const DEFAULT_DICTIONARIES_TOML: &str = include_str!("../../../dictionaries.toml
 impl Dictionaries {
     /// The built-in dictionaries (parsed from the embedded `dictionaries.toml`).
     pub fn defaults() -> Self {
-        toml::from_str(DEFAULT_DICTIONARIES_TOML)
-            .expect("the embedded dictionaries.toml must parse")
+        Self::shared().clone()
+    }
+
+    /// The built-in dictionaries, parsed once and shared.
+    pub fn shared() -> &'static Self {
+        static SHARED: OnceLock<Dictionaries> = OnceLock::new();
+        SHARED.get_or_init(|| {
+            toml::from_str(DEFAULT_DICTIONARIES_TOML)
+                .expect("the embedded dictionaries.toml must parse")
+        })
     }
 
     /// The dictionary names, sorted.
@@ -275,11 +284,25 @@ impl DetectionType for DetectionRuleKind {
                 pattern,
                 words,
                 system_group,
-                ..
+                category,
             } => {
                 match pattern {
                     Some(pattern) => validate_pattern(id, pattern)?,
                     None => validate_words(id, words)?,
+                }
+                // A word list has no capture groups: it can't carry a count
+                // or name the group of a reported system. (A pattern's groups
+                // are checked when it is compiled.)
+                if pattern.is_none() {
+                    if *category == Some(IntelCategory::Count) {
+                        return Err(PatternError::MissingCountGroup(id.to_string()));
+                    }
+                    if let Some(group) = system_group {
+                        return Err(PatternError::InvalidSystemGroup {
+                            id: id.to_string(),
+                            group: group.clone(),
+                        });
+                    }
                 }
                 if let Some(group) = system_group
                     && !is_valid_group_name(group)
@@ -352,51 +375,10 @@ impl OutputType for OutputKind {
     }
 }
 
-/// Maps a legacy `patterns.toml` pattern rule to the closest specific type.
-pub(crate) fn kind_from_legacy(rule: &PatternRuleConfig) -> DetectionRuleKind {
-    match &rule.action {
-        ActionConfig::Ignore => DetectionRuleKind::Custom {
-            pattern: Some(rule.pattern.clone()),
-            words: Vec::new(),
-            category: None,
-            system_group: None,
-        },
-        ActionConfig::MapAlert { system_group } => {
-            if rule.pattern == DEFAULT_SYSTEM_PATTERN {
-                DetectionRuleKind::SystemReport
-            } else {
-                DetectionRuleKind::Custom {
-                    pattern: Some(rule.pattern.clone()),
-                    words: Vec::new(),
-                    category: None,
-                    system_group: Some(system_group.clone()),
-                }
-            }
-        }
-        ActionConfig::Notify => match rule.category {
-            Some(IntelCategory::Count) => DetectionRuleKind::PilotCount,
-            Some(IntelCategory::Ship) if rule.pattern == DEFAULT_SHIP_ZH_PATTERN => {
-                DetectionRuleKind::ShipNamesZh
-            }
-            Some(category) => DetectionRuleKind::Custom {
-                pattern: Some(rule.pattern.clone()),
-                words: Vec::new(),
-                category: Some(category),
-                system_group: None,
-            },
-            None => DetectionRuleKind::Custom {
-                pattern: Some(rule.pattern.clone()),
-                words: Vec::new(),
-                category: None,
-                system_group: None,
-            },
-        },
-    }
-}
-
 /// Parses a raw log line into an [`IntelLine`]. Returns `None` when the line
 /// does not follow the EVE chat log format
-/// (`[ yyyy.MM.dd hh:mm:ss ] Author > message`).
+/// (`[ yyyy.MM.dd hh:mm:ss ] Author > message`). Lines longer than 2 KiB are
+/// cut first, so a flood of text can't make every detection scan it whole.
 ///
 /// # Examples
 ///
@@ -412,7 +394,7 @@ pub fn parse_line(raw: &str) -> Option<IntelLine> {
     static LINE_RE: OnceLock<Regex> = OnceLock::new();
     let re = LINE_RE
         .get_or_init(|| Regex::new(LINE_PATTERN).expect("hardcoded line regex must compile"));
-    let caps = re.captures(raw)?;
+    let caps = re.captures(truncate_str(raw, MAX_LINE_LEN))?;
     let naive_ts =
         NaiveDateTime::parse_from_str(caps.name("ts")?.as_str(), LINE_TIMESTAMP_FORMAT).ok()?;
     Some(IntelLine {
@@ -425,7 +407,6 @@ pub fn parse_line(raw: &str) -> Option<IntelLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::patterns::{ActionConfig, PatternRuleConfig};
 
     #[test]
     fn detection_rule_round_trips_through_toml() {
@@ -435,21 +416,5 @@ mod tests {
         let text = toml::to_string(&kind).unwrap();
         let back: DetectionRuleKind = toml::from_str(&text).unwrap();
         assert_eq!(back, kind);
-    }
-
-    #[test]
-    fn a_system_report_pattern_maps_to_the_system_type() {
-        let rule = PatternRuleConfig {
-            id: String::from("system_reported"),
-            pattern: String::from(DEFAULT_SYSTEM_PATTERN),
-            case_insensitive: false,
-            enabled: true,
-            channels: Vec::new(),
-            category: None,
-            action: ActionConfig::MapAlert {
-                system_group: String::from("system"),
-            },
-        };
-        assert_eq!(kind_from_legacy(&rule), DetectionRuleKind::SystemReport);
     }
 }

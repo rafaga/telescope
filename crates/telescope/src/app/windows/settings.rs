@@ -1,61 +1,253 @@
-//! The Settings screen: a full-window frame with the page menu, the selected
-//! page and the global Cancel / Accept bar. Each page lives in its own
-//! submodule (`general`, `intelligence`, `characters`, `patterns`);
-//! `data_sources` is a section of the General page.
+//! The Settings screen, built with `egui-panels`: a navigation with the pages
+//! grouped by what they configure, the selected page and the Cancel / Apply
+//! / Accept bar.
+//!
+//! The intel pages follow the path of a chat line -- `sources` (where it is
+//! read), `patterns` (the rules that turn it into an alert) and `alerts`
+//! (what the alert does) -- then come `maps`, `characters` and
+//! `application`.
+//!
+//! Every change is a draft until Apply or Accept: the settings are edited in
+//! place and `TelescopeApp::cancel_settings` puts back the snapshot taken
+//! when the screen opened. A page whose values differ from that snapshot
+//! shows a dot in the navigation. Linking and unlinking characters are the
+//! exception: they go through EVE SSO and apply at once.
 
 use crate::app::TelescopeApp;
-use crate::app::messages::SettingsPage;
+use crate::app::intel::input::monitored_channel_names;
+use crate::app::messages::{Message, SettingsPage};
+use crate::app::settings::Settings;
 use eframe::egui;
-use eframe::egui::Color32;
+use egui_panels::{Action, ActionBar, NavGroup, NavItem, SettingsLayout, SideNav, StatusKind};
+use native_tools::dialog::{Dialog, DialogResult, DialogType};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+use webb::graph::RuleGraph;
 
+mod alerts;
+mod application;
 mod characters;
-mod data_sources;
-mod general;
-mod intelligence;
+mod maps;
 pub(crate) mod patterns;
+mod sources;
+
+/// View state of the Settings pages that is not a setting.
+#[derive(Default)]
+pub(crate) struct SettingsUi {
+    /// Text typed to filter the region tiles (Maps).
+    region_filter: String,
+    /// Outcome of the last "Test the full alert" (Alerts).
+    test_result: Option<(StatusKind, String)>,
+    /// The graph last validated for the Rules page and its errors, so the
+    /// graph is validated again only when it changes.
+    validation: Option<(RuleGraph, Vec<String>)>,
+    /// A step of the intel flow was clicked this frame (it changes the page
+    /// like the navigation does).
+    step_clicked: bool,
+}
+
+impl SettingsUi {
+    /// The errors of `graph` (see [`RuleGraph::validate`]).
+    fn validation_errors(&mut self, graph: &RuleGraph) -> &[String] {
+        let stale = self
+            .validation
+            .as_ref()
+            .is_none_or(|(validated, _)| validated != graph);
+        if stale {
+            let errors = graph
+                .validate()
+                .iter()
+                .map(|error| error.to_string())
+                .collect();
+            self.validation = Some((graph.clone(), errors));
+        }
+        self.validation
+            .as_ref()
+            .map_or(&[], |(_, errors)| errors.as_slice())
+    }
+}
 
 impl TelescopeApp {
-    /// Draws the Settings screen over the whole window: a left page menu, the
-    /// selected page and a bottom bar with Cancel and Accept.
+    /// Draws the Settings screen over the whole window.
     #[tracing::instrument(skip(self, ui))]
     pub(crate) fn show_settings_screen(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("settings_bar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button(t!("settings.cancel")).clicked() {
-                    self.cancel_settings();
-                }
-                if ui.button(t!("settings.apply")).clicked() {
-                    self.apply_settings();
-                }
-                if ui.button(t!("settings.accept")).clicked() {
-                    self.accept_settings();
-                }
-                if !self.settings.its_saved() {
-                    ui.colored_label(Color32::YELLOW, t!("settings.unsaved"));
-                }
-            });
+        let dirty = self.dirty_settings_pages();
+        let item = |page: SettingsPage| {
+            NavItem::new(page, page.title())
+                .icon(page.icon())
+                .dirty(dirty.contains(&page))
+        };
+        let groups = [
+            NavGroup::new(
+                t!("settings.groups.intel"),
+                SettingsPage::INTEL_FLOW.into_iter().map(item).collect(),
+            ),
+            NavGroup::new(t!("settings.groups.view"), vec![item(SettingsPage::Maps)]),
+            NavGroup::new(
+                t!("settings.groups.account"),
+                vec![item(SettingsPage::Characters)],
+            ),
+            NavGroup::new(
+                t!("settings.groups.system"),
+                vec![item(SettingsPage::Application)],
+            ),
+        ];
+        let title = t!("settings.title");
+        let subtitle = format!("Telescope {}", env!("CARGO_PKG_VERSION"));
+        let nav = SideNav::new(&groups).title(&title).subtitle(&subtitle);
+
+        let pending = (!dirty.is_empty()).then(|| {
+            let pages: Vec<String> = dirty.iter().map(|page| page.title()).collect();
+            t!("settings.pending", pages = pages.join(", ")).into_owned()
         });
-        egui::Panel::left("settings_nav")
-            .resizable(false)
-            .show(ui, |ui| {
-                ui.set_min_width(180.0);
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(t!("settings.title")).strong());
-                ui.separator();
-                for page in SettingsPage::ALL {
-                    let selected = self.selected_settings_page == page;
-                    if ui.selectable_label(selected, page.title()).clicked() {
-                        self.selected_settings_page = page;
-                    }
-                }
-            });
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match self.selected_settings_page {
-                SettingsPage::General => self.show_general_page(ui),
-                SettingsPage::Intelligence => self.show_intelligence_page(ui),
-                SettingsPage::Patterns => self.show_patterns_page(ui),
+        let (cancel, apply, accept, saved) = (
+            t!("settings.cancel"),
+            t!("settings.apply"),
+            t!("settings.accept"),
+            t!("settings.saved"),
+        );
+        let bar = ActionBar::new(&cancel, &apply, &accept)
+            .pending(pending.as_deref())
+            .saved_message(&saved);
+
+        let mut page = self.selected_settings_page;
+        // The node editor fills the page itself.
+        let scroll = !(page == SettingsPage::Rules && self.patterns_editor.is_open());
+        let action = SettingsLayout::new("settings").scroll(scroll).show(
+            ui,
+            nav,
+            bar,
+            &mut page,
+            |ui, page| match page {
+                SettingsPage::Sources => self.show_sources_page(ui),
+                SettingsPage::Rules => self.show_patterns_page(ui),
+                SettingsPage::Alerts => self.show_alerts_page(ui),
+                SettingsPage::Maps => self.show_maps_page(ui),
                 SettingsPage::Characters => self.show_characters_page(ui),
-            });
+                SettingsPage::Application => self.show_application_page(ui),
+            },
+        );
+        // A step of the intel flow clicked inside the page wins over the
+        // navigation, which didn't change then.
+        if page != self.selected_settings_page && !self.settings_ui.step_clicked {
+            self.selected_settings_page = page;
+        }
+        self.settings_ui.step_clicked = false;
+        match action {
+            Some(Action::Cancel) => self.cancel_settings(),
+            Some(Action::Apply) => {
+                self.apply_settings();
+            }
+            Some(Action::Accept) => self.accept_settings(),
+            None => {}
+        }
+    }
+
+    /// The pages whose values differ from those the screen opened with (or
+    /// last applied).
+    fn dirty_settings_pages(&self) -> Vec<SettingsPage> {
+        let mut pages = Vec::new();
+        if self.patterns_editor.is_modified(&self.intel_graph) {
+            pages.push(SettingsPage::Rules);
+        }
+        let Some(saved) = &self.settings_snapshot else {
+            return pages;
+        };
+        let now = &self.settings;
+        if now.get_intel() != saved.get_intel() || watched_channels(now) != watched_channels(saved)
+        {
+            pages.push(SettingsPage::Sources);
+        }
+        if now.get_warning_area() != saved.get_warning_area()
+            || now.get_alert_sound() != saved.get_alert_sound()
+            || now.get_alert_duration_secs() != saved.get_alert_duration_secs()
+            || now.get_center_on_alert() != saved.get_center_on_alert()
+        {
+            pages.push(SettingsPage::Alerts);
+        }
+        let startup: HashSet<usize> = saved.get_startup_regions().iter().copied().collect();
+        let startup_changed = self
+            .behavior
+            .tile_data
+            .iter()
+            .any(|(region, data)| data.show_on_startup != startup.contains(region));
+        if startup_changed || now.get_glow_intensity() != saved.get_glow_intensity() {
+            pages.push(SettingsPage::Maps);
+        }
+        if now.get_ui_state().language != saved.get_ui_state().language
+            || now.get_sde() != saved.get_sde()
+            || now.get_db() != saved.get_db()
+        {
+            pages.push(SettingsPage::Application);
+        }
+        // In the navigation's order.
+        pages.sort_by_key(|page| *page as u8);
+        pages
+    }
+
+    /// The "1 · Sources → 2 · Rules → 3 · Alerts" steps at the top of the
+    /// intel pages; clicking one opens that page.
+    fn intel_flow_stepper(&mut self, ui: &mut egui::Ui, current: SettingsPage) {
+        let titles: Vec<String> = SettingsPage::INTEL_FLOW
+            .iter()
+            .map(|page| page.title())
+            .collect();
+        let steps: Vec<&str> = titles.iter().map(String::as_str).collect();
+        let index = SettingsPage::INTEL_FLOW
+            .iter()
+            .position(|page| *page == current)
+            .unwrap_or_default();
+        if let Some(step) = egui_panels::stepper(ui, &steps, index) {
+            self.selected_settings_page = SettingsPage::INTEL_FLOW[step];
+            self.settings_ui.step_clicked = true;
+        }
+    }
+
+    /// Opens a file or folder dialog starting at `start`; the path picked is
+    /// sent to the app as `message(path)`.
+    fn pick_path(
+        &self,
+        dialog_type: DialogType,
+        start: &Path,
+        message: impl Fn(PathBuf) -> Message + Send + Sync + 'static,
+    ) {
+        let mut dialog = Dialog::new(dialog_type);
+        let directory = if start.is_dir() {
+            Some(start)
+        } else {
+            start.parent().filter(|parent| parent.is_dir())
+        };
+        if let Some(directory) = directory {
+            dialog.set_directory(directory);
+        }
+        let task_msg = Arc::clone(&self.task_msg);
+        dialog.open_file_dialog(move |result| {
+            if let DialogResult::Ok(path) = result {
+                task_msg.spawn(message(path));
+            }
         });
     }
+}
+
+/// The channels checked in Sources, sorted.
+fn watched_channels(settings: &Settings) -> Vec<String> {
+    let mut channels = monitored_channel_names(&settings.get_available_channels());
+    channels.sort_unstable();
+    channels
+}
+
+/// "just now", "5 min ago", "3 h ago" or "2 d ago".
+fn time_ago(when: SystemTime) -> String {
+    let secs = SystemTime::now()
+        .duration_since(when)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    match secs {
+        0..60 => t!("settings.time.just_now"),
+        60..3_600 => t!("settings.time.minutes", count = secs / 60),
+        3_600..86_400 => t!("settings.time.hours", count = secs / 3_600),
+        _ => t!("settings.time.days", count = secs / 86_400),
+    }
+    .into_owned()
 }

@@ -1,7 +1,7 @@
 //! Where Telescope keeps its files.
 //!
-//! Every file Telescope writes -- `telescope.toml`, `patterns.toml`, `sde.db`,
-//! the player database, the SDE build cache -- is a path relative to the
+//! Every file Telescope writes -- `telescope.toml`, `sde.db`, the player
+//! database, the SDE build cache -- is a path relative to the
 //! working directory. That works when Telescope runs from its own folder
 //! (development, or a portable copy), but not once it is installed: the
 //! installer's shortcut starts it in the install folder (read-only for the
@@ -17,11 +17,9 @@
 //!   `~/.local/share/telescope` on Linux) is created if needed and becomes
 //!   the working directory. The first time, the settings template shipped
 //!   with the installer ([`SETTINGS_TEMPLATE`]) is copied there as
-//!   `telescope.toml`, and the installer's `patterns.toml` ([`PATTERNS_FILE`])
-//!   as `patterns.toml`. Each is copied only when missing, so the user's own
-//!   edits are never replaced. (Without a shipped `patterns.toml`,
-//!   `PatternEngine::load_or_create` still writes the rules built into the
-//!   executable.)
+//!   `telescope.toml`, only when missing, so the user's own edits are never
+//!   replaced. (The intel rules need no file: they live in the player
+//!   database, seeded from the default graph built into the executable.)
 //!
 //! Files Telescope only reads (the alarm sounds, the settings template) are
 //! looked up with [`find_resource`], which also checks the executable's own
@@ -36,10 +34,6 @@ pub const SETTINGS_FILE: &str = "telescope.toml";
 /// `assets/telescope.default.toml`), copied as [`SETTINGS_FILE`] on the
 /// first run of an installed Telescope.
 pub const SETTINGS_TEMPLATE: &str = "telescope.default.toml";
-
-/// The pattern rules file, shipped with the installer under the same name
-/// and copied to the data folder on first run (see the module docs).
-pub const PATTERNS_FILE: &str = "patterns.toml";
 
 /// Also where the repository keeps the template, for runs from a checkout.
 const SETTINGS_TEMPLATE_IN_REPO: &str = "assets/telescope.default.toml";
@@ -66,7 +60,6 @@ pub fn prepare() {
         &data.join(SETTINGS_FILE),
         &[SETTINGS_TEMPLATE, SETTINGS_TEMPLATE_IN_REPO],
     );
-    copy_if_missing(&data.join(PATTERNS_FILE), &[PATTERNS_FILE]);
     if let Err(error) = std::env::set_current_dir(data) {
         tracing::warn!(path = %data.display(), "could not switch to the data folder: {error}");
     }

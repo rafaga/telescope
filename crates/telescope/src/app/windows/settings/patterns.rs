@@ -1,15 +1,17 @@
-//! Settings -> Patterns: the intel rule graph as a list of input nodes.
+//! Settings -> Rules: the intel rule graph as a list of input nodes.
 //!
-//! Each Input node is a card; opening one shows a floating editor with the
-//! **connected component** of that input. Nodes are shared instances of the
+//! Each Input node is a card (its switch, description, id, what the rule is
+//! made of and the outputs it reaches); opening one shows, in place of the
+//! list, the node editor of the **connected component** of that input. Nodes are shared instances of the
 //! underlying [`RuleGraph`]: opening another input shows the same nodes.
 //!
 //! Wires: `input.out -> detection.in` and `detection.t|f -> output.in`. The
 //! edges are rebuilt from the graph's wires when the editor closes.
 
 use crate::app::TelescopeApp;
-use crate::app::messages::{Message, Type};
+use crate::app::messages::{Message, SettingsPage, Type};
 use eframe::egui::{self, Color32, Pos2, RichText, Ui};
+use egui_panels::{StatusKind, Variant};
 use egui_snarl::{
     InPin, InPinId, NodeId, OutPin, OutPinId, Snarl,
     ui::{PinInfo, SnarlPin, SnarlViewer, SnarlWidget},
@@ -379,14 +381,8 @@ impl PatternsEditor {
             .map(|(node_id, _)| node_id)
     }
 
-    /// Builds the component of `input_id`: everything reachable forward from
-    /// the input (through detections and the special nodes) plus each
-    /// detection's other sources. Outputs are shared, so it never traverses
-    /// through them.
-    fn build_component(&mut self, input_id: &str) {
-        self.snarl = Snarl::new();
-        self.original_ids.clear();
-
+    /// The ids of the component of `input_id` (see [`Self::build_component`]).
+    fn component_ids(&self, input_id: &str) -> HashSet<String> {
         let mut component: HashSet<String> = HashSet::new();
         component.insert(input_id.to_string());
         let mut queue: Vec<String> = vec![input_id.to_string()];
@@ -410,6 +406,17 @@ impl PatternsEditor {
                 }
             }
         }
+        component
+    }
+
+    /// Builds the component of `input_id`: everything reachable forward from
+    /// the input (through detections and the special nodes) plus each
+    /// detection's other sources. Outputs are shared, so it never traverses
+    /// through them.
+    fn build_component(&mut self, input_id: &str) {
+        self.snarl = Snarl::new();
+        self.original_ids.clear();
+        let component = self.component_ids(input_id);
 
         let mut node_of: HashMap<String, NodeId> = HashMap::new();
         let mut next_y: HashMap<u8, f32> = HashMap::new();
@@ -550,11 +557,82 @@ impl PatternsEditor {
     fn rules_has_id(&self, id: &str) -> bool {
         self.graph.nodes.iter().any(|node| node.id == id)
     }
+
+    /// Whether the node editor of a rule is open.
+    pub(crate) fn is_open(&self) -> bool {
+        self.open_input.is_some()
+    }
+
+    /// Whether the rules differ from `live` (the graph running), counting
+    /// the edits in the open editor.
+    pub(crate) fn is_modified(&self, live: &RuleGraph) -> bool {
+        self.loaded && (self.graph != *live || (self.is_open() && self.state.dirty))
+    }
+
+    /// Writes the open editor back into the working graph, keeping it open,
+    /// so the graph can be applied.
+    pub(crate) fn commit_open_editor(&mut self) -> Result<(), String> {
+        if let Some(input_id) = self.open_input.clone() {
+            self.merge_component()?;
+            self.build_component(&input_id);
+        }
+        Ok(())
+    }
+
+    /// The working graph was just applied: nothing is pending.
+    pub(crate) fn mark_applied(&mut self) {
+        self.state.dirty = false;
+    }
+
+    /// What the rule of `input_id` is made of, for its card.
+    fn component_summary(&self, input_id: &str) -> ComponentSummary {
+        let component = self.component_ids(input_id);
+        let mut summary = ComponentSummary::default();
+        for node in &self.graph.nodes {
+            if node.id == input_id {
+                if let NodeKind::Input(input) = &node.kind {
+                    summary.channels.clone_from(&input.channels);
+                }
+                continue;
+            }
+            if !component.contains(&node.id) {
+                continue;
+            }
+            match &node.kind {
+                NodeKind::Input(_) => {}
+                NodeKind::Detection(_) => summary.detections += 1,
+                NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {
+                    summary.logic += 1;
+                }
+                NodeKind::Output(output) => {
+                    if !summary.outputs.contains(&output.kind) {
+                        summary.outputs.push(output.kind);
+                    }
+                }
+            }
+        }
+        summary
+            .outputs
+            .sort_by_key(|kind| OUTPUT_KINDS.iter().position(|known| known == kind));
+        summary
+    }
+}
+
+/// What a rule (the component of an input) is made of.
+#[derive(Default)]
+struct ComponentSummary {
+    /// The channels the input reads; empty means every watched channel.
+    channels: Vec<String>,
+    detections: usize,
+    /// Aggregators, gates and formatters.
+    logic: usize,
+    /// The output kinds reached, in [`OUTPUT_KINDS`] order.
+    outputs: Vec<OutputKind>,
 }
 
 impl TelescopeApp {
-    /// Draws the Rules page: the list of input cards and, if one is open, the
-    /// floating editor of its component.
+    /// The Rules page: one card per input rule, or the node editor of the
+    /// rule opened.
     pub(crate) fn show_patterns_page(&mut self, ui: &mut egui::Ui) {
         let graph = self.intel_graph.clone();
         self.patterns_editor.ensure_loaded(&graph);
@@ -564,91 +642,93 @@ impl TelescopeApp {
             return;
         }
 
-        ui.label(RichText::new(t!("settings.patterns.heading")).strong());
-        ui.label(t!("settings.patterns.graph_hint"));
-        self.patterns_toolbar(ui);
-        for error in &self.patterns_editor.errors {
-            ui.colored_label(Color32::RED, error);
-        }
-        ui.separator();
-
-        let input_ids = self.patterns_editor.input_ids();
-        if input_ids.is_empty() {
-            ui.label(t!("settings.patterns.no_inputs"));
-        }
-        let mut select = None;
-        let mut toggle = None;
-        let mut rename = None;
-        let mut set_description = None;
-        for id in &input_ids {
-            let Some((description, enabled)) = self.patterns_editor.input_summary(id) else {
-                continue;
-            };
-            let selected = self.patterns_editor.selected_input.as_deref() == Some(id.as_str());
-            let card = input_card(ui, id, &description, enabled, selected);
-            if card.clicked {
-                select = Some(id.clone());
-            }
-            if card.toggled {
-                toggle = Some((id.clone(), !enabled));
-            }
-            if let Some(new_id) = card.renamed {
-                rename = Some((id.clone(), new_id));
-            }
-            if let Some(description) = card.description {
-                set_description = Some((id.clone(), description));
-            }
-            ui.add_space(4.0);
-        }
-        if let Some((old, new)) = rename {
-            self.patterns_editor.rename_input(&old, &new);
-        }
-        if let Some((id, description)) = set_description {
-            self.patterns_editor.set_input_description(&id, description);
-        }
-        if let Some((id, enabled)) = toggle {
-            self.patterns_editor.set_input_enabled(&id, enabled);
-        }
-        if let Some(id) = select {
-            self.patterns_editor.selected_input = Some(id);
-        }
-    }
-
-    /// The Rules page toolbar: add a rule, open or remove the selected one, and
-    /// import / export the whole graph.
-    fn patterns_toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.button(t!("settings.patterns.add_input")).clicked() {
+        egui_panels::page(ui, |ui| {
+            let (add, import, export) = egui_panels::page_header_with(
+                ui,
+                &SettingsPage::Rules.title(),
+                Some(&t!("settings.patterns.description")),
+                |ui| {
+                    let export =
+                        egui_panels::button(ui, t!("settings.patterns.export"), Variant::Ghost)
+                            .clicked();
+                    let import =
+                        egui_panels::button(ui, t!("settings.patterns.import"), Variant::Ghost)
+                            .clicked();
+                    let add = egui_panels::button(
+                        ui,
+                        t!("settings.patterns.add_input"),
+                        Variant::Primary,
+                    )
+                    .clicked();
+                    (add, import, export)
+                },
+            )
+            .inner;
+            if add {
                 let id = self.patterns_editor.add_input();
                 self.patterns_editor.selected_input = Some(id);
             }
-            let selected = self.patterns_editor.selected_input.clone();
-            let open = ui.add_enabled(
-                selected.is_some(),
-                egui::Button::new(t!("settings.patterns.open")),
-            );
-            if open.clicked()
-                && let Some(id) = &selected
-            {
-                self.patterns_editor.open_editor(id);
-            }
-            let remove = ui.add_enabled(
-                selected.is_some(),
-                egui::Button::new(t!("settings.patterns.remove_input")),
-            );
-            if remove.clicked()
-                && let Some(id) = &selected
-            {
-                self.patterns_editor.remove_input(id);
-            }
-            ui.separator();
-            if ui.button(t!("settings.patterns.import")).clicked() {
+            if import {
                 self.import_rules();
             }
-            if ui.button(t!("settings.patterns.export")).clicked() {
+            if export {
                 self.export_rules();
             }
+            self.intel_flow_stepper(ui, SettingsPage::Rules);
+
+            let input_ids = self.patterns_editor.input_ids();
+            if input_ids.is_empty() {
+                egui_panels::status(ui, StatusKind::Info, &t!("settings.patterns.no_inputs"));
+            }
+            let mut actions = Vec::new();
+            for id in &input_ids {
+                let Some((description, enabled)) = self.patterns_editor.input_summary(id) else {
+                    continue;
+                };
+                let summary = self.patterns_editor.component_summary(id);
+                let selected = self.patterns_editor.selected_input.as_deref() == Some(id.as_str());
+                let card = input_card(ui, id, &description, enabled, selected, &summary);
+                actions.extend(card.into_iter().map(|action| (id.clone(), action)));
+            }
+            for (id, action) in actions {
+                match action {
+                    CardAction::Select => self.patterns_editor.selected_input = Some(id),
+                    CardAction::Open => self.patterns_editor.open_editor(&id),
+                    CardAction::Remove => self.patterns_editor.remove_input(&id),
+                    CardAction::Enable(enabled) => {
+                        self.patterns_editor.set_input_enabled(&id, enabled);
+                    }
+                    CardAction::Describe(description) => {
+                        self.patterns_editor.set_input_description(&id, description);
+                    }
+                    CardAction::Rename(new_id) => {
+                        self.patterns_editor.rename_input(&id, &new_id);
+                    }
+                }
+            }
+            self.show_graph_status(ui);
         });
+    }
+
+    /// Whether the rule graph being edited is valid, and its errors.
+    fn show_graph_status(&mut self, ui: &mut egui::Ui) {
+        for error in &self.patterns_editor.errors {
+            egui_panels::status(ui, StatusKind::Error, error);
+        }
+        let graph = self.patterns_editor.graph.clone();
+        let errors = self.settings_ui.validation_errors(&graph);
+        if errors.is_empty() {
+            egui_panels::status(ui, StatusKind::Ok, &t!("settings.patterns.valid"));
+        } else {
+            egui_panels::status(
+                ui,
+                StatusKind::Error,
+                &t!("settings.patterns.invalid", count = errors.len()),
+            );
+            for error in errors {
+                ui.label(format!("  • {error}"));
+            }
+        }
     }
 
     /// Loads `rules.toml` (a serialized [`RuleGraph`]) into the editor.
@@ -791,97 +871,141 @@ impl TelescopeApp {
 }
 
 /// What the user did with an input card this frame.
-#[derive(Default)]
-struct InputCard {
-    clicked: bool,
-    toggled: bool,
-    renamed: Option<String>,
-    description: Option<String>,
+enum CardAction {
+    Select,
+    Open,
+    Remove,
+    Enable(bool),
+    Describe(String),
+    Rename(String),
 }
 
+/// The card of an input rule: its switch, description and id, what it is
+/// made of, the outputs it reaches, and Open / Remove.
 fn input_card(
     ui: &mut egui::Ui,
     id: &str,
     description: &str,
     enabled: bool,
     selected: bool,
-) -> InputCard {
-    let mut card = InputCard::default();
-    let visuals = ui.visuals();
-    let (fill, stroke) = if selected {
-        (
-            visuals.selection.bg_fill.gamma_multiply(0.35),
-            visuals.selection.stroke,
-        )
-    } else {
-        (
-            visuals.faint_bg_color,
-            visuals.widgets.noninteractive.bg_stroke,
-        )
-    };
-    let frame = egui::Frame::group(ui.style()).fill(fill).stroke(stroke);
-
+    summary: &ComponentSummary,
+) -> Vec<CardAction> {
+    let mut actions = Vec::new();
+    let theme = egui_panels::Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    let frame = egui::Frame::new()
+        .fill(if selected {
+            palette.card_fill_selected
+        } else {
+            palette.card_fill
+        })
+        .stroke(egui::Stroke::new(
+            1.0,
+            if selected {
+                palette.accent_stroke
+            } else {
+                palette.card_stroke
+            },
+        ))
+        .corner_radius(egui::CornerRadius::same(theme.radius))
+        .inner_margin(theme.section_margin);
     let response = ui
         .push_id(id, |ui| {
             frame
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    let mut description_text = description.to_string();
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut description_text)
-                                .font(egui::FontId::proportional(16.0))
-                                .desired_width(f32::INFINITY),
-                        )
-                        .changed()
-                    {
-                        card.description = Some(description_text);
-                    }
-                    let mut id_text = id.to_string();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut id_text).desired_width(f32::INFINITY))
-                        .changed()
-                        && id_text != id
-                    {
-                        card.renamed = Some(id_text);
-                    }
-                    // Bottom-left: a red/green LED and the state.
+                    ui.spacing_mut().item_spacing.y = 8.0;
                     ui.horizontal(|ui| {
-                        if led_widget(ui, enabled).clicked() {
-                            card.toggled = true;
+                        let mut on = enabled;
+                        if egui_panels::switch(ui, &mut on)
+                            .on_hover_text(if enabled {
+                                t!("settings.patterns.state_on")
+                            } else {
+                                t!("settings.patterns.state_off")
+                            })
+                            .changed()
+                        {
+                            actions.push(CardAction::Enable(on));
                         }
-                        ui.label(if enabled {
-                            t!("settings.patterns.state_on")
-                        } else {
-                            t!("settings.patterns.state_off")
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if egui_panels::button(
+                                ui,
+                                t!("settings.patterns.remove_input"),
+                                Variant::Danger,
+                            )
+                            .clicked()
+                            {
+                                actions.push(CardAction::Remove);
+                            }
+                            if egui_panels::button(
+                                ui,
+                                t!("settings.patterns.open"),
+                                Variant::Secondary,
+                            )
+                            .clicked()
+                            {
+                                actions.push(CardAction::Open);
+                            }
+                            let mut text = description.to_string();
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut text)
+                                        .font(egui::FontId::proportional(theme.section_title_size))
+                                        .frame(egui::Frame::NONE)
+                                        .desired_width(ui.available_width()),
+                                )
+                                .changed()
+                            {
+                                actions.push(CardAction::Describe(text));
+                            }
                         });
-                        ui.label(if enabled { "✅" } else { "⛔" });
                     });
+                    ui.horizontal(|ui| {
+                        let mut id_text = id.to_string();
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut id_text)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(160.0),
+                            )
+                            .on_hover_text(t!("settings.patterns.id_hint"))
+                            .changed()
+                            && id_text != id
+                        {
+                            actions.push(CardAction::Rename(id_text));
+                        }
+                        let channels = if summary.channels.is_empty() {
+                            t!("settings.patterns.all_channels").into_owned()
+                        } else {
+                            summary.channels.join(", ")
+                        };
+                        ui.label(
+                            RichText::new(t!(
+                                "settings.patterns.summary",
+                                channels = channels,
+                                detections = summary.detections,
+                                logic = summary.logic,
+                                outputs = summary.outputs.len()
+                            ))
+                            .size(theme.small_size)
+                            .color(palette.muted_text),
+                        );
+                    });
+                    if !summary.outputs.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for kind in &summary.outputs {
+                                egui_panels::badge(ui, &output_kind_label(*kind));
+                            }
+                        });
+                    }
                 })
                 .response
         })
         .inner;
-
     if response.interact(egui::Sense::click()).clicked() {
-        card.clicked = true;
+        actions.push(CardAction::Select);
     }
-    card
-}
-
-/// A small green (enabled) / red (disabled) LED the user can click to toggle.
-fn led_widget(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::click());
-    let color = if enabled {
-        Color32::from_rgb(60, 200, 60)
-    } else {
-        Color32::from_rgb(220, 60, 60)
-    };
-    let radius = rect.width() * 0.5;
-    let center = rect.center();
-    ui.painter().circle_filled(center, radius, color);
-    ui.painter()
-        .circle_stroke(center, radius, egui::Stroke::new(1.0, Color32::BLACK));
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    actions
 }
 
 /// The snarl viewer of the graph editor.
@@ -1375,8 +1499,8 @@ fn detection_params_editor(ui: &mut Ui, kind: &mut DetectionRuleKind) -> bool {
     changed
 }
 
-fn category_editor(ui: &mut Ui, category: &mut Option<webb::patterns::IntelCategory>) -> bool {
-    use webb::patterns::IntelCategory;
+fn category_editor(ui: &mut Ui, category: &mut Option<webb::intel::IntelCategory>) -> bool {
+    use webb::intel::IntelCategory;
     let options = [
         (None, t!("settings.patterns.category_none").into_owned()),
         (

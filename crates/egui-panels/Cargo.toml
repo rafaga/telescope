@@ -1,0 +1,23 @@
+[package]
+name = "egui-panels"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Settings-style screens for egui: page layout, sections, aligned forms, toggle tiles, segmented controls, switches, path pickers, a side navigation with unsaved-change markers and an action bar."
+readme = "README.md"
+keywords = ["egui", "gui", "settings", "widgets"]
+categories = ["gui"]
+
+[dependencies]
+# Only egui itself: no fonts, renderer or platform code, so the crate fits any
+# egui host (eframe, bevy_egui, a custom integration).
+egui = { version = "0.36", default-features = false }
+
+[dev-dependencies]
+# Fonts for the headless tests, and a window for the example.
+egui = { version = "0.36", features = ["default_fonts"] }
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+
+[[example]]
+name = "settings_demo"

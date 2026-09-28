@@ -33,7 +33,6 @@ use webb::rules::InputKind;
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
 use self::windows::settings::patterns::PatternsEditor;
-use native_tools::dialog::*;
 
 mod audio;
 mod character_link;
@@ -103,7 +102,6 @@ pub struct TelescopeApp {
     // shared, interior-mutable storage; otherwise every channel selected or
     // saved after startup is silently ignored until the app restarts.
     intel_channels: Arc<RwLock<Vec<String>>>,
-    dlg_intel_dir: Dialog,
     /// Live graph executor, shared with the detection thread.
     intel_executor: intel::detection::ExecutorHandle,
     /// System resolver injected into the executor (backed by the SDE).
@@ -114,9 +112,13 @@ pub struct TelescopeApp {
     intel_input: mpsc::Sender<intel::input::InputEvent>,
     /// Detection thread -> UI.
     intel_output: Receiver<intel::detection::DetectedLine>,
-    /// In-memory state of the Settings -> Patterns page (rules being edited).
+    /// Where the reading of each monitored chat log stopped.
+    intel_offsets: intel::input::IntelOffsets,
+    /// In-memory state of the Settings -> Rules page (rules being edited).
     patterns_editor: PatternsEditor,
-    // Alarm sound for `ActionConfig::MapAlert` matches -- see the
+    /// View state of the other Settings pages (filters, dialogs).
+    settings_ui: windows::settings::SettingsUi,
+    // Alarm sound for the intel rules' Sound output -- see the
     // `audio` module docs for why this has to be a long-lived field
     // rather than something opened per alert.
     audio: audio::AlarmPlayer,
@@ -240,10 +242,10 @@ impl Default for TelescopeApp {
         // before that move happens.
         let audio = audio::AlarmPlayer::new(Arc::clone(&msgmon));
 
-        // Load the intel node graph from the player database (seeded from
-        // `patterns.toml` by the schema 1 -> 2 migration), compile the
-        // executor once, and start the detection thread that evaluates the
-        // lines the watcher reports.
+        // Load the intel node graph from the player database (seeded with the
+        // built-in default graph, `rules.toml`, by the schema migration),
+        // compile the executor once, and start the detection thread that
+        // evaluates the lines the watcher reports.
         let mut intel_graph = match esi.load_graph() {
             Ok(graph) if !graph.nodes.is_empty() => graph,
             // No rules yet (fresh or emptied database): fall back to the
@@ -293,7 +295,7 @@ impl Default for TelescopeApp {
             input.path = intel_dir;
         }
         let intel_resolver: intel::detection::ResolverHandle =
-            Arc::new(intel::resolve::UniverseResolver::new(&universe));
+            Arc::new(intel::resolve::SharedResolver::new(&universe));
         let (executor, errors) = Executor::new(intel_graph.clone());
         for error in errors {
             msgmon.spawn(Message::GenericNotification((
@@ -315,22 +317,24 @@ impl Default for TelescopeApp {
             intel_output_tx,
         );
 
+        // Everything already in the monitored logs is history: start at
+        // their current end.
+        let mut intel_offsets = intel::input::IntelOffsets::default();
+        intel_offsets.sync(
+            settings.get_intel(),
+            &settings.get_cloned_monitored_channels(),
+        );
+
         let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(
             (*settings.get_cloned_monitored_channels()).clone(),
         ));
         let intel_event_handler =
             IntelEventHandler::new(Arc::clone(&intel_channels), Arc::clone(&arc_msg_sender));
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
-        let mut dlg_intel_dir = Dialog::default();
-        dlg_intel_dir.dialog_type = DialogType::Directory;
-
-        if settings.get_intel().exists() {
-            dlg_intel_dir.set_directory(settings.get_intel());
-            if !settings.get_cloned_monitored_channels().is_empty() {
-                watcher
-                    .watch(settings.get_intel(), RecursiveMode::NonRecursive)
-                    .expect("Error monitoring intel file path");
-            }
+        if settings.get_intel().exists() && !settings.get_cloned_monitored_channels().is_empty() {
+            watcher
+                .watch(settings.get_intel(), RecursiveMode::NonRecursive)
+                .expect("Error monitoring intel file path");
         }
 
         Self {
@@ -354,20 +358,21 @@ impl Default for TelescopeApp {
             debug: windows::debug::DebugState::default(),
             tree: None,
             universe,
-            selected_settings_page: SettingsPage::Intelligence,
+            selected_settings_page: SettingsPage::Sources,
             task_msg: msgmon,
             task_auth: authmon,
             settings,
             settings_snapshot: None,
             watcher,
             intel_channels,
-            dlg_intel_dir,
             intel_executor,
             intel_resolver,
             intel_graph,
             intel_input,
             intel_output,
+            intel_offsets,
             patterns_editor: PatternsEditor::default(),
+            settings_ui: windows::settings::SettingsUi::default(),
             audio,
             database_updater: database_updater::DatabaseUpdater::default(),
             last_notification: None,
@@ -407,13 +412,14 @@ impl eframe::App for TelescopeApp {
             settings_snapshot: _,
             watcher: _,
             intel_channels: _,
-            dlg_intel_dir: _,
             intel_executor: _,
             intel_resolver: _,
             intel_graph: _,
             intel_input: _,
             intel_output: _,
+            intel_offsets: _,
             patterns_editor: _,
+            settings_ui: _,
             audio: _,
             database_updater: _,
             last_notification: _,
@@ -423,9 +429,10 @@ impl eframe::App for TelescopeApp {
             let _span = tracing::info_span!("telescope_init").entered();
 
             egui_extras::install_image_loaders(ui.ctx());
-            // Wake the UI when a dependency logs a warning/error, so it
-            // shows up in the log panel right away (see `log_bridge`).
-            crate::log_bridge::set_repaint_context(ui.ctx());
+            // Lets background threads wake the UI when they queue work for
+            // it: app messages, intel detections, log records (see
+            // `repaint`).
+            crate::repaint::set_context(ui.ctx());
 
             self.tree = Some(self.create_tree());
             let mut vec_chars = Vec::new();
@@ -555,6 +562,10 @@ impl TelescopeApp {
     /// loaded from the live rules.
     pub(crate) fn open_settings(&mut self) {
         if !self.open[2] {
+            // Fresh channel list and activity for the Sources page.
+            if let Err(error) = self.scan_intel_files() {
+                tracing::debug!("could not scan the chat logs: {error}");
+            }
             self.settings_snapshot = Some(self.settings.clone());
         }
         let graph = self.intel_graph.clone();
@@ -565,9 +576,14 @@ impl TelescopeApp {
     /// Discards every change made while the Settings screen was open and
     /// closes it.
     pub(crate) fn cancel_settings(&mut self) {
-        if let Some(snapshot) = self.settings_snapshot.take() {
+        if let Some(mut snapshot) = self.settings_snapshot.take() {
+            // The log panel layout isn't part of the session: keep it.
+            snapshot.set_layout(&self.settings.get_ui_state());
             self.settings = snapshot;
         }
+        // The language previewed while editing, and the start-up maps.
+        crate::i18n::apply_language(&self.settings.get_ui_state().language);
+        self.reset_startup_flags();
         self.apply_intel_settings();
         let graph = self.intel_graph.clone();
         self.patterns_editor.reset(&graph);
@@ -578,6 +594,11 @@ impl TelescopeApp {
     /// without closing the Settings screen. An invalid graph keeps the errors
     /// shown and returns `false`.
     pub(crate) fn apply_settings(&mut self) -> bool {
+        // The rule open in the node editor is applied too.
+        if let Err(error) = self.patterns_editor.commit_open_editor() {
+            self.patterns_editor.set_errors(vec![error]);
+            return false;
+        }
         let graph = self.patterns_editor.to_graph();
         let errors = graph.validate();
         if !errors.is_empty() {
@@ -587,7 +608,9 @@ impl TelescopeApp {
         }
         self.patterns_editor.clear_errors();
         self.save_settings();
+        self.apply_node_style();
         self.apply_graph(graph);
+        self.patterns_editor.mark_applied();
         // What was just applied is the new baseline for Cancel.
         self.settings_snapshot = Some(self.settings.clone());
         true
@@ -639,7 +662,7 @@ impl TelescopeApp {
                 Message::UpdateIntelDirectory(directory_path) => {
                     match self.settings.set_intel(directory_path.as_path()) {
                         Ok(()) => {
-                            if let Err(e) = self.settings.scan_channels_logs() {
+                            if let Err(e) = self.scan_intel_files() {
                                 self.notify_intel_error("UpdateIntelDirectory", e);
                             }
                         }
@@ -665,7 +688,7 @@ impl TelescopeApp {
                             .join("ChatLogs");
                         match self.settings.set_intel(tpath.as_path()) {
                             Ok(()) => {
-                                if let Err(e) = self.settings.scan_channels_logs() {
+                                if let Err(e) = self.scan_intel_files() {
                                     self.notify_intel_error("DefaultIntelDirectory", e);
                                 }
                             }
@@ -674,13 +697,45 @@ impl TelescopeApp {
                     }
                 }
                 Message::ScanIntelFiles => {
-                    let _ = self.settings.scan_channels_logs();
+                    let _ = self.scan_intel_files();
+                }
+                Message::SdePathPicked(path) => {
+                    if let Err(e) = self.settings.set_sde(&path) {
+                        self.notify_intel_error("SdePathPicked", e);
+                    }
+                }
+                Message::DbPathPicked(path) => {
+                    if let Err(e) = self.settings.set_db(&path) {
+                        self.notify_intel_error("DbPathPicked", e);
+                    }
                 }
             };
         }
         // Lines evaluated by the detection thread since the last frame.
         while let Ok(detected) = self.intel_output.try_recv() {
             self.process_detected_line(detected);
+        }
+    }
+
+    /// Redraws every map's nodes with the node style of the settings (the
+    /// character glow set in Settings -> Maps).
+    fn apply_node_style(&mut self) {
+        let style = self.settings.get_node_style();
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.set_node_style(style);
+                }
+            }
+        }
+    }
+
+    /// Marks the regions whose map opens at start-up as the settings say,
+    /// dropping the choices made in Settings -> Maps and not applied.
+    fn reset_startup_flags(&mut self) {
+        let startup = self.settings.get_startup_regions().clone();
+        for (region, data) in self.behavior.tile_data.iter_mut() {
+            data.show_on_startup = startup.contains(region);
         }
     }
 

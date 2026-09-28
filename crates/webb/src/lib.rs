@@ -4,19 +4,20 @@
 //!   callback.
 //! * [`esi`]: the ESI client and the local player database.
 //! * [`objects`]: the domain types (characters, corporations, alliances, tokens).
-//! * [`patterns`]: the intel pattern-matching engine, rule/dictionary loading
-//!   and evaluation against raw chat-log text.
-//! * [`rules`]: the three-class intel rule model (input -> detection ->
-//!   output) and the detection engine that supersedes [`patterns`]' actions.
-//! * [`graph`]: the node-graph intel model (a DAG of Input/Detection/Output
-//!   nodes) that supersedes [`rules`].
-//! * [`map_alerts`]: condenses a line's matches into what a map's node tooltip
-//!   shows.
+//! * [`graph`]: the intel rules as a node graph (a DAG of Input / Detection /
+//!   Output / logic nodes) and the executor that runs it over each chat-log
+//!   line.
+//! * [`rules`]: the typed building blocks of the graph (detection and output
+//!   types, the built-in word lists, the chat-log line parser).
+//! * [`intel`]: types and limits the intel modules share (the parsed line,
+//!   the detection categories, the validation errors).
+//! * [`map_alerts`]: condenses a line's messages into what a map's node
+//!   tooltip shows.
 
 pub mod auth_service;
 pub mod esi;
 pub mod graph;
+pub mod intel;
 pub mod map_alerts;
 pub mod objects;
-pub mod patterns;
 pub mod rules;

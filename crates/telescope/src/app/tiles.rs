@@ -119,6 +119,9 @@ pub trait TabPane {
     fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str);
     /// Removes the marker of a character that is no longer linked.
     fn remove_marker(&mut self, player_id: usize);
+    /// Redraws the nodes with `style` (Settings -> Maps). Maps that don't
+    /// draw their nodes with it ignore it.
+    fn set_node_style(&mut self, _style: NodeStyle) {}
 }
 
 /// Linked characters on a map, by character id: their solar system and name.
@@ -128,6 +131,9 @@ type CharactersOnMap = HashMap<usize, (usize, String)>;
 
 /// Icon shown to the left of each character name in the node tooltips.
 pub(crate) const CHARACTER_ICON: &str = "👤";
+
+/// How often a node with a linked character repaints its glow (~30 fps).
+const GLOW_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Color of [`ALERT_ICON`] in the node tooltips.
 const ALERT_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
@@ -549,6 +555,10 @@ impl TabPane for RegionPane {
     fn remove_marker(&mut self, player_id: usize) {
         self.characters.remove(&player_id);
         self.map.remove_marker(player_id);
+    }
+
+    fn set_node_style(&mut self, style: NodeStyle) {
+        self.map.set_node_template(Rc::new(Template::new(style)));
     }
 
     #[tracing::instrument(skip(self))]
@@ -1044,7 +1054,7 @@ impl NodeTemplate for Template {
         // `ctx.marker` when the character arrives or leaves. Drawn over an
         // opaque background, the map behind never shows through, and the
         // label's `Galley` is untouched.
-        if ctx.marker > 0.0 {
+        if ctx.marker > 0.0 && self.node_style.glow_max_alpha > 0.0 {
             ctx.animation.glow_outline(
                 ui.painter(),
                 &NodeOutline::RoundedRect {
@@ -1057,7 +1067,10 @@ impl NodeTemplate for Template {
                     .gamma_multiply(self.node_style.glow_max_alpha),
                 ctx.marker,
             );
-            ui.ctx().request_repaint();
+            // The glow is a slow fade: 30 frames per second look the same as
+            // the display's full rate (60-144 Hz) at a fraction of the work,
+            // since every frame runs the whole UI, not just this node.
+            ui.ctx().request_repaint_after(GLOW_FRAME_INTERVAL);
         }
         // Snap to the nearest half-pixel: egui's font atlas caches rasterized
         // glyphs keyed on the exact `FontId` size, and `12.0 * ctx.zoom` is

@@ -11,16 +11,15 @@
 //! every frame with [`drain`] and shows the entries like any other
 //! `GenericNotification`. The layer can fire on any thread (tokio workers,
 //! the file watcher, the loader threads), so the queue is a `Mutex`, and
-//! [`set_repaint_context`] lets it wake up an idle UI so the entry shows up
+//! [`crate::repaint::request`] wakes up an idle UI so the entry shows up
 //! right away instead of on the next mouse move.
 //!
 //! Events from `telescope` itself are skipped: every `tracing::warn!` in this
 //! crate that matters to the user already sends its own `GenericNotification`,
 //! and forwarding them too would show them twice.
 
-use eframe::egui;
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 /// Most entries kept waiting for the UI thread. A dependency stuck in a loop
 /// (say, a loader retrying every frame) must not grow this without bound
@@ -42,13 +41,6 @@ pub struct LogRecord {
 }
 
 static PENDING: Mutex<VecDeque<LogRecord>> = Mutex::new(VecDeque::new());
-static REPAINT: OnceLock<egui::Context> = OnceLock::new();
-
-/// Lets the layer request a repaint when a new entry arrives. Called once,
-/// when the app starts; later calls are ignored.
-pub fn set_repaint_context(ctx: &egui::Context) {
-    let _ = REPAINT.set(ctx.clone());
-}
 
 /// Takes every entry received since the last call, oldest first.
 pub fn drain() -> Vec<LogRecord> {
@@ -65,9 +57,7 @@ fn push(record: LogRecord) {
         }
         pending.push_back(record);
     }
-    if let Some(ctx) = REPAINT.get() {
-        ctx.request_repaint();
-    }
+    crate::repaint::request();
 }
 
 /// Splits a target such as `egui_extras::loaders::http_loader` into

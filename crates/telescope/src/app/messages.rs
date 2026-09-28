@@ -129,34 +129,48 @@ pub enum Target {
     Region,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsPage {
-    General,
-    Intelligence,
-    Patterns,
+    Sources,
+    Rules,
+    Alerts,
+    Maps,
     Characters,
+    Application,
 }
 
 impl SettingsPage {
-    /// Every settings page, in the order the Settings window menu lists
-    /// them. A new page is one variant above, one entry here, one arm in
-    /// `title` and one arm in the Settings window's page `match`.
-    pub const ALL: [SettingsPage; 4] = [
-        SettingsPage::General,
-        SettingsPage::Intelligence,
-        SettingsPage::Patterns,
-        SettingsPage::Characters,
+    /// The pages an intel line goes through, in order (the stepper at the top
+    /// of those pages).
+    pub const INTEL_FLOW: [SettingsPage; 3] = [
+        SettingsPage::Sources,
+        SettingsPage::Rules,
+        SettingsPage::Alerts,
     ];
 
-    /// Label shown for this page in the Settings window menu.
+    /// Label shown for this page in the Settings navigation.
     pub fn title(self) -> String {
         match self {
-            SettingsPage::General => t!("settings.pages.general"),
-            SettingsPage::Intelligence => t!("settings.pages.intelligence"),
-            SettingsPage::Patterns => t!("settings.pages.patterns"),
+            SettingsPage::Sources => t!("settings.pages.sources"),
+            SettingsPage::Rules => t!("settings.pages.rules"),
+            SettingsPage::Alerts => t!("settings.pages.alerts"),
+            SettingsPage::Maps => t!("settings.pages.maps"),
             SettingsPage::Characters => t!("settings.pages.characters"),
+            SettingsPage::Application => t!("settings.pages.application"),
         }
         .into_owned()
+    }
+
+    /// Icon drawn before the title (a glyph of egui's bundled emoji fonts).
+    pub fn icon(self) -> &'static str {
+        match self {
+            SettingsPage::Sources => "📂",
+            SettingsPage::Rules => "🔀",
+            SettingsPage::Alerts => "🔔",
+            SettingsPage::Maps => "🗺",
+            SettingsPage::Characters => "👤",
+            SettingsPage::Application => "⚙",
+        }
     }
 }
 
@@ -180,6 +194,12 @@ pub enum Message {
     IntelFileChanged(String),
     UpdateIntelDirectory(PathBuf),
     DefaultIntelDirectory,
+    /// A file picked with *Browse…* for the SDE database (Settings ->
+    /// Application).
+    SdePathPicked(PathBuf),
+    /// A file picked with *Browse…* for the player database (Settings ->
+    /// Application).
+    DbPathPicked(PathBuf),
     /// Sent by `database_updater::DatabaseUpdater` while its background
     /// update check/build is running, one per phase -- drives the
     /// status text in `database_updater::DatabaseUpdater`'s progress
@@ -215,6 +235,8 @@ impl Message {
             Message::IntelFileChanged(_) => "IntelFileChanged",
             Message::UpdateIntelDirectory(_) => "UpdateIntelDirectory",
             Message::DefaultIntelDirectory => "DefaultIntelDirectory",
+            Message::SdePathPicked(_) => "SdePathPicked",
+            Message::DbPathPicked(_) => "DbPathPicked",
             Message::DatabaseUpdateProgress(_) => "DatabaseUpdateProgress",
             Message::DatabaseUpdated(_) => "DatabaseUpdated",
             Message::ScanIntelFiles => "ScanIntelFiles",
@@ -261,7 +283,8 @@ impl MessageSpawner {
         // rare, non-fatal loss of a single log line, which is a strictly
         // better failure mode for a diagnostics channel.
         match self.spawn.try_send(msg) {
-            Ok(()) => {}
+            // The queue is only drained inside `update()`: ask for a frame.
+            Ok(()) => crate::repaint::request(),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 panic!("The shared runtime has shut down.");
             }
@@ -285,7 +308,10 @@ pub async fn send_app_message(
     tx: &Sender<Message>,
     msg: Message,
 ) -> Result<(), mpsc::error::SendError<Message>> {
-    tx.send(msg).await
+    tx.send(msg).await?;
+    // The queue is only drained inside `update()`: ask for a frame.
+    crate::repaint::request();
+    Ok(())
 }
 
 /// Non-async counterpart of [`send_app_message`], for the `try_send` call
@@ -295,7 +321,9 @@ pub fn try_send_app_message(
     tx: &Sender<Message>,
     msg: Message,
 ) -> Result<(), mpsc::error::TrySendError<Message>> {
-    tx.try_send(msg)
+    tx.try_send(msg)?;
+    crate::repaint::request();
+    Ok(())
 }
 
 /// One "link a character" attempt, handed to [`AuthSpawner::spawn`]: a clone

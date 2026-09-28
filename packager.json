@@ -40,10 +40,6 @@
       {
         "src": "./assets/telescope.default.toml",
         "target": "./telescope.default.toml"
-      },
-      {
-        "src": "./patterns.toml",
-        "target": "./patterns.toml"
       }
     ],
     "externalBinaries": null,

@@ -10,7 +10,7 @@
 use super::input::InputEvent;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use webb::graph::{Activation, Executor, LineContext, SystemResolver};
+use webb::graph::{Activation, Executor, LineContext};
 use webb::rules::IntelLine;
 
 /// Capacity of the UI -> detection channel. Bounded on purpose: if the UI
@@ -26,8 +26,9 @@ pub(crate) const OUTPUT_CAPACITY: usize = 1024;
 /// when the rules change.
 pub(crate) type ExecutorHandle = Arc<RwLock<Executor>>;
 
-/// Shared system resolver injected into the executor (backed by the SDE).
-pub(crate) type ResolverHandle = Arc<dyn SystemResolver + Send + Sync>;
+/// Shared system resolver injected into the executor (backed by the SDE,
+/// rebuilt in place when the SDE is).
+pub(crate) type ResolverHandle = Arc<super::resolve::SharedResolver>;
 
 /// One line's output activations, as delivered to the UI thread.
 pub(crate) struct DetectedLine {
@@ -78,6 +79,8 @@ pub(crate) fn spawn(
                 {
                     break;
                 }
+                // The UI drains detections inside `update()`: ask for a frame.
+                crate::repaint::request();
             }
         });
     });

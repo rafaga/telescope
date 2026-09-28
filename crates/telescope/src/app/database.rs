@@ -17,7 +17,7 @@ impl TelescopeApp {
     /// and `"sde"` for the decompressed SDE tree. Kept next to `sde.db`
     /// itself (falling back to a relative `sde-build-cache` if
     /// `Settings::get_sde()` isn't configured yet, e.g. on a first run
-    /// before the user has set a path in Settings -> Data Sources) so
+    /// before the user has set a path in Settings -> Application) so
     /// it's obvious, on disk, what it belongs to; it isn't meant to be
     /// user-facing.
     pub(crate) fn sde_build_cache_dir(settings: &Settings) -> PathBuf {
@@ -46,6 +46,10 @@ impl TelescopeApp {
             Ok(mut sde) => match sde.get_universe() {
                 Ok(_) => {
                     self.universe = sde.universe;
+                    // The intel detection resolves reported systems against
+                    // this same data: without this, a first run (no `sde.db`
+                    // at startup) would resolve nothing until a restart.
+                    self.intel_resolver.replace(&self.universe);
                     self.task_msg.spawn(Message::GenericNotification((
                         Type::Info,
                         String::from("TelescopeApp"),

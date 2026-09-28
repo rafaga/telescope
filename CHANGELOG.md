@@ -11,6 +11,17 @@ period it happened in.
 
 ### Added
 
+* `egui-panels`, a new workspace crate with the building blocks of a settings
+  screen in egui (page, `Section`, `form`, `switch`, `Slider`, `segmented`,
+  `tile`, `PathPicker`, `stepper`, `EntityCard`, `SideNav`, `ActionBar`,
+  `SettingsLayout`, `Draft`), themed from `egui::Visuals` so light and dark
+  both work, with no dependency on Telescope (September 2026).
+* Settings: the folder status and each channel's last activity (*Sources*),
+  *Browse…* for the SDE and private database files and the SDE status
+  (*Application*), *Test the full alert* (*Alerts*), a character glow
+  intensity slider with a preview (*Maps*) and the live validity of the rule
+  graph (*Rules*) (September 2026).
+
 * Interface translations with `rust-i18n` and TOML files in
   `crates/telescope/locales/` (English and Spanish), a language selector in the
   new *Settings -> General* page and `language` in `[ui]` (`"auto"` follows
@@ -52,6 +63,16 @@ period it happened in.
 
 ### Changed
 
+* Settings redesigned with `egui-panels`: the pages follow an intel line
+  (*Sources -> Rules -> Alerts*, with a stepper) and then *Maps*,
+  *Characters* and *Application*, replacing *General*, *Intelligence*,
+  *Patterns* and *Data Sources*. Every change, the interface language
+  included, is a draft until *Apply* / *Accept* (the language is previewed and
+  *Cancel* restores it); a dot marks the pages with changes and the bar lists
+  them. Rule cards have an enable switch, a summary and their outputs, and a
+  rule open in the node editor is applied too. Characters are cards with their
+  location and an *Unlink* button each (September 2026).
+
 * Noto Sans TC replaced by Noto Sans CJK (`NotoSansCJK-Medium.ttc`), always
   loaded as the fallback font so intel lines in Chinese, Japanese, Korean and
   Russian are drawn whatever the interface language (September 2026).
@@ -70,6 +91,10 @@ period it happened in.
   with `tracing-tracy` 0.12 and `tracy-client` 0.19 (September 2026).
 
 ### Fixed
+
+* Settings: rescanning the chat log folder no longer unchecked every channel
+  (Accept then stopped watching them all), and monitored channels without a
+  log stay listed; unchecking every start-up region is saved (September 2026).
 
 * Crash on the first frame when a character is linked and `sde.db` can't be
   loaded yet (first run, or while it is being rebuilt): map panes without
@@ -95,6 +120,10 @@ period it happened in.
 
 ### Removed
 
+* `patterns.toml` and its engine (`PatternEngine`): the intel rules are a node
+  graph stored in the player database, seeded from the built-in `rules.toml`.
+  The installer no longer ships the file and it is no longer copied to the
+  data folder (September 2026).
 * `puffin` profiling, replaced by Tracy (August 2026).
 * The separate linked-characters window; its content moved into the Settings
   window (April 2024).

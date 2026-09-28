@@ -6,9 +6,9 @@ y = -375.06354
 
 [nodes.kind]
 node = "input"
-description = "migrated from toml"
+description = "chat logs"
 kind = "chat_log"
-path = 'C:\Users\9AWCJ\Downloads\test'
+path = ""
 channels = []
 exclude_motd = true
 
@@ -89,7 +89,7 @@ y = -350.42142
 
 [nodes.kind]
 node = "aggregator"
-inputs = 4
+inputs = 5
 
 [[nodes]]
 id = "visual"
@@ -147,17 +147,17 @@ y = 84.57867
 
 [nodes.kind]
 node = "aggregator"
-inputs = 4
+inputs = 5
 
 [[nodes]]
-id = "detection_1"
+id = "clear_report"
 enabled = true
 x = -269.14978
 y = -642.7141
 
 [nodes.kind]
 node = "detection"
-case_insensitive = false
+case_insensitive = true
 
 [nodes.kind.kind]
 type = "clear_report"
@@ -175,14 +175,14 @@ kind = "or"
 inputs = 2
 
 [[nodes]]
-id = "detection_2"
+id = "status_query"
 enabled = true
 x = -284.8771
 y = -132.86926
 
 [nodes.kind]
 node = "detection"
-case_insensitive = false
+case_insensitive = true
 
 [nodes.kind.kind]
 type = "query"
@@ -204,16 +204,63 @@ emojis = true
 [nodes.kind.log]
 use_current_time = false
 
+[[nodes]]
+id = "neutral_spotted"
+enabled = true
+x = -284.0
+y = -20.0
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+
+[nodes.kind.kind]
+type = "keyword"
+keywords = ["nv"]
+
+[[nodes]]
+id = "suppress_in"
+enabled = true
+x = 885.0
+y = -250.0
+
+[nodes.kind]
+node = "gate"
+kind = "or"
+inputs = 2
+
+[[nodes]]
+id = "not_query"
+enabled = true
+x = 885.0
+y = 60.0
+
+[nodes.kind]
+node = "gate"
+kind = "not"
+inputs = 1
+
+[[nodes]]
+id = "tooltip_gate"
+enabled = true
+x = 1100.0
+y = -20.0
+
+[nodes.kind]
+node = "gate"
+kind = "and"
+inputs = 2
+
 [[edges]]
 from = "chat_logs"
 from_pin = "out"
-to = "detection_1"
+to = "clear_report"
 to_pin = 0
 
 [[edges]]
 from = "chat_logs"
 from_pin = "out"
-to = "detection_2"
+to = "status_query"
 to_pin = 0
 
 [[edges]]
@@ -241,19 +288,13 @@ to = "system_reported"
 to_pin = 0
 
 [[edges]]
-from = "detection_1"
+from = "clear_report"
 from_pin = "t"
 to = "or_1"
 to_pin = 0
 
 [[edges]]
-from = "detection_1"
-from_pin = "t"
-to = "suppress"
-to_pin = 0
-
-[[edges]]
-from = "detection_2"
+from = "status_query"
 from_pin = "t"
 to = "log_in"
 to_pin = 3
@@ -262,12 +303,6 @@ to_pin = 3
 from = "log_in"
 from_pin = "out"
 to = "log"
-to_pin = 0
-
-[[edges]]
-from = "or_1"
-from_pin = "out"
-to = "tooltip"
 to_pin = 0
 
 [[edges]]
@@ -329,3 +364,63 @@ from = "tooltip_in"
 from_pin = "out"
 to = "or_1"
 to_pin = 1
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "neutral_spotted"
+to_pin = 0
+
+[[edges]]
+from = "neutral_spotted"
+from_pin = "t"
+to = "tooltip_in"
+to_pin = 4
+
+[[edges]]
+from = "system_reported"
+from_pin = "t"
+to = "log_in"
+to_pin = 4
+
+[[edges]]
+from = "clear_report"
+from_pin = "t"
+to = "suppress_in"
+to_pin = 0
+
+[[edges]]
+from = "status_query"
+from_pin = "t"
+to = "suppress_in"
+to_pin = 1
+
+[[edges]]
+from = "suppress_in"
+from_pin = "out"
+to = "suppress"
+to_pin = 0
+
+[[edges]]
+from = "status_query"
+from_pin = "t"
+to = "not_query"
+to_pin = 0
+
+[[edges]]
+from = "or_1"
+from_pin = "out"
+to = "tooltip_gate"
+to_pin = 0
+
+[[edges]]
+from = "not_query"
+from_pin = "out"
+to = "tooltip_gate"
+to_pin = 1
+
+[[edges]]
+from = "tooltip_gate"
+from_pin = "out"
+to = "tooltip"
+to_pin = 0

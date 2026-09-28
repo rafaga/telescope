@@ -174,7 +174,7 @@ impl DatabaseUpdater {
                     String::from("DatabaseUpdater"),
                     String::from("spawn"),
                     String::from(
-                        "No SDE database path is configured (Settings -> Data Sources); skipping the update check.",
+                        "No SDE database path is configured (Settings -> Application); skipping the update check.",
                     ),
                 )),
             );

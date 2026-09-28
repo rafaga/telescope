@@ -90,7 +90,10 @@ impl ChatLogSource {
         let mut chunk = file.take(file_length - start);
         let mut raw = Vec::new();
         let bytes_read = chunk.read_to_end(&mut raw).ok()?;
-        let (text, consumed) = decode_utf16le_chunk(&raw[..bytes_read]);
+        // Only whole lines: the watcher can fire while EVE is still writing
+        // one, and a truncated line would be parsed (the line pattern takes
+        // any text) with the rest of it lost on the next read.
+        let (text, consumed) = decode_complete_lines(&raw[..bytes_read]);
         let channel = IntelLogName::parse(file_name)
             .map(|log| log.channel.to_string())
             .unwrap_or_default();
@@ -108,6 +111,71 @@ impl ChatLogSource {
             events,
             end_offset: start + consumed as u64,
         })
+    }
+}
+
+/// Where the reading of each chat log stopped, by file name: the next read
+/// resumes there.
+///
+/// Only the files of monitored channels are tracked. [`Self::sync`] adds
+/// the files it finds at their current length -- so what was written before
+/// Telescope started (or before the channel was monitored) is never replayed
+/// -- and never moves the offset of a file it already knows, so lines
+/// written since the last read are not skipped. A file the watcher reports
+/// before any sync has seen it (its creation event was missed) is read from
+/// the start: it is a new, live log.
+#[derive(Debug, Default)]
+pub(crate) struct IntelOffsets(HashMap<String, u64>);
+
+impl IntelOffsets {
+    /// Where to resume reading `file_name` (0 for an unknown file).
+    pub(crate) fn get(&self, file_name: &str) -> u64 {
+        self.0.get(file_name).copied().unwrap_or(0)
+    }
+
+    /// Records where the last read of `file_name` stopped.
+    pub(crate) fn set(&mut self, file_name: &str, offset: u64) {
+        match self.0.get_mut(file_name) {
+            Some(known) => *known = offset,
+            None => {
+                self.0.insert(file_name.to_string(), offset);
+            }
+        }
+    }
+
+    /// Brings the tracked files in line with `dir`: files of the `monitored`
+    /// channels (sorted) that are new get their current length, files that
+    /// are gone or no longer monitored are dropped, and known files keep
+    /// their offset. Files that can't be read are skipped.
+    pub(crate) fn sync(&mut self, dir: &Path, monitored: &[String]) {
+        let Ok(entries) = dir.read_dir() else {
+            return;
+        };
+        let mut present: HashMap<String, u64> = HashMap::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(log) = IntelLogName::parse(&name) else {
+                continue;
+            };
+            if !monitored.iter().any(|channel| channel == log.channel) {
+                continue;
+            }
+            // Only files the loop can still read count; a file removed
+            // between `read_dir` and here is simply not there.
+            if let Ok(meta) = entry.metadata() {
+                present.insert(name, meta.len());
+            }
+        }
+        self.0.retain(|name, _| present.contains_key(name));
+        for (name, length) in present {
+            self.0.entry(name).or_insert(length);
+        }
+    }
+
+    /// Number of tracked files.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -152,9 +220,24 @@ pub(crate) fn decode_utf16le_chunk(raw: &[u8]) -> (String, usize) {
     (text, usable_len)
 }
 
+/// Like [`decode_utf16le_chunk`], but only up to the last complete line: the
+/// code units after the last `\n` (a line EVE is still writing) are left
+/// unconsumed, to be read whole next time. Returns an empty text and 0 when
+/// there is no complete line yet.
+pub(crate) fn decode_complete_lines(raw: &[u8]) -> (String, usize) {
+    let usable_len = raw.len() - (raw.len() % 2);
+    let complete = raw[..usable_len]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .rposition(|&pair| u16::from_le_bytes(pair) == u16::from(b'\n'))
+        .map_or(0, |last| (last + 1) * 2);
+    decode_utf16le_chunk(&raw[..complete])
+}
+
 #[cfg(test)]
 mod decode_tests {
-    use super::decode_utf16le_chunk;
+    use super::{decode_complete_lines, decode_utf16le_chunk};
 
     /// Encodes `s` as raw UTF-16LE bytes, the same wire format EVE writes,
     /// without needing an encoding crate as a test dependency.
@@ -222,6 +305,26 @@ mod decode_tests {
         // text.
         assert_eq!(consumed, raw.len() - 1);
         assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > hi\r");
+    }
+
+    #[test]
+    fn a_line_still_being_written_is_left_for_the_next_read() {
+        let raw =
+            utf16le_bytes("[ 2021.09.08 22:56:47 ] A > one\r\n[ 2021.09.08 22:56:48 ] B > tw");
+        let (text, consumed) = decode_complete_lines(&raw);
+        assert_eq!(text, "[ 2021.09.08 22:56:47 ] A > one\r\n");
+        assert_eq!(
+            consumed,
+            utf16le_bytes("[ 2021.09.08 22:56:47 ] A > one\r\n").len()
+        );
+        // Nothing complete yet: nothing consumed.
+        assert_eq!(
+            decode_complete_lines(&utf16le_bytes("[ 2021")),
+            (String::new(), 0)
+        );
+        // A CJK character whose code unit has 0x0A as a byte is not a newline.
+        let (text, consumed) = decode_complete_lines(&utf16le_bytes("\u{0a0a}x"));
+        assert_eq!((text.as_str(), consumed), ("", 0));
     }
 
     #[test]
@@ -304,5 +407,60 @@ mod monitored_channel_names_tests {
         let available = HashMap::from([(String::from("Local"), false)]);
         assert!(monitored_channel_names(&available).is_empty());
         assert!(monitored_channel_names(&HashMap::new()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod offsets_tests {
+    use super::IntelOffsets;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "telescope-offsets-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const INTEL: &str = "wc.Vale+Tribute_20230101_000000_1.txt";
+    const LOCAL: &str = "Local_20230101_000000_1.txt";
+
+    #[test]
+    fn new_files_start_at_their_end_and_known_ones_keep_their_offset() {
+        let dir = temp_dir("sync");
+        fs::write(dir.join(INTEL), [0u8; 10]).unwrap();
+        fs::write(dir.join(LOCAL), [0u8; 10]).unwrap();
+        let monitored = vec![String::from("wc.Vale+Tribute")];
+        let mut offsets = IntelOffsets::default();
+
+        offsets.sync(&dir, &monitored);
+        assert_eq!(offsets.get(INTEL), 10);
+        // Not monitored: not tracked.
+        assert_eq!(offsets.len(), 1);
+
+        // Lines written but not read yet survive a rescan.
+        offsets.set(INTEL, 4);
+        fs::write(dir.join(INTEL), [0u8; 20]).unwrap();
+        offsets.sync(&dir, &monitored);
+        assert_eq!(offsets.get(INTEL), 4);
+
+        // A removed file is forgotten.
+        fs::remove_file(dir.join(INTEL)).unwrap();
+        offsets.sync(&dir, &monitored);
+        assert_eq!(offsets.len(), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_file_is_read_from_the_start() {
+        let mut offsets = IntelOffsets::default();
+        assert_eq!(offsets.get(INTEL), 0);
+        offsets.set(INTEL, 42);
+        assert_eq!(offsets.get(INTEL), 42);
     }
 }

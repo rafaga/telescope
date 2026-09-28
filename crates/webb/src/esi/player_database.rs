@@ -20,9 +20,8 @@ pub(crate) struct PlayerDatabase {}
 ///
 /// - 0: one token set for every character, in `metadata`.
 /// - 1: one token set per character, in the `auth` table.
-/// - 2: the intel rule tables (`input_rule`, `detection_rule`, `output_rule`
-///   and their `*_channel`/`*_word`/`*_tag` children), seeded from the
-///   embedded `patterns.toml` template.
+/// - 2: the intel rule graph tables (`node`, `edge`), seeded with the
+///   built-in default graph (the embedded `rules.toml`).
 pub const SCHEMA_VERSION: i32 = 2;
 
 /// A migration script: changes only what its version step needs.

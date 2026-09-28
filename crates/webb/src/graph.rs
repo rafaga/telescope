@@ -1,24 +1,38 @@
 //! Node-graph intel model: a DAG of `Input -> Detection -> ... -> Output`.
 //!
-//! This supersedes the three-class [`crate::rules::RulesConfig`] model. A
-//! [`RuleGraph`] holds typed [`Node`]s and [`Edge`]s. The executor walks the
+//! A [`RuleGraph`] holds typed [`Node`]s and [`Edge`]s. The executor walks the
 //! graph once per input line: an **Input** node emits the raw line as a
-//! [`Mensaje`], every **Detection** node matches it and, on success, emits its
-//! own `tag`/`text`/`data` through its **T** pin (its **F** pin carries a
-//! "nothing found" signal), and every **Output** node turns the messages that
-//! reach it into an [`Activation`].
+//! [`Mensaje`], every **Detection** node matches it, and every **Output** node
+//! turns the messages that reach it into an [`Activation`].
+//!
+//! # Signals
+//!
+//! Each wire carries, for one line, one of three states:
+//!
+//! * **true**, with messages: the node found something. An Output fires only
+//!   on this.
+//! * **false**: the node was evaluated and found nothing.
+//! * **absent**: the node was not evaluated -- it is disabled, its Input
+//!   filtered the line out (channel, MOTD), or nothing upstream reached it.
+//!
+//! A Detection that matches sends true (its messages) on **T** and false on
+//! **F**; one that doesn't sends false on **T** and true (no messages) on
+//! **F**, so **F** means "not found". A false input makes both pins false.
+//! Gates treat an absent input as false, but emit nothing when every input is
+//! absent, and `not` of an absent input is absent: a rule that was never
+//! evaluated can't fire an output through a `not`.
 //!
 //! [`Mensaje`]s never repeat the line metadata: the shared [`LineContext`]
 //! travels once per line alongside them.
 
-use crate::patterns::{
-    ActionConfig, COUNT_GROUP, MAX_MATCHES_PER_CHUNK, MAX_SYSTEM_CANDIDATES, PatternConfig,
+use crate::intel::{
+    COUNT_GROUP, IntelCategory, MAX_CHANNELS, MAX_MATCHES_PER_CHUNK, MAX_SYSTEM_CANDIDATES,
     PatternError, REGEX_SIZE_LIMIT, has_word_boundaries, is_valid_channel, is_valid_id,
     sanitize_display,
 };
 use crate::rules::{
     DetectionMatcher, DetectionRuleKind, DetectionType, Dictionaries, InputKind, IntelLine,
-    OutputKind, OutputType, kind_from_legacy,
+    OutputKind, OutputType,
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use regex::{Regex, RegexBuilder};
@@ -26,9 +40,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::OnceLock;
-
-/// Maximum number of channels in a single input node.
-const MAX_CHANNELS: usize = crate::patterns::MAX_CHANNELS;
 
 /// Pattern of the channel message-of-the-day line EVE writes when joining a
 /// channel; an input with `exclude_motd` drops these lines.
@@ -68,6 +79,11 @@ pub enum Data {
     Text(String),
 }
 
+/// Tag of the message an Input node emits: the raw line text.
+pub const LINE_TAG: &str = "line";
+/// Tag of the message a Formatter node emits: its rendered template.
+pub const FORMATTED_TAG: &str = "formatted";
+
 /// One detection result flowing through the graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mensaje {
@@ -77,16 +93,18 @@ pub struct Mensaje {
     pub text: String,
     /// The structured payload.
     pub data: Data,
-}
-
-/// What a node produced for one input line.
-pub enum Outcome {
-    /// The node matched; its messages travel through the **T** pin.
-    True(Vec<Mensaje>),
-    /// The node did not match; the **F** pin carries a `None` signal.
-    False,
-    /// The node had nothing to do (no input).
-    None,
+    /// Byte ranges of the line text this message stands for (for a system
+    /// report, only the candidates that resolved). Empty when the detection
+    /// did not read the line itself (e.g. it was fed by a formatter). Used to
+    /// compute what is left of the line for the tooltip (see
+    /// [`crate::map_alerts::leftover`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<Range<usize>>,
+    /// What the message tells the tooltip (see [`IntelCategory`]): set from
+    /// the detection type, or chosen for a `custom` detection. `None` for a
+    /// system report, the input line and a formatter's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<IntelCategory>,
 }
 
 /// Resolves a solar-system name to its SDE id. Injected into the executor so
@@ -96,8 +114,8 @@ pub trait SystemResolver {
     fn resolve(&self, name: &str) -> Option<usize>;
 }
 
-/// Parameters of an Input node (an [`crate::rules::InputRule`] without the
-/// id/enabled, which live on the [`Node`]).
+/// Parameters of an Input node (its id and enabled flag live on the
+/// [`Node`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InputNode {
     /// Human-readable description.
@@ -266,9 +284,11 @@ pub struct Node {
 pub enum Pin {
     /// A node's single output.
     Out,
-    /// A Detection's "matched" output.
+    /// A Detection's "matched" output: true with its messages when it
+    /// found something, false otherwise.
     T,
-    /// A Detection's "not matched" output.
+    /// A Detection's "not matched" output: true (no messages) when it found
+    /// nothing, false otherwise.
     F,
 }
 
@@ -320,8 +340,8 @@ pub struct Activation {
     pub messages: Vec<Mensaje>,
 }
 
-/// What travels on a wire during one line's evaluation: `True` carries the
-/// node's messages, `False` is the "nothing found" signal of a T/F pin.
+/// What travels on a wire during one line's evaluation (an absent signal,
+/// the third state, is a wire nothing was routed to; see the module docs).
 #[derive(Debug, Clone)]
 enum Signal {
     True(Vec<Mensaje>),
@@ -343,38 +363,50 @@ impl Signal {
 
 /// Renders a Formatter's template: `{0}`, `{1}`, ... are the messages of each
 /// input pin, `{<tag>}` (e.g. `{ship_names}`) the messages of that tag and
-/// `{all}` every message.
+/// `{all}` every message; the texts of several messages are joined with
+/// ` · `. A placeholder that matches nothing is kept as written.
+///
+/// One pass over the template: the inserted texts come from chat lines, and
+/// a `{0}` or `{all}` typed in the chat must stay literal, not be expanded by
+/// a later replacement.
 fn format_template(template: &str, per_pin: &[Vec<Mensaje>], all: &[Mensaje]) -> String {
-    let mut rendered = template.to_string();
-    let mut tags: Vec<&str> = Vec::new();
-    for message in all {
-        if !tags.contains(&message.tag.as_str()) {
-            tags.push(&message.tag);
+    fn joined<'a>(messages: impl Iterator<Item = &'a Mensaje>) -> String {
+        messages
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rendered.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            rendered.push_str(&rest[open..]);
+            return rendered;
+        };
+        let key = &after[..close];
+        let value = if key == "all" {
+            Some(joined(all.iter()))
+        } else if let Ok(pin) = key.parse::<usize>() {
+            per_pin.get(pin).map(|messages| joined(messages.iter()))
+        } else if all.iter().any(|message| message.tag == key) {
+            Some(joined(all.iter().filter(|message| message.tag == key)))
+        } else {
+            None
+        };
+        match value {
+            Some(value) => rendered.push_str(&value),
+            None => {
+                rendered.push('{');
+                rendered.push_str(key);
+                rendered.push('}');
+            }
         }
+        rest = &after[close + 1..];
     }
-    for tag in tags {
-        let text = all
-            .iter()
-            .filter(|message| message.tag == tag)
-            .map(|message| message.text.clone())
-            .collect::<Vec<_>>()
-            .join(" · ");
-        rendered = rendered.replace(&format!("{{{tag}}}"), &text);
-    }
-    for (index, messages) in per_pin.iter().enumerate() {
-        let text = messages
-            .iter()
-            .map(|message| message.text.clone())
-            .collect::<Vec<_>>()
-            .join(" · ");
-        rendered = rendered.replace(&format!("{{{index}}}"), &text);
-    }
-    let all_text = all
-        .iter()
-        .map(|message| message.text.clone())
-        .collect::<Vec<_>>()
-        .join(" · ");
-    rendered.replace("{all}", &all_text)
+    rendered.push_str(rest);
+    rendered
 }
 
 /// Number of input pins a node exposes.
@@ -420,7 +452,7 @@ impl RuleGraph {
     /// per input, exactly one Output per kind, valid pins and no cycles.
     pub fn validate(&self) -> Vec<PatternError> {
         let mut errors = Vec::new();
-        let dictionaries = Dictionaries::defaults();
+        let dictionaries = Dictionaries::shared();
 
         let mut seen = HashSet::new();
         for node in &self.nodes {
@@ -489,7 +521,7 @@ impl RuleGraph {
                     if incoming.get(node.id.as_str()).copied().unwrap_or(0) != 1 {
                         errors.push(PatternError::MissingInput(node.id.clone()));
                     }
-                    if let Err(error) = detection.kind.validate(&node.id, &dictionaries) {
+                    if let Err(error) = detection.kind.validate(&node.id, dictionaries) {
                         errors.push(error);
                     }
                 }
@@ -525,19 +557,27 @@ impl RuleGraph {
         errors
     }
 
-    /// Returns the nodes of a cycle, if the graph has one.
+    /// The nodes caught in a cycle (and those only reachable through one),
+    /// sorted and capped at 8, if the graph has a cycle.
     fn cycle(&self) -> Option<Vec<String>> {
-        self.topological_order().is_none().then(|| {
-            self.nodes
-                .iter()
-                .map(|node| node.id.clone())
-                .take(8)
-                .collect()
-        })
+        let (_, mut stuck) = self.kahn();
+        if stuck.is_empty() {
+            return None;
+        }
+        stuck.sort_unstable();
+        stuck.truncate(8);
+        Some(stuck)
     }
 
     /// A topological order of the nodes, or `None` when the graph has a cycle.
     pub fn topological_order(&self) -> Option<Vec<String>> {
+        let (order, stuck) = self.kahn();
+        (stuck.is_empty() && order.len() == self.nodes.len()).then_some(order)
+    }
+
+    /// Kahn's algorithm: the nodes in topological order, and the ones left
+    /// with an unresolved incoming edge (a cycle and what hangs from it).
+    fn kahn(&self) -> (Vec<String>, Vec<String>) {
         let mut indegree: HashMap<&str, usize> = self
             .nodes
             .iter()
@@ -566,146 +606,16 @@ impl RuleGraph {
                 }
             }
         }
-        (order.len() == self.nodes.len()).then_some(order)
+        let stuck = indegree
+            .into_iter()
+            .filter(|(_, degree)| *degree > 0)
+            .map(|(id, _)| id.to_string())
+            .collect();
+        (order, stuck)
     }
 
-    /// Builds a graph from a legacy `patterns.toml` configuration: every
-    /// pattern becomes a Detection node, and the `notify`/`map_alert` actions
-    /// become the `log`/`visual`/`sound` outputs (through an aggregator when
-    /// several detections feed one output).
-    pub fn from_pattern_config(config: &PatternConfig) -> Self {
-        let mut graph = Self::default();
-
-        // Inputs: `chat_logs` plus one per distinct channel set.
-        graph.nodes.push(Node {
-            id: String::from("chat_logs"),
-            enabled: true,
-            x: 0.0,
-            y: 0.0,
-            kind: NodeKind::Input(InputNode {
-                description: String::from("migrated from toml"),
-                kind: InputKind::ChatLog,
-                path: String::new(),
-                channels: Vec::new(),
-                exclude_motd: true,
-            }),
-        });
-        let mut channel_inputs: Vec<(Vec<String>, String)> = Vec::new();
-        for channels in config
-            .patterns
-            .iter()
-            .map(|rule| &rule.channels)
-            .chain(config.dictionaries.iter().map(|rule| &rule.channels))
-        {
-            if channels.is_empty() || channel_inputs.iter().any(|(known, _)| known == channels) {
-                continue;
-            }
-            let id = format!("input_{}", channel_inputs.len() + 1);
-            graph.nodes.push(Node {
-                id: id.clone(),
-                enabled: true,
-                x: 0.0,
-                y: 0.0,
-                kind: NodeKind::Input(InputNode {
-                    description: format!("migrated from toml ({})", channels.join(", ")),
-                    kind: InputKind::ChatLog,
-                    path: String::new(),
-                    channels: channels.clone(),
-                    exclude_motd: true,
-                }),
-            });
-            channel_inputs.push((channels.clone(), id));
-        }
-        let input_for = |channels: &[String]| -> String {
-            if channels.is_empty() {
-                return String::from("chat_logs");
-            }
-            channel_inputs
-                .iter()
-                .find(|(known, _)| known == channels)
-                .map(|(_, id)| id.clone())
-                .unwrap_or_else(|| String::from("chat_logs"))
-        };
-
-        let mut notify_ids: Vec<String> = Vec::new();
-        let mut alert_ids: Vec<String> = Vec::new();
-        for rule in &config.patterns {
-            if matches!(rule.action, ActionConfig::Ignore) {
-                continue;
-            }
-            graph.nodes.push(Node {
-                id: rule.id.clone(),
-                enabled: rule.enabled,
-                x: 0.0,
-                y: 0.0,
-                kind: NodeKind::Detection(DetectionNode {
-                    kind: kind_from_legacy(rule),
-                    case_insensitive: rule.case_insensitive,
-                }),
-            });
-            graph.edges.push(Edge {
-                from: input_for(&rule.channels),
-                from_pin: Pin::Out,
-                to: rule.id.clone(),
-                to_pin: 0,
-            });
-            match rule.action {
-                ActionConfig::Notify => notify_ids.push(rule.id.clone()),
-                ActionConfig::MapAlert { .. } => alert_ids.push(rule.id.clone()),
-                ActionConfig::Ignore => {}
-            }
-        }
-
-        // The built-in ship-name dictionaries (all languages) are consolidated
-        // into a single rule that references them by name.
-        let ship_dictionaries = Dictionaries::defaults();
-        if !ship_dictionaries.is_empty() {
-            let id = String::from("ship_names");
-            graph.nodes.push(Node {
-                id: id.clone(),
-                enabled: true,
-                x: 0.0,
-                y: 0.0,
-                kind: NodeKind::Detection(DetectionNode {
-                    kind: DetectionRuleKind::ShipNames {
-                        dictionaries: ship_dictionaries.names(),
-                    },
-                    case_insensitive: true,
-                }),
-            });
-            graph.edges.push(Edge {
-                from: input_for(&[]),
-                from_pin: Pin::Out,
-                to: id.clone(),
-                to_pin: 0,
-            });
-            notify_ids.push(id);
-        }
-
-        if !notify_ids.is_empty() {
-            graph.push_output("log", OutputKind::Log, &notify_ids);
-        }
-        if !alert_ids.is_empty() {
-            graph.push_output("visual", OutputKind::Visual, &alert_ids);
-            graph.push_output("sound", OutputKind::Sound, &alert_ids);
-        }
-        // The tooltip summarizes the whole line: the alert detections plus the
-        // `notify` ones (ships, count, clear).
-        let mut tooltip_ids = notify_ids.clone();
-        for id in &alert_ids {
-            if !tooltip_ids.contains(id) {
-                tooltip_ids.push(id.clone());
-            }
-        }
-        if !tooltip_ids.is_empty() {
-            graph.push_output("tooltip", OutputKind::Tooltip, &tooltip_ids);
-        }
-        graph
-    }
-
-    /// The built-in default graph: the shipped `patterns.toml` translated to a
-    /// graph. It seeds a fresh or rebuilt database and is used whenever there
-    /// are no rules.
+    /// The built-in default graph, from the embedded `rules.toml`. It seeds a
+    /// fresh or rebuilt database and is used whenever there are no rules.
     pub fn default_graph() -> Self {
         let mut graph: Self =
             toml::from_str(DEFAULT_RULES_TOML).expect("the embedded default rules must parse");
@@ -717,57 +627,6 @@ impl RuleGraph {
             }
         }
         graph
-    }
-
-    /// Adds an Output node fed by `detections`: directly when there is one,
-    /// through an aggregator when there are several (one cable per input pin).
-    fn push_output(&mut self, id: &str, kind: OutputKind, detections: &[String]) {
-        self.nodes.push(Node {
-            id: id.to_string(),
-            enabled: true,
-            x: 0.0,
-            y: 0.0,
-            kind: NodeKind::Output(OutputNode {
-                kind,
-                tooltip: TooltipConfig { emojis: true },
-                log: LogConfig::default(),
-            }),
-        });
-        match detections {
-            [] => {}
-            [one] => self.edges.push(Edge {
-                from: one.clone(),
-                from_pin: Pin::T,
-                to: id.to_string(),
-                to_pin: 0,
-            }),
-            many => {
-                let aggregator = format!("{id}_in");
-                self.nodes.push(Node {
-                    id: aggregator.clone(),
-                    enabled: true,
-                    x: 0.0,
-                    y: 0.0,
-                    kind: NodeKind::Aggregator(AggregatorNode {
-                        inputs: many.len() as u8,
-                    }),
-                });
-                for (index, detection) in many.iter().enumerate() {
-                    self.edges.push(Edge {
-                        from: detection.clone(),
-                        from_pin: Pin::T,
-                        to: aggregator.clone(),
-                        to_pin: index as u8,
-                    });
-                }
-                self.edges.push(Edge {
-                    from: aggregator,
-                    from_pin: Pin::Out,
-                    to: id.to_string(),
-                    to_pin: 0,
-                });
-            }
-        }
     }
 }
 
@@ -783,10 +642,16 @@ struct MatchData {
     captures: HashMap<String, String>,
     matched: String,
     word: Option<String>,
+    /// Byte range of the match (the system group for a system report).
+    span: Range<usize>,
 }
 
 impl CompiledDetection {
-    fn compile(node: &DetectionNode, dictionaries: &Dictionaries) -> Result<Self, PatternError> {
+    fn compile(
+        node: &DetectionNode,
+        id: &str,
+        dictionaries: &Dictionaries,
+    ) -> Result<Self, PatternError> {
         match node.kind.matcher(dictionaries) {
             DetectionMatcher::Regex(patterns) => {
                 let mut regexes = Vec::new();
@@ -797,9 +662,23 @@ impl CompiledDetection {
                         .dfa_size_limit(REGEX_SIZE_LIMIT)
                         .build()
                         .map_err(|error| PatternError::InvalidPattern {
-                            id: String::new(),
+                            id: id.to_string(),
                             reason: error.to_string(),
                         })?;
+                    let has_group =
+                        |group: &str| regex.capture_names().flatten().any(|name| name == group);
+                    if let Some(group) = node.kind.system_group()
+                        && !has_group(&group)
+                    {
+                        return Err(PatternError::InvalidSystemGroup {
+                            id: id.to_string(),
+                            group,
+                        });
+                    }
+                    if node.kind.category() == Some(IntelCategory::Count) && !has_group(COUNT_GROUP)
+                    {
+                        return Err(PatternError::MissingCountGroup(id.to_string()));
+                    }
                     regexes.push(regex);
                 }
                 Ok(Self {
@@ -814,7 +693,7 @@ impl CompiledDetection {
                     .match_kind(MatchKind::LeftmostLongest)
                     .build(&words)
                     .map_err(|error| PatternError::DictionaryBuildFailed {
-                        id: String::new(),
+                        id: id.to_string(),
                         reason: error.to_string(),
                     })?;
                 Ok(Self {
@@ -857,6 +736,7 @@ impl CompiledDetection {
                     captures,
                     matched: sanitize_display(&text[span.clone()]),
                     word: None,
+                    span,
                 });
             }
         }
@@ -875,6 +755,7 @@ impl CompiledDetection {
                     captures,
                     matched: text.clone(),
                     word: Some(text),
+                    span: matched.range(),
                 });
             }
         }
@@ -882,19 +763,38 @@ impl CompiledDetection {
     }
 
     fn process(&self, matches: &[MatchData], resolver: &dyn SystemResolver) -> Option<Mensaje> {
+        let mut message = self.process_matches(matches, resolver)?;
+        if !matches!(message.data, Data::Systems(_)) {
+            message.category = self.kind.category();
+        }
+        // A system report already kept the spans of the candidates that
+        // resolved; every other kind stands for all of its matches.
+        if message.spans.is_empty() && !matches!(message.data, Data::Systems(_)) {
+            message.spans = matches.iter().map(|found| found.span.clone()).collect();
+        }
+        Some(message)
+    }
+
+    fn process_matches(
+        &self,
+        matches: &[MatchData],
+        resolver: &dyn SystemResolver,
+    ) -> Option<Mensaje> {
         let tag = self.kind.type_name().to_string();
-        match &self.kind {
-            DetectionRuleKind::SystemReport => self.systems(matches, resolver),
-            DetectionRuleKind::Custom {
-                system_group: Some(_),
-                ..
-            } => self.systems(matches, resolver),
-            DetectionRuleKind::ClearReport { .. } => matches.first().map(|found| Mensaje {
+        // What the detection produces follows from its category (a `custom`
+        // detection chooses one), or a system group when it names systems.
+        if self.kind.system_group().is_some() {
+            return self.systems(matches, resolver);
+        }
+        match self.kind.category() {
+            Some(IntelCategory::Clear) => matches.first().map(|found| Mensaje {
                 tag,
                 text: found.matched.clone(),
                 data: Data::Words(vec![found.matched.clone()]),
+                spans: Vec::new(),
+                category: None,
             }),
-            DetectionRuleKind::ShipNames { .. } | DetectionRuleKind::ShipNamesZh => {
+            Some(IntelCategory::Ship) => {
                 let mut ships: Vec<(String, u32)> = Vec::new();
                 for found in matches {
                     let name = found.matched.clone();
@@ -910,9 +810,11 @@ impl CompiledDetection {
                     tag,
                     text: format_ships(&ships),
                     data: Data::Ships(ships),
+                    spans: Vec::new(),
+                    category: None,
                 })
             }
-            DetectionRuleKind::PilotCount => matches
+            Some(IntelCategory::Count) => matches
                 .iter()
                 .find_map(|found| {
                     found
@@ -924,16 +826,18 @@ impl CompiledDetection {
                     tag,
                     text: count.to_string(),
                     data: Data::Count(count),
+                    spans: Vec::new(),
+                    category: None,
                 }),
-            DetectionRuleKind::Keyword { .. }
-            | DetectionRuleKind::Query { .. }
-            | DetectionRuleKind::Custom { .. } => {
+            Some(IntelCategory::Keyword | IntelCategory::Query) | None => {
                 let words: Vec<String> =
                     matches.iter().map(|found| found.matched.clone()).collect();
                 (!words.is_empty()).then(|| Mensaje {
                     tag,
                     text: words.join(", "),
                     data: Data::Words(words),
+                    spans: Vec::new(),
+                    category: None,
                 })
             }
         }
@@ -945,6 +849,7 @@ impl CompiledDetection {
         let group = self.kind.system_group();
         let mut ids = Vec::new();
         let mut names: Vec<String> = Vec::new();
+        let mut spans = Vec::new();
         for found in matches {
             let name = group
                 .as_deref()
@@ -953,6 +858,7 @@ impl CompiledDetection {
                 .or_else(|| found.word.clone())
                 .unwrap_or_else(|| found.matched.clone());
             if let Some(id) = resolver.resolve(&name) {
+                spans.push(found.span.clone());
                 if !ids.contains(&id) {
                     ids.push(id);
                 }
@@ -965,6 +871,8 @@ impl CompiledDetection {
             tag: self.kind.type_name().to_string(),
             text: names.join(", "),
             data: Data::Systems(ids),
+            spans,
+            category: None,
         })
     }
 }
@@ -1001,28 +909,25 @@ pub struct Executor {
 impl Executor {
     /// Compiles the graph. Returns the executor plus one error per skipped
     /// invalid detection node.
+    ///
+    /// The graph is validated first ([`RuleGraph::validate`]) and every problem
+    /// is returned. A graph with a cycle has no valid evaluation order, so its
+    /// executor evaluates nothing; any other problem only affects the nodes
+    /// involved.
     pub fn new(graph: RuleGraph) -> (Self, Vec<PatternError>) {
-        let dictionaries = Dictionaries::defaults();
-        let mut errors = Vec::new();
+        let dictionaries = Dictionaries::shared();
+        let mut errors = graph.validate();
         let mut compiled = HashMap::new();
         for node in &graph.nodes {
-            if let NodeKind::Detection(detection) = &node.kind
-                && let Err(error) = detection.kind.validate(&node.id, &dictionaries)
-            {
-                errors.push(error);
-            }
             if let NodeKind::Detection(detection) = &node.kind {
-                match CompiledDetection::compile(detection, &dictionaries) {
+                match CompiledDetection::compile(detection, &node.id, dictionaries) {
                     Ok(compiled_detection) => {
                         compiled.insert(node.id.clone(), compiled_detection);
                     }
-                    Err(mut error) => {
-                        if let PatternError::InvalidPattern { id, .. }
-                        | PatternError::DictionaryBuildFailed { id, .. } = &mut error
-                        {
-                            *id = node.id.clone();
+                    Err(error) => {
+                        if !errors.contains(&error) {
+                            errors.push(error);
                         }
-                        errors.push(error);
                     }
                 }
             }
@@ -1030,13 +935,22 @@ impl Executor {
 
         let order = graph.topological_order();
         let mut nodes = graph.nodes;
-        if let Some(order) = order {
-            nodes.sort_by_key(|node| {
-                order
+        match order {
+            Some(order) => {
+                let position: HashMap<&str, usize> = order
                     .iter()
-                    .position(|id| id == &node.id)
-                    .unwrap_or(usize::MAX)
-            });
+                    .enumerate()
+                    .map(|(index, id)| (id.as_str(), index))
+                    .collect();
+                nodes.sort_by_key(|node| {
+                    position
+                        .get(node.id.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX)
+                });
+            }
+            // `validate` already reported the cycle.
+            None => nodes.clear(),
         }
         let mut edges_out: HashMap<String, Vec<Edge>> = HashMap::new();
         let mut connected_inputs: HashMap<String, Vec<u8>> = HashMap::new();
@@ -1082,9 +996,11 @@ impl Executor {
                         continue;
                     }
                     let message = Mensaje {
-                        tag: String::from("line"),
+                        tag: String::from(LINE_TAG),
                         text: context.line.text.clone(),
                         data: Data::Text(context.line.text.clone()),
+                        spans: Vec::new(),
+                        category: None,
                     };
                     self.route(
                         &node.id,
@@ -1097,7 +1013,7 @@ impl Executor {
                     if !node.enabled {
                         continue;
                     }
-                    let matched = match signals.first().and_then(|signal| signal.as_ref()) {
+                    let evaluated = match signals.first().and_then(|signal| signal.as_ref()) {
                         Some(Signal::True(messages)) => {
                             let Some(compiled) = self.compiled.get(&node.id) else {
                                 continue;
@@ -1105,20 +1021,30 @@ impl Executor {
                             let mut matched = Vec::new();
                             for message in messages {
                                 let found = compiled.matches(&message.text);
-                                if let Some(result) = compiled.process(&found, resolver) {
+                                if let Some(mut result) = compiled.process(&found, resolver) {
+                                    // Spans only mean something relative to
+                                    // the line itself.
+                                    if message.tag != LINE_TAG {
+                                        result.spans.clear();
+                                    }
                                     matched.push(result);
                                 }
                             }
-                            matched
+                            Some(matched)
                         }
-                        Some(Signal::False) => Vec::new(),
+                        // Nothing to look at: neither found nor not found.
+                        Some(Signal::False) => None,
                         None => continue,
                     };
-                    if matched.is_empty() {
-                        self.route(&node.id, Pin::F, Signal::False, &mut incoming);
-                    } else {
-                        self.route(&node.id, Pin::T, Signal::True(matched), &mut incoming);
-                    }
+                    let (t, f) = match evaluated {
+                        Some(matched) if !matched.is_empty() => {
+                            (Signal::True(matched), Signal::False)
+                        }
+                        Some(_) => (Signal::False, Signal::True(Vec::new())),
+                        None => (Signal::False, Signal::False),
+                    };
+                    self.route(&node.id, Pin::T, t, &mut incoming);
+                    self.route(&node.id, Pin::F, f, &mut incoming);
                 }
                 NodeKind::Aggregator(_) => {
                     if !node.enabled {
@@ -1148,23 +1074,25 @@ impl Executor {
                         .get(&node.id)
                         .map(Vec::as_slice)
                         .unwrap_or(&[]);
-                    if pins.is_empty() {
-                        continue;
-                    }
-                    let truth: Vec<bool> = pins
+                    // Absent inputs (see the module docs): `None`.
+                    let inputs: Vec<Option<bool>> = pins
                         .iter()
                         .map(|pin| {
                             signals
                                 .get(*pin as usize)
                                 .and_then(|signal| signal.as_ref())
-                                .is_some_and(Signal::is_true)
+                                .map(Signal::is_true)
                         })
                         .collect();
+                    if inputs.iter().all(Option::is_none) {
+                        continue;
+                    }
+                    let truth = || inputs.iter().map(|value| value.unwrap_or(false));
                     let fired = match gate.kind {
-                        GateKind::And => truth.iter().all(|value| *value),
-                        GateKind::Or => truth.iter().any(|value| *value),
-                        GateKind::Xor => truth.iter().filter(|value| **value).count() == 1,
-                        GateKind::Not => truth.first().copied() == Some(false),
+                        GateKind::And => truth().all(|value| value),
+                        GateKind::Or => truth().any(|value| value),
+                        GateKind::Xor => truth().filter(|value| *value).count() == 1,
+                        GateKind::Not => inputs.first().copied().flatten() == Some(false),
                     };
                     let merged: Vec<Mensaje> = signals
                         .iter()
@@ -1204,9 +1132,11 @@ impl Executor {
                         .collect();
                     let text = format_template(&formatter.template, &per_pin, &all);
                     let message = Mensaje {
-                        tag: String::from("formatted"),
+                        tag: String::from(FORMATTED_TAG),
                         text: text.clone(),
                         data: Data::Text(text),
+                        spans: Vec::new(),
+                        category: None,
                     };
                     self.route(
                         &node.id,
@@ -1521,6 +1451,66 @@ mod tests {
         );
     }
 
+    /// `in -> sys (system report) -> not -> log`, for the tri-state tests.
+    fn not_graph() -> RuleGraph {
+        let mut graph = RuleGraph::default();
+        graph.nodes.push(input_node("in"));
+        graph
+            .nodes
+            .push(detection_node("sys", DetectionRuleKind::SystemReport));
+        graph.nodes.push(Node {
+            id: String::from("not"),
+            enabled: true,
+            x: 0.0,
+            y: 0.0,
+            kind: NodeKind::Gate(GateNode {
+                kind: GateKind::Not,
+                inputs: 1,
+            }),
+        });
+        graph.nodes.push(output_node("log"));
+        graph.edges.push(edge("in", Pin::Out, "sys", 0));
+        graph.edges.push(edge("sys", Pin::T, "not", 0));
+        graph.edges.push(edge("not", Pin::Out, "log", 0));
+        graph
+    }
+
+    #[test]
+    fn a_not_gate_of_an_unevaluated_detection_fires_nothing() {
+        // Disabled detection: not evaluated, so `not` has nothing to invert.
+        let mut graph = not_graph();
+        graph.nodes[1].enabled = false;
+        let (executor, _) = Executor::new(graph);
+        assert!(
+            executor
+                .run(&line("no system here"), &FixedResolver)
+                .is_empty()
+        );
+
+        // The line is the channel MOTD, dropped by the input.
+        let (executor, _) = Executor::new(not_graph());
+        assert!(
+            executor
+                .run(&line("Channel MOTD: welcome"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_f_pin_fires_when_nothing_is_found() {
+        let mut graph = graph(DetectionRuleKind::SystemReport);
+        graph.edges.retain(|edge| edge.from != "det");
+        graph.edges.push(Edge {
+            from: String::from("det"),
+            from_pin: Pin::F,
+            to: String::from("out"),
+            to_pin: 0,
+        });
+        let (executor, _) = Executor::new(graph);
+        assert_eq!(executor.run(&line("nothing here"), &FixedResolver).len(), 1);
+        assert!(executor.run(&line("Jita"), &FixedResolver).is_empty());
+    }
+
     #[test]
     fn a_formatter_renders_its_template() {
         let mut graph = RuleGraph::default();
@@ -1554,5 +1544,183 @@ mod tests {
         let (executor, _) = Executor::new(graph);
         let activations = executor.run(&line("Jita, Rifter"), &FixedResolver);
         assert_eq!(activations[0].messages[0].text, "Jita @ Rifter");
+    }
+
+    fn text_message(tag: &str, text: &str) -> Mensaje {
+        Mensaje {
+            tag: String::from(tag),
+            text: String::from(text),
+            data: Data::Text(String::from(text)),
+            spans: Vec::new(),
+            category: None,
+        }
+    }
+
+    #[test]
+    fn placeholders_typed_in_the_chat_are_not_expanded() {
+        let pin0 = vec![text_message("keyword", "hi {1} {all}")];
+        let pin1 = vec![text_message("ship_names", "Rifter")];
+        let all: Vec<Mensaje> = pin0.iter().chain(&pin1).cloned().collect();
+        let rendered = format_template("{0} | {ship_names} | {nope} | {", &[pin0, pin1], &all);
+        assert_eq!(rendered, "hi {1} {all} | Rifter | {nope} | {");
+    }
+
+    #[test]
+    fn a_cycle_reports_its_nodes_and_the_executor_runs_nothing() {
+        let mut graph = RuleGraph::default();
+        graph.nodes.push(input_node("in"));
+        graph.nodes.push(Node {
+            id: String::from("a"),
+            enabled: true,
+            x: 0.0,
+            y: 0.0,
+            kind: NodeKind::Aggregator(AggregatorNode { inputs: 2 }),
+        });
+        graph.nodes.push(Node {
+            id: String::from("b"),
+            enabled: true,
+            x: 0.0,
+            y: 0.0,
+            kind: NodeKind::Aggregator(AggregatorNode { inputs: 1 }),
+        });
+        graph.nodes.push(output_node("log"));
+        graph.edges.push(edge("in", Pin::Out, "a", 0));
+        graph.edges.push(edge("a", Pin::Out, "b", 0));
+        graph.edges.push(edge("b", Pin::Out, "a", 1));
+        graph.edges.push(edge("a", Pin::Out, "log", 0));
+
+        let (executor, errors) = Executor::new(graph);
+        let cycle = errors.iter().find_map(|error| match error {
+            PatternError::GraphCycle(nodes) => Some(nodes.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            cycle,
+            Some(vec![
+                String::from("a"),
+                String::from("b"),
+                String::from("log")
+            ])
+        );
+        assert!(executor.run(&line("Jita"), &FixedResolver).is_empty());
+    }
+
+    fn custom(pattern: Option<&str>, words: &[&str], category: IntelCategory) -> DetectionRuleKind {
+        DetectionRuleKind::Custom {
+            pattern: pattern.map(String::from),
+            words: words.iter().map(|word| word.to_string()).collect(),
+            category: Some(category),
+            system_group: None,
+        }
+    }
+
+    /// The single message a one-detection graph produces for `text`.
+    fn only_message(kind: DetectionRuleKind, text: &str) -> Mensaje {
+        let (executor, errors) = Executor::new(graph(kind));
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut activations = executor.run(&line(text), &FixedResolver);
+        assert_eq!(activations.len(), 1);
+        activations.remove(0).messages.remove(0)
+    }
+
+    #[test]
+    fn a_custom_detection_produces_the_data_of_its_category() {
+        let ships = only_message(
+            custom(None, &["Proteus"], IntelCategory::Ship),
+            "2x Proteus proteus",
+        );
+        assert_eq!(ships.data, Data::Ships(vec![(String::from("Proteus"), 1)]));
+        assert_eq!(ships.category, Some(IntelCategory::Ship));
+
+        let count = only_message(
+            custom(Some(r"(?P<count>\d+) reds"), &[], IntelCategory::Count),
+            "12 reds in local",
+        );
+        assert_eq!(count.data, Data::Count(12));
+
+        let clear = only_message(custom(None, &["empty"], IntelCategory::Clear), "gate empty");
+        assert_eq!(clear.category, Some(IntelCategory::Clear));
+        let summary = crate::map_alerts::AlertSummary::from_messages(&[&clear]);
+        assert_eq!(summary.clear.as_deref(), Some("empty"));
+    }
+
+    #[test]
+    fn a_custom_count_needs_a_count_group() {
+        for kind in [
+            custom(None, &["reds"], IntelCategory::Count),
+            custom(Some(r"\d+ reds"), &[], IntelCategory::Count),
+        ] {
+            let (_, errors) = Executor::new(graph(kind));
+            assert!(
+                errors.iter().any(
+                    |error| matches!(error, PatternError::MissingCountGroup(id) if id == "det")
+                ),
+                "{errors:?}"
+            );
+        }
+    }
+
+    /// Resolves only `H-5GUI`, like the SDE would for these lines.
+    struct H5gui;
+
+    impl SystemResolver for H5gui {
+        fn resolve(&self, name: &str) -> Option<usize> {
+            name.eq_ignore_ascii_case("H-5GUI").then_some(1)
+        }
+    }
+
+    /// The output kinds the shipped default graph fires for `text`, and the
+    /// tooltip's leftover text.
+    fn default_outputs(text: &str) -> (Vec<OutputKind>, Option<String>) {
+        let (executor, errors) = Executor::new(RuleGraph::default_graph());
+        assert!(errors.is_empty(), "{errors:?}");
+        let context = LineContext {
+            channel: String::from("wc.Vale+Tribute"),
+            ..line(text)
+        };
+        let activations = executor.run(&context, &H5gui);
+        let tooltip = activations
+            .iter()
+            .find(|activation| activation.kind == OutputKind::Tooltip)
+            .map(|activation| {
+                let messages: Vec<&Mensaje> = activation.messages.iter().collect();
+                crate::map_alerts::leftover(text, &messages)
+            });
+        (
+            activations
+                .iter()
+                .map(|activation| activation.kind)
+                .collect(),
+            tooltip,
+        )
+    }
+
+    #[test]
+    fn the_default_graph_is_valid() {
+        assert!(RuleGraph::default_graph().validate().is_empty());
+    }
+
+    #[test]
+    fn a_default_sighting_alerts_logs_and_lists_the_pilots() {
+        let (kinds, tooltip) = default_outputs("H-5GUI*  Floris Saucus  nv");
+        for kind in [OutputKind::Visual, OutputKind::Sound, OutputKind::Log] {
+            assert!(kinds.contains(&kind), "{kind:?} missing from {kinds:?}");
+        }
+        assert!(!kinds.contains(&OutputKind::Suppress));
+        assert_eq!(tooltip.as_deref(), Some("Floris Saucus"));
+    }
+
+    #[test]
+    fn a_default_status_question_is_suppressed_and_not_listed() {
+        let (kinds, tooltip) = default_outputs("H-5GUI status?");
+        assert!(kinds.contains(&OutputKind::Suppress), "{kinds:?}");
+        assert_eq!(tooltip, None);
+    }
+
+    #[test]
+    fn a_default_clear_report_is_suppressed_but_listed() {
+        let (kinds, tooltip) = default_outputs("H-5GUI Clear");
+        assert!(kinds.contains(&OutputKind::Suppress), "{kinds:?}");
+        assert_eq!(tooltip.as_deref(), Some(""));
     }
 }

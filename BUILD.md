@@ -46,7 +46,7 @@ If you change the values, rebuild the `telescope` crate (for example
 * You do not need to provide the SDE database (`sde.db`). If the file does
   not exist, Telescope downloads CCP's SDE and builds the database by itself
   (this needs network access). Its path can be changed in
-  *Settings -> Data Sources*, which also has a *Check for SDE updates* button.
+  *Settings -> Application*, which also has a *Check for updates* button.
 * Run the native application:
 
 ```sh
