@@ -37,7 +37,7 @@ impl TelescopeApp {
                     });
                     if picker.browse {
                         self.pick_path(
-                            DialogType::Directory,
+                            super::dialog(DialogType::Directory, &t!("settings.dialogs.chat_logs")),
                             self.settings.get_intel(),
                             Message::UpdateIntelDirectory,
                         );

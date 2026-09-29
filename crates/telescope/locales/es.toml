@@ -51,6 +51,12 @@ minutes = "hace %{count} min"
 hours = "hace %{count} h"
 days = "hace %{count} d"
 
+[settings.dialogs]
+chat_logs = "Carpeta de registros de chat de EVE"
+sde = "Base de datos del SDE"
+player_db = "Base de datos privada"
+database_files = "Bases de datos SQLite"
+
 [settings.sources]
 description = "De dónde lee Telescope el intel: la carpeta de registros de chat de EVE y los canales que vigila."
 folder_title = "Carpeta de registros de chat"
@@ -115,7 +121,8 @@ sde_missing = "El archivo del SDE no existe: busca actualizaciones para construi
 sde_empty = "No se cargaron sistemas del SDE: busca actualizaciones"
 check_updates = "Buscar actualizaciones"
 player_db = "Base privada"
-player_db_hint = "Personajes, tokens y reglas. El archivo se crea si no existe."
+player_db_hint = "Personajes, tokens y reglas. Escribe una ruta nueva o elige un archivo; si no existe, se crea."
+player_db_invalid = "No es una ruta de archivo válida: su carpeta debe existir."
 restart = "Una nueva ruta de base de datos se aplica al reiniciar Telescope."
 
 [settings.patterns]

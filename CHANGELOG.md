@@ -63,6 +63,11 @@ period it happened in.
 
 ### Changed
 
+* CI runs the tests (`cargo test --workspace`) on Windows and macOS, and a
+  Linux workflow (check, test, clippy, fmt) replaces the disabled one;
+  clippy covers the whole workspace with tests and examples (September 2026).
+* `native_tools`: comments and error messages in English (September 2026).
+
 * Settings redesigned with `egui-panels`: the pages follow an intel line
   (*Sources -> Rules -> Alerts*, with a stepper) and then *Maps*,
   *Characters* and *Application*, replacing *General*, *Intelligence*,
@@ -106,6 +111,20 @@ period it happened in.
   2026).
 
 ### Fixed
+
+* File dialogs: the Windows open dialog only offered `*.rs` files (a leftover
+  sample filter), so *Browse…* for the SDE and the private database showed
+  nothing; it ignored the folder to open in; and it had no owner window, so
+  the app's window kept taking input while it was open. Dialogs now have a
+  title, SQLite filters where they pick a database, open in the current
+  folder and, on Windows, are modal to Telescope's window (September 2026).
+* Linux: the machine identifier behind the player database key is the
+  machine id first (`/etc/machine-id`), not the DMI UUID only root can read:
+  running Telescope once as root no longer changes the key. The D-Bus
+  fallback never asks polkit for a password (September 2026).
+* The private database path can be typed, so it can point to a file that
+  doesn't exist yet (the open dialog can't pick one); an invalid path is
+  shown as such and not applied (September 2026).
 
 * The maps take their intel alerts every frame, even while their tab is
   hidden or the Settings screen is open: they used to read them only when

@@ -974,7 +974,8 @@ struct Template {
 }
 
 /// One entry in [`Template::label_cache`]: the inputs that produced
-/// `galley`, so a lookup can tell a still-valid entry from a stale one --
+/// `galley` (plus its own `pixels_per_point`, the screen scale it was laid
+/// out for), so a lookup can tell a still-valid entry from a stale one --
 /// `name`/`color`/`font_size` are exactly the arguments `node_ui` passes to
 /// [`FontsView::layout_no_wrap`](egui::text::Fonts) to build the label, so
 /// comparing them against the node's current values is the same test
@@ -1099,12 +1100,18 @@ impl NodeTemplate for Template {
         // is a same-thread reentrant lock attempt, which deadlocks (egui
         // panics after a 10s timeout in debug builds: "Failed to acquire
         // RwLock write ... Deadlock?").
+        // A galley is laid out for one pixel density: moving the window to a
+        // screen with another scale makes every cached one stale (epaint
+        // warns "pixels_per_point ... have changed between text layout and
+        // tessellation" for each, and draws them at the old resolution).
+        let pixels_per_point = ui.ctx().pixels_per_point();
         let mut label_cache = self.label_cache.borrow_mut();
         let galley = match label_cache.get(&ctx.point.id) {
             Some(cached)
                 if cached.name == ctx.point.name
                     && cached.color == text_color
-                    && cached.font_size == font_size =>
+                    && cached.font_size == font_size
+                    && cached.galley.pixels_per_point == pixels_per_point =>
             {
                 Arc::clone(&cached.galley)
             }

@@ -55,6 +55,9 @@ chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.36", features = ["all_loaders"] }
 image = { version = "0.25.8", features = ["jpeg","png"] }
+# The window handle eframe exposes (same version as eframe/winit), to own the
+# native file dialogs.
+raw-window-handle = "0.6"
 egui_tiles = { version = "0.17.0" }
 egui-snarl = "0.12.0"
 toml = "1.1.2"

@@ -37,21 +37,18 @@ jobs:
   #         command: check
   #         args: --all-features --lib --target wasm32-unknown-unknown
 
-  # test:
-  #   name: Test Suite
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v2
-  #     - uses: actions-rs/toolchain@v1
-  #       with:
-  #         profile: minimal
-  #         toolchain: stable
-  #         override: true
-  #     - run: sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-  #     - uses: actions-rs/cargo@v1
-  #       with:
-  #         command: test
-  #         args: --lib
+  test:
+    name: test on macOS
+    runs-on: macos-latest
+    env:
+      CARGO_HTTP_MULTIPLEXING: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Every crate of the workspace; `webb` with its default features
+      # (the encrypted player database) like Telescope uses it.
+      - run: cargo test --workspace
 
   fmt:
     name: fmt on MacOS
@@ -67,7 +64,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo clippy -- -D warnings
+      # Every crate, tests and examples included.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # trunk:
   #   name: trunk

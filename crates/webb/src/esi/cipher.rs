@@ -85,7 +85,51 @@ pub enum Preparation {
 /// Brings the database at `path` to this machine's key (see the module
 /// docs). A file no key opens is left as it is, and the error says so.
 pub(crate) fn prepare(path: &Path) -> Result<Preparation, Error> {
-    prepare_with(path, machine_id())
+    // Trying a key that doesn't fit is how the file is recognized, and
+    // SQLCipher logs every such attempt to stderr as an error ("hmac check
+    // failed"). Its log is silenced while probing; an actual failure is
+    // still returned (and logged by the caller).
+    let quiet = QuietCipherLog::new();
+    let result = prepare_with(path, machine_id());
+    drop(quiet);
+    result
+}
+
+/// Silences SQLCipher's log (a process-wide setting) until dropped, then
+/// puts back the level it had.
+struct QuietCipherLog {
+    previous: Option<String>,
+}
+
+impl QuietCipherLog {
+    fn new() -> Self {
+        let previous = Connection::open_in_memory().ok().and_then(|connection| {
+            let level = connection
+                .query_row("PRAGMA cipher_log_level", [], |row| row.get::<_, String>(0))
+                .ok()?;
+            connection
+                .query_row("PRAGMA cipher_log_level = NONE", [], |_| Ok(()))
+                .ok()?;
+            Some(level)
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for QuietCipherLog {
+    fn drop(&mut self) {
+        if let Some(level) = &self.previous
+            && let Ok(connection) = Connection::open_in_memory()
+        {
+            // Only SQLCipher's own level names reach here.
+            let _ =
+                connection.query_row(
+                    &format!("PRAGMA cipher_log_level = {level}"),
+                    [],
+                    |_| Ok(()),
+                );
+        }
+    }
 }
 
 fn prepare_with(path: &Path, id: &str) -> Result<Preparation, Error> {
@@ -278,6 +322,22 @@ mod tests {
     }
 
     #[test]
+    fn probing_restores_the_cipher_log_level() {
+        let level = || {
+            Connection::open_in_memory()
+                .unwrap()
+                .query_row("PRAGMA cipher_log_level", [], |row| row.get::<_, String>(0))
+                .unwrap()
+        };
+        let before = level();
+        {
+            let _quiet = QuietCipherLog::new();
+            assert_eq!(level(), "NONE");
+        }
+        assert_eq!(level(), before);
+    }
+
+    #[test]
     fn a_missing_file_is_ready() {
         let path = temp_path("missing");
         assert_eq!(prepare_with(&path, "machine").unwrap(), Preparation::Ready);
@@ -326,7 +386,9 @@ mod tests {
             Some(&format!("PRAGMA key = \"{}\";", raw_key("other machine"))),
         );
         let before = std::fs::read(&path).unwrap();
+        let quiet = QuietCipherLog::new();
         assert!(prepare_with(&path, "machine").is_err());
+        drop(quiet);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         cleanup(&path);
     }

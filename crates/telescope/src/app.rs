@@ -58,6 +58,16 @@ const CJK_FONT: &str = "Noto Sans CJK";
 /// changes.
 const CJK_FONT_INDEX: u32 = 2;
 
+/// The native id of the app's window where the file dialogs need one (the
+/// `HWND` on Windows), if the platform has one.
+fn native_window_id(frame: &eframe::Frame) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        _ => None,
+    }
+}
+
 /// Capacity of the app message channel. Senders never wait on it (a full
 /// channel drops the message), so it has room for bursts: every write to a
 /// watched chat log is one `IntelFileChanged`.
@@ -414,7 +424,7 @@ impl eframe::App for TelescopeApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     #[tracing::instrument(skip_all)]
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let Self {
             initialized: _,
             app_msg: _,
@@ -460,6 +470,8 @@ impl eframe::App for TelescopeApp {
             // it: app messages, intel detections, log records (see
             // `repaint`).
             crate::repaint::set_context(ui.ctx());
+            // The window the native file dialogs belong to.
+            self.settings_ui.set_window_owner(native_window_id(frame));
 
             self.tree = Some(self.create_tree());
             let regions: Vec<u32> = self
@@ -608,6 +620,7 @@ impl TelescopeApp {
             snapshot.set_layout(&self.settings.get_ui_state());
             self.settings = snapshot;
         }
+        self.settings_ui.discard_drafts();
         // The language previewed while editing, and the start-up maps.
         crate::i18n::apply_language(&self.settings.get_ui_state().language);
         self.reset_startup_flags();

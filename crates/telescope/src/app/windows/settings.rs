@@ -19,7 +19,7 @@ use crate::app::messages::{Message, SettingsPage};
 use crate::app::settings::Settings;
 use eframe::egui;
 use egui_panels::{Action, ActionBar, NavGroup, NavItem, SettingsLayout, SideNav, StatusKind};
-use native_tools::dialog::{Dialog, DialogResult, DialogType};
+use native_tools::dialog::{Dialog, DialogResult, DialogType, FileFilter};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,12 +43,27 @@ pub(crate) struct SettingsUi {
     /// The graph last validated for the Rules page and its errors, so the
     /// graph is validated again only when it changes.
     validation: Option<(RuleGraph, Vec<String>)>,
+    /// The private database path being typed while it isn't a valid one
+    /// (Application); `None` when the field shows the path in the settings.
+    db_text: Option<String>,
+    /// The window file dialogs belong to (see `Dialog::set_owner`).
+    window_owner: Option<isize>,
     /// A step of the intel flow was clicked this frame (it changes the page
     /// like the navigation does).
     step_clicked: bool,
 }
 
 impl SettingsUi {
+    /// Forgets what was typed and not applied (Cancel).
+    pub(crate) fn discard_drafts(&mut self) {
+        self.db_text = None;
+    }
+
+    /// Records the app window's native id, for the file dialogs.
+    pub(crate) fn set_window_owner(&mut self, owner: Option<isize>) {
+        self.window_owner = owner;
+    }
+
     /// The errors of `graph` (see [`RuleGraph::validate`]).
     fn validation_errors(&mut self, graph: &RuleGraph) -> &[String] {
         let stale = self
@@ -205,15 +220,14 @@ impl TelescopeApp {
         }
     }
 
-    /// Opens a file or folder dialog starting at `start`; the path picked is
+    /// Opens `dialog` at `start` (its folder, for a file); the path picked is
     /// sent to the app as `message(path)`.
     fn pick_path(
         &self,
-        dialog_type: DialogType,
+        mut dialog: Dialog,
         start: &Path,
         message: impl Fn(PathBuf) -> Message + Send + Sync + 'static,
     ) {
-        let mut dialog = Dialog::new(dialog_type);
         let directory = if start.is_dir() {
             Some(start)
         } else {
@@ -222,6 +236,9 @@ impl TelescopeApp {
         if let Some(directory) = directory {
             dialog.set_directory(directory);
         }
+        if let Some(owner) = self.settings_ui.window_owner {
+            dialog.set_owner(owner);
+        }
         let task_msg = Arc::clone(&self.task_msg);
         dialog.open_file_dialog(move |result| {
             if let DialogResult::Ok(path) = result {
@@ -229,6 +246,23 @@ impl TelescopeApp {
             }
         });
     }
+}
+
+/// A dialog of `dialog_type` titled `title`.
+fn dialog(dialog_type: DialogType, title: &str) -> Dialog {
+    let mut dialog = Dialog::new(dialog_type);
+    dialog.set_title(title);
+    dialog
+}
+
+/// A dialog picking a SQLite database file, titled `title`.
+fn database_dialog(title: &str) -> Dialog {
+    let mut dialog = dialog(DialogType::File, title);
+    dialog.add_filter(FileFilter::new(
+        t!("settings.dialogs.database_files"),
+        &["db", "sqlite", "sqlite3"],
+    ));
+    dialog
 }
 
 /// The channels checked in Sources, sorted.

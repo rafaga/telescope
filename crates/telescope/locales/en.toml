@@ -50,6 +50,12 @@ minutes = "%{count} min ago"
 hours = "%{count} h ago"
 days = "%{count} d ago"
 
+[settings.dialogs]
+chat_logs = "EVE chat log folder"
+sde = "SDE database"
+player_db = "Private database"
+database_files = "SQLite databases"
+
 [settings.sources]
 description = "Where Telescope reads intel from: EVE's chat log folder and the channels it watches."
 folder_title = "Chat log folder"
@@ -114,7 +120,8 @@ sde_missing = "The SDE file doesn't exist: check for updates to build it"
 sde_empty = "No systems loaded from the SDE: check for updates"
 check_updates = "Check for updates"
 player_db = "Private database"
-player_db_hint = "Characters, tokens and rules. The file is created if it doesn't exist."
+player_db_hint = "Characters, tokens and rules. Type a new path or pick a file; a file that doesn't exist is created."
+player_db_invalid = "Not a valid file path: its folder must exist."
 restart = "A new database path takes effect when Telescope restarts."
 
 [settings.patterns]

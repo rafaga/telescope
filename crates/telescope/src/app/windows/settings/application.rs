@@ -6,7 +6,7 @@ use crate::app::messages::{Message, SettingsPage};
 use crate::i18n;
 use eframe::egui;
 use egui_panels::{PathPicker, Section, StatusKind, Variant};
-use native_tools::dialog::DialogType;
+use std::path::Path;
 use std::sync::Arc;
 
 impl TelescopeApp {
@@ -62,7 +62,7 @@ impl TelescopeApp {
                 });
                 if picker.browse {
                     self.pick_path(
-                        DialogType::File,
+                        super::database_dialog(&t!("settings.dialogs.sde")),
                         self.settings.get_sde(),
                         Message::SdePathPicked,
                     );
@@ -81,13 +81,36 @@ impl TelescopeApp {
                     }
                 });
 
-                let mut db = self.settings.get_db().to_string_lossy().into_owned();
+                // Typed by hand too: the file doesn't have to exist yet (a new
+                // location), which the open dialog can't pick. What is typed
+                // is kept while it isn't a valid path, and applied once it is.
+                let current = self.settings.get_db().to_string_lossy().into_owned();
+                let mut db = self
+                    .settings_ui
+                    .db_text
+                    .clone()
+                    .unwrap_or_else(|| current.clone());
                 let picker = form.row(t!("settings.application.player_db"), |ui| {
-                    PathPicker::new(&mut db, &browse).editable(false).show(ui)
+                    PathPicker::new(&mut db, &browse).show(ui)
                 });
+                if picker.edited {
+                    let valid = self.settings.set_db(Path::new(db.trim())).is_ok();
+                    self.settings_ui.db_text = (!valid).then_some(db);
+                } else if self.settings_ui.db_text.as_deref() == Some(current.as_str()) {
+                    self.settings_ui.db_text = None;
+                }
+                if self.settings_ui.db_text.is_some() {
+                    form.note(|ui| {
+                        egui_panels::status(
+                            ui,
+                            StatusKind::Error,
+                            &t!("settings.application.player_db_invalid"),
+                        )
+                    });
+                }
                 if picker.browse {
                     self.pick_path(
-                        DialogType::File,
+                        super::database_dialog(&t!("settings.dialogs.player_db")),
                         self.settings.get_db(),
                         Message::DbPathPicked,
                     );

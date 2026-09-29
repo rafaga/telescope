@@ -3,6 +3,9 @@
 ## Requirements
 
 * A recent stable Rust toolchain (edition 2024, Rust 1.89 or newer).
+* Linux only: the ALSA and OpenSSL development files and `pkg-config`
+  (Debian / Ubuntu: `sudo apt-get install libasound2-dev libssl-dev
+  pkg-config`), for the alarm sound and the encrypted player database.
 * An ESI application from CCP (client id and secret key), registered at the
   [EVE Online developers portal](https://developers.eveonline.com/) with:
   * Callback URL: `http://localhost:56123/login`
@@ -69,9 +72,13 @@ trunk build            # or `trunk serve` to try it in the browser
 
 ## Checks
 
-`check.sh` runs the same checks as CI: `cargo check` (native and wasm),
-`cargo fmt --check`, `cargo clippy` with warnings as errors, the tests
-(including doc tests) and `trunk build`. Since the wasm target is still under
+CI (GitHub Actions, `.github/workflows/`) runs on Linux, Windows and macOS:
+`cargo check --all-features`, `cargo test --workspace`, `cargo fmt --check`
+and `cargo clippy --workspace --all-targets` with warnings as errors.
+
+`check.sh` runs those checks locally, plus the wasm ones: `cargo check`
+(native and wasm), `cargo fmt --check`, `cargo clippy` with warnings as
+errors, the tests (including doc tests) and `trunk build`. Since the wasm target is still under
 development, its steps (`cargo check ... --target wasm32-unknown-unknown` and
 `trunk build`) may fail even when the native build is fine.
 
