@@ -55,7 +55,6 @@ impl TelescopeApp {
                     unlink = Some(character.id);
                 } else if card
                     .response
-                    .interact(egui::Sense::click())
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {

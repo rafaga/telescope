@@ -3,8 +3,8 @@
 use crate::theme::{Theme, mix};
 use egui::{
     Align, Align2, Button, Color32, CornerRadius, FontId, Frame, ImageSource, InnerResponse, Label,
-    Layout, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, Vec2, WidgetInfo,
-    WidgetText, WidgetType, pos2, vec2,
+    Layout, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, Vec2,
+    WidgetInfo, WidgetText, WidgetType, pos2, vec2,
 };
 
 /// What a [`status`] line reports.
@@ -623,7 +623,8 @@ impl<'a> EntityCard<'a> {
     }
 
     /// Draws the card; `actions` are laid out right to left at its right end.
-    /// The response senses clicks on the whole card.
+    /// The response senses clicks on the whole card, except on the widgets
+    /// inside it (the actions), which get their own clicks.
     pub fn show<R>(self, ui: &mut Ui, actions: impl FnOnce(&mut Ui) -> R) -> InnerResponse<R> {
         let theme = Theme::get(ui.ctx());
         let palette = theme.palette(ui.visuals());
@@ -637,60 +638,65 @@ impl<'a> EntityCard<'a> {
         } else {
             palette.card_fill
         };
-        let inner = Frame::new()
-            .fill(fill)
-            .stroke(Stroke::new(1.0, stroke))
-            .corner_radius(CornerRadius::same(theme.radius))
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    let size = Vec2::splat(self.avatar_size);
-                    match self.avatar {
-                        Avatar::Image(source) => {
-                            ui.add(egui::Image::new(source).fit_to_exact_size(size));
+        // The click sense is the scope's own, registered before its
+        // contents: a sense added to the card's response afterwards would sit
+        // on top of the action buttons and take their clicks.
+        let scope = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
+            Frame::new()
+                .fill(fill)
+                .stroke(Stroke::new(1.0, stroke))
+                .corner_radius(CornerRadius::same(theme.radius))
+                .inner_margin(egui::Margin::symmetric(16, 12))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        let size = Vec2::splat(self.avatar_size);
+                        match self.avatar {
+                            Avatar::Image(source) => {
+                                ui.add(egui::Image::new(source).fit_to_exact_size(size));
+                            }
+                            Avatar::Initials(initials) => {
+                                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                                ui.painter().rect_filled(
+                                    rect,
+                                    CornerRadius::same(4),
+                                    mix(palette.card_fill, palette.accent, 0.55),
+                                );
+                                ui.painter().text(
+                                    rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    initials,
+                                    FontId::proportional(self.avatar_size * 0.32),
+                                    palette.strong_text,
+                                );
+                            }
+                            Avatar::None => {}
                         }
-                        Avatar::Initials(initials) => {
-                            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                            ui.painter().rect_filled(
-                                rect,
-                                CornerRadius::same(4),
-                                mix(palette.card_fill, palette.accent, 0.55),
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            ui.label(
+                                RichText::new(self.title)
+                                    .size(theme.section_title_size + 1.0)
+                                    .color(palette.strong_text),
                             );
-                            ui.painter().text(
-                                rect.center(),
-                                Align2::CENTER_CENTER,
-                                initials,
-                                FontId::proportional(self.avatar_size * 0.32),
-                                palette.strong_text,
-                            );
-                        }
-                        Avatar::None => {}
-                    }
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        ui.label(
-                            RichText::new(self.title)
-                                .size(theme.section_title_size + 1.0)
-                                .color(palette.strong_text),
-                        );
-                        for (index, line) in self.lines.into_iter().enumerate() {
-                            let color = if index == 0 {
-                                palette.text
-                            } else {
-                                palette.muted_text
-                            };
-                            ui.label(line.color(color));
-                        }
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), actions)
-                        .inner
+                            for (index, line) in self.lines.into_iter().enumerate() {
+                                let color = if index == 0 {
+                                    palette.text
+                                } else {
+                                    palette.muted_text
+                                };
+                                ui.label(line.color(color));
+                            }
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), actions)
+                            .inner
+                    })
+                    .inner
                 })
                 .inner
-            });
-        let response = inner.response.interact(Sense::click());
-        InnerResponse::new(inner.inner, response)
+        });
+        InnerResponse::new(scope.inner, scope.response)
     }
 }
 

@@ -112,6 +112,12 @@ period it happened in.
 
 ### Fixed
 
+* Settings -> Rules: the buttons, switch and fields of an entry's card
+  didn't respond (Open, Remove, the on/off switch, renaming): the card sensed
+  clicks over its whole area on top of them. The same held for *Unlink* on
+  the Characters page (`egui_panels::EntityCard`). The card's own click is
+  now registered under its contents (September 2026).
+
 * File dialogs: the Windows open dialog only offered `*.rs` files (a leftover
   sample filter), so *Browse…* for the SDE and the private database showed
   nothing; it ignored the folder to open in; and it had no owner window, so

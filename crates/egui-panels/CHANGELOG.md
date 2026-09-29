@@ -2,6 +2,14 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+* `EntityCard`: its actions (buttons in the card) didn't get clicks; the
+  card's click sense sat on top of them. It is now the card scope's own
+  sense, registered under the contents.
+
 ## [0.1.0] - 2026-09-28
 
 ### Added

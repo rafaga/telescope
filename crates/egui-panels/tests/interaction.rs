@@ -2,8 +2,8 @@
 
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, pos2, vec2};
 use egui_panels::{
-    Action, ActionBar, NavGroup, NavItem, PathPicker, SideNav, Slider, form, segmented, stepper,
-    switch, tile,
+    Action, ActionBar, EntityCard, NavGroup, NavItem, PathPicker, SideNav, Slider, Variant, button,
+    form, segmented, stepper, switch, tile,
 };
 
 /// A headless context with a fixed 1000 x 700 screen.
@@ -206,4 +206,38 @@ fn a_slider_jumps_to_the_click_and_snaps_to_its_step() {
     );
     assert_eq!(seconds, 600);
     assert_eq!(seconds % 10, 0);
+}
+
+#[test]
+fn an_entity_card_leaves_its_actions_their_clicks() {
+    // Clicking the action button must reach the button, not the card.
+    let harness = Harness::new();
+    let button_rect = std::cell::Cell::new(Rect::NOTHING);
+    let (mut action_clicked, mut card_clicked) = (false, false);
+    harness.click(|| button_rect.get().center(), &mut |ui| {
+        let card = EntityCard::new("Kara Voss").line("Corp").show(ui, |ui| {
+            let response = button(ui, "Unlink", Variant::Danger);
+            button_rect.set(response.rect);
+            response.clicked()
+        });
+        action_clicked |= card.inner;
+        card_clicked |= card.response.clicked();
+    });
+    assert!(action_clicked);
+    assert!(!card_clicked);
+
+    // Clicking elsewhere on the card clicks the card.
+    let harness = Harness::new();
+    let card_rect = std::cell::Cell::new(Rect::NOTHING);
+    let mut card_clicked = false;
+    harness.click(
+        || pos2(card_rect.get().left() + 8.0, card_rect.get().center().y),
+        &mut |ui| {
+            let card = EntityCard::new("Kara Voss")
+                .show(ui, |ui| button(ui, "Unlink", Variant::Danger).clicked());
+            card_rect.set(card.response.rect);
+            card_clicked |= card.response.clicked();
+        },
+    );
+    assert!(card_clicked);
 }

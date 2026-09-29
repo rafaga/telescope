@@ -909,10 +909,17 @@ fn input_card(
         ))
         .corner_radius(egui::CornerRadius::same(theme.radius))
         .inner_margin(theme.section_margin);
+    // The click sense (select the card) is the scope's own, registered
+    // before its contents so the switch, the fields and the buttons inside
+    // keep their clicks; sensing clicks on the frame's response afterwards
+    // put it on top of them and took every click.
     let response = ui
-        .push_id(id, |ui| {
-            frame
-                .show(ui, |ui| {
+        .scope_builder(
+            egui::UiBuilder::new()
+                .id_salt(id)
+                .sense(egui::Sense::click()),
+            |ui| {
+                frame.show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing.y = 8.0;
                     ui.horizontal(|ui| {
@@ -998,11 +1005,11 @@ fn input_card(
                             }
                         });
                     }
-                })
-                .response
-        })
-        .inner;
-    if response.interact(egui::Sense::click()).clicked() {
+                });
+            },
+        )
+        .response;
+    if response.clicked() {
         actions.push(CardAction::Select);
     }
     actions
