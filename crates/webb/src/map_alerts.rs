@@ -17,7 +17,8 @@ use crate::graph::{Data, Mensaje};
 use crate::intel::{IntelCategory, sanitize_display};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Icon of an alert line in the tooltip (painted red).
 pub const ALERT_ICON: &str = "🔥";

@@ -5,6 +5,8 @@ members = [
     "crates/webb",
     "crates/native_tools",
     "crates/egui-panels",
+    "crates/universe-snapshot",
+    "crates/telescope-web",
 ]
 
 [workspace.package]
@@ -39,6 +41,6 @@ opt-level = 0
 #egui-map = { git = "https://github.com/rafaga/egui-map", branch = "dev" }
 # `Map::remove_marker` is not on crates.io yet (egui-map > 0.9.0): use the
 # sibling checkout until it is published, then drop this line.
-# egui-map = { path = "../egui-map" }
+egui-map = { path = "../egui-map" }
 # sde = { path = "../sde" }
 # sde = { git = "https://github.com/rafaga/sde", branch = "test" }

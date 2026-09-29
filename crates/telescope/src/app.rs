@@ -13,7 +13,7 @@ use crate::app::file::IntelEventHandler;
 use crate::app::messages::{
     CharacterSync, MapSync, Message, SettingsPage, Type, send_app_message, try_send_app_message,
 };
-use crate::app::tiles::{TabPane, TileData, TreeBehavior, UniversePane};
+use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
 use eframe::egui::{self, epaint::text::LayoutJob};
 use egui_tiles::{Tile, Tiles, Tree};
@@ -97,11 +97,17 @@ pub struct TelescopeApp {
     esi: EsiManager,
     // Capped at `Settings::get_max_app_messages` by `update_status_with_error`.
     app_messages: Vec<LayoutJob>,
+    // Debug window only (not in release builds, see `windows.rs`).
+    #[cfg(debug_assertions)]
     search_text: String,
+    #[cfg(debug_assertions)]
     emit_notification: bool,
+    #[cfg(debug_assertions)]
     search_selected_row: Option<usize>,
+    #[cfg(debug_assertions)]
     search_results: Vec<(isize, String, isize, String)>,
     // State of the Debug window's "Advanced" section.
+    #[cfg(debug_assertions)]
     debug: windows::debug::DebugState,
     universe: Universe,
     selected_settings_page: SettingsPage,
@@ -142,6 +148,8 @@ pub struct TelescopeApp {
     patterns_editor: PatternsEditor,
     /// View state of the other Settings pages (filters, dialogs).
     settings_ui: windows::settings::SettingsUi,
+    /// The "Third-party licenses" window, while it is open.
+    licenses: Option<windows::licenses::LicensesWindow>,
     // Alarm sound for the intel rules' Sound output -- see the
     // `audio` module docs for why this has to be a long-lived field
     // rather than something opened per alert.
@@ -200,7 +208,7 @@ impl Default for TelescopeApp {
         // than loading data that might not be trustworthy; `universe`
         // gets populated once `DatabaseUpdater` (spawned unconditionally
         // below) finishes building a fresh database, via
-        // `Message::DatabaseUpdated`/`Self::handle_database_updated`.
+        // `Message::DatabaseUpdated`/`Self::reload_sde`.
         //
         // This is deliberately independent of the background check
         // below: a self-consistent database can still be for an old SDE
@@ -381,15 +389,20 @@ impl Default for TelescopeApp {
             open: [false; 3],
             esi,
             app_messages: Vec::new(),
+            #[cfg(debug_assertions)]
             search_text: String::new(),
+            #[cfg(debug_assertions)]
             search_selected_row: None,
+            #[cfg(debug_assertions)]
             emit_notification: false,
             behavior: TreeBehavior::new(
                 Arc::clone(&msgmon),
                 settings.get_factor(),
                 settings.get_sde().to_path_buf(),
             ),
+            #[cfg(debug_assertions)]
             search_results: Vec::new(),
+            #[cfg(debug_assertions)]
             debug: windows::debug::DebugState::default(),
             tree: None,
             universe,
@@ -409,6 +422,7 @@ impl Default for TelescopeApp {
             intel_offsets,
             patterns_editor: PatternsEditor::default(),
             settings_ui: windows::settings::SettingsUi::default(),
+            licenses: None,
             audio,
             database_updater: database_updater::DatabaseUpdater::default(),
             last_notification: None,
@@ -433,10 +447,15 @@ impl eframe::App for TelescopeApp {
             open: _,
             esi: _,
             app_messages: _,
+            #[cfg(debug_assertions)]
             search_text: _,
+            #[cfg(debug_assertions)]
             emit_notification: _,
+            #[cfg(debug_assertions)]
             search_selected_row: _,
+            #[cfg(debug_assertions)]
             search_results: _,
+            #[cfg(debug_assertions)]
             debug: _,
             tree: _,
             universe: _,
@@ -457,6 +476,7 @@ impl eframe::App for TelescopeApp {
             intel_offsets: _,
             patterns_editor: _,
             settings_ui: _,
+            licenses: _,
             audio: _,
             database_updater: _,
             last_notification: _,
@@ -474,34 +494,10 @@ impl eframe::App for TelescopeApp {
             self.settings_ui.set_window_owner(native_window_id(frame));
 
             self.tree = Some(self.create_tree());
-            let regions: Vec<u32> = self
-                .universe
-                .regions
-                .keys()
-                .copied()
-                .filter(|val| val < &11000000)
-                .collect();
-
-            for key in &regions {
-                let region = self.universe.regions.get(key).unwrap();
-                self.behavior.tile_data.insert(
-                    region.id as usize,
-                    TileData::new(region.name.clone(), false),
-                );
-            }
-
-            let startup_regions = self.settings.get_startup_regions().clone();
-            for region in startup_regions {
-                if regions.contains(&(region as u32)) {
-                    self.behavior
-                        .tile_data
-                        .entry(region)
-                        .and_modify(|z_region| {
-                            z_region.show_on_startup = true;
-                        });
-                    self.create_new_regional_pane(region);
-                }
-            }
+            // Both again whenever the SDE is reloaded (`reload_sde`): on a
+            // first run the universe is still empty here.
+            self.sync_region_list();
+            self.open_startup_regions();
 
             self.report_player_database_status();
             if !self.esi.characters.is_empty() {
@@ -554,6 +550,7 @@ impl eframe::App for TelescopeApp {
                     if ui.button(t!("menu.preferences")).clicked() {
                         self.open_settings();
                     }
+                    #[cfg(debug_assertions)]
                     if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;
                     }
@@ -563,6 +560,10 @@ impl eframe::App for TelescopeApp {
                     }
                 });
                 ui.menu_button(t!("menu.help"), |ui| {
+                    if ui.button(t!("menu.licenses")).clicked() {
+                        self.open_licenses();
+                    }
+                    ui.separator();
                     if ui.button(t!("menu.about")).clicked() {
                         self.open[0] = true;
                     }
@@ -576,8 +577,10 @@ impl eframe::App for TelescopeApp {
         if self.open[0] {
             self.open_about_window(ui.ctx());
         }
+        self.show_licenses_window(ui.ctx());
 
-        // Debug menu
+        // Debug menu (not in release builds)
+        #[cfg(debug_assertions)]
         if self.open[1] {
             self.open_debug_menu(ui.ctx());
         }
@@ -647,7 +650,14 @@ impl TelescopeApp {
             return false;
         }
         self.patterns_editor.clear_errors();
+        let sde_changed = self
+            .settings_snapshot
+            .as_ref()
+            .is_some_and(|saved| saved.get_sde() != self.settings.get_sde());
         self.save_settings();
+        if sde_changed {
+            self.change_sde();
+        }
         self.apply_node_style();
         self.apply_graph(graph);
         self.patterns_editor.mark_applied();
@@ -709,13 +719,13 @@ impl TelescopeApp {
                         Err(e) => self.notify_intel_error("UpdateIntelDirectory", e),
                     }
                 }
-                Message::DatabaseUpdateProgress(status) => {
-                    self.database_updater.set_status(status);
+                Message::DatabaseUpdateProgress(phase) => {
+                    self.database_updater.set_phase(phase);
                 }
                 Message::DatabaseUpdated(rebuilt) => {
                     self.database_updater.hide();
                     if rebuilt {
-                        self.handle_database_updated();
+                        self.reload_sde();
                     }
                 }
                 Message::DefaultIntelDirectory => {

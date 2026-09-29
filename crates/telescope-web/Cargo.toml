@@ -1,0 +1,23 @@
+[package]
+name = "telescope-web"
+description = "Lightweight web (WASM) build of Telescope: the universe map in the browser"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# `glow` (WebGL) rather than `wgpu`: the web build only paints 2D shapes and this
+# keeps the download small.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow"] }
+egui-map = { version = "0.11.0" }
+universe-snapshot = { path = "../universe-snapshot/" }
+tracing = "0.1"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4.54"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Response"] }
+tracing-wasm = "0.2"

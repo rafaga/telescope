@@ -1,13 +1,18 @@
 //! `TelescopeApp` methods that keep the local databases in sync: locating the
-//! SDE build cache directory and reacting to a finished SDE database update.
+//! SDE build cache directory and reloading the SDE database without a restart.
 //! (Storing a freshly authorized character lives in `character_link.rs`.)
 
 use crate::app::TelescopeApp;
+use crate::app::database_updater::DatabaseUpdater;
 use crate::app::messages::Message;
 use crate::app::messages::Type;
 use crate::app::settings::Settings;
+use crate::app::tiles::TileData;
+use egui_tiles::Tile;
 use sde::SdeManager;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 impl TelescopeApp {
     /// Base scratch directory for `database_updater::DatabaseUpdater`'s
@@ -27,56 +32,125 @@ impl TelescopeApp {
         }
     }
 
-    /// Reloads `self.universe` from `sde.db` after
-    /// `database_updater::DatabaseUpdater` has (re)built it.
-    ///
-    /// Note this only refreshes the in-memory `universe` data (used e.g.
-    /// to look up region/system names and coordinates); every map pane
-    /// (`RegionPane`/`UniversePane`, see `tiles.rs`) and the search box
-    /// already open their own `SdeManager` against `settings.get_sde()`
-    /// on demand, so they pick up the new database automatically. What
-    /// does *not* happen live is regenerating the region *tile* list
-    /// built once at startup (`create_tree`/the `self.behavior.tile_data`
-    /// entries) -- a region that didn't exist in `sde.db` before this
-    /// update (i.e. this was the very first successful build) won't get
-    /// a tile until Telescope is restarted.
+    /// Loads the SDE database again -- after `database_updater::DatabaseUpdater`
+    /// rebuilt it, or when another one is picked in Settings -> Application --
+    /// so it takes effect without restarting Telescope: the in-memory
+    /// `universe`, the intel resolver, the list of regions, the systems of
+    /// every open map and the startup regions that couldn't open before (a
+    /// first run starts with no database).
     #[tracing::instrument(skip(self))]
-    pub(crate) fn handle_database_updated(&mut self) {
-        match SdeManager::new(self.settings.get_sde(), self.settings.get_factor()) {
-            Ok(mut sde) => match sde.get_universe() {
-                Ok(_) => {
-                    self.universe = sde.universe;
-                    // The intel detection resolves reported systems against
-                    // this same data: without this, a first run (no `sde.db`
-                    // at startup) would resolve nothing until a restart.
-                    self.intel_resolver.replace(&self.universe);
-                    self.task_msg.spawn(Message::GenericNotification((
-                        Type::Info,
-                        String::from("TelescopeApp"),
-                        String::from("handle_database_updated"),
-                        String::from(
-                            "SDE data reloaded. Restart Telescope to see newly available regions on the map.",
-                        ),
-                    )));
-                }
-                Err(t_error) => {
-                    self.task_msg.spawn(Message::GenericNotification((
-                        Type::Error,
-                        String::from("TelescopeApp"),
-                        String::from("handle_database_updated"),
-                        t_error.to_string(),
-                    )));
-                }
-            },
-            Err(t_error) => {
+    pub(crate) fn reload_sde(&mut self) {
+        let loaded = SdeManager::new(self.settings.get_sde(), self.settings.get_factor())
+            .and_then(|mut sde| sde.get_universe().map(|_| sde.universe));
+        let universe = match loaded {
+            Ok(universe) => universe,
+            Err(error) => {
                 self.task_msg.spawn(Message::GenericNotification((
                     Type::Error,
                     String::from("TelescopeApp"),
-                    String::from("handle_database_updated"),
-                    t_error.to_string(),
+                    String::from("reload_sde"),
+                    error.to_string(),
                 )));
+                return;
+            }
+        };
+        self.universe = universe;
+        // The intel detection resolves reported systems against this same
+        // data.
+        self.intel_resolver.replace(&self.universe);
+        self.behavior
+            .set_path(self.settings.get_sde().to_path_buf());
+        self.sync_region_list();
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.reload_data(self.settings.get_sde());
+                }
             }
         }
+        self.open_startup_regions();
+        self.task_msg.spawn(Message::GenericNotification((
+            Type::Info,
+            String::from("TelescopeApp"),
+            String::from("reload_sde"),
+            String::from("SDE data reloaded."),
+        )));
+    }
+
+    /// Makes the list of regions (`self.behavior.tile_data`, the maps' ➕
+    /// menu) match `self.universe`: new regions are added, those gone are
+    /// removed with their map, and the others keep their state.
+    pub(crate) fn sync_region_list(&mut self) {
+        let regions: HashMap<usize, String> = self
+            .universe
+            .regions
+            .values()
+            // k-space only: wormhole and abyssal regions have no map.
+            .filter(|region| region.id < 11_000_000)
+            .map(|region| (region.id as usize, region.name.clone()))
+            .collect();
+        let gone: Vec<usize> = self
+            .behavior
+            .tile_data
+            .keys()
+            .filter(|id| !regions.contains_key(id))
+            .copied()
+            .collect();
+        for id in gone {
+            if let Some(data) = self.behavior.tile_data.remove(&id)
+                && let (Some(tile_id), Some(tree)) = (data.get_tile_id(), self.tree.as_mut())
+            {
+                tree.remove_recursively(tile_id);
+            }
+        }
+        let startup = self.settings.get_startup_regions();
+        for (id, name) in regions {
+            self.behavior
+                .tile_data
+                .entry(id)
+                .or_insert_with(|| TileData::new(name, startup.contains(&id)));
+        }
+    }
+
+    /// Opens the map of every startup region (Settings -> Maps) that has
+    /// none yet.
+    pub(crate) fn open_startup_regions(&mut self) {
+        let pending: Vec<usize> = self
+            .behavior
+            .tile_data
+            .iter()
+            .filter(|(_, data)| data.show_on_startup && data.get_tile_id().is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for region in pending {
+            self.create_new_regional_pane(region);
+        }
+    }
+
+    /// Checks for a newer SDE and rebuilds the database when there is one;
+    /// `reload_sde` runs once it is done (see `database_updater`).
+    pub(crate) fn start_sde_update(&self) {
+        let sde_cache_dir = Self::sde_build_cache_dir(&self.settings);
+        DatabaseUpdater::spawn(
+            self.settings.get_sde().to_path_buf(),
+            sde_cache_dir.join("data"),
+            sde_cache_dir.join("sde"),
+            Arc::clone(&self.app_msg.0),
+            false,
+            self.settings.get_data_source_urls().clone(),
+        );
+    }
+
+    /// Another SDE database was applied in Settings -> Application: loaded
+    /// at once when it is there, built first when it isn't.
+    pub(crate) fn change_sde(&mut self) {
+        if self.settings.get_sde().is_file() {
+            self.reload_sde();
+        } else {
+            self.behavior
+                .set_path(self.settings.get_sde().to_path_buf());
+        }
+        self.start_sde_update();
     }
 }
 

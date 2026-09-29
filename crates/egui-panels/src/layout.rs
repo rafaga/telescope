@@ -58,6 +58,22 @@ pub fn page_header_with<R>(
     })
 }
 
+/// The frame of a floating window (a progress or confirmation dialog) drawn
+/// like the settings screen: the page background, the card border and
+/// radius, the section padding and egui's window shadow. Use it with
+/// `egui::Window::frame` and no title bar.
+pub fn dialog_frame(ctx: &egui::Context) -> Frame {
+    let theme = Theme::get(ctx);
+    let style = ctx.global_style();
+    let palette = theme.palette(&style.visuals);
+    Frame::new()
+        .fill(style.visuals.panel_fill)
+        .stroke(Stroke::new(1.0, palette.card_stroke))
+        .corner_radius(CornerRadius::same(theme.radius + 2))
+        .inner_margin(egui::Margin::symmetric(24, 20))
+        .shadow(style.visuals.window_shadow)
+}
+
 /// A titled card grouping related settings.
 ///
 /// ```no_run

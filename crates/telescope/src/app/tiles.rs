@@ -122,6 +122,10 @@ pub trait TabPane {
     /// Redraws the nodes with `style` (Settings -> Maps). Maps that don't
     /// draw their nodes with it ignore it.
     fn set_node_style(&mut self, _style: NodeStyle) {}
+    /// Loads the map's systems again from the SDE database at `path` (a
+    /// rebuilt `sde.db`, or another one picked in Settings -> Application)
+    /// and puts back the markers of the linked characters.
+    fn reload_data(&mut self, path: &Path);
 }
 
 /// Linked characters on a map, by character id: their solar system and name.
@@ -346,6 +350,18 @@ impl UniversePane {
 }
 
 impl TabPane for UniversePane {
+    #[tracing::instrument(skip(self))]
+    fn reload_data(&mut self, path: &Path) {
+        self.path = path.to_path_buf();
+        self.has_points = false;
+        self.generate_data();
+        if self.has_points {
+            for (player_id, (system_id, _)) in &self.characters {
+                self.map.update_marker(*player_id, *system_id);
+            }
+        }
+    }
+
     fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str) {
         self.characters
             .insert(player_id, (system_id, name.to_owned()));
@@ -532,11 +548,13 @@ impl RegionPane {
                 return;
             }
         }
-        let t_region_id = self.region_id;
-        let region = t_sde.get_region(vec![t_region_id as u32], None).unwrap();
-        let keys: Vec<u32> = region.keys().copied().collect();
-        self.tab_name
-            .clone_from(&region.get(&keys[0]).unwrap().name);
+        // A region missing from the database (it can change under a pane,
+        // see `TabPane::reload_data`) keeps the name the tab had.
+        if let Ok(region) = t_sde.get_region(vec![self.region_id as u32], None)
+            && let Some(region) = region.values().next()
+        {
+            self.tab_name.clone_from(&region.name);
+        }
     }
 }
 
@@ -559,6 +577,18 @@ impl TabPane for RegionPane {
 
     fn set_node_style(&mut self, style: NodeStyle) {
         self.map.set_node_template(Rc::new(Template::new(style)));
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn reload_data(&mut self, path: &Path) {
+        self.path = path.to_path_buf();
+        self.has_points = false;
+        self.generate_data();
+        if self.has_points {
+            for (player_id, (system_id, _)) in &self.characters {
+                self.map.update_marker(*player_id, *system_id);
+            }
+        }
     }
 
     #[tracing::instrument(skip(self))]
@@ -690,6 +720,11 @@ impl TreeBehavior {
             tile_data: HashMap::new(),
             search_regions: Vec::new(),
         }
+    }
+
+    /// The SDE database the region search reads (Settings -> Application).
+    pub(crate) fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
     }
 
     #[tracing::instrument(skip(self))]
@@ -1223,6 +1258,40 @@ mod no_sde_tests {
             NodeStyle::default(),
         );
         region.update_marker(1, 30000142, "Pilot");
+        draw(&mut region);
+    }
+
+    // Reloading a map against a database that isn't there (a path picked
+    // before it was built) leaves it empty, keeps the markers for later and
+    // switches to the new path, without panicking.
+    #[test]
+    fn reloading_without_sde_data_keeps_the_markers() {
+        let missing = PathBuf::from("/nonexistent/telescope-test/sde.db");
+        let other = PathBuf::from("/nonexistent/telescope-test/other.db");
+        let (sender, _) = tokio::sync::broadcast::channel::<MapSync>(4);
+        let (spawner, _messages) = spawner();
+
+        let mut universe =
+            UniversePane::new(sender.subscribe(), missing.clone(), 1.0, spawner.clone());
+        universe.update_marker(1, 30000142, "Pilot");
+        universe.reload_data(&other);
+        assert!(!universe.has_points);
+        assert_eq!(universe.path, other);
+        assert!(universe.characters.contains_key(&1));
+        draw(&mut universe);
+
+        let mut region = RegionPane::new(
+            sender.subscribe(),
+            missing,
+            1.0,
+            10000002,
+            spawner,
+            NodeStyle::default(),
+        );
+        region.update_marker(1, 30000142, "Pilot");
+        region.reload_data(&other);
+        assert!(!region.has_points);
+        assert_eq!(region.path, other);
         draw(&mut region);
     }
 

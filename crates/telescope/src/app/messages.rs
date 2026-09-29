@@ -203,12 +203,12 @@ pub enum Message {
     /// Sent by `database_updater::DatabaseUpdater` while its background
     /// update check/build is running, one per phase -- drives the
     /// status text in `database_updater::DatabaseUpdater`'s progress
-    /// window (`DatabaseUpdater::set_status`).
-    DatabaseUpdateProgress(String),
+    /// window (`DatabaseUpdater::set_phase`).
+    DatabaseUpdateProgress(super::database_updater::SdePhase),
     /// Sent by `database_updater::DatabaseUpdater` once its background
     /// update check finishes; also hides the progress window
     /// (`DatabaseUpdater::hide`). `true` means `sde.db` was (re)built
-    /// and should be reloaded (see `TelescopeApp::handle_database_updated`);
+    /// and should be reloaded (see `TelescopeApp::reload_sde`);
     /// `false` means it was already up to date, or the check/build
     /// failed (the failure itself was already reported separately via a
     /// `GenericNotification`).

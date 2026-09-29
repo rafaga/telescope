@@ -1,5 +1,9 @@
 //! `webb`: Telescope's EVE Online back end.
 //!
+//! [`auth_service`], [`esi`] and [`objects`] need the `esi` feature (on by
+//! default). Without it the crate is only the intel engine and builds for the
+//! web (`wasm32-unknown-unknown`).
+//!
 //! * [`auth_service`]: the local HTTP server that receives the EVE SSO OAuth
 //!   callback.
 //! * [`esi`]: the ESI client and the local player database.
@@ -14,10 +18,13 @@
 //! * [`map_alerts`]: condenses a line's messages into what a map's node
 //!   tooltip shows.
 
+#[cfg(feature = "esi")]
 pub mod auth_service;
+#[cfg(feature = "esi")]
 pub mod esi;
 pub mod graph;
 pub mod intel;
 pub mod map_alerts;
+#[cfg(feature = "esi")]
 pub mod objects;
 pub mod rules;

@@ -7,7 +7,6 @@ use crate::i18n;
 use eframe::egui;
 use egui_panels::{PathPicker, Section, StatusKind, Variant};
 use std::path::Path;
-use std::sync::Arc;
 
 impl TelescopeApp {
     pub(super) fn show_application_page(&mut self, ui: &mut egui::Ui) {
@@ -77,7 +76,7 @@ impl TelescopeApp {
                     )
                     .clicked()
                     {
-                        self.check_sde_updates();
+                        self.start_sde_update();
                     }
                 });
 
@@ -118,10 +117,12 @@ impl TelescopeApp {
                 form.note(|ui| {
                     ui.weak(t!("settings.application.player_db_hint"));
                 });
-                let restart = self.settings_snapshot.as_ref().is_some_and(|saved| {
-                    saved.get_sde() != self.settings.get_sde()
-                        || saved.get_db() != self.settings.get_db()
-                });
+                // The SDE is loaded again when applied (`change_sde`); the
+                // private database is opened only at startup.
+                let restart = self
+                    .settings_snapshot
+                    .as_ref()
+                    .is_some_and(|saved| saved.get_db() != self.settings.get_db());
                 if restart {
                     form.note(|ui| {
                         egui_panels::status(
@@ -154,20 +155,6 @@ impl TelescopeApp {
             StatusKind::Ok,
             t!("settings.application.sde_ok", count = count).into_owned(),
         )
-    }
-
-    /// Checks for a newer SDE and rebuilds the database when there is one
-    /// (see `database_updater`).
-    fn check_sde_updates(&self) {
-        let sde_cache_dir = Self::sde_build_cache_dir(&self.settings);
-        crate::app::database_updater::DatabaseUpdater::spawn(
-            self.settings.get_sde().to_path_buf(),
-            sde_cache_dir.join("data"),
-            sde_cache_dir.join("sde"),
-            Arc::clone(&self.app_msg.0),
-            false,
-            self.settings.get_data_source_urls().clone(),
-        );
     }
 }
 

@@ -28,7 +28,7 @@
 //! [`Message::DatabaseUpdateProgress`]/[`Message::DatabaseUpdated`] and
 //! [`Message::GenericNotification`] rather than touching any UI state
 //! directly; [`TelescopeApp::event_manager`](super::TelescopeApp::event_manager)
-//! forwards those into this struct's `set_status`/`hide`, and
+//! forwards those into this struct's `set_phase`/`hide`, and
 //! [`TelescopeApp::ui`](super::TelescopeApp::ui) calls [`Self::show`]
 //! once per frame, the same way it already calls
 //! `open_about_window`/`open_settings_window`/`open_debug_menu`.
@@ -36,7 +36,8 @@
 //! There used to be a stub here that called a nonexistent
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
-use eframe::egui::{self, Align2, Vec2};
+use eframe::egui::{self, Align2, RichText, Vec2};
+use egui_panels::StatusKind;
 use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
 use sde::builder::{BuildUrls, extract, http, schema, sde_index};
@@ -46,6 +47,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Instant;
 use tokio::sync::mpsc::Sender;
 
 use super::messages::{Message, Type, send_app_message, try_send_app_message};
@@ -57,6 +59,52 @@ use super::messages::{Message, Type, send_app_message, try_send_app_message};
 /// rather than letting two pipelines fight over the same `sde.db` file.
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// The phases of an SDE update, in the order they run; each is sent to the
+/// window as [`Message::DatabaseUpdateProgress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SdePhase {
+    /// Asking CCP's SDE index whether there is a newer build.
+    Checking,
+    /// Downloading and decompressing the new export.
+    Downloading,
+    /// Parsing the export into a new `sde.db`.
+    Rebuilding,
+}
+
+impl SdePhase {
+    const ALL: [Self; 3] = [Self::Checking, Self::Downloading, Self::Rebuilding];
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|phase| *phase == self)
+            .unwrap_or_default()
+    }
+
+    /// The phase's line in the list of steps.
+    fn step(self) -> String {
+        match self {
+            Self::Checking => t!("sde_update.step_check"),
+            Self::Downloading => t!("sde_update.step_download"),
+            Self::Rebuilding => t!("sde_update.step_rebuild"),
+        }
+        .into_owned()
+    }
+
+    /// What is happening now, under the steps.
+    fn detail(self) -> String {
+        match self {
+            Self::Checking => t!("sde_update.checking"),
+            Self::Downloading => t!("sde_update.downloading"),
+            Self::Rebuilding => t!("sde_update.rebuilding"),
+        }
+        .into_owned()
+    }
+}
+
+/// Width of the update window's content.
+const WINDOW_WIDTH: f32 = 400.0;
+
 /// UI state for the "updating the SDE database" window, owned by
 /// `TelescopeApp` and painted every frame via [`Self::show`]. Doesn't
 /// drive anything itself -- `Self::spawn` is the only thing that starts
@@ -64,44 +112,107 @@ static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// currently visible.
 #[derive(Default)]
 pub struct DatabaseUpdater {
-    visible: bool,
-    status: String,
+    /// The phase running, `None` while no update is.
+    phase: Option<SdePhase>,
+    /// When the window was shown, for the elapsed time.
+    started: Option<Instant>,
 }
 
 impl DatabaseUpdater {
     /// Paints the progress window if an update is currently running (see
-    /// `Self::set_status`/`Self::hide`) -- a no-op otherwise.
+    /// `Self::set_phase`/`Self::hide`) -- a no-op otherwise. It is drawn
+    /// like the Settings screen (`egui_panels`): a title with the elapsed
+    /// time, a progress rail, the three phases as steps and what the
+    /// current one is doing.
     #[tracing::instrument(skip(self, ctx))]
     pub fn show(&self, ctx: &egui::Context) {
-        if !self.visible {
+        let Some(phase) = self.phase else {
             return;
-        }
+        };
         egui::Window::new(t!("sde_update.title"))
             .id(egui::Id::new("sde_update_window"))
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .frame(egui_panels::dialog_frame(ctx))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(&self.status);
+                let theme = egui_panels::Theme::get(ui.ctx());
+                let palette = theme.palette(ui.visuals());
+                ui.set_width(WINDOW_WIDTH);
+                ui.spacing_mut().item_spacing.y = theme.section_spacing;
+
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(t!("sde_update.title"))
+                                .size(theme.section_title_size + 2.0)
+                                .color(palette.strong_text),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let elapsed = self
+                                .started
+                                .map_or(0, |started| started.elapsed().as_secs());
+                            egui_panels::badge(
+                                ui,
+                                &format!("{}:{:02}", elapsed / 60, elapsed % 60),
+                            )
+                            .on_hover_text(t!("sde_update.elapsed"));
+                        });
+                    });
+                    ui.label(
+                        RichText::new(t!("sde_update.description"))
+                            .size(theme.small_size)
+                            .color(palette.muted_text),
+                    );
                 });
+
+                // Half a phase in while it runs, so the rail moves at once.
+                let target = (phase.index() as f32 + 0.5) / SdePhase::ALL.len() as f32;
+                let fraction = ui.ctx().animate_value_with_time(
+                    egui::Id::new("sde_update_progress"),
+                    target,
+                    0.4,
+                );
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_height(4.0)
+                        .corner_radius(2)
+                        .fill(palette.accent),
+                );
+
+                let steps: Vec<String> = SdePhase::ALL.iter().map(|phase| phase.step()).collect();
+                let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+                egui_panels::progress_steps(ui, &steps, phase.index());
+
+                ui.separator();
+                egui_panels::status(ui, StatusKind::Info, &phase.detail());
+                ui.label(
+                    RichText::new(t!("sde_update.hint"))
+                        .size(theme.small_size)
+                        .color(palette.muted_text),
+                );
             });
+        // The elapsed time counts even while nothing else repaints.
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 
-    /// Shows the window (if it wasn't already) with `status` as its
-    /// message. Called from `TelescopeApp::event_manager` on
-    /// [`Message::DatabaseUpdateProgress`].
-    pub fn set_status(&mut self, status: String) {
-        self.visible = true;
-        self.status = status;
+    /// Shows the window (if it wasn't already) at `phase`. Called from
+    /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdateProgress`].
+    pub fn set_phase(&mut self, phase: SdePhase) {
+        if self.phase.is_none() {
+            self.started = Some(Instant::now());
+        }
+        self.phase = Some(phase);
     }
 
     /// Hides the window. Called from `TelescopeApp::event_manager` on
     /// [`Message::DatabaseUpdated`], which is sent once the
     /// check/build finishes (successfully or not).
     pub fn hide(&mut self) {
-        self.visible = false;
+        self.phase = None;
+        self.started = None;
     }
 
     /// Spawns the update check/build on its own thread, with its own
@@ -136,25 +247,18 @@ impl DatabaseUpdater {
     ) {
         // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
-        if sde_path.exists() {
-            let mut file = File::open(&sde_path).unwrap();
-            let mut buf = [0u8; 16];
-            if match file.read_exact(&mut buf) {
-                Ok(()) => &buf == b"SQLite format 3\0",
-                Err(_) => false, // file it is too small or doesn't exist, so it is not a valid SQLite database
-            } {
-                return;
-            } else {
-                let _ = try_send_app_message(
-                    &app_msg,
-                    Message::GenericNotification((
-                        Type::Warning,
-                        String::from("DatabaseUpdater"),
-                        String::from("spawn"),
-                        String::from("The SDE database is corrupted, rebuilding it."),
-                    )),
-                );
-            }
+        // A file that isn't a SQLite database is rebuilt (`run` treats it as
+        // missing); a valid one still goes through the update check.
+        if sde_path.exists() && !is_sqlite(&sde_path) {
+            let _ = try_send_app_message(
+                &app_msg,
+                Message::GenericNotification((
+                    Type::Warning,
+                    String::from("DatabaseUpdater"),
+                    String::from("spawn"),
+                    String::from("The SDE database is corrupted, rebuilding it."),
+                )),
+            );
         }
         // An empty path means `Settings::get_sde()` isn't configured
         // (shouldn't happen for a fresh `Settings::default()` anymore,
@@ -290,26 +394,23 @@ impl DatabaseUpdater {
         urls: &BuildUrls,
         app_msg: &Sender<Message>,
     ) -> Result<bool, Error> {
-        send_app_message(
-            app_msg,
-            Message::DatabaseUpdateProgress(t!("sde_update.checking").into_owned()),
-        )
-        .await
-        .ok();
+        send_app_message(app_msg, Message::DatabaseUpdateProgress(SdePhase::Checking))
+            .await
+            .ok();
 
         let client = http::build_client()?;
         let changed =
             sde_index::update_as_needed(&client, data_dir, &urls.sde_url, &urls.sde_variant)
                 .await?;
 
-        let db_exists = sde_path.exists();
+        let db_exists = is_sqlite(sde_path);
         if !changed && db_exists {
             return Ok(false);
         }
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(t!("sde_update.downloading").into_owned()),
+            Message::DatabaseUpdateProgress(SdePhase::Downloading),
         )
         .await
         .ok();
@@ -337,7 +438,7 @@ impl DatabaseUpdater {
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(t!("sde_update.rebuilding").into_owned()),
+            Message::DatabaseUpdateProgress(SdePhase::Rebuilding),
         )
         .await
         .ok();
@@ -396,6 +497,15 @@ impl DatabaseUpdater {
     }
 }
 
+/// Whether `path` is a file starting with the SQLite header (a missing,
+/// unreadable or too short file isn't).
+fn is_sqlite(path: &std::path::Path) -> bool {
+    let mut header = [0u8; 16];
+    File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok_and(|()| &header == b"SQLite format 3 ")
+}
+
 /// Where a new SDE database is built before it replaces `sde_path`
 /// (`sde.db` -> `sde.db.building`).
 fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
@@ -406,7 +516,25 @@ fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod building_path_tests {
-    use super::building_path;
+    use super::{building_path, is_sqlite};
+
+    #[test]
+    fn only_a_file_with_the_sqlite_header_is_a_database() {
+        let dir = std::env::temp_dir().join(format!("telescope-is-sqlite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid = dir.join("valid.db");
+        std::fs::write(&valid, b"SQLite format 3\0rest of the page").unwrap();
+        let broken = dir.join("broken.db");
+        std::fs::write(&broken, b"not a database at all").unwrap();
+        let short = dir.join("short.db");
+        std::fs::write(&short, b"SQLite").unwrap();
+
+        assert!(is_sqlite(&valid));
+        assert!(!is_sqlite(&broken));
+        assert!(!is_sqlite(&short));
+        assert!(!is_sqlite(&dir.join("missing.db")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use std::path::Path;
 
     #[test]

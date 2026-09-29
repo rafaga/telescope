@@ -6,40 +6,54 @@ license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["crypted-db"]
-esi-api-test = []
+default = ["esi", "crypted-db"]
+# The EVE online back end: SSO callback server, ESI client and player database.
+# Needs threads, sockets and SQLite, so it does not build for
+# `wasm32-unknown-unknown`. Without it `webb` is only the intel engine
+# (`graph`, `rules`, `intel`, `map_alerts`), which is what the web build uses:
+# `webb = { default-features = false }`.
+esi = [
+    "dep:hyper", "dep:hyper-tls", "dep:open", "dep:rfesi", "dep:serde_json",
+    "dep:base64", "dep:tokio", "dep:bytes", "dep:http-body-util",
+    "dep:hyper-util", "dep:rusqlite",
+]
+esi-api-test = ["esi"]
 # SQLCipher encryption of the player database, keyed from the machine
 # identifier `native_tools` reads (see `esi/cipher.rs`).
-crypted-db = ["rusqlite/bundled-sqlcipher", "dep:native_tools", "dep:sha2"]
-native-auth-flow = []
+crypted-db = ["esi", "rusqlite/bundled-sqlcipher", "dep:native_tools", "dep:sha2"]
+native-auth-flow = ["esi"]
 
 [dependencies]
 aho-corasick = "1.1"
 chrono = "0.4.45"
 regex = "1.12.1"
 toml = "1.1.2"
-hyper = { version = "1.10.1", features = ["server", "client", "http1"] }
-hyper-tls = "0.6.0"
-open = "5.3.5"
-rfesi = { version = "0.50.0", default-features = false, features = ["rustls-tls", "random_state", "validate_jwt"] }
+hyper = { version = "1.10.1", features = ["server", "client", "http1"], optional = true }
+hyper-tls = { version = "0.6.0", optional = true }
+open = { version = "5.3.5", optional = true }
+rfesi = { version = "0.50.0", default-features = false, features = ["rustls-tls", "random_state", "validate_jwt"], optional = true }
 serde = { version = "1.0.228", features = ["serde_derive"] }
-serde_json = "1.0"
-base64 = "0.23.1"
-tokio = { version = "1.52.3", features = ["tokio-macros", "rt", "rt-multi-thread", "macros", "time"] }
-bytes = "1.11.1"
-http-body-util = "0.1.3"
-hyper-util = { version = "0.1.20", features = ["full"] }
-rusqlite = { version = "0.40.1", features = ["backup", "blob", "array"] }
+serde_json = { version = "1.0", optional = true }
+base64 = { version = "0.23.1", optional = true }
+tokio = { version = "1.52.3", features = ["tokio-macros", "rt", "rt-multi-thread", "macros", "time"], optional = true }
+bytes = { version = "1.11.1", optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+hyper-util = { version = "0.1.20", features = ["full"], optional = true }
+rusqlite = { version = "0.40.1", features = ["backup", "blob", "array"], optional = true }
 native_tools = { path = "../native_tools/", optional = true }
 sha2 = { version = "0.10", optional = true }
 tracing = "0.1"
+# `std::time::Instant` panics on `wasm32-unknown-unknown`; `web-time` is the same type on native and uses the browser clock on web.
+web-time = "1"
 
 # Windows:
 [target.'cfg(target_os = "windows")'.dependencies]
-rusqlite = { version = "0.40.1", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"]}
+rusqlite = { version = "0.40.1", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"], optional = true }
 
 [dev-dependencies]
 mockall = "0.15.0"
+# `graph` tests serialize a rule graph; the `esi` feature also pulls this in.
+serde_json = "1.0"
 
 # WASM specific dependencies:
 [target.'cfg(wasm)'.dependencies]

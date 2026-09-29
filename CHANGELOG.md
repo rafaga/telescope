@@ -117,6 +117,10 @@ period it happened in.
   clicks over its whole area on top of them. The same held for *Unlink* on
   the Characters page (`egui_panels::EntityCard`). The card's own click is
   now registered under its contents (September 2026).
+* Settings -> Rules: the id field of an entry lost the focus at every key
+  (the card's widgets were keyed by the id being edited). The id is now
+  applied when the field is left, and an invalid or taken id is reported
+  instead of silently put back (September 2026).
 
 * File dialogs: the Windows open dialog only offered `*.rs` files (a leftover
   sample filter), so *Browse…* for the SDE and the private database showed

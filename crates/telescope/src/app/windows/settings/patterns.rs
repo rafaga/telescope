@@ -681,13 +681,13 @@ impl TelescopeApp {
                 egui_panels::status(ui, StatusKind::Info, &t!("settings.patterns.no_inputs"));
             }
             let mut actions = Vec::new();
-            for id in &input_ids {
+            for (index, id) in input_ids.iter().enumerate() {
                 let Some((description, enabled)) = self.patterns_editor.input_summary(id) else {
                     continue;
                 };
                 let summary = self.patterns_editor.component_summary(id);
                 let selected = self.patterns_editor.selected_input.as_deref() == Some(id.as_str());
-                let card = input_card(ui, id, &description, enabled, selected, &summary);
+                let card = input_card(ui, index, id, &description, enabled, selected, &summary);
                 actions.extend(card.into_iter().map(|action| (id.clone(), action)));
             }
             for (id, action) in actions {
@@ -702,7 +702,11 @@ impl TelescopeApp {
                         self.patterns_editor.set_input_description(&id, description);
                     }
                     CardAction::Rename(new_id) => {
-                        self.patterns_editor.rename_input(&id, &new_id);
+                        if !self.patterns_editor.rename_input(&id, &new_id) {
+                            self.patterns_editor.set_errors(vec![
+                                t!("settings.patterns.invalid_id", id = new_id).into_owned(),
+                            ]);
+                        }
                     }
                 }
             }
@@ -792,70 +796,103 @@ impl TelescopeApp {
         let Some(input_id) = self.patterns_editor.open_input.clone() else {
             return;
         };
+        let theme = egui_panels::Theme::get(ui.ctx());
+        let palette = theme.palette(ui.visuals());
+        let (description, enabled) = self
+            .patterns_editor
+            .input_summary(&input_id)
+            .unwrap_or_default();
         let mut close = false;
-        ui.horizontal(|ui| {
-            if ui
-                .button("⬅")
-                .on_hover_text(t!("settings.patterns.back"))
-                .clicked()
-            {
-                close = true;
-            }
-            ui.label(
-                RichText::new(format!(
-                    "{} · {}",
-                    t!("settings.patterns.node_input"),
-                    input_id
-                ))
-                .strong(),
-            );
-            ui.separator();
-            ui.menu_button("🔎", |ui| {
-                for type_name in DETECTION_TYPES {
-                    if ui.button(detection_type_label(type_name)).clicked() {
-                        self.patterns_editor.add_detection_of(type_name);
-                        ui.close();
-                    }
+        ui.spacing_mut().item_spacing.y = theme.section_spacing;
+        // The header of a page, like the list of rules: the way back, the
+        // rule's name and id, and the nodes that can be added.
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if egui_panels::button(ui, t!("settings.patterns.back_to_rules"), Variant::Ghost)
+                    .on_hover_text(t!("settings.patterns.back_hint"))
+                    .clicked()
+                {
+                    close = true;
                 }
-            })
-            .response
-            .on_hover_text(t!("settings.patterns.add_detection"));
-            let missing = self.patterns_editor.missing_output_kinds();
-            ui.menu_button("📤", |ui| {
-                for kind in missing {
-                    if ui.button(output_kind_label(kind)).clicked() {
-                        self.patterns_editor.add_output_of(kind);
-                        ui.close();
-                    }
-                }
-            })
-            .response
-            .on_hover_text(t!("settings.patterns.add_output"));
-            ui.menu_button("🧩", |ui| {
-                if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
-                    self.patterns_editor.add_aggregator();
-                    ui.close();
-                }
-                ui.separator();
-                for kind in [GateKind::And, GateKind::Or, GateKind::Xor, GateKind::Not] {
-                    if ui.button(gate_kind_label(kind)).clicked() {
-                        self.patterns_editor.add_gate(kind);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if ui.button(t!("settings.patterns.kind_formatter")).clicked() {
-                    self.patterns_editor.add_formatter();
-                    ui.close();
-                }
-            })
-            .response
-            .on_hover_text(t!("settings.patterns.add_logic"));
+                ui.label(
+                    RichText::new(&description)
+                        .font(egui::FontId::proportional(theme.title_size))
+                        .color(palette.strong_text),
+                );
+                egui_panels::chip(
+                    ui,
+                    &input_id,
+                    Some(&if enabled {
+                        t!("settings.patterns.state_on")
+                    } else {
+                        t!("settings.patterns.state_off")
+                    }),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let missing = self.patterns_editor.missing_output_kinds();
+                    let outputs = egui_panels::menu_button(
+                        ui,
+                        t!("settings.patterns.menu_output"),
+                        Variant::Ghost,
+                        |ui| {
+                            for kind in missing {
+                                if ui.button(output_kind_label(kind)).clicked() {
+                                    self.patterns_editor.add_output_of(kind);
+                                    ui.close();
+                                }
+                            }
+                        },
+                    );
+                    outputs.on_hover_text(t!("settings.patterns.add_output"));
+                    egui_panels::menu_button(
+                        ui,
+                        t!("settings.patterns.menu_logic"),
+                        Variant::Ghost,
+                        |ui| {
+                            if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
+                                self.patterns_editor.add_aggregator();
+                                ui.close();
+                            }
+                            ui.separator();
+                            for kind in [GateKind::And, GateKind::Or, GateKind::Xor, GateKind::Not]
+                            {
+                                if ui.button(gate_kind_label(kind)).clicked() {
+                                    self.patterns_editor.add_gate(kind);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button(t!("settings.patterns.kind_formatter")).clicked() {
+                                self.patterns_editor.add_formatter();
+                                ui.close();
+                            }
+                        },
+                    )
+                    .on_hover_text(t!("settings.patterns.add_logic"));
+                    egui_panels::menu_button(
+                        ui,
+                        t!("settings.patterns.menu_detection"),
+                        Variant::Primary,
+                        |ui| {
+                            for type_name in DETECTION_TYPES {
+                                if ui.button(detection_type_label(type_name)).clicked() {
+                                    self.patterns_editor.add_detection_of(type_name);
+                                    ui.close();
+                                }
+                            }
+                        },
+                    )
+                    .on_hover_text(t!("settings.patterns.add_detection"));
+                });
+            });
+            ui.label(RichText::new(t!("settings.patterns.editor_hint")).color(palette.muted_text));
         });
         for error in &self.patterns_editor.errors {
-            ui.colored_label(Color32::RED, error);
+            egui_panels::status(ui, StatusKind::Error, error);
         }
-        ui.separator();
         {
             let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
             let mut viewer = RulesViewer { state: &mut *state };
@@ -884,6 +921,7 @@ enum CardAction {
 /// made of, the outputs it reaches, and Open / Remove.
 fn input_card(
     ui: &mut egui::Ui,
+    index: usize,
     id: &str,
     description: &str,
     enabled: bool,
@@ -915,8 +953,11 @@ fn input_card(
     // put it on top of them and took every click.
     let response = ui
         .scope_builder(
+            // Salted with the card's position, not the entry's id: renaming
+            // the entry would give every widget inside a new id, and the id
+            // field would lose the focus at each key.
             egui::UiBuilder::new()
-                .id_salt(id)
+                .id_salt(("input_card", index))
                 .sense(egui::Sense::click()),
             |ui| {
                 frame.show(ui, |ui| {
@@ -968,18 +1009,32 @@ fn input_card(
                         });
                     });
                     ui.horizontal(|ui| {
-                        let mut id_text = id.to_string();
-                        if ui
+                        // The id is edited as a draft and applied when the
+                        // field is left (Enter, Tab or a click elsewhere):
+                        // applied at each key, an id being typed is usually
+                        // invalid (empty, or taken halfway through) and was
+                        // put back.
+                        let edit_id = ui.make_persistent_id("input_id");
+                        let draft_id = edit_id.with("draft");
+                        let mut id_text = ui
+                            .data(|data| data.get_temp::<String>(draft_id))
+                            .unwrap_or_else(|| id.to_string());
+                        let response = ui
                             .add(
                                 egui::TextEdit::singleline(&mut id_text)
+                                    .id(edit_id)
                                     .font(egui::TextStyle::Monospace)
                                     .desired_width(160.0),
                             )
-                            .on_hover_text(t!("settings.patterns.id_hint"))
-                            .changed()
-                            && id_text != id
-                        {
-                            actions.push(CardAction::Rename(id_text));
+                            .on_hover_text(t!("settings.patterns.id_hint"));
+                        if response.lost_focus() {
+                            ui.data_mut(|data| data.remove::<String>(draft_id));
+                            let new_id = id_text.trim();
+                            if new_id != id {
+                                actions.push(CardAction::Rename(new_id.to_string()));
+                            }
+                        } else if response.has_focus() {
+                            ui.data_mut(|data| data.insert_temp(draft_id, id_text));
                         }
                         let channels = if summary.channels.is_empty() {
                             t!("settings.patterns.all_channels").into_owned()

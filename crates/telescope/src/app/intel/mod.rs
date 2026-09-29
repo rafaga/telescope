@@ -120,6 +120,7 @@ impl TelescopeApp {
     /// Runs the detection engine over `data` (chat-log lines from `channel`)
     /// without dispatching anything, returning the ids of the matched rules.
     /// Used by the Debug window's line tester.
+    #[cfg(debug_assertions)]
     #[tracing::instrument(skip(self, data))]
     pub(crate) fn parse_intel_data(&self, channel: &str, data: &str) -> Vec<String> {
         let executor = self

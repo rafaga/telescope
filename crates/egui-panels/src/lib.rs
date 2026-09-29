@@ -8,12 +8,13 @@
 //!   [`form`] (rows with an aligned label column).
 //! * Controls: [`switch`], [`Slider`], [`segmented`], [`tile`] / [`tile_grid`] (toggle
 //!   cards for picking from a list), [`PathPicker`], [`stepper`], and
-//!   [`button`] with a few [`Variant`]s.
-//! * Feedback: [`status`] lines, [`badge`] / [`chip`] pills and the
+//!   [`button`] / [`menu_button`] with a few [`Variant`]s.
+//! * Feedback: [`status`] lines, [`progress_steps`], [`badge`] / [`chip`] pills and the
 //!   [`EntityCard`] used for accounts, devices or any listed item.
 //! * Screen: [`SideNav`] (grouped pages with an unsaved-change dot),
 //!   [`ActionBar`] (Cancel / Apply / Accept) and [`SettingsLayout`], which puts
-//!   both around the selected page.
+//!   both around the selected page; [`dialog_frame`] for floating windows
+//!   drawn the same way.
 //! * State: [`Draft`], a saved value and the copy being edited, to know what
 //!   changed and to commit or revert it.
 //!
@@ -50,11 +51,11 @@ mod widgets;
 
 pub use action_bar::{Action, ActionBar};
 pub use draft::Draft;
-pub use layout::{Form, Section, form, page, page_header, page_header_with};
+pub use layout::{Form, Section, dialog_frame, form, page, page_header, page_header_with};
 pub use nav::{NavGroup, NavItem, SideNav};
 pub use shell::SettingsLayout;
 pub use theme::{Palette, Theme};
 pub use widgets::{
     Avatar, EntityCard, PathPicker, PathPickerResponse, Slider, StatusKind, Variant, badge, button,
-    chip, segmented, status, stepper, switch, tile, tile_grid,
+    chip, menu_button, progress_steps, segmented, status, stepper, switch, tile, tile_grid,
 };

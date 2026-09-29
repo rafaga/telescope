@@ -120,6 +120,24 @@ pub enum Variant {
 
 /// A button of [`Theme::control_height`] in the given [`Variant`].
 pub fn button(ui: &mut Ui, text: impl Into<String>, variant: Variant) -> Response {
+    ui.add(styled_button(ui, text, variant))
+}
+
+/// A [`button`] that opens a menu drawn by `add_contents` (close it with
+/// [`Ui::close`] once an entry is picked). Returns the button's response.
+pub fn menu_button(
+    ui: &mut Ui,
+    text: impl Into<String>,
+    variant: Variant,
+    add_contents: impl FnOnce(&mut Ui),
+) -> Response {
+    let text = format!("{} ⏷", text.into());
+    egui::containers::menu::MenuButton::from_button(styled_button(ui, text, variant))
+        .ui(ui, add_contents)
+        .0
+}
+
+fn styled_button(ui: &Ui, text: impl Into<String>, variant: Variant) -> Button<'static> {
     let theme = Theme::get(ui.ctx());
     let palette = theme.palette(ui.visuals());
     let text: String = text.into();
@@ -139,7 +157,7 @@ pub fn button(ui: &mut Ui, text: impl Into<String>, variant: Variant) -> Respons
                 mix(palette.card_stroke, palette.error, 0.45),
             )),
     };
-    ui.add(widget.min_size(vec2(0.0, theme.control_height)))
+    widget.min_size(vec2(0.0, theme.control_height))
 }
 
 trait MaxColor {
@@ -562,6 +580,41 @@ pub fn stepper(ui: &mut Ui, steps: &[&str], current: usize) -> Option<usize> {
         }
     });
     clicked
+}
+
+/// The phases of a running task, one per line: those before `current` are
+/// done (a check mark), `current` is running (a spinner, emphasized text)
+/// and the ones after it are pending (dimmed).
+pub fn progress_steps(ui: &mut Ui, steps: &[&str], current: usize) -> Response {
+    let theme = Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        for (index, step) in steps.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+                let color = if index < current {
+                    paint_status_icon(ui, rect.shrink(1.0), StatusKind::Ok, palette.ok);
+                    palette.text
+                } else if index == current {
+                    egui::Spinner::new()
+                        .color(palette.accent_stroke)
+                        .paint_at(ui, rect);
+                    palette.strong_text
+                } else {
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        rect.width() * 0.3,
+                        Stroke::new(1.2, palette.muted_text),
+                    );
+                    palette.muted_text
+                };
+                ui.label(RichText::new(*step).color(color));
+            });
+        }
+    })
+    .response
 }
 
 /// The picture of an [`EntityCard`].
