@@ -29,6 +29,14 @@ period it happened in.
 
 ### Changed
 
+* Documentation brought up to date with the code (September 2026):
+  `ARCHITECTURE.md` (module map, the intel pipeline on its own threads, the
+  channels, platform services and diagnostics, tests, how to regenerate the
+  diagrams), the six D2 diagrams and their SVGs (now rendered with the `elk`
+  layout), a `README.md` with working CI badges and the current features, a
+  rewritten `crates/webb/README.md`, a new `crates/native_tools/README.md`, an
+  *Installers* section in `BUILD.md`, and the stale names of pages, functions
+  and messages in comments and in `assets/telescope.default.toml`.
 * CI rebuilt around one `ci.yml`: a single job per operating system runs
   clippy, the all-features check and the tests on a shared build, `fmt` runs
   once, and there is a `ci-ok` summary check, run cancellation, least

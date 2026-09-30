@@ -1,21 +1,33 @@
 direction: right
 
-bg: "Background threads\n(each with its own Tokio runtime)" {
+bg: "Background threads\n(most with their own Tokio runtime)" {
   watcher: "notify watcher\nIntelEventHandler"
+  reader: "intel reader\nlog bytes -> lines"
+  detection: "intel detection\nrule graph Executor"
+  dispatch: "intel dispatch\nmap messages, sound, log"
+  audio: "audio\nAlarmPlayer"
   auth: "AuthSpawner\nOAuth callback server\n(localhost:56123)"
   updater: "DatabaseUpdater\nSDE check and build"
-  watchdog: "Watchdog\nESI location polling (25 s)"
+  watchdog: "Watchdog\nESI location polling (30 s)"
 }
 
 ui: "UI thread" {
   app: "TelescopeApp\nui() then event_manager()"
   panes: "Map panes\nUniversePane, RegionPane"
-  app -> panes: "MapSync (broadcast)\nCenterOn, SystemNotification, PlayerMoved"
+  app -> panes: "markers updated directly\n(PlayerNewLocation)"
 }
 
-bg.watcher -> ui.app: "Message (mpsc)\nIntelFileChanged, ScanIntelFiles"
+bg.watcher -> bg.reader: "file names\n(std mpsc)"
+bg.watcher -> ui.app: "Message (mpsc)\nScanIntelFiles"
+bg.reader -> bg.detection: "InputEvent\n(bounded mpsc)"
+bg.reader -> ui.app: "Message\nChannelActivity"
+bg.detection -> bg.dispatch: "DetectedLine\n(bounded mpsc)"
+bg.dispatch -> ui.panes: "MapSync (broadcast)\nSystemAlert, SystemTooltip, CenterOn"
+bg.dispatch -> bg.audio: "sound"
+bg.dispatch -> ui.app: "Message\nGenericNotification"
 bg.auth -> ui.app: "Message\nCharacterAuthenticated"
-bg.updater -> ui.app: "Message\nDatabaseUpdateProgress, DatabaseUpdated"
+bg.updater -> ui.app: "Message\nDatabaseUpdateProgress,\nDatabaseUpdated"
 bg.watchdog -> ui.app: "Message\nPlayerNewLocation"
-bg.watchdog -> ui.panes: "MapSync::PlayerMoved"
 ui.app -> bg.watchdog: "CharacterSync (mpsc)\nAdd, Remove"
+ui.app -> bg.detection: "swaps the Executor\nwhen the rules change (RwLock)"
+ui.app -> bg.dispatch: "AlarmShared snapshot\n(settings, locations, jumps)"

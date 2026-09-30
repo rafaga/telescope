@@ -87,6 +87,35 @@ trunk build --filehash false    # or `trunk serve --filehash false` to try it in
 the service worker (`assets/sw.js`) lists them by name, and Trunk adds a hash to
 them by default. It used to be set in `Trunk.toml`, which was removed.
 
+## Installers
+
+The Windows installer (MSI, built with WiX) and the macOS disk image (dmg) are
+made with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager)
+from `packager.json`. Each one can only be built on its own system, and the ESI
+credentials (see above) must be set: without them the installer builds but
+panics at start-up.
+
+```sh
+cargo install cargo-packager --locked --version 0.11.8
+cargo packager --release
+```
+
+The result is in `target/release/`. `packager.json` builds the release binary
+itself (`cargo build --release -p telescope`) and ships the alarm sounds, the
+icon and the settings template (`assets/telescope.default.toml`) next to it.
+
+An installed Telescope does not write next to its own files: it keeps
+`telescope.toml`, the databases and the SDE cache in the per-user data folder
+(see *Platform services* in [ARCHITECTURE.md](ARCHITECTURE.md)), and copies the
+template there on the first run.
+
+Releases are built by the `release.yml` workflow when a GitHub release is
+published: it takes the installer version from the tag (the MSI needs numbers
+only, so a tag such as `v1.0.0-rc01` becomes `1.0.0` plus the run number) and
+attaches the installers and their SHA-256 sums to the release. On macOS the app
+is only ad-hoc signed, which lets it start on Apple Silicon but not pass
+Gatekeeper: the first time, open it with right click -> *Open*.
+
 ## Checks
 
 `Cargo.lock` is versioned and CI builds with `--locked`, so a change to a

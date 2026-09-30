@@ -1,7 +1,7 @@
 # Telescope
 
-[![Windows](https://github.com/rafaga/telescope/actions/workflows/windows.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/windows.yml)
-[![MacOS](https://github.com/rafaga/telescope/actions/workflows/macos.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/macos.yml)
+[![CI](https://github.com/rafaga/telescope/actions/workflows/ci.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/ci.yml)
+[![Security](https://github.com/rafaga/telescope/actions/workflows/security.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/security.yml)
 
 Telescope is a desktop application that watches your EVE Online chat logs,
 evaluates them against configurable pattern rules and shows the resulting
@@ -26,18 +26,31 @@ key differences.
   `rules.toml`.
 * **Interactive maps** — universe and per-region maps with system alerts
   raised directly from intel matches.
+* **Alerts you can hear** — a rule's *sound* output plays an alarm clip you
+  choose, and map nodes list the ships and pilot counts of each report in
+  their tooltip. The work runs on its own threads, so an alarm is not delayed
+  by a hidden or stalled window.
 * **Character linking via EVE SSO** — authorizes through ESI and keeps
   linked characters, their corporations and alliances in a local database.
+  The database, tokens included, is encrypted with SQLCipher and keyed from
+  your machine's identifier.
 * **Location tracking** — a background watchdog polls ESI for each linked
   character's location and moves their marker on the maps.
 * **Automatic SDE updates** — the CCP Static Data Export database is checked,
-  downloaded and built automatically the first and updates itself.
+  downloaded and built automatically the first time Telescope runs, and it
+  keeps itself up to date. A progress window shows what it is doing.
+* **Settings with a draft** — every change stays a draft until *Apply* /
+  *Accept*; *Cancel* puts everything back, the interface language included.
+* **Languages** — the interface is available in English and Spanish, and
+  follows your operating system's language by default.
 
-Platforms tested:
+Platforms tested by hand:
 
 * MacOS Tahoe (ARM64)
 * Windows 11 (ARM64)
 * Windows 11 (Intel x86-64)
+
+CI builds and tests every change on Linux, Windows and macOS.
 
 Screenshots:
 
@@ -54,8 +67,9 @@ cargo run --release
 
 You do not need to provide the SDE database yourself, Telescope builds it on
 first run. You do need your own ESI application (client id and secret key)
-from CCP, set at compile time — see [BUILD.md](BUILD.md) for the full
-requirements, ESI credential setup, logging and profiling instructions.
+from CCP, given to the build as the `ESI_CLIENT_ID` and `ESI_SECRET_KEY`
+environment variables — see [BUILD.md](BUILD.md) for the full requirements,
+ESI credential setup, tests, logging and profiling instructions.
 
 ## Documentation
 
@@ -63,10 +77,16 @@ requirements, ESI credential setup, logging and profiling instructions.
   crates, the `telescope` crate's modules, threads and messages, and the main
   flows (chat log to alert, linking a character, location tracking, SDE
   updates), illustrated with diagrams.
-* [BUILD.md](BUILD.md) — requirements, ESI credentials, building, checks
-  (`check.sh`), logging and Tracy profiling.
+* [BUILD.md](BUILD.md) — requirements, ESI credentials, building, tests and
+  coverage, the CI workflows (`check.sh` runs them locally), logging and Tracy
+  profiling.
 * [CHANGELOG.md](CHANGELOG.md) — notable changes, following
   [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+* The crates of the workspace: [`webb`](crates/webb/README.md) (intel rule
+  engine and EVE back end), [`egui-panels`](crates/egui-panels/README.md)
+  (settings screen components) and
+  [`native_tools`](crates/native_tools/README.md) (native dialogs and machine
+  identification).
 
 ## License
 
