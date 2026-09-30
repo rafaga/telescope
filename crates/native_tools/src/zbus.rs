@@ -613,3 +613,264 @@ mod tests {
         }
     }
 }
+
+/// The pieces that need neither root nor D-Bus: parsing, placeholders, the
+/// files the identifiers are read from and the error texts.
+#[cfg(all(test, target_os = "linux"))]
+mod source_tests {
+    use super::*;
+    use std::error::Error;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "native-tools-zbus-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn read(path: &Path) -> Result<String, HwIdError> {
+        read_dmi_field(path.to_str().unwrap())
+    }
+
+    #[test]
+    fn a_uuid_is_written_in_its_canonical_groups() {
+        let bytes: Vec<u8> = (0x10..0x20).collect();
+        assert_eq!(
+            uuid_bytes_to_string(&bytes),
+            "10111213-1415-1617-1819-1a1b1c1d1e1f"
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_uuid_give_an_empty_text() {
+        assert_eq!(uuid_bytes_to_string(&[]), "");
+        assert_eq!(uuid_bytes_to_string(&[1; 15]), "");
+        assert_eq!(uuid_bytes_to_string(&[1; 17]), "");
+        // And an empty text counts as a placeholder, so it is never used as an id.
+        assert!(is_placeholder(&uuid_bytes_to_string(&[1; 4])));
+    }
+
+    #[test]
+    fn every_known_placeholder_is_rejected_whatever_its_case_or_spacing() {
+        for placeholder in KNOWN_PLACEHOLDERS {
+            assert!(is_placeholder(placeholder), "{placeholder}");
+            assert!(is_placeholder(&format!(
+                "  {}\n",
+                placeholder.to_uppercase()
+            )));
+        }
+        assert!(!is_placeholder("Dell Inc."));
+    }
+
+    #[test]
+    fn a_field_is_read_trimmed() {
+        let dir = temp_dir("trimmed");
+        let file = dir.join("id");
+        fs::write(&file, "  4c4c4544-0044-3010-8035-b9c04f435931\n").unwrap();
+        assert_eq!(read(&file).unwrap(), "4c4c4544-0044-3010-8035-b9c04f435931");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_placeholder_or_empty_field_is_an_error_that_names_the_file() {
+        let dir = temp_dir("placeholder");
+        for content in ["", "\n", "To Be Filled By O.E.M.\n"] {
+            let file = dir.join("id");
+            fs::write(&file, content).unwrap();
+            match read(&file) {
+                Err(HwIdError::EmptyOrPlaceholder { path }) => {
+                    assert_eq!(path, file.to_str().unwrap())
+                }
+                other => panic!("{content:?} -> {other:?}"),
+            }
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_field_is_a_read_error_with_its_cause() {
+        let dir = temp_dir("missing");
+        let error = read(&dir.join("nope")).unwrap_err();
+        match &error {
+            HwIdError::FileRead { source, .. } => {
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound)
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(error.source().is_some());
+        assert!(error.to_string().contains("could not read"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_field_the_user_cannot_read_is_reported_as_a_permission_problem() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root reads anything, so there is nothing to see.
+        if rustix::process::getuid().is_root() {
+            return;
+        }
+        let dir = temp_dir("denied");
+        let file = dir.join("product_uuid");
+        fs::write(&file, "secret").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = read(&file);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            matches!(result, Err(HwIdError::PermissionDenied { .. })),
+            "{result:?}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_bus_address_is_checked_for_its_socket() {
+        let dir = temp_dir("bus");
+        let socket = dir.join("bus");
+        fs::write(&socket, b"").unwrap();
+        let path = socket.to_str().unwrap();
+
+        assert!(dbus_address_socket_exists(&format!("unix:path={path}")));
+        // The usual form carries a guid after the path.
+        assert!(dbus_address_socket_exists(&format!(
+            "unix:path={path},guid=0123456789abcdef"
+        )));
+        assert!(!dbus_address_socket_exists(&format!(
+            "unix:path={path}.gone"
+        )));
+        // Other transports have no socket file to look for.
+        assert!(!dbus_address_socket_exists("tcp:host=localhost,port=1234"));
+        assert!(!dbus_address_socket_exists("unix:abstract=/tmp/dbus-xyz"));
+        assert!(!dbus_address_socket_exists(""));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_machine_with_any_bus_counts_as_having_dbus() {
+        let availability = |session, system| DbusAvailability {
+            session_bus_available: session,
+            system_bus_available: system,
+            session_bus_address: None,
+            system_bus_socket_path: None,
+        };
+        assert!(!availability(false, false).any_available());
+        assert!(availability(true, false).any_available());
+        assert!(availability(false, true).any_available());
+        assert!(availability(true, true).any_available());
+    }
+
+    #[test]
+    fn every_source_has_its_own_name() {
+        let sources = [
+            IdSource::DmiUuidDirect,
+            IdSource::DbusHostname1,
+            IdSource::DbusMachine1,
+            IdSource::EtcMachineId,
+            IdSource::VarLibDbusMachineId,
+            IdSource::DmiBoardSerial,
+            IdSource::DmiProductSerial,
+        ];
+        let names: std::collections::HashSet<String> =
+            sources.iter().map(|source| source.to_string()).collect();
+        assert_eq!(names.len(), sources.len());
+        assert_eq!(IdSource::EtcMachineId.to_string(), "/etc/machine-id");
+    }
+
+    #[test]
+    fn every_bus_error_says_what_failed() {
+        let cases: Vec<(DbusError, Vec<&str>)> = vec![
+            (
+                DbusError::SessionBusNotFound,
+                vec!["DBUS_SESSION_BUS_ADDRESS"],
+            ),
+            (
+                DbusError::SystemBusSocketMissing(String::from("/run/x")),
+                vec!["system bus", "/run/x"],
+            ),
+            (
+                DbusError::ConnectionFailed(String::from("refused")),
+                vec!["could not connect", "refused"],
+            ),
+            (
+                DbusError::MethodCallFailed {
+                    interface: String::from("org.example"),
+                    method: String::from("Do"),
+                    detail: String::from("boom"),
+                },
+                vec!["'Do'", "org.example", "boom"],
+            ),
+            (
+                DbusError::PolicyDenied(String::from("Do")),
+                vec!["polkit", "'Do'"],
+            ),
+        ];
+        for (error, fragments) in cases {
+            let message = error.to_string();
+            for fragment in fragments {
+                assert!(message.contains(fragment), "{message:?} lacks {fragment:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_identifier_error_says_what_failed_and_chains_its_cause() {
+        let io = || std::io::Error::other("disk on fire");
+        let cases: Vec<(HwIdError, Vec<&str>, bool)> = vec![
+            (
+                HwIdError::FileRead {
+                    path: String::from("/p"),
+                    source: io(),
+                },
+                vec!["/p", "disk on fire"],
+                true,
+            ),
+            (
+                HwIdError::EmptyOrPlaceholder {
+                    path: String::from("/p"),
+                },
+                vec!["/p", "placeholder"],
+                false,
+            ),
+            (
+                HwIdError::PermissionDenied {
+                    path: String::from("/p"),
+                },
+                vec!["/p", "root"],
+                false,
+            ),
+            (
+                HwIdError::DbusUnavailable(DbusError::SessionBusNotFound),
+                vec!["D-Bus is not available"],
+                true,
+            ),
+            (
+                HwIdError::AllSourcesExhausted {
+                    sources_tried: vec![String::from("a: no"), String::from("b: no")],
+                },
+                vec!["a: no", "b: no"],
+                false,
+            ),
+        ];
+        for (error, fragments, has_cause) in cases {
+            let message = error.to_string();
+            for fragment in fragments {
+                assert!(message.contains(fragment), "{message:?} lacks {fragment:?}");
+            }
+            assert_eq!(error.source().is_some(), has_cause, "{message}");
+        }
+    }
+
+    #[test]
+    fn a_bus_error_converts_into_an_identifier_error() {
+        let error: HwIdError = DbusError::PolicyDenied(String::from("Do")).into();
+        assert!(matches!(
+            error,
+            HwIdError::DbusUnavailable(DbusError::PolicyDenied(_))
+        ));
+    }
+}
