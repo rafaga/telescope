@@ -28,7 +28,7 @@
 //! [`Message::DatabaseUpdateProgress`]/[`Message::DatabaseUpdated`] and
 //! [`Message::GenericNotification`] rather than touching any UI state
 //! directly; [`TelescopeApp::event_manager`](super::TelescopeApp::event_manager)
-//! forwards those into this struct's `set_status`/`hide`, and
+//! forwards those into this struct's `set_phase`/`hide`, and
 //! [`TelescopeApp::ui`](super::TelescopeApp::ui) calls [`Self::show`]
 //! once per frame, the same way it already calls
 //! `open_about_window`/`open_settings_window`/`open_debug_menu`.
@@ -36,7 +36,7 @@
 //! There used to be a stub here that called a nonexistent
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
-use eframe::egui::{self, Align2, Vec2};
+use eframe::egui::{self, Align2, Margin, RichText, Stroke, Vec2};
 use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
 use sde::builder::{BuildUrls, extract, http, schema, sde_index};
@@ -46,6 +46,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Instant;
 use tokio::sync::mpsc::Sender;
 
 use super::messages::{Message, Type, send_app_message, try_send_app_message};
@@ -57,6 +58,108 @@ use super::messages::{Message, Type, send_app_message, try_send_app_message};
 /// rather than letting two pipelines fight over the same `sde.db` file.
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// Set by the window's Cancel button, read by `DatabaseUpdater::run` at the
+/// end of each phase: the phase that is running finishes, the next one does
+/// not start.
+static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// The phases of an SDE update, in the order they run; each is sent to the
+/// window as [`Message::DatabaseUpdateProgress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SdePhase {
+    /// Asking CCP's SDE index which build is the latest.
+    Checking,
+    /// Downloading the new export.
+    Downloading,
+    /// Decompressing the export.
+    Extracting,
+    /// Parsing the export into a new `sde.db`.
+    Rebuilding,
+    /// Checking the new database before it replaces the old one.
+    Verifying,
+}
+
+/// Something learned while an update runs, shown next to the steps and in
+/// the window's log; sent as [`Message::DatabaseUpdateInfo`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SdeInfo {
+    /// The build installed (if any) and the latest one CCP offers.
+    Versions {
+        /// The build number recorded by the last update.
+        installed: Option<String>,
+        /// The latest build number in CCP's index.
+        available: String,
+    },
+    /// The export was downloaded: its size in bytes.
+    Downloaded(u64),
+    /// The new database passed its integrity check.
+    Verified,
+}
+
+impl SdePhase {
+    const ALL: [Self; 5] = [
+        Self::Checking,
+        Self::Downloading,
+        Self::Extracting,
+        Self::Rebuilding,
+        Self::Verifying,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|phase| *phase == self)
+            .unwrap_or_default()
+    }
+
+    /// The phase's line in the list of steps.
+    fn step(self) -> String {
+        match self {
+            Self::Checking => t!("sde_update.step_check"),
+            Self::Downloading => t!("sde_update.step_download"),
+            Self::Extracting => t!("sde_update.step_extract"),
+            Self::Rebuilding => t!("sde_update.step_rebuild"),
+            Self::Verifying => t!("sde_update.step_verify"),
+        }
+        .into_owned()
+    }
+
+    /// What is happening now: the phase's line in the log.
+    fn detail(self) -> String {
+        match self {
+            Self::Checking => t!("sde_update.checking"),
+            Self::Downloading => t!("sde_update.downloading"),
+            Self::Extracting => t!("sde_update.extracting"),
+            Self::Rebuilding => t!("sde_update.rebuilding"),
+            Self::Verifying => t!("sde_update.verifying"),
+        }
+        .into_owned()
+    }
+}
+
+/// Width of the update window.
+const WINDOW_WIDTH: f32 = 568.0;
+
+/// Room left at each side of the window on a small screen.
+const WINDOW_MARGIN: f32 = 24.0;
+
+/// Height of the window's own title bar.
+const TITLE_BAR_HEIGHT: f32 = 34.0;
+
+/// Height of the log area.
+const LOG_HEIGHT: f32 = 92.0;
+
+/// How an update run ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    /// `sde.db` was (re)built.
+    Rebuilt,
+    /// The database was already up to date.
+    UpToDate,
+    /// The user cancelled before the rebuild started.
+    Cancelled,
+}
+
 /// UI state for the "updating the SDE database" window, owned by
 /// `TelescopeApp` and painted every frame via [`Self::show`]. Doesn't
 /// drive anything itself -- `Self::spawn` is the only thing that starts
@@ -64,44 +167,345 @@ static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// currently visible.
 #[derive(Default)]
 pub struct DatabaseUpdater {
-    visible: bool,
-    status: String,
+    /// The phase running, `None` while no update is.
+    phase: Option<SdePhase>,
+    /// The update is over and the new database is in place; the window
+    /// stays until the user accepts it.
+    finished: bool,
+    /// When the running phase began.
+    phase_started: Option<Instant>,
+    /// The installed and the latest build, once known.
+    versions: Option<(Option<String>, String)>,
+    /// The size of the downloaded export, once known.
+    downloaded: Option<u64>,
+    /// One line per event, each led by the time of day.
+    log: Vec<String>,
+}
+
+/// `m:ss` for a duration.
+fn clock(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 impl DatabaseUpdater {
     /// Paints the progress window if an update is currently running (see
-    /// `Self::set_status`/`Self::hide`) -- a no-op otherwise.
+    /// `Self::set_phase`/`Self::hide`) -- a no-op otherwise. It is drawn
+    /// like a dialog of the Settings screen (`egui_panels`): a title bar
+    /// with a close button, a progress bar, the three
+    /// phases as steps, a log of what began and when, and a Cancel button
+    /// that takes effect at the end of the running phase (not during the
+    /// rebuild, which can't be interrupted).
     #[tracing::instrument(skip(self, ctx))]
-    pub fn show(&self, ctx: &egui::Context) {
-        if !self.visible {
+    pub fn show(&mut self, ctx: &egui::Context) {
+        let Some(phase) = self.phase else {
             return;
-        }
+        };
+        let mut accepted = false;
         egui::Window::new(t!("sde_update.title"))
             .id(egui::Id::new("sde_update_window"))
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .frame(egui_panels::dialog_frame(ctx).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(&self.status);
-                });
+                let theme = egui_panels::Theme::get(ui.ctx());
+                let palette = theme.palette(ui.visuals());
+                let cancelling = CANCEL_REQUESTED.load(Ordering::SeqCst);
+                let finished = self.finished;
+                let can_cancel = matches!(
+                    phase,
+                    SdePhase::Checking | SdePhase::Downloading | SdePhase::Extracting
+                ) && !cancelling
+                    && !finished;
+                // Narrower than usual when the application window is.
+                let window_width = WINDOW_WIDTH
+                    .min(ui.ctx().content_rect().width() - 2.0 * WINDOW_MARGIN)
+                    .max(280.0);
+                ui.set_width(window_width);
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+
+                // Title bar.
+                ui.allocate_ui_with_layout(
+                    Vec2::new(window_width, TITLE_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(14.0);
+                        ui.label(
+                            RichText::new(t!("sde_update.title"))
+                                .size(theme.section_title_size)
+                                .color(palette.strong_text),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            let hover = if finished {
+                                t!("sde_update.accept")
+                            } else {
+                                t!("sde_update.cancel")
+                            };
+                            if close_button(ui, can_cancel || finished)
+                                .on_hover_text(hover)
+                                .clicked()
+                            {
+                                if finished {
+                                    accepted = true;
+                                } else {
+                                    Self::request_cancel();
+                                }
+                            }
+                        });
+                    },
+                );
+                egui_panels::divider(ui);
+
+                egui::Frame::NONE
+                    .inner_margin(Margin {
+                        left: 18,
+                        right: 18,
+                        top: 16,
+                        bottom: 18,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(window_width - 36.0);
+                        ui.spacing_mut().item_spacing.y = 14.0;
+
+                        let info = match &self.versions {
+                            Some((installed, available)) => t!(
+                                "sde_update.versions",
+                                installed = installed
+                                    .clone()
+                                    .unwrap_or_else(|| t!("sde_update.none").into_owned()),
+                                available = available
+                            )
+                            .into_owned(),
+                            None => t!("sde_update.description").into_owned(),
+                        };
+                        ui.label(
+                            RichText::new(info)
+                                .size(theme.small_size)
+                                .color(palette.muted_text),
+                        );
+
+                        // Half a phase in while it runs, so the bar moves at once.
+                        let target = if finished {
+                            1.0
+                        } else {
+                            (phase.index() as f32 + 0.5) / SdePhase::ALL.len() as f32
+                        };
+                        let current = if finished {
+                            SdePhase::ALL.len()
+                        } else {
+                            phase.index()
+                        };
+                        let fraction = ui.ctx().animate_value_with_time(
+                            egui::Id::new("sde_update_progress"),
+                            target,
+                            0.4,
+                        );
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            let width = ui.available_width() - 44.0;
+                            ui.add_sized(
+                                [width, 8.0],
+                                egui::ProgressBar::new(fraction)
+                                    .desired_height(8.0)
+                                    .corner_radius(4)
+                                    .fill(palette.accent),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.0} %", fraction * 100.0))
+                                    .size(theme.small_size)
+                                    .color(palette.muted_text),
+                            );
+                        });
+
+                        let steps: Vec<String> =
+                            SdePhase::ALL.iter().map(|phase| phase.step()).collect();
+                        let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+                        let notes: Vec<String> = (0..steps.len())
+                            .map(|index| match index {
+                                0 => self
+                                    .versions
+                                    .as_ref()
+                                    .filter(|_| current > 0)
+                                    .map(|(_, available)| {
+                                        t!("sde_update.available", build = available).into_owned()
+                                    })
+                                    .unwrap_or_default(),
+                                1 => self
+                                    .downloaded
+                                    .filter(|_| current > 1)
+                                    .map(format_size)
+                                    .unwrap_or_default(),
+                                _ => String::new(),
+                            })
+                            .enumerate()
+                            .map(|(index, note)| {
+                                if index == current && note.is_empty() {
+                                    self.phase_started
+                                        .map(|began| clock(began.elapsed()))
+                                        .unwrap_or_default()
+                                } else {
+                                    note
+                                }
+                            })
+                            .collect();
+                        egui_panels::progress_steps_with_notes(ui, &steps, &notes, current);
+
+                        // What began and when.
+                        egui::Frame::NONE
+                            .fill(ui.visuals().extreme_bg_color)
+                            .stroke(Stroke::new(1.0, palette.card_stroke))
+                            .corner_radius(3)
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                egui::ScrollArea::vertical()
+                                    .id_salt("sde_update_log")
+                                    .max_height(LOG_HEIGHT - 16.0)
+                                    .auto_shrink([false, false])
+                                    .stick_to_bottom(true)
+                                    .show(ui, |ui| {
+                                        for line in &self.log {
+                                            ui.label(
+                                                RichText::new(line)
+                                                    .monospace()
+                                                    .size(theme.small_size - 1.0)
+                                                    .color(palette.muted_text),
+                                            );
+                                        }
+                                    });
+                            });
+
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let accept = ui.add_enabled_ui(finished, |ui| {
+                                        egui_panels::button(
+                                            ui,
+                                            t!("sde_update.accept").into_owned(),
+                                            if finished {
+                                                egui_panels::Variant::Primary
+                                            } else {
+                                                egui_panels::Variant::Secondary
+                                            },
+                                        )
+                                    });
+                                    if accept.inner.clicked() {
+                                        accepted = true;
+                                    }
+                                    let label = if cancelling {
+                                        t!("sde_update.cancelling")
+                                    } else {
+                                        t!("sde_update.cancel")
+                                    };
+                                    let cancel = ui.add_enabled_ui(can_cancel, |ui| {
+                                        egui_panels::button(
+                                            ui,
+                                            label.into_owned(),
+                                            egui_panels::Variant::Ghost,
+                                        )
+                                    });
+                                    if cancel.inner.clicked() {
+                                        Self::request_cancel();
+                                    }
+                                },
+                            );
+                        });
+                    });
             });
+        if accepted {
+            self.hide();
+            return;
+        }
+        // The elapsed time counts even while nothing else repaints.
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 
-    /// Shows the window (if it wasn't already) with `status` as its
-    /// message. Called from `TelescopeApp::event_manager` on
-    /// [`Message::DatabaseUpdateProgress`].
-    pub fn set_status(&mut self, status: String) {
-        self.visible = true;
-        self.status = status;
+    /// Asks the running update to stop at the end of its current phase.
+    fn request_cancel() {
+        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+    }
+
+    /// Shows the window (if it wasn't already) at `phase`. Called from
+    /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdateProgress`].
+    pub fn set_phase(&mut self, phase: SdePhase) {
+        if self.phase.is_none() {
+            self.finished = false;
+            self.versions = None;
+            self.downloaded = None;
+            self.log.clear();
+        }
+        self.log_line(phase.detail());
+        self.phase_started = Some(Instant::now());
+        self.phase = Some(phase);
+    }
+
+    /// Records something learned during the update. Called from
+    /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdateInfo`].
+    pub fn set_info(&mut self, info: SdeInfo) {
+        match info {
+            SdeInfo::Versions {
+                installed,
+                available,
+            } => {
+                let line = t!(
+                    "sde_update.log_versions",
+                    installed = installed
+                        .clone()
+                        .unwrap_or_else(|| t!("sde_update.none").into_owned()),
+                    available = available
+                )
+                .into_owned();
+                self.log_line(line);
+                self.versions = Some((installed, available));
+            }
+            SdeInfo::Downloaded(bytes) => {
+                self.log_line(
+                    t!("sde_update.log_downloaded", size = format_size(bytes)).into_owned(),
+                );
+                self.downloaded = Some(bytes);
+            }
+            SdeInfo::Verified => {
+                self.log_line(t!("sde_update.log_verified").into_owned());
+            }
+        }
+    }
+
+    /// Adds a line to the log, led by the time of day.
+    fn log_line(&mut self, text: String) {
+        self.log.push(format!(
+            "{}  {text}",
+            chrono::Local::now().format("%H:%M:%S")
+        ));
+    }
+
+    /// The new database is in place: every step is done and the window
+    /// waits for the user to accept it. Called from
+    /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdated`] when
+    /// the database was rebuilt.
+    pub fn finish(&mut self) {
+        if self.phase.is_some() {
+            self.finished = true;
+            self.phase_started = None;
+            self.log_line(t!("sde_update.log_done").into_owned());
+        }
     }
 
     /// Hides the window. Called from `TelescopeApp::event_manager` on
-    /// [`Message::DatabaseUpdated`], which is sent once the
-    /// check/build finishes (successfully or not).
+    /// [`Message::DatabaseUpdated`] when nothing was rebuilt (up to date,
+    /// cancelled or failed), and when the user accepts a finished update.
     pub fn hide(&mut self) {
-        self.visible = false;
+        self.phase = None;
+        self.finished = false;
+        self.phase_started = None;
+        self.versions = None;
+        self.downloaded = None;
+        self.log.clear();
     }
 
     /// Spawns the update check/build on its own thread, with its own
@@ -136,25 +540,18 @@ impl DatabaseUpdater {
     ) {
         // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
-        if sde_path.exists() {
-            let mut file = File::open(&sde_path).unwrap();
-            let mut buf = [0u8; 16];
-            if match file.read_exact(&mut buf) {
-                Ok(()) => &buf == b"SQLite format 3\0",
-                Err(_) => false, // file it is too small or doesn't exist, so it is not a valid SQLite database
-            } {
-                return;
-            } else {
-                let _ = try_send_app_message(
-                    &app_msg,
-                    Message::GenericNotification((
-                        Type::Warning,
-                        String::from("DatabaseUpdater"),
-                        String::from("spawn"),
-                        String::from("The SDE database is corrupted, rebuilding it."),
-                    )),
-                );
-            }
+        // A file that isn't a SQLite database is rebuilt (`run` treats it as
+        // missing); a valid one still goes through the update check.
+        if sde_path.exists() && !is_sqlite(&sde_path) {
+            let _ = try_send_app_message(
+                &app_msg,
+                Message::GenericNotification((
+                    Type::Warning,
+                    String::from("DatabaseUpdater"),
+                    String::from("spawn"),
+                    String::from("The SDE database is corrupted, rebuilding it."),
+                )),
+            );
         }
         // An empty path means `Settings::get_sde()` isn't configured
         // (shouldn't happen for a fresh `Settings::default()` anymore,
@@ -174,7 +571,7 @@ impl DatabaseUpdater {
                     String::from("DatabaseUpdater"),
                     String::from("spawn"),
                     String::from(
-                        "No SDE database path is configured (Settings -> Data Sources); skipping the update check.",
+                        "No SDE database path is configured (Settings -> Application); skipping the update check.",
                     ),
                 )),
             );
@@ -193,6 +590,7 @@ impl DatabaseUpdater {
             return;
         }
 
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -210,22 +608,29 @@ impl DatabaseUpdater {
                 )
                 .await;
                 match result {
-                    Ok(rebuilt) => {
-                        if rebuilt {
-                            Self::notify(
-                                &app_msg,
-                                Type::Info,
-                                "SDE database updated successfully.",
-                            )
-                            .await;
-                        } else {
-                            Self::notify(
-                                &app_msg,
-                                Type::Info,
-                                "SDE database is already up to date.",
-                            )
-                            .await;
+                    Ok(outcome) => {
+                        match outcome {
+                            Outcome::Rebuilt => {
+                                Self::notify(
+                                    &app_msg,
+                                    Type::Info,
+                                    "SDE database updated successfully.",
+                                )
+                                .await;
+                            }
+                            Outcome::UpToDate => {
+                                Self::notify(
+                                    &app_msg,
+                                    Type::Info,
+                                    "SDE database is already up to date.",
+                                )
+                                .await;
+                            }
+                            Outcome::Cancelled => {
+                                Self::notify(&app_msg, Type::Info, "SDE update cancelled.").await;
+                            }
                         }
+                        let rebuilt = outcome == Outcome::Rebuilt;
                         let _ = send_app_message(&app_msg, Message::DatabaseUpdated(rebuilt)).await;
                     }
                     Err(err) => {
@@ -278,8 +683,8 @@ impl DatabaseUpdater {
     /// `sde_path` doesn't exist yet (`!db_exists`). Skipping only requires
     /// both "nothing changed" and "the database is already there".
     ///
-    /// Returns `Ok(true)` if the database was (re)built, `Ok(false)` if it
-    /// was already up to date (nothing to do). Errors -- no network, a
+    /// Returns whether the database was rebuilt, was already up to date or
+    /// the user cancelled (see [`Outcome`]). Errors -- no network, a
     /// malformed zip, a SQL failure -- are returned rather than panicking;
     /// the caller decides how to surface them.
     async fn run(
@@ -289,42 +694,85 @@ impl DatabaseUpdater {
         with_third_party: bool,
         urls: &BuildUrls,
         app_msg: &Sender<Message>,
-    ) -> Result<bool, Error> {
-        send_app_message(
-            app_msg,
-            Message::DatabaseUpdateProgress(t!("sde_update.checking").into_owned()),
-        )
-        .await
-        .ok();
+    ) -> Result<Outcome, Error> {
+        send_app_message(app_msg, Message::DatabaseUpdateProgress(SdePhase::Checking))
+            .await
+            .ok();
 
         let client = http::build_client()?;
+        let build_file = data_dir.join(format!("sde-{}.build", urls.sde_variant));
+        let installed = std::fs::read_to_string(&build_file)
+            .ok()
+            .map(|build| build.trim().to_string())
+            .filter(|build| !build.is_empty());
+        // Only for the window: `sde_index::update_as_needed` reads the index
+        // again and decides on its own.
+        let available = http::fetch_text(&client, &format!("{}latest.jsonl", urls.sde_url))
+            .await
+            .ok()
+            .and_then(|index| latest_build(&index));
+        if let Some(available) = &available {
+            send_app_message(
+                app_msg,
+                Message::DatabaseUpdateInfo(SdeInfo::Versions {
+                    installed: installed.clone(),
+                    available: available.clone(),
+                }),
+            )
+            .await
+            .ok();
+        }
+
+        let db_exists = is_sqlite(sde_path);
+        let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
+        let expect_download = !db_exists
+            || !zip_path.exists()
+            || available
+                .as_ref()
+                .is_none_or(|available| installed.as_ref() != Some(available));
+        if expect_download {
+            send_app_message(
+                app_msg,
+                Message::DatabaseUpdateProgress(SdePhase::Downloading),
+            )
+            .await
+            .ok();
+        }
         let changed =
             sde_index::update_as_needed(&client, data_dir, &urls.sde_url, &urls.sde_variant)
                 .await?;
-
-        let db_exists = sde_path.exists();
         if !changed && db_exists {
-            return Ok(false);
+            return Ok(Outcome::UpToDate);
+        }
+        if let Ok(zip) = std::fs::metadata(&zip_path) {
+            send_app_message(
+                app_msg,
+                Message::DatabaseUpdateInfo(SdeInfo::Downloaded(zip.len())),
+            )
+            .await
+            .ok();
+        }
+        if Self::cancelled(data_dir, urls) {
+            return Ok(Outcome::Cancelled);
         }
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(t!("sde_update.downloading").into_owned()),
+            Message::DatabaseUpdateProgress(SdePhase::Extracting),
         )
         .await
         .ok();
 
-        if db_exists {
-            std::fs::remove_file(sde_path)?;
-        }
         if let Some(parent) = sde_path.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
         }
 
-        let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
         extract::prepare_sde_directory(&zip_path, sde_dir)?;
+        if Self::cancelled(data_dir, urls) {
+            return Ok(Outcome::Cancelled);
+        }
 
         // Read back the build number `sde_index::update_as_needed` just
         // wrote (or confirmed unchanged) to `sde-{sde_variant}.build`,
@@ -340,12 +788,18 @@ impl DatabaseUpdater {
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(t!("sde_update.rebuilding").into_owned()),
+            Message::DatabaseUpdateProgress(SdePhase::Rebuilding),
         )
         .await
         .ok();
 
-        let mut connection = rusqlite::Connection::open(sde_path)?;
+        // Built next to the database and moved over it only once complete:
+        // a failed download or build keeps the database there was.
+        let building = building_path(sde_path);
+        if building.exists() {
+            std::fs::remove_file(&building)?;
+        }
+        let mut connection = rusqlite::Connection::open(&building)?;
         schema::create_schema(&connection)?;
 
         // Local projection instead of CCP's precomputed `position2D`:
@@ -371,15 +825,876 @@ impl DatabaseUpdater {
             with_third_party,
         };
         let sde_parser = Parser::new(sde_dir, parser_config);
-        sde_parser
+        let built = sde_parser
             .build_database(
                 &mut connection,
                 &client,
                 &urls.maps_url,
                 build_number.as_deref(),
             )
-            .await?;
+            .await;
+        let verified = match built {
+            Ok(_) => {
+                send_app_message(
+                    app_msg,
+                    Message::DatabaseUpdateProgress(SdePhase::Verifying),
+                )
+                .await
+                .ok();
+                Self::verify(&connection)
+            }
+            Err(error) => Err(error),
+        };
+        // Closed before the file is moved or removed.
+        drop(connection);
+        if let Err(error) = verified {
+            let _ = std::fs::remove_file(&building);
+            return Err(error);
+        }
+        send_app_message(app_msg, Message::DatabaseUpdateInfo(SdeInfo::Verified))
+            .await
+            .ok();
+        // One step on every platform: the old database stays whole until
+        // the new one replaces it.
+        std::fs::rename(&building, sde_path)?;
 
-        Ok(true)
+        Ok(Outcome::Rebuilt)
+    }
+
+    /// SQLite's own quick integrity check of the database just built.
+    fn verify(connection: &rusqlite::Connection) -> Result<(), Error> {
+        let result: String =
+            connection.pragma_query_value(None, "quick_check", |row| row.get(0))?;
+        if result == "ok" {
+            return Ok(());
+        }
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            Some(format!(
+                "the new SDE database failed its integrity check: {result}"
+            )),
+        )
+        .into())
+    }
+
+    /// Whether the user asked to stop. A cancelled run forgets the build
+    /// number it recorded, so the next check still sees the export as new
+    /// instead of taking the old database for up to date.
+    fn cancelled(data_dir: &std::path::Path, urls: &BuildUrls) -> bool {
+        let cancelled = CANCEL_REQUESTED.load(Ordering::SeqCst);
+        if cancelled {
+            let _ = std::fs::remove_file(data_dir.join(format!("sde-{}.build", urls.sde_variant)));
+        }
+        cancelled
+    }
+}
+
+/// The latest build number in the text of CCP's SDE index (`latest.jsonl`),
+/// `None` when it has none: the window then simply has no version to show.
+fn latest_build(index: &str) -> Option<String> {
+    index.lines().find_map(|line| {
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if !compact.contains("\"_key\":\"sde\"") {
+            return None;
+        }
+        let rest = compact.split("\"buildNumber\":").nth(1)?;
+        let build: String = rest
+            .trim_start_matches('"')
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        (!build.is_empty()).then_some(build)
+    })
+}
+
+/// A byte count for people: `48.2 MB`.
+fn format_size(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    }
+}
+
+/// The title bar's close button: a 22 px square with a drawn cross, the same
+/// hover as a side navigation item. Disabled it is dimmed and inert.
+fn close_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    let theme = egui_panels::Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), sense);
+    if ui.is_rect_visible(rect) {
+        if enabled && response.hovered() {
+            ui.painter().rect_filled(rect, 3.0, palette.hover_fill);
+        }
+        let color = if enabled {
+            palette.muted_text
+        } else {
+            palette.muted_text.gamma_multiply(0.4)
+        };
+        let arm = 4.0;
+        let center = rect.center();
+        let stroke = Stroke::new(1.4, color);
+        ui.painter().line_segment(
+            [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [center + Vec2::new(-arm, arm), center + Vec2::new(arm, -arm)],
+            stroke,
+        );
+    }
+    response
+}
+
+/// Whether `path` is a file starting with the SQLite header (a missing,
+/// unreadable or too short file isn't).
+fn is_sqlite(path: &std::path::Path) -> bool {
+    let mut header = [0u8; 16];
+    File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok_and(|()| &header == b"SQLite format 3\0")
+}
+
+/// Where a new SDE database is built before it replaces `sde_path`
+/// (`sde.db` -> `sde.db.building`).
+fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = sde_path.as_os_str().to_owned();
+    name.push(".building");
+    std::path::PathBuf::from(name)
+}
+
+/// The update lock and cancel flag are process-wide: the tests that touch
+/// them (or read them through `run`, `spawn` and `show`) take this first.
+#[cfg(test)]
+static FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    FLAG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod building_path_tests {
+    use super::{building_path, format_size, is_sqlite, latest_build};
+
+    #[test]
+    fn the_latest_build_is_read_from_the_index() {
+        let index =
+            "{\"_key\": \"sde\", \"buildNumber\": 3458726, \"releaseDate\": \"2026-08-06\"}\r\n";
+        assert_eq!(latest_build(index).as_deref(), Some("3458726"));
+        let text =
+            "{\"_key\":\"other\",\"buildNumber\":1}\n{\"_key\":\"sde\",\"buildNumber\":\"77\"}";
+        assert_eq!(latest_build(text).as_deref(), Some("77"));
+        assert_eq!(
+            latest_build("{\"_key\": \"other\", \"buildNumber\": 1}"),
+            None
+        );
+        assert_eq!(latest_build(""), None);
+    }
+
+    #[test]
+    fn sizes_are_shown_in_megabytes_or_kilobytes() {
+        assert_eq!(format_size(50_540_000), "48.2 MB");
+        assert_eq!(format_size(2048), "2 KB");
+    }
+
+    #[test]
+    fn only_a_file_with_the_sqlite_header_is_a_database() {
+        let dir = std::env::temp_dir().join(format!("telescope-is-sqlite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let valid = dir.join("valid.db");
+        std::fs::write(&valid, b"SQLite format 3\0rest of the page").unwrap();
+        let broken = dir.join("broken.db");
+        std::fs::write(&broken, b"not a database at all").unwrap();
+        let short = dir.join("short.db");
+        std::fs::write(&short, b"SQLite").unwrap();
+
+        assert!(is_sqlite(&valid));
+        assert!(!is_sqlite(&broken));
+        assert!(!is_sqlite(&short));
+        assert!(!is_sqlite(&dir.join("missing.db")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    use std::path::Path;
+
+    #[test]
+    fn the_new_database_is_built_next_to_the_old_one() {
+        assert_eq!(
+            building_path(Path::new("data/sde.db")),
+            Path::new("data/sde.db.building")
+        );
+        assert_eq!(
+            building_path(Path::new("sde.db")),
+            Path::new("sde.db.building")
+        );
+    }
+}
+
+#[cfg(test)]
+mod updater_state_tests {
+    use super::*;
+
+    #[test]
+    fn the_phases_run_in_order_and_have_distinct_texts() {
+        let phases = [
+            SdePhase::Checking,
+            SdePhase::Downloading,
+            SdePhase::Extracting,
+            SdePhase::Rebuilding,
+            SdePhase::Verifying,
+        ];
+        for (expected, phase) in phases.iter().enumerate() {
+            assert_eq!(phase.index(), expected);
+            assert!(!phase.step().is_empty());
+            assert!(!phase.detail().is_empty());
+        }
+        let steps: std::collections::HashSet<String> =
+            phases.iter().map(|phase| phase.step()).collect();
+        assert_eq!(steps.len(), phases.len());
+    }
+
+    #[test]
+    fn the_clock_shows_minutes_and_padded_seconds() {
+        assert_eq!(clock(std::time::Duration::from_secs(0)), "0:00");
+        assert_eq!(clock(std::time::Duration::from_secs(9)), "0:09");
+        assert_eq!(clock(std::time::Duration::from_secs(75)), "1:15");
+        assert_eq!(clock(std::time::Duration::from_secs(3600)), "60:00");
+    }
+
+    #[test]
+    fn the_first_phase_opens_the_window_with_a_clean_state() {
+        let mut updater = DatabaseUpdater::default();
+        assert!(updater.phase.is_none());
+        updater.set_phase(SdePhase::Checking);
+        assert_eq!(updater.phase, Some(SdePhase::Checking));
+        assert!(updater.phase_started.is_some());
+        assert_eq!(updater.log.len(), 1);
+        // "HH:MM:SS  text"
+        assert_eq!(updater.log[0].as_bytes()[2], b':');
+        assert!(updater.log[0].contains("  "));
+    }
+
+    #[test]
+    fn later_phases_keep_what_was_learned() {
+        let mut updater = DatabaseUpdater::default();
+        updater.set_phase(SdePhase::Checking);
+        updater.set_info(SdeInfo::Versions {
+            installed: None,
+            available: String::from("100"),
+        });
+        updater.set_phase(SdePhase::Downloading);
+        assert_eq!(updater.versions, Some((None, String::from("100"))));
+        assert_eq!(updater.phase, Some(SdePhase::Downloading));
+        assert_eq!(updater.log.len(), 3);
+    }
+
+    #[test]
+    fn each_kind_of_info_is_recorded_and_logged() {
+        let mut updater = DatabaseUpdater::default();
+        updater.set_phase(SdePhase::Checking);
+        updater.set_info(SdeInfo::Versions {
+            installed: Some(String::from("90")),
+            available: String::from("100"),
+        });
+        assert_eq!(
+            updater.versions,
+            Some((Some(String::from("90")), String::from("100")))
+        );
+        updater.set_info(SdeInfo::Downloaded(50_540_000));
+        assert_eq!(updater.downloaded, Some(50_540_000));
+        assert!(updater.log.last().unwrap().contains("48.2 MB"));
+        let before = updater.log.len();
+        updater.set_info(SdeInfo::Verified);
+        assert_eq!(updater.log.len(), before + 1);
+    }
+
+    #[test]
+    fn finishing_needs_a_running_update_and_keeps_the_window_open() {
+        let mut updater = DatabaseUpdater::default();
+        updater.finish();
+        assert!(!updater.finished);
+        assert!(updater.log.is_empty());
+
+        updater.set_phase(SdePhase::Verifying);
+        updater.finish();
+        assert!(updater.finished);
+        assert!(updater.phase_started.is_none());
+        assert!(updater.phase.is_some());
+    }
+
+    #[test]
+    fn hiding_forgets_everything_and_a_new_update_starts_clean() {
+        let mut updater = DatabaseUpdater::default();
+        updater.set_phase(SdePhase::Checking);
+        updater.set_info(SdeInfo::Downloaded(1));
+        updater.finish();
+        updater.hide();
+        assert!(updater.phase.is_none());
+        assert!(!updater.finished);
+        assert!(updater.downloaded.is_none());
+        assert!(updater.log.is_empty());
+
+        updater.set_phase(SdePhase::Checking);
+        assert_eq!(updater.log.len(), 1);
+        assert!(!updater.finished);
+    }
+
+    #[test]
+    fn a_fresh_database_passes_its_integrity_check() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(DatabaseUpdater::verify(&connection).is_ok());
+    }
+
+    #[test]
+    fn a_cancelled_run_forgets_the_recorded_build_number() {
+        let dir = std::env::temp_dir().join(format!("telescope-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let urls = BuildUrls::default();
+        let build_file = dir.join(format!("sde-{}.build", urls.sde_variant));
+        std::fs::write(&build_file, "100").unwrap();
+
+        let _guard = super::serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        assert!(!DatabaseUpdater::cancelled(&dir, &urls));
+        assert!(build_file.exists());
+
+        DatabaseUpdater::request_cancel();
+        assert!(DatabaseUpdater::cancelled(&dir, &urls));
+        assert!(!build_file.exists());
+
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// `run` and `spawn` against a local HTTP server that plays CCP's SDE index:
+/// no test here reaches the real network or a real `sde.db`.
+#[cfg(test)]
+mod updater_run_tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::sync::mpsc;
+
+    const INDEX: &str = "{\"_key\": \"sde\", \"buildNumber\": 100, \"releaseDate\": \"x\"}\n";
+    const ZIP_PATH: &str = "/eve-online-static-data-100-jsonl.zip";
+
+    /// Answers each request with the body registered for its path, or 404.
+    fn serve(routes: Vec<(&'static str, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match std::io::Read::read(&mut stream, &mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, body) = match routes.iter().find(|(route, _)| *route == path) {
+                    Some((_, body)) => ("200 OK", body.clone()),
+                    None => ("404 Not Found", Vec::new()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        base
+    }
+
+    /// An address nothing listens on.
+    fn dead_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/", listener.local_addr().unwrap())
+    }
+
+    fn urls(base: &str) -> BuildUrls {
+        BuildUrls {
+            sde_variant: String::from("jsonl"),
+            sde_url: base.to_string(),
+            maps_url: base.to_string(),
+        }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "telescope-updater-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A file with the SQLite header, standing for the installed `sde.db`.
+    fn installed_database(dir: &Path) -> PathBuf {
+        let path = dir.join("sde.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute("CREATE TABLE marker (x)", []).unwrap();
+        path
+    }
+
+    fn summary(message: &Message) -> String {
+        match message {
+            Message::DatabaseUpdateProgress(phase) => format!("progress:{phase:?}"),
+            Message::DatabaseUpdateInfo(SdeInfo::Versions {
+                installed,
+                available,
+            }) => format!("versions:{installed:?}->{available}"),
+            Message::DatabaseUpdateInfo(SdeInfo::Downloaded(bytes)) => {
+                format!("downloaded:{bytes}")
+            }
+            Message::DatabaseUpdateInfo(SdeInfo::Verified) => String::from("verified"),
+            Message::DatabaseUpdated(rebuilt) => format!("updated:{rebuilt}"),
+            Message::GenericNotification((_, _, _, text)) => format!("note:{text}"),
+            _ => String::from("other"),
+        }
+    }
+
+    fn drain(receiver: &mut mpsc::Receiver<Message>) -> Vec<String> {
+        std::iter::from_fn(|| receiver.try_recv().ok())
+            .map(|message| summary(&message))
+            .collect()
+    }
+
+    fn run_update(
+        sde_path: &Path,
+        data_dir: &Path,
+        urls: &BuildUrls,
+    ) -> (Result<Outcome, Error>, Vec<String>) {
+        let (sender, mut receiver) = mpsc::channel(64);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(DatabaseUpdater::run(
+            sde_path,
+            data_dir,
+            &data_dir.join("sde"),
+            false,
+            urls,
+            &sender,
+        ));
+        (result, drain(&mut receiver))
+    }
+
+    fn build_file(dir: &Path) -> PathBuf {
+        dir.join("sde-jsonl.build")
+    }
+
+    fn zip_file(dir: &Path) -> PathBuf {
+        dir.join("sde-jsonl.zip")
+    }
+
+    /// Waits for the thread `spawn` started to release the update lock.
+    fn wait_until_idle() {
+        for _ in 0..1000 {
+            if !UPDATE_IN_PROGRESS.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the update thread did not finish");
+    }
+
+    // ---- run ----
+
+    #[test]
+    fn an_installed_current_build_is_up_to_date_and_downloads_nothing() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("current");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "100\n").unwrap();
+        std::fs::write(zip_file(&dir), "old zip").unwrap();
+        let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert_eq!(
+            messages,
+            ["progress:Checking", "versions:Some(\"100\")->100"]
+        );
+        assert_eq!(std::fs::read_to_string(zip_file(&dir)).unwrap(), "old zip");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_build_is_downloaded_and_a_cancel_stops_before_extracting() {
+        let _guard = serial();
+        let dir = temp_dir("cancel");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "99").unwrap();
+        std::fs::write(zip_file(&dir), "old zip").unwrap();
+        let payload = b"not really a zip".to_vec();
+        let base = serve(vec![
+            ("/latest.jsonl", INDEX.as_bytes().to_vec()),
+            (ZIP_PATH, payload.clone()),
+        ]);
+        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+
+        assert_eq!(result.unwrap(), Outcome::Cancelled);
+        assert_eq!(
+            messages,
+            [
+                "progress:Checking".to_string(),
+                "versions:Some(\"99\")->100".to_string(),
+                "progress:Downloading".to_string(),
+                format!("downloaded:{}", payload.len()),
+            ]
+        );
+        // The zip was replaced, and the recorded build forgotten so the next
+        // check does not take the old database for current.
+        assert_eq!(std::fs::read(zip_file(&dir)).unwrap(), payload);
+        assert!(!build_file(&dir).exists());
+        assert!(is_sqlite(&database));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_broken_zip_fails_the_update_and_keeps_the_installed_database() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("badzip");
+        let database = installed_database(&dir);
+        let before = std::fs::read(&database).unwrap();
+        std::fs::write(build_file(&dir), "99").unwrap();
+        let base = serve(vec![
+            ("/latest.jsonl", INDEX.as_bytes().to_vec()),
+            (ZIP_PATH, b"not really a zip".to_vec()),
+        ]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert!(result.is_err());
+        assert!(messages.contains(&String::from("progress:Extracting")));
+        assert!(!messages.contains(&String::from("progress:Rebuilding")));
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        assert!(!building_path(&database).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_download_is_an_error_and_keeps_the_recorded_build() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("nodownload");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "99").unwrap();
+        // The index is there, the zip is not (404).
+        let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert!(result.is_err());
+        assert!(messages.contains(&String::from("progress:Downloading")));
+        assert_eq!(std::fs::read_to_string(build_file(&dir)).unwrap(), "99");
+        assert!(is_sqlite(&database));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offline_with_an_installed_database_counts_as_up_to_date() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("offline");
+        let database = installed_database(&dir);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&dead_server()));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert_eq!(messages, ["progress:Checking", "progress:Downloading"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offline_without_a_database_fails_and_builds_nothing() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("firstrun");
+        let database = dir.join("sub").join("sde.db");
+
+        let (result, messages) = run_update(&database, &dir, &urls(&dead_server()));
+
+        assert!(result.is_err());
+        assert!(messages.contains(&String::from("progress:Extracting")));
+        assert!(!database.exists());
+        assert!(!building_path(&database).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_index_without_the_sde_build_is_treated_like_no_index() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("noindex");
+        let database = installed_database(&dir);
+        let base = serve(vec![(
+            "/latest.jsonl",
+            b"{\"_key\": \"other\", \"buildNumber\": 1}\n".to_vec(),
+        )]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.starts_with("versions"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notify_sends_a_notification_with_the_text() {
+        let (sender, mut receiver) = mpsc::channel(4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(DatabaseUpdater::notify(&sender, Type::Info, "hello"));
+        assert_eq!(drain(&mut receiver), ["note:hello"]);
+    }
+
+    // ---- spawn ----
+
+    #[test]
+    fn spawn_skips_an_unconfigured_database_path() {
+        let _guard = serial();
+        let dir = temp_dir("nopath");
+        let (sender, mut receiver) = mpsc::channel(8);
+
+        DatabaseUpdater::spawn(
+            PathBuf::new(),
+            dir.clone(),
+            dir.join("sde"),
+            Arc::new(sender),
+            false,
+            urls(&dead_server()),
+        );
+
+        let messages = drain(&mut receiver);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("No SDE database path"), "{messages:?}");
+        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn spawn_reports_a_corrupted_database_and_a_run_already_going() {
+        let _guard = serial();
+        let dir = temp_dir("running");
+        let database = dir.join("sde.db");
+        std::fs::write(&database, "this is not sqlite").unwrap();
+        let (sender, mut receiver) = mpsc::channel(8);
+        UPDATE_IN_PROGRESS.store(true, Ordering::SeqCst);
+
+        DatabaseUpdater::spawn(
+            database.clone(),
+            dir.clone(),
+            dir.join("sde"),
+            Arc::new(sender),
+            false,
+            urls(&dead_server()),
+        );
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+
+        let messages = drain(&mut receiver);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("corrupted"), "{messages:?}");
+        assert!(messages[1].contains("already running"), "{messages:?}");
+        // Nothing touched the file.
+        assert_eq!(
+            std::fs::read_to_string(&database).unwrap(),
+            "this is not sqlite"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn spawn_and_collect(database: &Path, dir: &Path, base: &str) -> Vec<String> {
+        let (sender, mut receiver) = mpsc::channel(64);
+        DatabaseUpdater::spawn(
+            database.to_path_buf(),
+            dir.to_path_buf(),
+            dir.join("sde"),
+            Arc::new(sender),
+            false,
+            urls(base),
+        );
+        wait_until_idle();
+        drain(&mut receiver)
+    }
+
+    #[test]
+    fn a_spawned_check_of_a_current_database_reports_and_finishes() {
+        let _guard = serial();
+        let dir = temp_dir("spawn-current");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "100").unwrap();
+        std::fs::write(zip_file(&dir), "old zip").unwrap();
+        let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
+
+        let messages = spawn_and_collect(&database, &dir, &base);
+
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("updated:false"),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message == "note:SDE database is already up to date."),
+            "{messages:?}"
+        );
+        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_spawned_update_that_fails_reports_the_error_and_releases_the_lock() {
+        let _guard = serial();
+        let dir = temp_dir("spawn-fail");
+        let database = dir.join("sde.db");
+
+        let messages = spawn_and_collect(&database, &dir, &dead_server());
+
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("updated:false"),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("note:") && message.len() > "note:".len()),
+            "{messages:?}"
+        );
+        assert!(!database.exists());
+        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        // And a second update can start afterwards.
+        let again = spawn_and_collect(&database, &dir, &dead_server());
+        assert_eq!(again.last().map(String::as_str), Some("updated:false"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- The window ----
+
+    fn frame(ctx: &egui::Context, draw: impl FnMut(&egui::Context)) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1000.0, 700.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        let mut draw = draw;
+        let mut output = ctx.run_ui(input, |ui| draw(ui.ctx()));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_window_only_exists_while_an_update_runs() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let ctx = egui::Context::default();
+        let mut updater = DatabaseUpdater::default();
+        let id = egui::Id::new("sde_update_window");
+
+        frame(&ctx, |ctx| updater.show(ctx));
+        assert!(ctx.memory(|memory| memory.area_rect(id)).is_none());
+
+        updater.set_phase(SdePhase::Checking);
+        frame(&ctx, |ctx| updater.show(ctx));
+        frame(&ctx, |ctx| updater.show(ctx));
+        assert!(ctx.memory(|memory| memory.area_rect(id)).is_some());
+
+        updater.hide();
+        frame(&ctx, |ctx| updater.show(ctx));
+        assert!(updater.phase.is_none());
+    }
+
+    #[test]
+    fn the_window_draws_every_phase_with_and_without_details() {
+        let _guard = serial();
+        for cancelling in [false, true] {
+            CANCEL_REQUESTED.store(cancelling, Ordering::SeqCst);
+            for phase in SdePhase::ALL {
+                for finished in [false, true] {
+                    let ctx = egui::Context::default();
+                    let mut updater = DatabaseUpdater::default();
+                    updater.set_phase(phase);
+                    updater.set_info(SdeInfo::Versions {
+                        installed: None,
+                        available: String::from("100"),
+                    });
+                    updater.set_info(SdeInfo::Downloaded(50_540_000));
+                    updater.set_info(SdeInfo::Verified);
+                    if finished {
+                        updater.finish();
+                    }
+                    frame(&ctx, |ctx| updater.show(ctx));
+                    frame(&ctx, |ctx| updater.show(ctx));
+                    assert!(
+                        ctx.memory(|memory| memory.area_rect(egui::Id::new("sde_update_window")))
+                            .is_some(),
+                        "{phase:?} finished={finished} cancelling={cancelling}"
+                    );
+                }
+            }
+        }
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn the_close_button_is_a_small_square_that_only_clicks_when_enabled() {
+        let ctx = egui::Context::default();
+        let (mut enabled_size, mut disabled_size) = (Vec2::ZERO, Vec2::ZERO);
+        let (mut enabled_click, mut disabled_click) = (false, true);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1000.0, 700.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let enabled = close_button(ui, true);
+            let disabled = close_button(ui, false);
+            enabled_size = enabled.rect.size();
+            disabled_size = disabled.rect.size();
+            enabled_click = enabled.sense.senses_click();
+            disabled_click = disabled.sense.senses_click();
+        });
+        output.textures_delta.clear();
+        assert_eq!(enabled_size, Vec2::splat(22.0));
+        assert_eq!(disabled_size, Vec2::splat(22.0));
+        assert!(enabled_click);
+        assert!(!disabled_click);
     }
 }

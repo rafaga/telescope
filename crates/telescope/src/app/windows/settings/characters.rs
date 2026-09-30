@@ -1,169 +1,131 @@
-//! Settings page "Characters": the linked EVE characters used to emit notifications
-//! when something is close to their location, and the buttons to link/unlink one.
+//! Settings page "Characters": the EVE characters linked through EVE SSO,
+//! whose locations set the alert distance. Linking and unlinking apply at
+//! once (they don't wait for Apply).
 //!
 //! This file only renders; the linking logic lives in `app/character_link.rs`.
 
 use crate::app::TelescopeApp;
-use crate::app::settings::CharacterCardStyle;
+use crate::app::messages::SettingsPage;
 use eframe::egui;
-use eframe::egui::FontId;
-use eframe::egui::RichText;
+use egui_panels::{Avatar, EntityCard, StatusKind, Variant};
 use webb::objects::Character;
 
 impl TelescopeApp {
     pub(super) fn show_characters_page(&mut self, ui: &mut egui::Ui) {
         let style = self.settings.get_character_card_style();
-        ui.label(RichText::new(t!("settings.characters.heading")).font(FontId::proportional(20.0)));
-        ui.label(t!("settings.characters.help"));
-        self.character_toolbar(ui);
-        ui.add_space(style.card_spacing);
-
-        if self.esi.characters.is_empty() {
-            empty_state(ui, style);
-            return;
-        }
-
-        // The page is already inside the Settings window's ScrollArea.
-        let mut clicked = None;
-        for character in &self.esi.characters {
-            let selected = self.esi.active_character == Some(character.id);
-            if character_card(ui, character, selected, style).clicked() {
-                clicked = Some(character.id);
-            }
-            ui.add_space(style.card_spacing);
-        }
-        if clicked.is_some() {
-            self.esi.active_character = clicked;
-        }
-    }
-
-    fn character_toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui
-                .button(t!("settings.characters.add"))
-                .on_hover_text(t!("settings.characters.add_hint"))
-                .clicked()
-            {
+        egui_panels::page(ui, |ui| {
+            let link = egui_panels::page_header_with(
+                ui,
+                &SettingsPage::Characters.title(),
+                Some(&t!("settings.characters.description")),
+                |ui| {
+                    egui_panels::button(ui, t!("settings.characters.add"), Variant::Primary)
+                        .on_hover_text(t!("settings.characters.add_hint"))
+                        .clicked()
+                },
+            )
+            .inner;
+            if link {
                 self.start_character_link();
             }
 
-            let selected = self.esi.active_character.and_then(|id| {
-                self.esi
-                    .characters
-                    .iter()
-                    .find(|c| c.id == id)
-                    .map(|c| (id, c.name.clone()))
-            });
-            let remove = ui.add_enabled(
-                selected.is_some(),
-                egui::Button::new(t!("settings.characters.remove")),
-            );
-            let remove = match &selected {
-                Some((_, name)) => {
-                    remove.on_hover_text(t!("settings.characters.remove_hint", name = name))
+            if self.esi.characters.is_empty() {
+                ui.add_sized(
+                    [ui.available_width(), style.empty_state_height],
+                    egui::Label::new(t!("settings.characters.empty")),
+                );
+            }
+            let mut select = None;
+            let mut unlink = None;
+            // The rows sit one under another, told apart by hairlines.
+            let row_spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+            egui_panels::divider(ui);
+            for character in &self.esi.characters {
+                let selected = self.esi.active_character == Some(character.id);
+                let location = self.location_name(character);
+                let card = character_card(character, location, selected, style.portrait_size).show(
+                    ui,
+                    |ui| {
+                        egui_panels::button(ui, t!("settings.characters.remove"), Variant::Ghost)
+                            .on_hover_text(t!(
+                                "settings.characters.remove_hint",
+                                name = character.name
+                            ))
+                            .clicked()
+                    },
+                );
+                if card.inner {
+                    unlink = Some(character.id);
+                } else if card
+                    .response
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    select = Some(character.id);
                 }
-                None => remove.on_disabled_hover_text(t!("settings.characters.remove_disabled")),
-            };
-            if remove.clicked()
-                && let Some((id, _)) = selected
-            {
+            }
+            ui.spacing_mut().item_spacing.y = row_spacing;
+            if let Some(id) = select {
+                self.esi.active_character = Some(id);
+            }
+            if let Some(id) = unlink {
                 self.unlink_character(id);
             }
+            egui_panels::status(ui, StatusKind::Info, &t!("settings.characters.immediate"));
         });
+    }
+
+    /// The name of `character`'s solar system, when it is known.
+    fn location_name(&self, character: &Character) -> Option<String> {
+        let system = u32::try_from(character.location).ok()?;
+        Some(self.universe.solar_systems.get(&system)?.name.clone())
     }
 }
 
-/// One linked character: portrait, name, alliance, corporation and last logon.
-/// Returns a clickable response covering the whole card.
+/// The card of a linked character: portrait, name, corporation and
+/// alliance, location and last login.
 fn character_card(
-    ui: &mut egui::Ui,
     character: &Character,
+    location: Option<String>,
     selected: bool,
-    style: CharacterCardStyle,
-) -> egui::Response {
-    let visuals = ui.visuals();
-    let (fill, stroke) = if selected {
-        (
-            visuals.selection.bg_fill.gamma_multiply(0.35),
-            visuals.selection.stroke,
-        )
-    } else {
-        (
-            visuals.faint_bg_color,
-            visuals.widgets.noninteractive.bg_stroke,
-        )
-    };
-    let frame = egui::Frame::group(ui.style()).fill(fill).stroke(stroke);
-
-    let response = ui
-        .push_id(character.id, |ui| {
-            frame
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        let portrait_size = egui::Vec2::splat(style.portrait_size);
-                        match &character.photo {
-                            Some(photo) => {
-                                ui.add(
-                                    egui::Image::new(photo.as_str())
-                                        .fit_to_exact_size(portrait_size),
-                                );
-                            }
-                            None => {
-                                ui.allocate_exact_size(portrait_size, egui::Sense::hover());
-                            }
-                        }
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&character.name).strong().size(16.0));
-                            egui::Grid::new("character_details")
-                                .num_columns(2)
-                                .show(ui, |ui| {
-                                    detail_row(
-                                        ui,
-                                        &t!("settings.characters.alliance"),
-                                        &character.alliance.as_ref().map_or_else(
-                                            || t!("settings.characters.no_alliance"),
-                                            |a| a.name.as_str().into(),
-                                        ),
-                                    );
-                                    detail_row(
-                                        ui,
-                                        &t!("settings.characters.corporation"),
-                                        &character.corp.as_ref().map_or_else(
-                                            || t!("settings.characters.no_corporation"),
-                                            |c| c.name.as_str().into(),
-                                        ),
-                                    );
-                                    detail_row(
-                                        ui,
-                                        &t!("settings.characters.last_logon"),
-                                        &character
-                                            .last_logon
-                                            .format("%Y-%m-%d %H:%M UTC")
-                                            .to_string(),
-                                    );
-                                });
-                        });
-                    });
-                })
-                .response
-        })
-        .inner;
-
-    response
-        .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.weak(label);
-    ui.label(value);
-    ui.end_row();
-}
-
-fn empty_state(ui: &mut egui::Ui, style: CharacterCardStyle) {
-    ui.add_sized(
-        [ui.available_width(), style.empty_state_height],
-        egui::Label::new(t!("settings.characters.empty")),
+    portrait_size: f32,
+) -> EntityCard<'_> {
+    let corporation = character.corp.as_ref().map_or_else(
+        || t!("settings.characters.no_corporation").into_owned(),
+        |corp| corp.name.clone(),
     );
+    let alliance = character.alliance.as_ref().map_or_else(
+        || t!("settings.characters.no_alliance").into_owned(),
+        |alliance| alliance.name.clone(),
+    );
+    let location = location.map_or_else(
+        || t!("settings.characters.unknown_location").into_owned(),
+        |system| t!("settings.characters.location", system = system).into_owned(),
+    );
+    let last_logon = t!(
+        "settings.characters.last_logon",
+        when = character
+            .last_logon
+            .format("%Y-%m-%d %H:%M UTC")
+            .to_string()
+    );
+    let avatar = match &character.photo {
+        Some(photo) => Avatar::Image(photo.as_str().into()),
+        None => Avatar::Initials(initials(&character.name)),
+    };
+    EntityCard::new(&character.name)
+        .avatar(avatar)
+        .avatar_size(portrait_size)
+        .line(format!("{corporation} · {alliance}"))
+        .line(format!("{location} · {last_logon}"))
+        .selected(selected)
+}
+
+/// "Kara Voss" -> "KV".
+fn initials(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
 }

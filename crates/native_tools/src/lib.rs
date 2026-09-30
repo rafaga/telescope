@@ -4,7 +4,10 @@
 //! * `zbus` (Linux only): stable machine identification via DMI, D-Bus and
 //!   machine-id fallbacks.
 //! * `get_*_unique_id`: a per-machine identifier for each OS, with a fixed
-//!   fallback value when the OS cannot provide one.
+//!   fallback value when the OS cannot provide one. It must not change
+//!   between runs: the player database key is derived from it. Windows:
+//!   `SystemIdentification::GetSystemIdForPublisher`; macOS: the platform
+//!   serial number; Linux: the machine id (see `zbus::get_stable_machine_id`).
 
 pub mod dialog;
 #[cfg(target_os = "linux")]
@@ -30,27 +33,27 @@ const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
 pub fn get_macos_unique_id() -> Result<String, String> {
     // macOS unique ID
     unsafe {
-        // 1. Obtener el entry del IORegistry para la plataforma
+        // 1. The platform's IORegistry entry
         let matching = IOServiceMatching(c"IOPlatformExpertDevice".as_ptr())
             .map(|matching| (&matching).into());
         let entry = IOServiceGetMatchingService(kIOMainPortDefault, matching);
 
         if entry != 0 {
-            // 2. Construir la clave como CFString
+            // 2. The property name as a CFString
             let key = CFString::from_str("IOPlatformSerialNumber");
 
-            // 3. Llamar a IORegistryEntryCreateCFProperty
+            // 3. Read the property
             let cf_value = IORegistryEntryCreateCFProperty(
                 entry,
                 Some(&key),
-                None::<&CFAllocator>, // usar el allocator por defecto
+                None::<&CFAllocator>, // the default allocator
                 0,                    // options = 0
             );
 
-            // 4. Liberar el entry
+            // 4. Release the entry
             IOObjectRelease(entry);
 
-            // 5. Convertir el CFType resultante a CFString y luego a String de Rust
+            // 5. CFType -> CFString -> Rust String
             if let Some(retained) = cf_value
                 && let Ok(cf_str) = retained.downcast::<CFString>()
             {
@@ -64,10 +67,10 @@ pub fn get_macos_unique_id() -> Result<String, String> {
 #[cfg(target_os = "linux")]
 #[tracing::instrument]
 pub fn get_linux_unique_id() -> Result<String, String> {
-    // zbus usa el reactor de Tokio (feature "tokio"), así que la cadena
-    // de fallback se conduce dentro de un runtime current-thread creado
-    // en un hilo aparte (igual que en dialog.rs). El hilo evita pánico
-    // si el llamador ya está dentro de un runtime Tokio existente.
+    // zbus uses Tokio's reactor (feature "tokio"), so the chain runs in a
+    // current-thread runtime on a thread of its own (as in dialog.rs); the
+    // thread also avoids a panic when the caller is already inside a Tokio
+    // runtime.
     let outcome = std::thread::spawn(|| {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -75,7 +78,7 @@ pub fn get_linux_unique_id() -> Result<String, String> {
             .map_err(|e| e.to_string())?;
 
         runtime
-            .block_on(zbus::get_persistent_hardware_id())
+            .block_on(zbus::get_stable_machine_id())
             .map(|result| result.value)
             .map_err(|e| e.to_string())
     })
@@ -83,7 +86,7 @@ pub fn get_linux_unique_id() -> Result<String, String> {
 
     match outcome {
         Ok(Ok(id)) => Ok(id),
-        // Contrato Windows/macOS: cualquier fallo devuelve el ID de respaldo
+        // Same contract as Windows/macOS: any failure returns the fallback.
         _ => Err(String::from(FALLBACK_UNIQUE_ID)),
     }
 }
@@ -91,8 +94,8 @@ pub fn get_linux_unique_id() -> Result<String, String> {
 #[cfg(target_os = "windows")]
 #[tracing::instrument]
 pub fn get_windows_unique_id() -> Result<String, String> {
-    // this get a unique ID for the user, and its used to generate a unique key
-    // for the database encryption
+    // The machine's identifier for this publisher; the player database key
+    // is derived from it (webb's `esi::cipher`).
     match SystemIdentification::GetSystemIdForPublisher() {
         Ok(info) => {
             if let Ok(id_buffer) = info.Id()
@@ -121,8 +124,8 @@ mod tests {
         assert!(!FALLBACK_UNIQUE_ID.is_empty());
     }
 
-    // Contrato igual que en Windows/macOS: Ok(id no vacío) si alguna
-    // fuente funcionó, o Err(FALLBACK_UNIQUE_ID) si todas fallaron.
+    // Same contract as Windows/macOS: Ok(a non-empty id) when a source
+    // worked, Err(FALLBACK_UNIQUE_ID) when every one failed.
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_unique_id_respects_fallback_contract() {

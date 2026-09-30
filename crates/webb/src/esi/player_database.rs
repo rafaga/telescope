@@ -2,8 +2,10 @@
 //! corporations, alliances and the authorization tokens of the linked characters.
 
 use crate::esi::Error;
+use crate::graph::{Edge, Node, Pin, RuleGraph};
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
 use chrono::{DateTime, Utc};
+use rusqlite::types::Type;
 use rusqlite::{Connection, ToSql, params};
 use std::collections::HashMap;
 
@@ -18,13 +20,18 @@ pub(crate) struct PlayerDatabase {}
 ///
 /// - 0: one token set for every character, in `metadata`.
 /// - 1: one token set per character, in the `auth` table.
-pub const SCHEMA_VERSION: i32 = 1;
+/// - 2: the intel rule graph tables (`node`, `edge`), seeded with the
+///   built-in default graph (the embedded `rules.toml`).
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
 
 /// `MIGRATIONS[n]` takes a database from schema version `n` to `n + 1`.
-const MIGRATIONS: &[Migration] = &[PlayerDatabase::migrate_0_to_1];
+const MIGRATIONS: &[Migration] = &[
+    PlayerDatabase::migrate_0_to_1,
+    PlayerDatabase::migrate_1_to_2,
+];
 
 // One migration per version step, always.
 const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
@@ -33,6 +40,23 @@ const _: () = assert!(MIGRATIONS.len() == SCHEMA_VERSION as usize);
 const CREATE_AUTH_TABLE: &str = "CREATE TABLE auth (id INTEGER PRIMARY KEY \
     REFERENCES char(id) ON DELETE CASCADE ON UPDATE CASCADE, \
     token TEXT NOT NULL, refresh_token TEXT NOT NULL, expiration TEXT NOT NULL)";
+
+/// Creation script of the intel graph tables (1 -> 2 migration). Every node
+/// (input/detection/output, and later the special ones) is a row whose payload
+/// is stored as JSON; the edges are a separate table keyed by the two pins.
+const CREATE_RULE_TABLES: &str = "
+    CREATE TABLE node (
+        id TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+    );
+    CREATE TABLE edge (
+        from_node TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+        from_pin TEXT NOT NULL,
+        to_node TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+        to_pin TEXT NOT NULL,
+        PRIMARY KEY (from_node, from_pin, to_node, to_pin)
+    );
+";
 
 /// What [`PlayerDatabase::ensure_schema`] found and did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +159,16 @@ impl PlayerDatabase {
 
         let query = "DELETE FROM metadata WHERE id IN ('token', 'refresh_token', 'expiration')";
         conn.execute(query, [])?;
+        Ok(())
+    }
+
+    /// 1 -> 2: creates the intel graph tables and seeds them with the built-in
+    /// default graph ([`RuleGraph::default_graph`]).
+    #[tracing::instrument]
+    fn migrate_1_to_2(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(CREATE_RULE_TABLES)?;
+        let graph = RuleGraph::default_graph();
+        PlayerDatabase::save_graph(conn, &graph)?;
         Ok(())
     }
 
@@ -558,6 +592,105 @@ impl PlayerDatabase {
     }
 }
 
+/// Repository of the intel node graph stored in the player database.
+impl PlayerDatabase {
+    /// Loads the whole intel node graph.
+    #[tracing::instrument(skip(conn))]
+    pub(crate) fn load_graph(conn: &Connection) -> Result<RuleGraph, Error> {
+        let mut statement = conn.prepare("SELECT id, data FROM node ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<usize, String>(0)?, row.get::<usize, String>(1)?))
+        })?;
+        let mut nodes = Vec::new();
+        for row in rows {
+            let (id, data) = row?;
+            let node: Node = serde_json::from_str(&data)
+                .map_err(|e| conversion_error(format!("invalid node '{id}': {e}")))?;
+            nodes.push(node);
+        }
+
+        let mut statement =
+            conn.prepare("SELECT from_node, from_pin, to_node, to_pin FROM edge ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<usize, String>(0)?,
+                row.get::<usize, String>(1)?,
+                row.get::<usize, String>(2)?,
+                row.get::<usize, String>(3)?,
+            ))
+        })?;
+        let mut edges = Vec::new();
+        for row in rows {
+            let (from, from_pin, to, to_pin) = row?;
+            edges.push(Edge {
+                from,
+                from_pin: pin_from_str(&from_pin)?,
+                to,
+                to_pin: to_pin
+                    .parse()
+                    .map_err(|_| conversion_error(format!("invalid input pin '{to_pin}'")))?,
+            });
+        }
+
+        Ok(RuleGraph { nodes, edges })
+    }
+
+    /// Replaces the whole intel graph. The caller is expected to wrap this in a
+    /// transaction for atomicity.
+    #[tracing::instrument(skip(conn, graph))]
+    pub(crate) fn save_graph(conn: &Connection, graph: &RuleGraph) -> Result<(), Error> {
+        conn.execute_batch("DELETE FROM node; DELETE FROM edge;")?;
+        for node in &graph.nodes {
+            let data = serde_json::to_string(node)
+                .map_err(|e| Error::ToSqlConversionFailure(Box::new(e)))?;
+            conn.execute(
+                "INSERT INTO node (id, data) VALUES (?1, ?2)",
+                params![node.id, data],
+            )?;
+        }
+        for edge in &graph.edges {
+            conn.execute(
+                "INSERT INTO edge (from_node, from_pin, to_node, to_pin) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    edge.from,
+                    pin_str(edge.from_pin),
+                    edge.to,
+                    edge.to_pin.to_string()
+                ],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn pin_str(pin: Pin) -> &'static str {
+    match pin {
+        Pin::Out => "out",
+        Pin::T => "t",
+        Pin::F => "f",
+    }
+}
+
+fn pin_from_str(value: &str) -> Result<Pin, Error> {
+    match value {
+        "out" => Ok(Pin::Out),
+        "t" => Ok(Pin::T),
+        "f" => Ok(Pin::F),
+        other => Err(conversion_error(format!("unknown pin '{other}'"))),
+    }
+}
+
+fn conversion_error(message: String) -> Error {
+    Error::FromSqlConversionFailure(
+        0,
+        Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message,
+        )),
+    )
+}
+
 /// Character id from the `sub` claim (`CHARACTER:EVE:<id>`) of an EVE SSO
 /// access token (a JWT), without verifying it: only used to tell which
 /// character an already stored token belongs to.
@@ -574,6 +707,8 @@ fn jwt_character_id(token: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::{DetectionNode, InputNode, LogConfig, NodeKind, OutputNode, TooltipConfig};
+    use crate::rules::{DetectionRuleKind, InputKind, OutputKind};
     use rusqlite::vtab::array;
 
     fn memory_connection() -> Connection {
@@ -861,6 +996,95 @@ mod tests {
     fn update_auth_without_schema_is_an_error_not_a_panic() {
         let conn = memory_connection();
         assert!(PlayerDatabase::update_auth(&conn, 1, &AuthData::new()).is_err());
+    }
+
+    // ---------------------------------------------------------------------
+    // Intel rules
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn migration_seeds_the_default_graph() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        assert!(table_names(&conn).contains(&String::from("node")));
+        let graph = PlayerDatabase::load_graph(&conn).unwrap();
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Detection(_)))
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| matches!(node.kind, NodeKind::Output(_)))
+        );
+        assert!(graph.validate().is_empty(), "{:?}", graph.validate());
+    }
+
+    #[test]
+    fn a_graph_round_trips_through_the_database() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        let graph = RuleGraph {
+            nodes: vec![
+                Node {
+                    id: "chat".to_string(),
+                    enabled: true,
+                    x: 1.0,
+                    y: 2.0,
+                    kind: NodeKind::Input(InputNode {
+                        description: "chat logs".to_string(),
+                        kind: InputKind::ChatLog,
+                        path: "logs".to_string(),
+                        channels: vec!["intel".to_string()],
+                        exclude_motd: true,
+                    }),
+                },
+                Node {
+                    id: "sys".to_string(),
+                    enabled: true,
+                    x: 3.0,
+                    y: 4.0,
+                    kind: NodeKind::Detection(DetectionNode {
+                        kind: DetectionRuleKind::SystemReport,
+                        case_insensitive: true,
+                    }),
+                },
+                Node {
+                    id: "visual".to_string(),
+                    enabled: true,
+                    x: 5.0,
+                    y: 6.0,
+                    kind: NodeKind::Output(OutputNode {
+                        kind: OutputKind::Visual,
+                        tooltip: TooltipConfig::default(),
+                        log: LogConfig::default(),
+                    }),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    from: "chat".to_string(),
+                    from_pin: Pin::Out,
+                    to: "sys".to_string(),
+                    to_pin: 0,
+                },
+                Edge {
+                    from: "sys".to_string(),
+                    from_pin: Pin::T,
+                    to: "visual".to_string(),
+                    to_pin: 0,
+                },
+            ],
+        };
+
+        PlayerDatabase::save_graph(&conn, &graph).unwrap();
+        let loaded = PlayerDatabase::load_graph(&conn).unwrap();
+        assert_eq!(loaded, graph);
     }
 
     // ---------------------------------------------------------------------

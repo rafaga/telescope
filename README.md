@@ -18,9 +18,12 @@ key differences.
 
 * **Intel watching** — monitors the EVE chat log directory and parses new
   lines as they are written, recognising the channel from the log file name.
-* **Pattern engine** — alert rules are driven by `patterns.toml` (regex
-  rules, dictionaries, `notify` and `map_alert` actions), so alerts can be
-  tuned at will.
+* **Intel rules** — a node graph edited in *Settings -> Rules*: inputs
+  (chat logs), detections (systems, ships, pilot counts, keywords, custom
+  regexes or word lists), logic nodes (aggregators, gates, formatters) and
+  outputs (map alert, sound, log, tooltip, suppress). Stored in the local
+  database; the whole graph can be exported to or imported from
+  `rules.toml`.
 * **Interactive maps** — universe and per-region maps with system alerts
   raised directly from intel matches.
 * **Character linking via EVE SSO** — authorizes through ESI and keeps

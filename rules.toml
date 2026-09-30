@@ -1,0 +1,426 @@
+[[nodes]]
+id = "chat_logs"
+enabled = true
+x = -1360.8292
+y = -375.06354
+
+[nodes.kind]
+node = "input"
+description = "chat logs"
+kind = "chat_log"
+path = ""
+channels = []
+exclude_motd = true
+
+[[nodes]]
+id = "system_reported"
+enabled = true
+x = -263.7722
+y = -444.18674
+
+[nodes.kind]
+node = "detection"
+case_insensitive = false
+
+[nodes.kind.kind]
+type = "system_report"
+
+[[nodes]]
+id = "pilot_count_prefix"
+enabled = true
+x = -276.4468
+y = -294.3134
+
+[nodes.kind]
+node = "detection"
+case_insensitive = false
+
+[nodes.kind.kind]
+type = "pilot_count"
+
+[[nodes]]
+id = "ship_report_zh"
+enabled = true
+x = -280.58258
+y = 73.37106
+
+[nodes.kind]
+node = "detection"
+case_insensitive = false
+
+[nodes.kind.kind]
+type = "ship_names_zh"
+
+[[nodes]]
+id = "ship_names"
+enabled = true
+x = -313.45233
+y = 204.769
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+
+[nodes.kind.kind]
+type = "ship_names"
+dictionaries = ["ship_report_en", "ship_report_es", "ship_report_fr", "ship_report_ja", "ship_report_ko"]
+
+[[nodes]]
+id = "log"
+enabled = true
+x = 1211.1796
+y = -349.75037
+
+[nodes.kind]
+node = "output"
+kind = "log"
+
+[nodes.kind.tooltip]
+emojis = true
+
+[nodes.kind.log]
+use_current_time = false
+
+[[nodes]]
+id = "log_in"
+enabled = true
+x = 645.3671
+y = -350.42142
+
+[nodes.kind]
+node = "aggregator"
+inputs = 5
+
+[[nodes]]
+id = "visual"
+enabled = true
+x = 647.3922
+y = -620.5336
+
+[nodes.kind]
+node = "output"
+kind = "visual"
+
+[nodes.kind.tooltip]
+emojis = true
+
+[nodes.kind.log]
+use_current_time = false
+
+[[nodes]]
+id = "sound"
+enabled = true
+x = 646.8277
+y = -477.5849
+
+[nodes.kind]
+node = "output"
+kind = "sound"
+
+[nodes.kind.tooltip]
+emojis = true
+
+[nodes.kind.log]
+use_current_time = false
+
+[[nodes]]
+id = "tooltip"
+enabled = true
+x = 1311.2052
+y = -114.61004
+
+[nodes.kind]
+node = "output"
+kind = "tooltip"
+
+[nodes.kind.tooltip]
+emojis = true
+
+[nodes.kind.log]
+use_current_time = false
+
+[[nodes]]
+id = "tooltip_in"
+enabled = true
+x = 508.46262
+y = 84.57867
+
+[nodes.kind]
+node = "aggregator"
+inputs = 5
+
+[[nodes]]
+id = "clear_report"
+enabled = true
+x = -269.14978
+y = -642.7141
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+
+[nodes.kind.kind]
+type = "clear_report"
+keywords = ["clear", "clr"]
+
+[[nodes]]
+id = "or_1"
+enabled = true
+x = 885.4807
+y = -112.11994
+
+[nodes.kind]
+node = "gate"
+kind = "or"
+inputs = 2
+
+[[nodes]]
+id = "status_query"
+enabled = true
+x = -284.8771
+y = -132.86926
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+
+[nodes.kind.kind]
+type = "query"
+keywords = ["status"]
+
+[[nodes]]
+id = "suppress"
+enabled = true
+x = 614.2328
+y = -779.9688
+
+[nodes.kind]
+node = "output"
+kind = "suppress"
+
+[nodes.kind.tooltip]
+emojis = true
+
+[nodes.kind.log]
+use_current_time = false
+
+[[nodes]]
+id = "neutral_spotted"
+enabled = true
+x = -284.0
+y = -20.0
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+
+[nodes.kind.kind]
+type = "keyword"
+keywords = ["nv"]
+
+[[nodes]]
+id = "suppress_in"
+enabled = true
+x = 885.0
+y = -250.0
+
+[nodes.kind]
+node = "gate"
+kind = "or"
+inputs = 2
+
+[[nodes]]
+id = "not_query"
+enabled = true
+x = 885.0
+y = 60.0
+
+[nodes.kind]
+node = "gate"
+kind = "not"
+inputs = 1
+
+[[nodes]]
+id = "tooltip_gate"
+enabled = true
+x = 1100.0
+y = -20.0
+
+[nodes.kind]
+node = "gate"
+kind = "and"
+inputs = 2
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "clear_report"
+to_pin = 0
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "status_query"
+to_pin = 0
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "pilot_count_prefix"
+to_pin = 0
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "ship_names"
+to_pin = 0
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "ship_report_zh"
+to_pin = 0
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "system_reported"
+to_pin = 0
+
+[[edges]]
+from = "clear_report"
+from_pin = "t"
+to = "or_1"
+to_pin = 0
+
+[[edges]]
+from = "status_query"
+from_pin = "t"
+to = "log_in"
+to_pin = 3
+
+[[edges]]
+from = "log_in"
+from_pin = "out"
+to = "log"
+to_pin = 0
+
+[[edges]]
+from = "pilot_count_prefix"
+from_pin = "t"
+to = "log_in"
+to_pin = 2
+
+[[edges]]
+from = "pilot_count_prefix"
+from_pin = "t"
+to = "tooltip_in"
+to_pin = 1
+
+[[edges]]
+from = "ship_names"
+from_pin = "t"
+to = "log_in"
+to_pin = 1
+
+[[edges]]
+from = "ship_names"
+from_pin = "t"
+to = "tooltip_in"
+to_pin = 3
+
+[[edges]]
+from = "ship_report_zh"
+from_pin = "t"
+to = "log_in"
+to_pin = 0
+
+[[edges]]
+from = "ship_report_zh"
+from_pin = "t"
+to = "tooltip_in"
+to_pin = 2
+
+[[edges]]
+from = "system_reported"
+from_pin = "t"
+to = "sound"
+to_pin = 0
+
+[[edges]]
+from = "system_reported"
+from_pin = "t"
+to = "tooltip_in"
+to_pin = 0
+
+[[edges]]
+from = "system_reported"
+from_pin = "t"
+to = "visual"
+to_pin = 0
+
+[[edges]]
+from = "tooltip_in"
+from_pin = "out"
+to = "or_1"
+to_pin = 1
+
+[[edges]]
+from = "chat_logs"
+from_pin = "out"
+to = "neutral_spotted"
+to_pin = 0
+
+[[edges]]
+from = "neutral_spotted"
+from_pin = "t"
+to = "tooltip_in"
+to_pin = 4
+
+[[edges]]
+from = "system_reported"
+from_pin = "t"
+to = "log_in"
+to_pin = 4
+
+[[edges]]
+from = "clear_report"
+from_pin = "t"
+to = "suppress_in"
+to_pin = 0
+
+[[edges]]
+from = "status_query"
+from_pin = "t"
+to = "suppress_in"
+to_pin = 1
+
+[[edges]]
+from = "suppress_in"
+from_pin = "out"
+to = "suppress"
+to_pin = 0
+
+[[edges]]
+from = "status_query"
+from_pin = "t"
+to = "not_query"
+to_pin = 0
+
+[[edges]]
+from = "or_1"
+from_pin = "out"
+to = "tooltip_gate"
+to_pin = 0
+
+[[edges]]
+from = "not_query"
+from_pin = "out"
+to = "tooltip_gate"
+to_pin = 1
+
+[[edges]]
+from = "tooltip_gate"
+from_pin = "out"
+to = "tooltip"
+to_pin = 0

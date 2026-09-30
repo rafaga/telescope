@@ -26,12 +26,27 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+  # `rsa` comes through `jsonwebtoken` (rfesi and esi-openapi), which Telescope
+  # uses to validate EVE SSO tokens. The Marvin attack is a timing side channel
+  # in RSA private-key operations (decryption/signing); Telescope never holds an
+  # RSA private key. No fixed release exists (`patched = []`). Revisit when
+  # `jsonwebtoken` moves to another backend or `rsa` ships a fix.
+  { id = "RUSTSEC-2023-0071", reason = "rsa timing side channel; only reached through JWT validation, no private key operations, no fix available" },
+  # `paste` is a build-time proc macro pulled in by `pulp` (exr -> image ->
+  # eframe/egui-winit). Unmaintained, no vulnerability; it leaves the tree when
+  # `image` drops it.
+  { id = "RUSTSEC-2024-0436", reason = "unmaintained proc macro, transitive through image/egui, no vulnerability" },
+]
 
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+# The workspace crates depend on each other by path, without a version, and
+# `allow-wildcard-paths` does not apply to crates that are not `publish = false`
+# (`telescope`, `webb`). A warning keeps `*` requirements visible without
+# failing the check; make it "deny" once those path dependencies carry a version.
+wildcards = "warn"
 deny = [
   #{ name = "openssl", reason = "Use rustls" },
   #{ name = "openssl-sys", reason = "Use rustls" },
@@ -52,12 +67,12 @@ allow = [
   "BSL-1.0",                        # https://tldrlegal.com/license/boost-software-license-1.0-explained
   "CC0-1.0",                        # https://creativecommons.org/publicdomain/zero/1.0/
   "ISC",                            # https://www.tldrlegal.com/license/isc-license
-  "LicenseRef-UFL-1.0",             # no official SPDX, see https://github.com/emilk/egui/issues/2321
+  "CDLA-Permissive-2.0",            # https://spdx.org/licenses/CDLA-Permissive-2.0.html - data crates (webpki-roots)
   "MIT",                            # https://tldrlegal.com/license/mit-license
   "MPL-2.0",                        # https://www.mozilla.org/en-US/MPL/2.0/FAQ/ - see Q11. Used by webpki-roots on Linux.
   "OFL-1.1",                        # https://spdx.org/licenses/OFL-1.1.html
-  "OpenSSL",                        # https://www.openssl.org/source/license.html - used on Linux
-  "Unicode-DFS-2016",               # https://spdx.org/licenses/Unicode-DFS-2016.html
+  "Ubuntu-font-1.0",                # https://spdx.org/licenses/Ubuntu-font-1.0.html - fonts of epaint_default_fonts
+  "Unicode-3.0",                    # https://spdx.org/licenses/Unicode-3.0.html - icu / unicode-ident data
   "Zlib",                           # https://tldrlegal.com/license/zlib-libpng-license-(zlib)
 ]
 exceptions = []

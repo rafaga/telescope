@@ -4,13 +4,14 @@
 //! flow, token refresh and location / portrait queries, and reads and writes
 //! characters, corporations and alliances in the local SQLite player database (see
 //! `player_database`). With the `crypted-db` feature the database is encrypted
-//! (SQLCipher) with a key derived from a per-machine identifier.
+//! (SQLCipher) with a key derived from a per-machine identifier (see
+//! `cipher`).
 
+use crate::graph::RuleGraph;
 use crate::objects::AuthData;
 use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPublicInfo};
 use crate::objects::{Corporation, TokenSet};
 use http_body_util::{BodyExt, Empty};
-use hyper::body::Body;
 use hyper_tls::HttpsConnector;
 use rfesi::prelude::*;
 use rusqlite::vtab::array;
@@ -21,27 +22,11 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 
-//#[cfg(feature = "crypted-db")]
-//use uuid::Uuid;
-
-#[cfg(all(target_os = "windows", feature = "crypted-db"))]
-use windows::{Storage::Streams::DataReader, System::Profile::SystemIdentification};
-
-#[cfg(all(target_os = "macos", feature = "crypted-db"))]
-use objc2_core_foundation::{CFAllocator, CFString};
-
-#[cfg(all(target_os = "macos", feature = "crypted-db"))]
-use objc2_io_kit::{
-    IOObjectRelease, IORegistryEntryCreateCFProperty, IOServiceGetMatchingService,
-    IOServiceMatching, kIOMainPortDefault,
-};
-
 use self::player_database::PlayerDatabase;
 pub use self::player_database::{SCHEMA_VERSION, SchemaStatus};
-pub mod player_database;
-
 #[cfg(feature = "crypted-db")]
-const FALLBACK_UNIQUE_ID: &str = "t313/sc0p3";
+pub(crate) mod cipher;
+pub mod player_database;
 
 /// Network boundary towards the CCP servers (SSO + ESI).
 ///
@@ -145,6 +130,7 @@ impl EsiApi for LiveEsiApi {
             .get_authorize_url()
             .map(|info| AuthorizeInfo {
                 url: info.authorization_url,
+                state: info.state,
                 pkce_verifier: info.pkce_verifier,
             })
             .map_err(|e| e.to_string())
@@ -311,92 +297,34 @@ impl<T: EsiApi> EsiManagerCore<T> {
         // we add the carray module disguised as rarray in rusqlite
         array::load_module(&connection)?;
 
-        let query = "PRAGMA journey_mode=WAL;";
-        let mut statement = connection.prepare(query)?;
-        let _ = statement.execute([])?;
-
+        // SQLCipher needs the key before anything else reads the file.
         #[cfg(feature = "crypted-db")]
-        {
-            #[cfg(target_os = "windows")]
-            let value_txt = self.get_windows_unique_id().unwrap();
-            #[cfg(target_os = "macos")]
-            let value_txt = self.get_macos_unique_id().unwrap();
-            #[cfg(target_os = "linux")]
-            let value_txt = self.get_linux_unique_id().unwrap();
-            //let uuid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, value_txt.as_bytes());
-            //let query = ["PRAGMA key = '", uuid.to_string().as_str(), "'"].concat();
-            let query = ["PRAGMA key = '", value_txt.as_str(), "'"].concat();
-            let mut statement = connection.prepare(query.as_str())?;
+        cipher::apply_key(&connection)?;
 
-            let _ = statement.query([])?;
-        }
-
-        statement.finalize()?;
+        // Write-ahead logging: the UI and the watchdog thread open their own
+        // connections, and WAL lets one read while the other writes instead
+        // of failing with "database is locked". The mode is stored in the
+        // file, so this only changes it the first time.
+        connection
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
         Ok(connection)
     }
 
-    #[cfg(all(target_os = "macos", feature = "crypted-db"))]
-    fn get_macos_unique_id(&self) -> Result<String, String> {
-        // macOS unique ID
-        unsafe {
-            // 1. Obtener el entry del IORegistry para la plataforma
-            let matching = IOServiceMatching(c"IOPlatformExpertDevice".as_ptr())
-                .map(|matching| (&matching).into());
-            let entry = IOServiceGetMatchingService(kIOMainPortDefault, matching);
-
-            if entry != 0 {
-                // 2. Construir la clave como CFString
-                let key = CFString::from_str("IOPlatformSerialNumber");
-
-                // 3. Llamar a IORegistryEntryCreateCFProperty
-                let cf_value = IORegistryEntryCreateCFProperty(
-                    entry,
-                    Some(&key),
-                    None::<&CFAllocator>, // usar el allocator por defecto
-                    0,                    // options = 0
-                );
-
-                // 4. Liberar el entry
-                IOObjectRelease(entry);
-
-                // 5. Convertir el CFType resultante a CFString y luego a String de Rust
-                if let Some(retained) = cf_value
-                    && let Ok(cf_str) = retained.downcast::<CFString>()
-                {
-                    return Ok(cf_str.to_string());
-                }
-            }
-        }
-        Err(String::from(FALLBACK_UNIQUE_ID))
+    /// Loads the intel node graph stored in the player database.
+    #[tracing::instrument(skip(self))]
+    pub fn load_graph(&self) -> Result<RuleGraph, Error> {
+        let connection = self.get_standard_connection()?;
+        PlayerDatabase::load_graph(&connection)
     }
 
-    #[cfg(all(target_os = "linux", feature = "crypted-db"))]
-    fn get_linux_unique_id(&self) -> Result<String, String> {
-        // Placeholder implementation for Linux unique ID
-        Ok(String::from(FALLBACK_UNIQUE_ID))
-    }
-
-    #[cfg(all(target_os = "windows", feature = "crypted-db"))]
-    fn get_windows_unique_id(&self) -> Result<String, String> {
-        // this get a unique ID for the user, and its used to generate a unique key
-        // for the database encryption
-        match SystemIdentification::GetSystemIdForPublisher() {
-            Ok(info) => {
-                if let Ok(id_buffer) = info.Id()
-                    && let Ok(reader) = DataReader::FromBuffer(&id_buffer)
-                {
-                    // reading bytes from ID IBuffer
-                    if let Ok(length) = id_buffer.Length() {
-                        let mut bytes = vec![0u8; length as usize];
-                        if let Ok(()) = reader.ReadBytes(&mut bytes) {
-                            return Ok(String::from_utf8_lossy(&bytes).into_owned());
-                        }
-                    }
-                }
-                Err(String::from(FALLBACK_UNIQUE_ID))
-            }
-            Err(_) => Err(String::from(FALLBACK_UNIQUE_ID)),
-        }
+    /// Replaces the intel node graph stored in the player database, atomically.
+    #[tracing::instrument(skip(self, graph))]
+    pub fn save_graph(&self, graph: &RuleGraph) -> Result<(), Error> {
+        let mut connection = self.get_standard_connection()?;
+        let transaction = connection.transaction()?;
+        PlayerDatabase::save_graph(&transaction, graph)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     // Alliance
@@ -604,6 +532,19 @@ impl<T: EsiApi> EsiManagerCore<T> {
             active_character: None,
         };
 
+        // An existing file is brought to this machine's key first (a plain
+        // file from a build without encryption, or the older passphrase key).
+        #[cfg(feature = "crypted-db")]
+        match cipher::prepare(&obj.path) {
+            Ok(cipher::Preparation::Ready) => {}
+            Ok(done) => tracing::warn!(path = %obj.path.display(), ?done, "player database key"),
+            Err(t_error) => tracing::error!(
+                path = %obj.path.display(),
+                error = %t_error,
+                "could not open the encrypted player database"
+            ),
+        }
+
         // Create the schema if the file has none (new or empty file) or run
         // the pending migration scripts if it is older; see
         // `PlayerDatabase::ensure_schema`. The caller reports
@@ -728,15 +669,10 @@ impl<T: EsiApi> EsiManagerCore<T> {
         //assert_eq!(res.status(), 200);
         let mut photo: Vec<u8> = vec![];
         if res.status() == 200 {
-            while !res.is_end_stream() {
-                if let Some(data) = res
-                    .body_mut()
-                    .frame()
-                    .await
-                    .unwrap()
-                    .expect("No data")
-                    .data_mut()
-                {
+            // `None` is the end of the body; a broken connection is an error,
+            // not a panic.
+            while let Some(frame) = res.body_mut().frame().await {
+                if let Some(data) = frame?.data_ref() {
                     photo.extend_from_slice(data.as_ref());
                 }
             }
@@ -744,12 +680,22 @@ impl<T: EsiApi> EsiManagerCore<T> {
         Ok(photo)
     }
 
+    /// Completes a login: `oauth_data` is the `(code, state)` pair of the
+    /// SSO callback. A callback whose `state` is not the one sent in
+    /// `_auth_info.url` is rejected before the code is used: any web page
+    /// can send the browser to the local callback URL, and without this
+    /// check it could link a character of its choosing (login CSRF).
     #[tracing::instrument(skip_all)]
     pub async fn auth_user(
         &mut self,
         _auth_info: AuthorizeInfo,
         oauth_data: (String, String),
     ) -> Result<Option<Character>, Box<dyn std::error::Error + Send + Sync>> {
+        if !same_secret(&oauth_data.1, &_auth_info.state) {
+            return Err(
+                "the EVE SSO callback does not belong to this login (state mismatch)".into(),
+            );
+        }
         #[cfg(not(feature = "native-auth-flow"))]
         let verifier = None;
 
@@ -805,6 +751,18 @@ impl<T: EsiApi> EsiManagerCore<T> {
             Ok(None)
         }
     }
+}
+
+/// Compares two secrets without stopping at the first difference, so the
+/// time taken says nothing about how much of `received` was right.
+fn same_secret(received: &str, expected: &str) -> bool {
+    let (received, expected) = (received.as_bytes(), expected.as_bytes());
+    received.len() == expected.len()
+        && received
+            .iter()
+            .zip(expected)
+            .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+            == 0
 }
 
 impl EsiManagerCore<LiveEsiApi> {
@@ -883,6 +841,12 @@ mod tests {
 
     fn cleanup(path: &Path) {
         let _ = std::fs::remove_file(path);
+        // The write-ahead log files next to it, if a connection left them.
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.as_os_str().to_owned();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
     }
 
     fn sample_character() -> Character {
@@ -1160,6 +1124,7 @@ mod tests {
     fn sample_authorize_info() -> AuthorizeInfo {
         AuthorizeInfo {
             url: String::from("https://login.eveonline.com/v2/oauth/authorize/?x=1"),
+            state: String::from("oauth-state"),
             pkce_verifier: None,
         }
     }
@@ -1365,6 +1330,39 @@ mod tests {
             PlayerDatabase::select_auth(&conn).unwrap()[&PILOT].token,
             "new-access-token"
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn connections_use_write_ahead_logging() {
+        let (manager, path) = mock_manager("wal", MockEsiApi::new());
+        let conn = manager.get_standard_connection().unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        drop(conn);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn auth_user_rejects_a_callback_with_another_state() {
+        let mut mock = MockEsiApi::new();
+        // The code must never be exchanged.
+        mock.expect_authenticate().never();
+        let (mut manager, path) = mock_manager("auth_state", mock);
+
+        for state in ["forged", "", "oauth-stat", "oauth-state2"] {
+            let result = manager
+                .auth_user(
+                    sample_authorize_info(),
+                    (String::from("oauth-code"), String::from(state)),
+                )
+                .await;
+            assert!(result.is_err(), "state {state:?} must be rejected");
+        }
+        assert!(manager.read_characters(None).unwrap().is_empty());
 
         cleanup(&path);
     }

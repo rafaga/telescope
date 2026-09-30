@@ -3,6 +3,14 @@
 ## Requirements
 
 * A recent stable Rust toolchain (edition 2024, Rust 1.89 or newer).
+* Linux only: the ALSA and OpenSSL development files and `pkg-config`
+  (Debian / Ubuntu: `sudo apt-get install libasound2-dev libssl-dev
+  pkg-config`), for the alarm sound and the encrypted player database.
+* Windows only: a full Perl (for example
+  [Strawberry Perl](https://strawberryperl.com/)) ahead of Git's own `perl` on
+  the `PATH`. The player database builds OpenSSL from source, and the `perl`
+  that ships with Git for Windows is too limited for that (the build fails in
+  `openssl-sys`).
 * An ESI application from CCP (client id and secret key), registered at the
   [EVE Online developers portal](https://developers.eveonline.com/) with:
   * Callback URL: `http://localhost:56123/login`
@@ -18,12 +26,13 @@
 ## ESI credentials
 
 The client id and the secret key are read **at compile time** from the
-`ESI_CLIENT_ID` and `ESI_SECRET_KEY` environment variables. `.cargo/config.toml`
-declares both in its `[env]` section, empty, so the project builds but
-logging in with a character will not work until you provide real values.
+`ESI_CLIENT_ID` and `ESI_SECRET_KEY` environment variables. Without them
+`telescope` does not build (`AppData::new` names the missing one), and with
+placeholder values it builds but logging in with a character will not work.
 
-Cargo does not override variables that are already set in the environment, so
-the safest option is to set them in your shell before building:
+The repository does not carry them: `.cargo/config.toml` is not tracked and
+neither is a `.env` file (both are ignored by git). Set the variables in your
+shell before building:
 
 ```sh
 # Linux / macOS
@@ -35,8 +44,15 @@ $env:ESI_CLIENT_ID = "your client id"
 $env:ESI_SECRET_KEY = "your secret key"
 ```
 
-Alternatively, put the values in the `[env]` section of `.cargo/config.toml`,
-but **never commit them**: that file is tracked by git.
+Cargo does not read `.env` files by itself: if you keep the values in one,
+load it into the shell (or your IDE's run configuration) first. Another option
+is the `[env]` section of a local `.cargo/config.toml`. Either way, **never
+commit the values**; if they ever reach a commit, rotate them in the developer
+portal, since deleting the file does not remove them from the history.
+
+CI reads them from the `ESI_CLIENT_ID` and `ESI_SECRET_KEY` repository secrets
+(see `.github/workflows/release.yml`). The unit tests do not need them: they
+build the app with placeholder credentials (see *Tests* below).
 
 If you change the values, rebuild the `telescope` crate (for example
 `cargo clean -p telescope`), since they are baked into the binary.
@@ -46,7 +62,7 @@ If you change the values, rebuild the `telescope` crate (for example
 * You do not need to provide the SDE database (`sde.db`). If the file does
   not exist, Telescope downloads CCP's SDE and builds the database by itself
   (this needs network access). Its path can be changed in
-  *Settings -> Data Sources*, which also has a *Check for SDE updates* button.
+  *Settings -> Application*, which also has a *Check for updates* button.
 * Run the native application:
 
 ```sh
@@ -69,15 +85,76 @@ trunk build            # or `trunk serve` to try it in the browser
 
 ## Checks
 
-`check.sh` runs the same checks as CI: `cargo check` (native and wasm),
-`cargo fmt --check`, `cargo clippy` with warnings as errors, the tests
-(including doc tests) and `trunk build`. Since the wasm target is still under
-development, its steps (`cargo check ... --target wasm32-unknown-unknown` and
-`trunk build`) may fail even when the native build is fine.
+`Cargo.lock` is versioned and CI builds with `--locked`, so a change to a
+`Cargo.toml` needs its lockfile update in the same commit.
+
+CI (GitHub Actions, `.github/workflows/`):
+
+* `ci.yml`, on pull requests to `master` and `dev` and on pushes to `master`
+  (documentation-only changes are skipped; a new push to a pull request
+  cancels the run in progress). `fmt` checks the formatting once. On Linux,
+  Windows and macOS one job runs, in this order, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo check --workspace --all-features` and
+  `cargo test --workspace`, so the dependencies (OpenSSL, Tracy, egui) are
+  compiled once per system. `ci-ok` sums it all up: it is the one check to
+  require if branch protection is turned on. The build cache is written by
+  pushes to `master` and only read by pull requests. Pushes to `master` also
+  run `coverage` (`cargo llvm-cov`): the summary is in the run's page and
+  `lcov.info` is kept as an artifact.
+* `security.yml`, when a manifest, `Cargo.lock` or `deny.toml` changes and
+  every Monday: `cargo deny check` (RustSec advisories, licenses, banned and
+  duplicated crates, sources). The two advisories that have no fix yet
+  (`rsa` through `jsonwebtoken`, and the unmaintained `paste`) are listed in
+  `deny.toml` with the reason; run `cargo deny check` locally
+  (`cargo install cargo-deny --locked`) before touching them.
+* `release.yml`, when a release is published (or by hand, with a tag, to try
+  the packaging: the installers are then kept as artifacts). It stops early if
+  the `ESI_CLIENT_ID` or `ESI_SECRET_KEY` repository secrets are missing, and
+  attaches a `SHA256SUMS-<system>.txt` next to the installers.
+
+`check.sh` runs the same checks locally with all features, and the wasm check
+too when the `wasm32-unknown-unknown` target is installed. Since the wasm
+target is still under development, that step may fail even when the native
+build is fine.
 
 ```sh
 ./check.sh
 ```
+
+## Tests
+
+`cargo test --workspace` runs everything; nothing in it touches the network,
+your `telescope.toml` or your `sde.db`.
+
+* `webb`, `egui-panels` and most of `telescope` are tested on their own
+  (`egui-panels` on a headless egui context, in `tests/`).
+* `TelescopeApp` is built for tests with `TelescopeApp::for_test(dir)`
+  (`crates/telescope/src/app/app_tests.rs`). It runs the same startup as
+  `Default::default()` (`with_settings`) on a temporary folder, but skips the
+  SDE update check and uses placeholder ESI credentials, so a test can drive
+  `event_manager`, the Settings screen, the rule graph, the chat log watcher
+  and the character link without side effects.
+* The SDE updater is tested against a small HTTP server on `127.0.0.1` that
+  plays CCP's `latest.jsonl` index (`database_updater.rs`, module
+  `updater_run_tests`). Tests that touch its process-wide update lock or
+  cancel flag take the module's `serial()` guard first.
+
+Not covered: drawing code of the Settings pages and the map, the ESI polling
+loop of the location watchdog and a full SDE rebuild from a real export, since
+those need a window, the network or CCP's data.
+
+### Coverage
+
+```sh
+cargo install cargo-llvm-cov    # once
+rustup component add llvm-tools-preview
+cargo llvm-cov --workspace --summary-only
+```
+
+Add `--html` for a browsable report under `target/llvm-cov/html`, or
+`cargo llvm-cov report --show-missing-lines` after a run to list the lines no
+test reaches. It compiles into its own directory (`target/llvm-cov-target`), so
+the first run is a full build.
 
 ## Logging
 

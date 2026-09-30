@@ -21,7 +21,7 @@ use block2::RcBlock;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSModalResponse, NSModalResponseOK, NSOpenPanel};
 #[cfg(target_os = "macos")]
-use objc2_foundation::{MainThreadMarker, ns_string};
+use objc2_foundation::{MainThreadMarker, NSString, NSURL};
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
@@ -30,16 +30,16 @@ use std::time::Instant;
 #[cfg(target_os = "linux")]
 use ashpd::desktop::ResponseError;
 #[cfg(target_os = "linux")]
-use ashpd::desktop::file_chooser::SelectedFiles;
+use ashpd::desktop::file_chooser::{FileFilter as PortalFileFilter, SelectedFiles};
 
 // ---------------------------------------------------------------------
-// Macros helper para propagar errores sin depender del trait Try
-// (que solo está disponible en nightly para tipos custom como
-// DialogResult). Reemplazan al operador `?` en este contexto.
+// Helper macros that propagate errors without the `Try` trait (only
+// available on nightly for custom types such as `DialogResult`). They
+// stand in for the `?` operator here.
 // ---------------------------------------------------------------------
 
-/// Convierte un `windows::core::Result<T>` en `T`, o hace un `return`
-/// anticipado con `DialogResult::Err(..)` si falla.
+/// Unwraps a `windows::core::Result<T>` into `T`, or returns early with
+/// `DialogResult::Err(..)` when it failed.
 #[cfg(target_os = "windows")]
 macro_rules! try_win {
     ($expr:expr) => {
@@ -50,8 +50,8 @@ macro_rules! try_win {
     };
 }
 
-/// Propaga un `DialogResult<T>`: si es `Ok`, extrae el valor; si es
-/// `Cancelled` o `Err`, hace `return` anticipado con esa misma variante.
+/// Propagates a `DialogResult<T>`: unwraps `Ok`, and returns early with the
+/// same variant on `Cancelled` or `Err`.
 #[cfg(target_os = "windows")]
 macro_rules! try_dialog {
     ($expr:expr) => {
@@ -120,10 +120,46 @@ impl<T> DialogResult<T> {
     }
 }
 
+/// A group of file types offered by a file dialog, such as
+/// `FileFilter::new("SQLite database", &["db"])`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileFilter {
+    /// What the user sees.
+    pub name: String,
+    /// The extensions it matches, without the dot.
+    pub extensions: Vec<String>,
+}
+
+impl FileFilter {
+    pub fn new(name: impl Into<String>, extensions: &[&str]) -> Self {
+        Self {
+            name: name.into(),
+            extensions: extensions.iter().map(|ext| (*ext).to_string()).collect(),
+        }
+    }
+
+    /// The patterns of [`Self::extensions`] (`*.db`).
+    pub fn patterns(&self) -> Vec<String> {
+        self.extensions
+            .iter()
+            .map(|ext| format!("*.{ext}"))
+            .collect()
+    }
+}
+
 #[derive(Clone)]
 pub struct Dialog {
     pub dialog_type: DialogType,
-    directory_path: Option<PathBuf>, // para recordar la última carpeta abierta
+    /// Folder the dialog opens in.
+    directory_path: Option<PathBuf>,
+    /// Title (macOS: the panel's message) instead of the default one.
+    title: Option<String>,
+    /// File types offered, first one selected; an "All files" entry is
+    /// added after them. Ignored for folders, and on macOS.
+    filters: Vec<FileFilter>,
+    /// Windows: the window (`HWND`) the dialog belongs to. Ignored elsewhere
+    /// (macOS uses the app's main window).
+    owner: Option<isize>,
     #[cfg(target_os = "macos")]
     main_thread_marker: Option<MainThreadMarker>,
 }
@@ -139,15 +175,52 @@ impl Dialog {
         Self {
             dialog_type,
             directory_path: None,
+            title: None,
+            filters: Vec::new(),
+            owner: None,
             #[cfg(target_os = "macos")]
             main_thread_marker: None,
-            //dialog_result: None,
         }
     }
 
+    /// Opens the dialog in `path`.
     pub fn set_directory(&mut self, path: &Path) {
-        // Implementar si es necesario para recordar la última carpeta abierta
         self.directory_path = Some(path.to_path_buf());
+    }
+
+    /// Shows `title` instead of the default title.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = Some(title.into());
+    }
+
+    /// Windows: makes the dialog modal to `window` (its `HWND`): the window
+    /// takes no input while the dialog is open, and the dialog opens over
+    /// it. Without an owner the user can click the app's window while the
+    /// dialog runs its own message loop on the UI thread, and the app then
+    /// handles those events from inside `open_file_dialog`. Ignored on the
+    /// other systems.
+    pub fn set_owner(&mut self, window: isize) {
+        self.owner = Some(window);
+    }
+
+    /// Offers `filter` (see [`Dialog::filters`]).
+    pub fn add_filter(&mut self, filter: FileFilter) {
+        self.filters.push(filter);
+    }
+
+    /// The file types offered, in order.
+    pub fn filters(&self) -> &[FileFilter] {
+        &self.filters
+    }
+
+    /// The title shown: the one set, or "Select a folder" / "Select a file".
+    pub fn title(&self) -> String {
+        self.title.clone().unwrap_or_else(|| {
+            String::from(match self.dialog_type {
+                DialogType::Directory => "Select a folder",
+                DialogType::File => "Select a file",
+            })
+        })
     }
 
     pub fn get_directory(&self) -> Option<PathBuf> {
@@ -172,7 +245,7 @@ impl Dialog {
         };
         self.main_thread_marker = Some(mtm);
 
-        // Obtener NSWindow desde NSApplication — sin raw-window-handle
+        // The NSWindow from NSApplication, without raw-window-handle.
         let parent_window = NSApplication::sharedApplication(mtm).mainWindow();
 
         let Some(parent_window) = parent_window else {
@@ -194,7 +267,11 @@ impl Dialog {
         }
         panel.setAllowsMultipleSelection(false);
         panel.setResolvesAliases(true);
-        panel.setMessage(Some(ns_string!("Select a folder")));
+        panel.setMessage(Some(&NSString::from_str(&self.title())));
+        if let Some(directory) = &self.directory_path {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&directory.to_string_lossy()));
+            panel.setDirectoryURL(Some(&url));
+        }
 
         let panel_retained = panel.clone();
 
@@ -240,16 +317,17 @@ impl Dialog {
         &mut self,
         on_result: impl Fn(DialogResult<PathBuf>) + Send + Sync + 'static,
     ) {
-        // El portal es inherentemente asíncrono (la respuesta llega por
-        // una señal de D-Bus), así que la petición se ejecuta en un hilo
-        // aparte y el callback se invoca ahí, igual que en macOS, sin
-        // congelar la UI.
+        // The portal is asynchronous by nature (the answer arrives as a
+        // D-Bus signal), so the request runs on its own thread and the
+        // callback is called there, as on macOS, without freezing the UI.
         let dialog_type = self.dialog_type;
         let start_dir = self.directory_path.clone();
+        let title = self.title();
+        let filters = self.filters.clone();
         std::thread::spawn(move || {
-            // zbus usa el reactor de Tokio (feature "tokio"), así que la
-            // petición al portal se conduce dentro de un runtime
-            // current-thread creado en este hilo.
+            // zbus uses Tokio's reactor (feature "tokio"), so the portal
+            // request is driven by a current-thread runtime made on this
+            // thread.
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -262,7 +340,8 @@ impl Dialog {
                     return;
                 }
             };
-            let outcome = runtime.block_on(open_portal_dialog(dialog_type, start_dir));
+            let outcome =
+                runtime.block_on(open_portal_dialog(dialog_type, start_dir, title, filters));
             on_result(outcome);
         });
     }
@@ -286,18 +365,16 @@ impl Dialog {
     }
 
     // -------------------------------------------------------------
-    // Wrappers "safe": el unsafe queda contenido aquí adentro, y
-    // ahora devuelven DialogResult directamente en vez de
-    // windows::core::Result, para que todo el módulo hable el
-    // mismo "idioma" de error.
+    // Safe wrappers: the `unsafe` stays in here, and they return
+    // `DialogResult` instead of `windows::core::Result` so the whole
+    // module speaks the same error type.
     // -------------------------------------------------------------
 
     #[cfg(target_os = "windows")]
     #[allow(unsafe_code)]
     fn create_open_dialog(&self) -> windows::core::Result<IFileOpenDialog> {
-        // Esta se queda en windows::core::Result porque se usa con
-        // try_win! justo antes de que exista un "dialog" válido con
-        // el que construir un DialogResult con más contexto.
+        // Stays a `windows::core::Result`: it is unwrapped with `try_win!`
+        // before there is a dialog to build a richer `DialogResult` from.
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
     }
 
@@ -316,35 +393,60 @@ impl Dialog {
         };
         try_win!(unsafe { dialog.SetOptions(flags) });
 
-        if dialog_type == DialogType::File {
-            let file_types = [
-                COMDLG_FILTERSPEC {
-                    pszName: w!("Rust Source Files"),
-                    pszSpec: w!("*.rs"),
-                },
-                COMDLG_FILTERSPEC {
-                    pszName: w!("All Files"),
-                    pszSpec: w!("*.*"),
-                },
-            ];
+        let title = HSTRING::from(self.title());
+        try_win!(unsafe { dialog.SetTitle(&title) });
+
+        if dialog_type == DialogType::File && !self.filters.is_empty() {
+            // The strings must outlive `SetFileTypes`, which copies them.
+            let names: Vec<HSTRING> = self
+                .filters
+                .iter()
+                .map(|filter| HSTRING::from(filter.name.as_str()))
+                .chain(std::iter::once(HSTRING::from("All files")))
+                .collect();
+            let specs: Vec<HSTRING> = self
+                .filters
+                .iter()
+                .map(|filter| HSTRING::from(filter.patterns().join(";")))
+                .chain(std::iter::once(HSTRING::from("*.*")))
+                .collect();
+            let file_types: Vec<COMDLG_FILTERSPEC> = names
+                .iter()
+                .zip(&specs)
+                .map(|(name, spec)| COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(name.as_ptr()),
+                    pszSpec: PCWSTR(spec.as_ptr()),
+                })
+                .collect();
             try_win!(unsafe { dialog.SetFileTypes(&file_types) });
-            unsafe {
-                let _ = dialog.SetFileTypeIndex(1);
-                let _ = dialog.SetDefaultExtension(w!("rs"));
+            // 1-based: the first filter set.
+            let _ = unsafe { dialog.SetFileTypeIndex(1) };
+        }
+
+        // A folder that doesn't exist (any more) just isn't applied.
+        if let Some(directory) = self.directory_path.as_deref().filter(|dir| dir.is_dir()) {
+            let path = HSTRING::from(directory);
+            let folder: windows::core::Result<IShellItem> =
+                unsafe { SHCreateItemFromParsingName(&path, None::<&IBindCtx>) };
+            if let Ok(folder) = folder {
+                let _ = unsafe { dialog.SetFolder(&folder) };
             }
         }
 
         DialogResult::Ok(())
     }
 
-    /// Muestra el diálogo y devuelve la ruta elegida, o
-    /// `DialogResult::Cancelled` si el usuario cerró el diálogo.
+    /// Shows the dialog and returns the path picked, or
+    /// `DialogResult::Cancelled` when the user closed it.
     #[cfg(target_os = "windows")]
     #[allow(unsafe_code)]
     fn show_and_get_path(&self, dialog: &IFileOpenDialog) -> DialogResult<PathBuf> {
         const ERROR_CANCELLED: HRESULT = HRESULT::from_win32(0x4C7);
 
-        match unsafe { dialog.Show(None) } {
+        let owner = self
+            .owner
+            .map(|window| windows::Win32::Foundation::HWND(window as *mut core::ffi::c_void));
+        match unsafe { dialog.Show(owner) } {
             Ok(()) => {}
             Err(e) if e.code() == ERROR_CANCELLED => return DialogResult::Cancelled,
             Err(e) => return DialogResult::Err(e.to_string()),
@@ -353,8 +455,8 @@ impl Dialog {
         let result = try_win!(unsafe { dialog.GetResult() });
         let display_name = try_win!(unsafe { result.GetDisplayName(SIGDN_FILESYSPATH) });
 
-        // Guard local para asegurar CoTaskMemFree pase lo que pase
-        // con to_string(), incluyendo el return anticipado de abajo.
+        // Frees the string with CoTaskMemFree whatever `to_string()` does,
+        // the early return below included.
         struct CoMem(windows::core::PWSTR);
         impl Drop for CoMem {
             fn drop(&mut self) {
@@ -375,16 +477,15 @@ impl Dialog {
 }
 
 // ---------------------------------------------------------------------
-// Implementación de Linux: XDG Desktop Portal (interfaz D-Bus
-// org.freedesktop.portal.FileChooser) a través de ashpd, en Rust puro
-// y sin arrastrar GTK. Funciona en GNOME, KDE, Wayland, X11 e incluso
-// dentro de Flatpak. Se usa el backend tokio de zbus, así que el hilo
-// del diálogo crea su propio runtime Tokio current-thread para
-// conducir la petición sin congelar la UI.
+// Linux: the XDG Desktop Portal (D-Bus interface
+// org.freedesktop.portal.FileChooser) through ashpd, pure Rust and without
+// GTK. Works on GNOME, KDE, Wayland, X11 and inside Flatpak. zbus runs on
+// its tokio backend, so the dialog's thread makes its own current-thread
+// Tokio runtime to drive the request without freezing the UI.
 // ---------------------------------------------------------------------
 
-/// Ejecuta la petición al portal y devuelve el resultado en el
-/// "idioma" de DialogResult.
+/// Sends the request to the portal and returns its answer as a
+/// `DialogResult`.
 ///
 /// The instrumented span's duration IS the real wait for the user's
 /// response: this runs to completion on the dedicated thread
@@ -397,12 +498,30 @@ impl Dialog {
 async fn open_portal_dialog(
     dialog_type: DialogType,
     start_dir: Option<PathBuf>,
+    title: String,
+    filters: Vec<FileFilter>,
 ) -> DialogResult<PathBuf> {
     let mut request = SelectedFiles::open_file()
-        .title("Select a folder")
+        .title(title.as_str())
         .modal(true)
         .multiple(false)
         .directory(dialog_type == DialogType::Directory);
+    if dialog_type == DialogType::File && !filters.is_empty() {
+        let portal_filters = filters
+            .iter()
+            .map(|filter| {
+                filter
+                    .patterns()
+                    .iter()
+                    .fold(PortalFileFilter::new(&filter.name), |portal, pattern| {
+                        portal.glob(pattern)
+                    })
+            })
+            .chain(std::iter::once(
+                PortalFileFilter::new("All files").glob("*"),
+            ));
+        request = request.filters(portal_filters);
+    }
 
     if let Some(dir) = start_dir {
         request = match request.current_folder(dir) {
@@ -425,8 +544,8 @@ async fn open_portal_dialog(
     }
 }
 
-/// Mapea los errores del portal: la cancelación del usuario es
-/// `DialogResult::Cancelled` y cualquier otro fallo es `Err` con el
+/// Maps the portal's errors: the user cancelling is
+/// `DialogResult::Cancelled` and any other failure is `Err` with the
 /// mensaje original.
 #[cfg(target_os = "linux")]
 fn map_portal_error(err: ashpd::Error) -> DialogResult<PathBuf> {
@@ -436,16 +555,16 @@ fn map_portal_error(err: ashpd::Error) -> DialogResult<PathBuf> {
     }
 }
 
-/// Convierte una URI `file://` (lo que devuelve el portal) en un
-/// `PathBuf`, decodificando los %-escapes. Se implementa a mano para
-/// no arrastrar el crate `url` por una conversión tan acotada.
+/// Turns a `file://` URI (what the portal returns) into a `PathBuf`,
+/// decoding the %-escapes. Written by hand rather than pulling in the `url`
+/// crate for such a narrow conversion.
 #[cfg(target_os = "linux")]
 fn file_uri_to_path(uri: &str) -> DialogResult<PathBuf> {
     let Some(rest) = uri.strip_prefix("file://") else {
         return DialogResult::Err(format!("Unsupported URI scheme: {uri}"));
     };
-    // Tras el esquema viene el host: vacío (la ruta empieza con '/')
-    // o "localhost". Cualquier otro host no es un archivo local.
+    // After the scheme comes the host: empty (the path starts with '/') or
+    // "localhost". Any other host is not a local file.
     let path = match rest.split_once('/') {
         Some(("", path)) | Some(("localhost", path)) => format!("/{path}"),
         _ => return DialogResult::Err(format!("Unsupported file URI: {uri}")),
@@ -456,8 +575,8 @@ fn file_uri_to_path(uri: &str) -> DialogResult<PathBuf> {
     }
 }
 
-/// Decodifica los %-escapes de una ruta URI (p. ej. `%20` -> ' ').
-/// Los bytes resultantes se interpretan como UTF-8 con reemplazo.
+/// Decodes the %-escapes of a URI path (e.g. `%20` -> ' '). The resulting
+/// bytes are read as UTF-8, with replacement characters where invalid.
 #[cfg(target_os = "linux")]
 fn percent_decode(input: &str) -> Result<String, ()> {
     fn hex_digit(b: u8) -> Result<u8, ()> {
@@ -488,15 +607,15 @@ fn percent_decode(input: &str) -> Result<String, ()> {
 }
 
 // ---------------------------------------------------------------------
-// ComGuard: RAII que garantiza CoUninitialize() sin importar el path
-// de salida (Ok, Err, panic durante el scope, return anticipado, etc.)
+// ComGuard: RAII that guarantees CoUninitialize() whatever the way out
+// (Ok, Err, a panic inside the scope, an early return...).
 // ---------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 struct ComGuard;
 
 #[cfg(target_os = "windows")]
 impl ComGuard {
-    /// Único bloque `unsafe` para inicializar COM en este hilo.
+    /// The one `unsafe` block that initializes COM on this thread.
     #[allow(unsafe_code)]
     fn new() -> windows::core::Result<Self> {
         unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
@@ -508,14 +627,14 @@ impl ComGuard {
 impl Drop for ComGuard {
     #[allow(unsafe_code)]
     fn drop(&mut self) {
-        // Único lugar donde se llama CoUninitialize. Se ejecuta
-        // automáticamente al salir del scope, sin importar el camino.
+        // The one place CoUninitialize is called; it runs when the scope
+        // ends, whatever the way out.
         unsafe { CoUninitialize() };
     }
 }
 
 // ---------------------------------------------------------------------
-// Pruebas unitarias
+// Unit tests
 // ---------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
@@ -525,8 +644,7 @@ mod tests {
 
     #[test]
     fn dialog_type_equality() {
-        // DialogType no implementa Debug, así que se comparan con `==`
-        // en lugar de assert_eq!.
+        // Compared with `==` rather than `assert_eq!`.
         assert!(DialogType::File == DialogType::File);
         assert!(DialogType::Directory == DialogType::Directory);
         assert!(DialogType::File != DialogType::Directory);
@@ -536,12 +654,12 @@ mod tests {
     fn dialog_type_is_copy() {
         let original = DialogType::Directory;
         let copied = original;
-        // Si DialogType no fuera Copy, `original` quedaría movido
-        // y esta comparación no compilaría.
+        // If DialogType weren't Copy, `original` would have been moved and
+        // this comparison wouldn't compile.
         assert!(original == copied);
     }
 
-    // ---- DialogResult: predicados ----
+    // ---- DialogResult: predicates ----
 
     #[test]
     fn dialog_result_ok_predicates() {
@@ -683,7 +801,7 @@ mod tests {
         assert_eq!(dialog.get_directory(), Some(PathBuf::from("/tmp/second")));
     }
 
-    // ---- Diálogo de Linux (XDG Desktop Portal) ----
+    // ---- Linux dialog (XDG Desktop Portal) ----
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -706,8 +824,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn file_uri_to_path_decodes_utf8_multibyte() {
-        match file_uri_to_path("file:///home/usuario/caf%C3%A9") {
-            DialogResult::Ok(path) => assert_eq!(path, PathBuf::from("/home/usuario/café")),
+        match file_uri_to_path("file:///home/user/caf%C3%A9") {
+            DialogResult::Ok(path) => assert_eq!(path, PathBuf::from("/home/user/café")),
             other => panic!("expected DialogResult::Ok, got {other:?}"),
         }
     }

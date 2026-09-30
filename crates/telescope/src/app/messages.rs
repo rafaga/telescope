@@ -5,7 +5,6 @@
 
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use sputnik::map_alerts::IntelAlert;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +17,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Duration, Instant, sleep_until, timeout_at};
 use webb::auth_service::AuthService2;
 use webb::esi::EsiManager;
+use webb::map_alerts::IntelAlert;
 use webb::objects::AuthorizeInfo;
 use webb::objects::Character;
 
@@ -28,17 +28,28 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub enum MapSync {
     CenterOn((usize, Target)),
-    /// An intel report on a solar system: its visual alert (unless it is a
-    /// `clear` report) and its line in the node tooltip.
+    /// An intel report on a solar system: its visual alert (a pulse).
     SystemAlert(IntelAlert),
+    /// An intel line listed in the node tooltip of a solar system, with no
+    /// visual alert.
+    SystemTooltip(IntelAlert),
     /// Plays (or clears) an animation on a node of every map that has it;
-    /// used by the Debug window to preview the node effects.
+    /// used by the Debug window to preview the node effects. Only the
+    /// `#[cfg(debug_assertions)]` Debug window (see `app/windows.rs`'s
+    /// `mod debug`) ever sends it, but the variant and its handling arms stay
+    /// compiled in every profile -- gating them with the UI is what used to
+    /// drop the animation match arms entirely in release. The `allow` below
+    /// covers release, where nothing constructs it.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     NodeEffect((usize, NodeEffect)),
 }
 
 /// Node animations offered by `egui-map` (see `egui_map::map::NodeHandle`):
 /// one-off events that end on their own, lasting states that run until
-/// cleared, and `Clear` itself.
+/// cleared, and `Clear` itself. Only ever constructed by the Debug window's
+/// animation preview, but kept compiled in every profile -- see the note on
+/// `MapSync::NodeEffect` above.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NodeEffect {
     #[default]
@@ -53,6 +64,7 @@ pub enum NodeEffect {
     Clear,
 }
 
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 impl NodeEffect {
     pub const ALL: [NodeEffect; 9] = [
         NodeEffect::Pulse,
@@ -108,34 +120,57 @@ pub enum Type {
 #[derive(Clone)]
 pub enum Target {
     System,
+    /// Never constructed outside the Debug window (`center_on_target`'s
+    /// handler for it in both map panes is an unfinished no-op stub), but
+    /// kept compiled in every profile so those arms stay put -- see the note
+    /// on `MapSync::NodeEffect`. The `allow` below covers release, where
+    /// nothing constructs it.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     Region,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsPage {
-    General,
-    Intelligence,
+    Sources,
+    Rules,
+    Alerts,
+    Maps,
     Characters,
+    Application,
 }
 
 impl SettingsPage {
-    /// Every settings page, in the order the Settings window menu lists
-    /// them. A new page is one variant above, one entry here, one arm in
-    /// `title` and one arm in the Settings window's page `match`.
-    pub const ALL: [SettingsPage; 3] = [
-        SettingsPage::General,
-        SettingsPage::Intelligence,
-        SettingsPage::Characters,
+    /// The pages an intel line goes through, in order (the stepper at the top
+    /// of those pages).
+    pub const INTEL_FLOW: [SettingsPage; 3] = [
+        SettingsPage::Sources,
+        SettingsPage::Rules,
+        SettingsPage::Alerts,
     ];
 
-    /// Label shown for this page in the Settings window menu.
+    /// Label shown for this page in the Settings navigation.
     pub fn title(self) -> String {
         match self {
-            SettingsPage::General => t!("settings.pages.general"),
-            SettingsPage::Intelligence => t!("settings.pages.intelligence"),
+            SettingsPage::Sources => t!("settings.pages.sources"),
+            SettingsPage::Rules => t!("settings.pages.rules"),
+            SettingsPage::Alerts => t!("settings.pages.alerts"),
+            SettingsPage::Maps => t!("settings.pages.maps"),
             SettingsPage::Characters => t!("settings.pages.characters"),
+            SettingsPage::Application => t!("settings.pages.application"),
         }
         .into_owned()
+    }
+
+    /// Icon drawn before the title (a glyph of egui's bundled emoji fonts).
+    pub fn icon(self) -> &'static str {
+        match self {
+            SettingsPage::Sources => "📂",
+            SettingsPage::Rules => "🔀",
+            SettingsPage::Alerts => "🔔",
+            SettingsPage::Maps => "🗺",
+            SettingsPage::Characters => "👤",
+            SettingsPage::Application => "⚙",
+        }
     }
 }
 
@@ -156,18 +191,30 @@ pub enum Message {
     MapHidden(usize),
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
-    IntelFileChanged(String),
+    /// Sent by the intel reader thread after it read new lines of a
+    /// channel's log: the channel and when, for Settings -> Sources.
+    ChannelActivity(String, std::time::SystemTime),
     UpdateIntelDirectory(PathBuf),
     DefaultIntelDirectory,
+    /// A file picked with *Browse…* for the SDE database (Settings ->
+    /// Application).
+    SdePathPicked(PathBuf),
+    /// A file picked with *Browse…* for the player database (Settings ->
+    /// Application).
+    DbPathPicked(PathBuf),
     /// Sent by `database_updater::DatabaseUpdater` while its background
     /// update check/build is running, one per phase -- drives the
     /// status text in `database_updater::DatabaseUpdater`'s progress
-    /// window (`DatabaseUpdater::set_status`).
-    DatabaseUpdateProgress(String),
+    /// window (`DatabaseUpdater::set_phase`).
+    DatabaseUpdateProgress(super::database_updater::SdePhase),
+    /// Sent by `database_updater::DatabaseUpdater` when it learns
+    /// something the progress window shows (the builds, the download size).
+    DatabaseUpdateInfo(super::database_updater::SdeInfo),
     /// Sent by `database_updater::DatabaseUpdater` once its background
     /// update check finishes; also hides the progress window
-    /// (`DatabaseUpdater::hide`). `true` means `sde.db` was (re)built
-    /// and should be reloaded (see `TelescopeApp::handle_database_updated`);
+    /// (`DatabaseUpdater::hide`, or `DatabaseUpdater::finish` after a
+    /// rebuild: that one waits for the user). `true` means `sde.db` was (re)built
+    /// and should be reloaded (see `TelescopeApp::reload_sde`);
     /// `false` means it was already up to date, or the check/build
     /// failed (the failure itself was already reported separately via a
     /// `GenericNotification`).
@@ -181,8 +228,8 @@ pub enum Message {
 impl Message {
     /// Returns the variant's name, for lightweight tagging of spans/events
     /// (e.g. in Tracy) without dumping potentially large or arbitrary
-    /// payloads (`GenericNotification`'s error text, `IntelFileChanged`'s
-    /// path, etc.) into every trace.
+    /// payloads (`GenericNotification`'s error text, `ChannelActivity`'s
+    /// channel, etc.) into every trace.
     pub fn kind(&self) -> &'static str {
         match self {
             Message::CharacterAuthenticated(_) => "CharacterAuthenticated",
@@ -191,10 +238,13 @@ impl Message {
             Message::MapHidden(_) => "MapHidden",
             Message::MapShown(_) => "MapShown",
             Message::PlayerNewLocation(_) => "PlayerNewLocation",
-            Message::IntelFileChanged(_) => "IntelFileChanged",
+            Message::ChannelActivity(..) => "ChannelActivity",
             Message::UpdateIntelDirectory(_) => "UpdateIntelDirectory",
             Message::DefaultIntelDirectory => "DefaultIntelDirectory",
+            Message::SdePathPicked(_) => "SdePathPicked",
+            Message::DbPathPicked(_) => "DbPathPicked",
             Message::DatabaseUpdateProgress(_) => "DatabaseUpdateProgress",
+            Message::DatabaseUpdateInfo(_) => "DatabaseUpdateInfo",
             Message::DatabaseUpdated(_) => "DatabaseUpdated",
             Message::ScanIntelFiles => "ScanIntelFiles",
         }
@@ -233,14 +283,15 @@ impl MessageSpawner {
         // self.app_msg.1.try_recv()` -- also runs on that same UI thread,
         // once, near the top of that same `update()`. If a single frame
         // ever queued more messages than the channel's capacity (`app.rs`'s
-        // `mpsc::channel::<messages::Message>(40)`), a `blocking_send` here
+        // `APP_MESSAGE_CAPACITY`), a `blocking_send` here
         // would block the UI thread waiting for room that only a `recv()`
         // on this same, now-blocked thread could free -- a self-deadlock
         // that freezes the whole app. `try_send` trades that hang for the
         // rare, non-fatal loss of a single log line, which is a strictly
         // better failure mode for a diagnostics channel.
         match self.spawn.try_send(msg) {
-            Ok(()) => {}
+            // The queue is only drained inside `update()`: ask for a frame.
+            Ok(()) => crate::repaint::request(),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 panic!("The shared runtime has shut down.");
             }
@@ -264,7 +315,10 @@ pub async fn send_app_message(
     tx: &Sender<Message>,
     msg: Message,
 ) -> Result<(), mpsc::error::SendError<Message>> {
-    tx.send(msg).await
+    tx.send(msg).await?;
+    // The queue is only drained inside `update()`: ask for a frame.
+    crate::repaint::request();
+    Ok(())
 }
 
 /// Non-async counterpart of [`send_app_message`], for the `try_send` call
@@ -274,7 +328,9 @@ pub fn try_send_app_message(
     tx: &Sender<Message>,
     msg: Message,
 ) -> Result<(), mpsc::error::TrySendError<Message>> {
-    tx.try_send(msg)
+    tx.try_send(msg)?;
+    crate::repaint::request();
+    Ok(())
 }
 
 /// One "link a character" attempt, handed to [`AuthSpawner::spawn`]: a clone
@@ -562,5 +618,97 @@ mod auth_spawner_tests {
                 assert!(!text.contains("in use"), "unexpected: {text}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod enum_tests {
+    use super::*;
+    use egui_map::map::Map;
+    use egui_map::map::objects::MapPoint;
+
+    #[test]
+    fn every_node_effect_has_its_own_label() {
+        let labels: std::collections::HashSet<&str> = NodeEffect::ALL
+            .iter()
+            .map(|effect| effect.label())
+            .collect();
+        assert_eq!(labels.len(), NodeEffect::ALL.len());
+        assert!(labels.iter().all(|label| !label.is_empty()));
+    }
+
+    #[test]
+    fn every_node_effect_can_be_applied_to_a_map_node() {
+        let mut map = Map::new();
+        map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
+        for effect in NodeEffect::ALL {
+            let node = map.node(1).expect("the node exists");
+            effect.apply(node);
+        }
+    }
+
+    #[test]
+    fn the_settings_pages_have_a_title_and_a_distinct_icon() {
+        let pages = [
+            SettingsPage::Sources,
+            SettingsPage::Rules,
+            SettingsPage::Alerts,
+            SettingsPage::Maps,
+            SettingsPage::Characters,
+            SettingsPage::Application,
+        ];
+        let icons: std::collections::HashSet<&str> = pages.iter().map(|p| p.icon()).collect();
+        assert_eq!(icons.len(), pages.len());
+        assert!(pages.iter().all(|page| !page.title().is_empty()));
+    }
+
+    #[test]
+    fn the_intel_flow_goes_from_the_sources_to_the_alerts() {
+        assert_eq!(
+            SettingsPage::INTEL_FLOW,
+            [
+                SettingsPage::Sources,
+                SettingsPage::Rules,
+                SettingsPage::Alerts
+            ]
+        );
+    }
+
+    #[test]
+    fn messages_are_tagged_with_their_variant_name() {
+        let cases: [(Message, &str); 8] = [
+            (
+                Message::GenericNotification((
+                    Type::Info,
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                )),
+                "GenericNotification",
+            ),
+            (Message::NewRegionalPane(1), "NewRegionalPane"),
+            (Message::MapHidden(1), "MapHidden"),
+            (Message::MapShown(1), "MapShown"),
+            (Message::PlayerNewLocation((1, 2)), "PlayerNewLocation"),
+            (
+                Message::ChannelActivity(String::new(), std::time::SystemTime::UNIX_EPOCH),
+                "ChannelActivity",
+            ),
+            (Message::DefaultIntelDirectory, "DefaultIntelDirectory"),
+            (Message::ScanIntelFiles, "ScanIntelFiles"),
+        ];
+        for (message, name) in cases {
+            assert_eq!(message.kind(), name);
+        }
+        assert_eq!(
+            Message::UpdateIntelDirectory(PathBuf::new()).kind(),
+            "UpdateIntelDirectory"
+        );
+        assert_eq!(
+            Message::SdePathPicked(PathBuf::new()).kind(),
+            "SdePathPicked"
+        );
+        assert_eq!(Message::DbPathPicked(PathBuf::new()).kind(), "DbPathPicked");
+        assert_eq!(Message::DatabaseUpdated(true).kind(), "DatabaseUpdated");
     }
 }

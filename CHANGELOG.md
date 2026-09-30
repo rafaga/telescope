@@ -9,7 +9,66 @@ period it happened in.
 
 ## [Unreleased]
 
+### Security
+
+* `security.yml` runs `cargo deny check` (advisories, licenses, bans, sources)
+  on manifest changes and weekly; `deny.toml` was adapted to the actual
+  dependency tree, with the two advisories that have no fix documented, and
+  the yanked `yoke-derive` was updated (September 2026).
+
+### Fixed
+
+* Adding nodes in the open rules editor could give two of them the same id
+  (`PatternsEditor::rule_ids` ignored the canvas), which made closing the
+  editor fail with a duplicate node id error (September 2026).
+
+### Changed
+
+* CI rebuilt around one `ci.yml`: a single job per operating system runs
+  clippy, the all-features check and the tests on a shared build, `fmt` runs
+  once, and there is a `ci-ok` summary check, run cancellation, least
+  privilege permissions and timeouts. The build cache is written only by
+  pushes to `master`. Pushes to `dev` are no longer built twice (the pull
+  request already covers them), and `master` gets a coverage report
+  (`cargo llvm-cov`) (September 2026).
+* `Cargo.lock` is versioned and CI and the release build with `--locked`
+  (September 2026).
+* `release.yml` fails early without the ESI secrets, caches `cargo-packager`,
+  publishes SHA-256 checksums, and can be run by hand to try the packaging
+  without publishing (September 2026).
+* `.cargo/config.toml` is no longer tracked by git; the ESI credentials come
+  from the build environment (`BUILD.md`). The values that had been committed
+  were rotated (September 2026).
+* `TelescopeApp::default()` builds the app through `with_settings`, which also
+  serves the tests (no SDE update check, placeholder ESI credentials); the
+  behaviour of the normal startup is unchanged (September 2026).
+* CI and `check.sh` run clippy with `-D warnings`; the test fixtures that
+  tripped it were rewritten (September 2026).
+
+* The Settings screen, the SDE update window and the rule graph editor use
+  egui's own look-and-feel (flat sections separated by hairlines, check box
+  rows, small radii, no shadows except on floating windows) instead of a card
+  based one; the pages fill the available width. *Alerts* no longer lists the
+  characters the distance is measured from, and *Maps* picks start-up regions
+  with toggle buttons (September 2026).
+
 ### Added
+
+* Unit tests for the rule engine (`webb::rules`), the chat log reader, the
+  rules editor, the SDE updater (against a local HTTP server), the character
+  link helpers and `TelescopeApp` itself (`app_tests.rs`), and component tests
+  for `egui-panels`. Line coverage of the workspace went from about 65 % to
+  72 % (`cargo llvm-cov`, see `BUILD.md`) (September 2026).
+* `egui-panels`, a new workspace crate with the building blocks of a settings
+  screen in egui (page, `Section`, `form`, `switch`, `Slider`, `segmented`,
+  `tile`, `PathPicker`, `stepper`, `EntityCard`, `SideNav`, `ActionBar`,
+  `SettingsLayout`, `Draft`), themed from `egui::Visuals` so light and dark
+  both work, with no dependency on Telescope (September 2026).
+* Settings: the folder status and each channel's last activity (*Sources*),
+  *Browse…* for the SDE and private database files and the SDE status
+  (*Application*), *Test the full alert* (*Alerts*), a character glow
+  intensity slider with a preview (*Maps*) and the live validity of the rule
+  graph (*Rules*) (September 2026).
 
 * Interface translations with `rust-i18n` and TOML files in
   `crates/telescope/locales/` (English and Spanish), a language selector in the
@@ -52,6 +111,21 @@ period it happened in.
 
 ### Changed
 
+* CI runs the tests (`cargo test --workspace`) on Windows and macOS, and a
+  Linux workflow (check, test, clippy, fmt) replaces the disabled one;
+  clippy covers the whole workspace with tests and examples (September 2026).
+* `native_tools`: comments and error messages in English (September 2026).
+
+* Settings redesigned with `egui-panels`: the pages follow an intel line
+  (*Sources -> Rules -> Alerts*, with a stepper) and then *Maps*,
+  *Characters* and *Application*, replacing *General*, *Intelligence*,
+  *Patterns* and *Data Sources*. Every change, the interface language
+  included, is a draft until *Apply* / *Accept* (the language is previewed and
+  *Cancel* restores it); a dot marks the pages with changes and the bar lists
+  them. Rule cards have an enable switch, a summary and their outputs, and a
+  rule open in the node editor is applied too. Characters are cards with their
+  location and an *Unlink* button each (September 2026).
+
 * Noto Sans TC replaced by Noto Sans CJK (`NotoSansCJK-Medium.ttc`), always
   loaded as the fallback font so intel lines in Chinese, Japanese, Korean and
   Russian are drawn whatever the interface language (September 2026).
@@ -69,7 +143,77 @@ period it happened in.
 * `BUILD.md` documents Tracy v0.14.1 as the version verified to work, in line
   with `tracing-tracy` 0.12 and `tracy-client` 0.19 (September 2026).
 
+### Security
+
+* The player database (tokens included) is always encrypted: Telescope now
+  enables `webb`'s `crypted-db` itself (before, whether it was depended on
+  the cargo command used to build). The key is a raw SQLCipher key derived
+  from the machine identifier `native_tools` reads (on Linux it was a fixed
+  placeholder), so opening a connection no longer runs the passphrase
+  derivation. An existing plain database is encrypted and one under the old
+  passphrase key is re-keyed on the first start (September 2026).
+* EVE SSO login: the `state` of the callback is checked against the one sent
+  in the login URL, and a callback with any other value is rejected before
+  its code is used. Before, any web page could send the browser to the local
+  callback during a login and link a character of its choosing (September
+  2026).
+
 ### Fixed
+
+* When the GPU device is lost (sleep, driver reset), the app now restarts
+  itself instead of dying with a `egui-wgpu` panic (exit code 101). At most
+  three restarts in a row, and only if wgpu reported the loss.
+* Settings -> Rules: the buttons, switch and fields of an entry's card
+  didn't respond (Open, Remove, the on/off switch, renaming): the card sensed
+  clicks over its whole area on top of them. The same held for *Unlink* on
+  the Characters page (`egui_panels::EntityCard`). The card's own click is
+  now registered under its contents (September 2026).
+* Settings -> Rules: the id field of an entry lost the focus at every key
+  (the card's widgets were keyed by the id being edited). The id is now
+  applied when the field is left, and an invalid or taken id is reported
+  instead of silently put back (September 2026).
+
+* File dialogs: the Windows open dialog only offered `*.rs` files (a leftover
+  sample filter), so *Browse…* for the SDE and the private database showed
+  nothing; it ignored the folder to open in; and it had no owner window, so
+  the app's window kept taking input while it was open. Dialogs now have a
+  title, SQLite filters where they pick a database, open in the current
+  folder and, on Windows, are modal to Telescope's window (September 2026).
+* Linux: the machine identifier behind the player database key is the
+  machine id first (`/etc/machine-id`), not the DMI UUID only root can read:
+  running Telescope once as root no longer changes the key. The D-Bus
+  fallback never asks polkit for a password (September 2026).
+* The private database path can be typed, so it can point to a file that
+  doesn't exist yet (the open dialog can't pick one); an invalid path is
+  shown as such and not applied (September 2026).
+
+* The maps take their intel alerts every frame, even while their tab is
+  hidden or the Settings screen is open: they used to read them only when
+  drawn, and the 30-message channel dropped the rest (September 2026).
+* The SDE update progress window shows over the Settings screen (September
+  2026).
+* An SDE update builds the new database next to the old one and replaces it
+  only once complete: a failed download or build no longer leaves Telescope
+  without `sde.db` (September 2026).
+* Chat logs are read from the folder being watched, not from a folder picked
+  in Settings but not applied yet; applying a new folder stops watching the
+  old one (both used to stay watched), and a cancelled folder change no
+  longer skips lines (September 2026).
+* A report repeated within 3 seconds doesn't sound the alarm (or center the
+  maps) again over the one still playing (September 2026).
+* Each chat log write no longer adds a "Changed" line to the on-screen log,
+  and the app message channel has room for bursts (40 -> 256) (September
+  2026).
+* No panics when a region's map was never created, when a portrait download
+  breaks, or when the intel folder can't be watched at start-up (it is
+  reported instead) (September 2026).
+* The player database uses write-ahead logging (`journal_mode` was misspelt,
+  so SQLite ignored it), and with `crypted-db` the key is set first, quoted,
+  and a missing machine id falls back instead of panicking (September 2026).
+
+* Settings: rescanning the chat log folder no longer unchecked every channel
+  (Accept then stopped watching them all), and monitored channels without a
+  log stay listed; unchecking every start-up region is saved (September 2026).
 
 * Crash on the first frame when a character is linked and `sde.db` can't be
   loaded yet (first run, or while it is being rebuilt): map panes without
@@ -95,6 +239,10 @@ period it happened in.
 
 ### Removed
 
+* `patterns.toml` and its engine (`PatternEngine`): the intel rules are a node
+  graph stored in the player database, seeded from the built-in `rules.toml`.
+  The installer no longer ships the file and it is no longer copied to the
+  data folder (September 2026).
 * `puffin` profiling, replaced by Tracy (August 2026).
 * The separate linked-characters window; its content moved into the Settings
   window (April 2024).

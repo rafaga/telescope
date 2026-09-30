@@ -1,7 +1,7 @@
 //! File-system watcher glue: [`IntelEventHandler`] receives the `notify` events for
 //! the EVE chat log directory and turns them into app messages
-//! (`IntelFileChanged` for writes to a monitored channel's log, `ScanIntelFiles`
-//! when log files appear or disappear).
+//! (the name of a written monitored channel's log goes straight to the reader
+//! thread, `ScanIntelFiles` when log files appear or disappear).
 //!
 //! Each OS backend of `notify` reports different event kinds for the same
 //! change, so the matching in `handle_event` is deliberately broad.
@@ -10,11 +10,15 @@ use crate::app::intel::IntelLogName;
 use crate::app::messages::{Message, Type, try_send_app_message};
 use notify::EventHandler;
 use notify::event::ModifyKind;
+use std::sync::mpsc::Sender as FileSender;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc::Sender;
 
 pub struct IntelEventHandler {
     app_msg: Arc<Sender<Message>>,
+    /// Names of the changed monitored logs, for the reader thread
+    /// (`intel::reader`).
+    files: FileSender<String>,
     // Shared with `TelescopeApp` so the monitored-channel list can be
     // updated in place after the user changes the intel directory or edits
     // the channel selection in Settings; `IntelEventHandler` is moved into
@@ -63,19 +67,13 @@ impl EventHandler for IntelEventHandler {
                             channels.binary_search(&log.channel.to_string()).is_ok()
                         });
                         if is_monitored {
-                            let _ = try_send_app_message(
-                                &app_sender_file,
-                                Message::IntelFileChanged(file_name.clone()),
-                            );
-                            let _ = try_send_app_message(
-                                &app_sender_file,
-                                Message::GenericNotification((
-                                    Type::Debug,
-                                    String::from("Telescope"),
-                                    String::from("IntelWatcher"),
-                                    file_name + " Changed",
-                                )),
-                            );
+                            // Only traced: a line in the on-screen log for
+                            // every write buried the useful entries and
+                            // took room in the message channel.
+                            tracing::debug!(file = %file_name, "chat log changed");
+                            if self.files.send(file_name).is_err() {
+                                tracing::warn!("intel reader is not running; change dropped");
+                            }
                         }
                     }
                 }
@@ -129,11 +127,109 @@ impl EventHandler for IntelEventHandler {
 }
 
 impl IntelEventHandler {
-    #[tracing::instrument(skip(app_sender))]
-    pub fn new(channels: Arc<RwLock<Vec<String>>>, app_sender: Arc<Sender<Message>>) -> Self {
+    #[tracing::instrument(skip(app_sender, files))]
+    pub fn new(
+        channels: Arc<RwLock<Vec<String>>>,
+        app_sender: Arc<Sender<Message>>,
+        files: FileSender<String>,
+    ) -> Self {
         Self {
             app_msg: app_sender,
+            files,
             channels,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{AccessKind, CreateKind, DataChange, RemoveKind};
+    use notify::{Event, EventKind};
+    use std::path::PathBuf;
+    use std::sync::mpsc::{Receiver, channel};
+    use tokio::sync::mpsc;
+
+    const MONITORED: &str = "Intel_20240101_120000.txt";
+
+    fn handler(
+        channels: &[&str],
+    ) -> (IntelEventHandler, Receiver<String>, mpsc::Receiver<Message>) {
+        let (app_tx, app_rx) = mpsc::channel(8);
+        let (files_tx, files_rx) = channel();
+        let channels = channels.iter().map(|name| name.to_string()).collect();
+        (
+            IntelEventHandler::new(Arc::new(RwLock::new(channels)), Arc::new(app_tx), files_tx),
+            files_rx,
+            app_rx,
+        )
+    }
+
+    fn event(kind: EventKind, file: &str) -> Result<Event, notify::Error> {
+        Ok(Event::new(kind).add_path(PathBuf::from("logs").join(file)))
+    }
+
+    #[test]
+    fn a_write_to_a_monitored_log_goes_to_the_reader() {
+        // Windows reports an untyped Modify, Linux/macOS a Data one.
+        for kind in [
+            EventKind::Modify(ModifyKind::Any),
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        ] {
+            let (mut handler, files, mut app) = handler(&["Intel"]);
+            handler.handle_event(event(kind, MONITORED));
+            assert_eq!(files.try_recv().as_deref(), Ok(MONITORED));
+            assert!(app.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn a_write_to_an_unmonitored_or_foreign_file_is_ignored() {
+        let (mut handler, files, mut app) = handler(&["Alliance"]);
+        handler.handle_event(event(EventKind::Modify(ModifyKind::Any), MONITORED));
+        handler.handle_event(event(EventKind::Modify(ModifyKind::Any), "notes.txt"));
+        assert!(files.try_recv().is_err());
+        assert!(app.try_recv().is_err());
+    }
+
+    #[test]
+    fn nothing_is_read_while_no_channel_is_monitored() {
+        let (mut handler, files, mut app) = handler(&[]);
+        handler.handle_event(event(EventKind::Modify(ModifyKind::Any), MONITORED));
+        handler.handle_event(event(EventKind::Create(CreateKind::Any), MONITORED));
+        assert!(files.try_recv().is_err());
+        assert!(app.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_created_or_removed_log_triggers_a_rescan() {
+        for kind in [
+            EventKind::Create(CreateKind::Any),
+            EventKind::Remove(RemoveKind::Any),
+        ] {
+            let (mut handler, files, mut app) = handler(&["Intel"]);
+            handler.handle_event(event(kind, MONITORED));
+            assert!(matches!(app.try_recv(), Ok(Message::ScanIntelFiles)));
+            assert!(files.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn other_events_are_only_reported_as_debug_notifications() {
+        let (mut handler, files, mut app) = handler(&["Intel"]);
+        handler.handle_event(event(EventKind::Access(AccessKind::Any), MONITORED));
+        assert!(matches!(
+            app.try_recv(),
+            Ok(Message::GenericNotification((Type::Debug, ..)))
+        ));
+        assert!(files.try_recv().is_err());
+    }
+
+    #[test]
+    fn watcher_errors_are_ignored() {
+        let (mut handler, files, mut app) = handler(&["Intel"]);
+        handler.handle_event(Err(notify::Error::generic("boom")));
+        assert!(files.try_recv().is_err());
+        assert!(app.try_recv().is_err());
     }
 }

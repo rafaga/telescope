@@ -18,15 +18,14 @@ use egui::containers::menu::{MenuButton, MenuConfig};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
-    animation::Animation,
     objects::{
         ContextMenuManager, HitContext, MapPoint, MapSegment, MapSettings, MarkerContext,
         NodeContext, NodeOutline, NodeTemplate, RegionLabel, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
-use sputnik::map_alerts::{
-    ALERT_ICON, AlertLog, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
+use webb::map_alerts::{
+    ALERT_ICON, AlertLog, AlertPart, CLEAR_ICON, IntelAlert, MAX_TOOLTIP_ALERTS, format_age,
 };
 //use futures::executor::ThreadPool;
 use sde::SdeManager;
@@ -120,6 +119,13 @@ pub trait TabPane {
     fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str);
     /// Removes the marker of a character that is no longer linked.
     fn remove_marker(&mut self, player_id: usize);
+    /// Redraws the nodes with `style` (Settings -> Maps). Maps that don't
+    /// draw their nodes with it ignore it.
+    fn set_node_style(&mut self, _style: NodeStyle) {}
+    /// Loads the map's systems again from the SDE database at `path` (a
+    /// rebuilt `sde.db`, or another one picked in Settings -> Application)
+    /// and puts back the markers of the linked characters.
+    fn reload_data(&mut self, path: &Path);
 }
 
 /// Linked characters on a map, by character id: their solar system and name.
@@ -130,10 +136,21 @@ type CharactersOnMap = HashMap<usize, (usize, String)>;
 /// Icon shown to the left of each character name in the node tooltips.
 pub(crate) const CHARACTER_ICON: &str = "👤";
 
+/// How often a node with a linked character repaints its glow (~30 fps).
+const GLOW_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+
 /// Color of [`ALERT_ICON`] in the node tooltips.
 const ALERT_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
 /// Color of [`CLEAR_ICON`] in the node tooltips.
 const CLEAR_ICON_COLOR: Color32 = Color32::from_rgb(90, 200, 90);
+/// Emoji/color of the ships section of a tooltip line.
+const SHIP_ICON: &str = "🚀";
+const SHIP_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
+/// Emoji/color of the pilot-count section of a tooltip line (a person
+/// silhouette, colored distinctly from [`CHARACTER_ICON`], which uses the
+/// default text color).
+const COUNT_ICON: &str = "👤";
+const COUNT_ICON_COLOR: Color32 = Color32::from_rgb(190, 130, 255);
 
 /// The tooltip of the node under the pointer, only on nodes that have
 /// something to show: the linked characters in that system, one per line
@@ -184,7 +201,9 @@ fn show_node_tooltip(
     });
 }
 
-/// One intel alert in a node tooltip: icon, age and summary.
+/// One intel alert in a node tooltip: icon, age and summary. Each section of
+/// the summary is prefixed with its own emoji (ships, pilot count) unless the
+/// alert was built with `emojis` off.
 fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
     ui.horizontal(|ui| {
         let (icon, color) = if alert.raises_visual() {
@@ -194,26 +213,48 @@ fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
         };
         ui.label(RichText::new(icon).color(color));
         ui.label(RichText::new(format_age(now.saturating_duration_since(alert.received))).weak());
-        let detail = alert.summary.detail(|count| match count {
+        let parts = alert.summary.parts(|count| match count {
             1 => t!("map.alert_pilots_one").into_owned(),
             _ => t!("map.alert_pilots_other", count = count).into_owned(),
         });
-        if !detail.is_empty() {
-            ui.label(detail);
+        for (index, part) in parts.into_iter().enumerate() {
+            if index > 0 {
+                ui.label(RichText::new("·").weak());
+            }
+            match part {
+                AlertPart::Clear(word) => {
+                    ui.label(word);
+                }
+                AlertPart::Ships(text) => {
+                    if alert.emojis {
+                        ui.label(RichText::new(SHIP_ICON).color(SHIP_ICON_COLOR));
+                    }
+                    ui.label(text);
+                }
+                AlertPart::Count(text) => {
+                    if alert.emojis {
+                        ui.label(RichText::new(COUNT_ICON).color(COUNT_ICON_COLOR));
+                    }
+                    ui.label(text);
+                }
+                AlertPart::Text(text) => {
+                    ui.label(text);
+                }
+            }
         }
     });
 }
 
-/// Handles an intel alert on a pane's map: starts its visual alert -- a
-/// pulse repeated for its duration, fading out over that time (egui-map's
-/// lasting notifications) -- unless it is a `clear` report, and lists it
-/// for the node tooltip.
-fn receive_alert(map: &mut Map, alerts: &mut AlertLog, alert: IntelAlert) {
-    if alert.raises_visual()
-        && let Some(node) = map.node(alert.system_id)
-    {
+/// Starts an intel alert's visual on a pane's map: a pulse repeated for its
+/// duration, fading out over that time (egui-map's lasting notifications).
+fn pulse_alert(map: &mut Map, alert: &IntelAlert) {
+    if let Some(node) = map.node(alert.system_id) {
         node.lasting(alert.duration).pulse(alert.received);
     }
+}
+
+/// Lists an intel line in a pane's node tooltips (no visual alert).
+fn push_alert(alerts: &mut AlertLog, alert: IntelAlert) {
     alerts.push(alert);
 }
 
@@ -309,6 +350,18 @@ impl UniversePane {
 }
 
 impl TabPane for UniversePane {
+    #[tracing::instrument(skip(self))]
+    fn reload_data(&mut self, path: &Path) {
+        self.path = path.to_path_buf();
+        self.has_points = false;
+        self.generate_data();
+        if self.has_points {
+            for (player_id, (system_id, _)) in &self.characters {
+                self.map.update_marker(*player_id, *system_id);
+            }
+        }
+    }
+
     fn update_marker(&mut self, player_id: usize, system_id: usize, name: &str) {
         self.characters
             .insert(player_id, (system_id, name.to_owned()));
@@ -352,7 +405,10 @@ impl TabPane for UniversePane {
                     }
                 }
                 MapSync::SystemAlert(alert) => {
-                    receive_alert(&mut self.map, &mut self.alerts, alert);
+                    pulse_alert(&mut self.map, &alert);
+                }
+                MapSync::SystemTooltip(alert) => {
+                    push_alert(&mut self.alerts, alert);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -447,6 +503,11 @@ impl RegionPane {
         object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        // A region is a much smaller area than the whole universe, so the
+        // intel alert pulse spreads over a shorter radius here (default is
+        // 40.0) -- otherwise it covers the neighbouring systems on the
+        // tighter regional view.
+        object.map.settings.animation.pulse.spread = 12.0;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
             .map
@@ -487,11 +548,13 @@ impl RegionPane {
                 return;
             }
         }
-        let t_region_id = self.region_id;
-        let region = t_sde.get_region(vec![t_region_id as u32], None).unwrap();
-        let keys: Vec<u32> = region.keys().copied().collect();
-        self.tab_name
-            .clone_from(&region.get(&keys[0]).unwrap().name);
+        // A region missing from the database (it can change under a pane,
+        // see `TabPane::reload_data`) keeps the name the tab had.
+        if let Ok(region) = t_sde.get_region(vec![self.region_id as u32], None)
+            && let Some(region) = region.values().next()
+        {
+            self.tab_name.clone_from(&region.name);
+        }
     }
 }
 
@@ -512,6 +575,22 @@ impl TabPane for RegionPane {
         self.map.remove_marker(player_id);
     }
 
+    fn set_node_style(&mut self, style: NodeStyle) {
+        self.map.set_node_template(Rc::new(Template::new(style)));
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn reload_data(&mut self, path: &Path) {
+        self.path = path.to_path_buf();
+        self.has_points = false;
+        self.generate_data();
+        if self.has_points {
+            for (player_id, (system_id, _)) in &self.characters {
+                self.map.update_marker(*player_id, *system_id);
+            }
+        }
+    }
+
     #[tracing::instrument(skip(self))]
     fn event_manager(&mut self) {
         // See `UniversePane::event_manager`'s comment: `while let`, not
@@ -526,7 +605,10 @@ impl TabPane for RegionPane {
                     }
                 }
                 MapSync::SystemAlert(alert) => {
-                    receive_alert(&mut self.map, &mut self.alerts, alert);
+                    pulse_alert(&mut self.map, &alert);
+                }
+                MapSync::SystemTooltip(alert) => {
+                    push_alert(&mut self.alerts, alert);
                 }
                 MapSync::CenterOn(message) => {
                     let t_msg = message.clone();
@@ -638,6 +720,11 @@ impl TreeBehavior {
             tile_data: HashMap::new(),
             search_regions: Vec::new(),
         }
+    }
+
+    /// The SDE database the region search reads (Settings -> Application).
+    pub(crate) fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
     }
 
     #[tracing::instrument(skip(self))]
@@ -922,7 +1009,8 @@ struct Template {
 }
 
 /// One entry in [`Template::label_cache`]: the inputs that produced
-/// `galley`, so a lookup can tell a still-valid entry from a stale one --
+/// `galley` (plus its own `pixels_per_point`, the screen scale it was laid
+/// out for), so a lookup can tell a still-valid entry from a stale one --
 /// `name`/`color`/`font_size` are exactly the arguments `node_ui` passes to
 /// [`FontsView::layout_no_wrap`](egui::text::Fonts) to build the label, so
 /// comparing them against the node's current values is the same test
@@ -1002,8 +1090,8 @@ impl NodeTemplate for Template {
         // `ctx.marker` when the character arrives or leaves. Drawn over an
         // opaque background, the map behind never shows through, and the
         // label's `Galley` is untouched.
-        if ctx.marker > 0.0 {
-            Animation::glow_outline(
+        if ctx.marker > 0.0 && self.node_style.glow_max_alpha > 0.0 {
+            ctx.animation.glow_outline(
                 ui.painter(),
                 &NodeOutline::RoundedRect {
                     rect,
@@ -1015,7 +1103,10 @@ impl NodeTemplate for Template {
                     .gamma_multiply(self.node_style.glow_max_alpha),
                 ctx.marker,
             );
-            ui.ctx().request_repaint();
+            // The glow is a slow fade: 30 frames per second look the same as
+            // the display's full rate (60-144 Hz) at a fraction of the work,
+            // since every frame runs the whole UI, not just this node.
+            ui.ctx().request_repaint_after(GLOW_FRAME_INTERVAL);
         }
         // Snap to the nearest half-pixel: egui's font atlas caches rasterized
         // glyphs keyed on the exact `FontId` size, and `12.0 * ctx.zoom` is
@@ -1044,12 +1135,18 @@ impl NodeTemplate for Template {
         // is a same-thread reentrant lock attempt, which deadlocks (egui
         // panics after a 10s timeout in debug builds: "Failed to acquire
         // RwLock write ... Deadlock?").
+        // A galley is laid out for one pixel density: moving the window to a
+        // screen with another scale makes every cached one stale (epaint
+        // warns "pixels_per_point ... have changed between text layout and
+        // tessellation" for each, and draws them at the old resolution).
+        let pixels_per_point = ui.ctx().pixels_per_point();
         let mut label_cache = self.label_cache.borrow_mut();
         let galley = match label_cache.get(&ctx.point.id) {
             Some(cached)
                 if cached.name == ctx.point.name
                     && cached.color == text_color
-                    && cached.font_size == font_size =>
+                    && cached.font_size == font_size
+                    && cached.galley.pixels_per_point == pixels_per_point =>
             {
                 Arc::clone(&cached.galley)
             }
@@ -1164,6 +1261,40 @@ mod no_sde_tests {
         draw(&mut region);
     }
 
+    // Reloading a map against a database that isn't there (a path picked
+    // before it was built) leaves it empty, keeps the markers for later and
+    // switches to the new path, without panicking.
+    #[test]
+    fn reloading_without_sde_data_keeps_the_markers() {
+        let missing = PathBuf::from("/nonexistent/telescope-test/sde.db");
+        let other = PathBuf::from("/nonexistent/telescope-test/other.db");
+        let (sender, _) = tokio::sync::broadcast::channel::<MapSync>(4);
+        let (spawner, _messages) = spawner();
+
+        let mut universe =
+            UniversePane::new(sender.subscribe(), missing.clone(), 1.0, spawner.clone());
+        universe.update_marker(1, 30000142, "Pilot");
+        universe.reload_data(&other);
+        assert!(!universe.has_points);
+        assert_eq!(universe.path, other);
+        assert!(universe.characters.contains_key(&1));
+        draw(&mut universe);
+
+        let mut region = RegionPane::new(
+            sender.subscribe(),
+            missing,
+            1.0,
+            10000002,
+            spawner,
+            NodeStyle::default(),
+        );
+        region.update_marker(1, 30000142, "Pilot");
+        region.reload_data(&other);
+        assert!(!region.has_points);
+        assert_eq!(region.path, other);
+        draw(&mut region);
+    }
+
     #[test]
     fn the_outline_is_the_node_box_with_its_border() {
         let zoom = 2.0;
@@ -1177,5 +1308,177 @@ mod no_sde_tests {
         assert!(outline.contains(outer.center_top() + Vec2::new(0.0, 0.5)));
         assert!(!outline.contains(outer.center_top() - Vec2::new(0.0, 1.0)));
         assert_eq!(outline.bounding_rect(), outer);
+    }
+}
+
+#[cfg(test)]
+mod logic_tests {
+    use super::*;
+    use crate::app::messages::Message;
+    use webb::map_alerts::AlertSummary;
+
+    fn sde_point(x: f64, y: f64) -> SdePoint {
+        SdePoint {
+            coords: [x, y, 0.0],
+            ..SdePoint::default()
+        }
+    }
+
+    #[test]
+    fn an_sde_point_becomes_a_map_point_with_its_name_links_and_color() {
+        let mut point = sde_point(1.5, -2.5);
+        point.name = Some(String::from("Jita"));
+        point.connections = vec![(1, 2), (1, 3)];
+        point.color = Some(String::from("#FFE996"));
+        let map_point = sde_point_to_map(7, point);
+        assert_eq!(map_point.get_id(), 7);
+        assert_eq!(map_point.coords, [1.5, -2.5]);
+        assert_eq!(map_point.get_name(), "Jita");
+        assert_eq!(map_point.connections, vec![(1, 2), (1, 3)]);
+        assert_eq!(map_point.color, Color32::from_hex("#FFE996").ok());
+        assert!(map_point.color.is_some());
+    }
+
+    #[test]
+    fn a_missing_or_malformed_star_color_keeps_the_default_node_color() {
+        let mut point = sde_point(0.0, 0.0);
+        assert!(sde_point_to_map(1, point.clone()).color.is_none());
+        point.color = Some(String::from("not a color"));
+        assert!(sde_point_to_map(1, point).color.is_none());
+    }
+
+    #[test]
+    fn a_nameless_sde_point_stays_nameless() {
+        assert!(sde_point_to_map(1, sde_point(0.0, 0.0)).name.is_none());
+    }
+
+    #[test]
+    fn points_keep_their_ids_when_converted_in_bulk() {
+        let points = HashMap::from([(1, sde_point(1.0, 1.0)), (2, sde_point(2.0, 2.0))]);
+        let converted = sde_points_to_map(points);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[&2].get_id(), 2);
+        assert_eq!(converted[&2].coords, [2.0, 2.0]);
+    }
+
+    #[test]
+    fn segments_are_narrowed_to_f32_and_keep_their_id() {
+        let segment = SdeSegment {
+            id: (1, 2),
+            point1: [1.25, 2.5],
+            point2: [-3.0, 4.0],
+        };
+        let converted = sde_segment_to_map((1, 2), segment);
+        assert_eq!(converted.id, (1, 2));
+        assert_eq!(converted.point1, [1.25, 2.5]);
+        assert_eq!(converted.point2, [-3.0, 4.0]);
+
+        let all = sde_segments_to_map(HashMap::from([((1, 2), segment)]));
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[&(1, 2)].id, (1, 2));
+    }
+
+    #[test]
+    fn tile_data_remembers_its_name_and_visibility() {
+        let mut data = TileData::new(String::from("The Forge"), true);
+        assert_eq!(data.get_name(), "The Forge");
+        assert!(!data.get_visible());
+        assert!(data.show_on_startup);
+        data.set_visible(true);
+        assert!(data.get_visible());
+    }
+
+    fn behavior() -> (TreeBehavior, tokio::sync::mpsc::Receiver<Message>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let spawner = Arc::new(MessageSpawner::new(Arc::new(sender)));
+        (
+            TreeBehavior::new(spawner, 1.0, PathBuf::from("sde.db")),
+            receiver,
+        )
+    }
+
+    #[test]
+    fn toggling_a_region_asks_for_the_right_change_of_its_map() {
+        let (mut behavior, mut messages) = behavior();
+        behavior
+            .tile_data
+            .insert(1, TileData::new(String::from("Forge"), false));
+
+        // Hidden -> hide its map.
+        behavior.toggle_regions(1);
+        assert!(matches!(messages.try_recv(), Ok(Message::MapHidden(1))));
+
+        // Visible without a map yet -> create it.
+        behavior.tile_data.get_mut(&1).unwrap().set_visible(true);
+        behavior.toggle_regions(1);
+        assert!(matches!(
+            messages.try_recv(),
+            Ok(Message::NewRegionalPane(1))
+        ));
+
+        // Visible with a map -> show it.
+        behavior
+            .tile_data
+            .get_mut(&1)
+            .unwrap()
+            .set_tile_id(Some(TileId::from_u64(3)));
+        behavior.toggle_regions(1);
+        assert!(matches!(messages.try_recv(), Ok(Message::MapShown(1))));
+    }
+
+    #[test]
+    fn the_region_search_path_can_be_replaced() {
+        let (mut behavior, _messages) = behavior();
+        behavior.set_path(PathBuf::from("other.db"));
+        assert_eq!(behavior.path, PathBuf::from("other.db"));
+    }
+
+    fn alert(system_id: usize, text: &str) -> IntelAlert {
+        IntelAlert::new(
+            system_id,
+            Instant::now(),
+            Duration::from_secs(30),
+            text,
+            AlertSummary::default(),
+            true,
+        )
+    }
+
+    #[test]
+    fn pushed_alerts_are_listed_under_their_system() {
+        let mut log = AlertLog::default();
+        push_alert(&mut log, alert(1, "first"));
+        push_alert(&mut log, alert(1, "second"));
+        push_alert(&mut log, alert(2, "other"));
+        let now = Instant::now();
+        assert_eq!(log.active(1, now).len(), 2);
+        assert_eq!(log.active(2, now).len(), 1);
+        assert!(log.active(3, now).is_empty());
+    }
+
+    #[test]
+    fn an_alert_pulse_tolerates_nodes_the_map_does_not_have() {
+        let mut map = Map::new();
+        map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
+        pulse_alert(&mut map, &alert(1, "on the map"));
+        pulse_alert(&mut map, &alert(99, "not on this map"));
+    }
+
+    #[test]
+    fn node_geometry_scales_with_the_zoom() {
+        let style = NodeStyle::default();
+        let center = Pos2::new(100.0, 50.0);
+        let rect = node_rect(center, 2.0, style);
+        assert_eq!(rect.center(), center);
+        assert_eq!(rect.width(), style.width * 2.0);
+        assert_eq!(rect.height(), style.height * 2.0);
+
+        let outer = node_outer_rect(center, 2.0, style);
+        assert_eq!(outer.width(), rect.width() + 2.0 * style.border * 2.0);
+
+        assert_eq!(
+            node_corner_radius(2.0, style),
+            CornerRadius::same((style.corner_radius * 2.0).round() as u8)
+        );
     }
 }

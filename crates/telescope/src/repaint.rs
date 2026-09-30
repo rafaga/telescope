@@ -1,0 +1,98 @@
+//! Wakes the UI from other threads.
+//!
+//! egui only runs `update()` when something asks for a frame: input, an
+//! animation, or `Context::request_repaint`. Work finished off the UI thread
+//! -- a chat log line read by the watcher, a line evaluated by the intel
+//! detection thread, a log record from a dependency -- reaches the UI through
+//! a queue that is only drained inside `update()`, so whoever fills the queue
+//! must also ask for a frame, or the result waits for the next mouse move.
+//!
+//! The context is only known once the first frame runs ([`set_context`]);
+//! wake-ups requested before that are dropped, and that first frame drains
+//! whatever was queued anyway.
+
+use eframe::egui;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::ThreadId;
+
+static CONTEXT: OnceLock<egui::Context> = OnceLock::new();
+
+/// The UI thread's id, recorded alongside the context. See [`request`] for
+/// why `request` needs to tell that thread apart from every other one.
+static UI_THREAD: OnceLock<ThreadId> = OnceLock::new();
+
+/// A frame asked for from the UI thread, granted at the end of the current
+/// one by [`take_pending`] (see [`request`]).
+static PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Stores the UI context. Called on the first frame; later calls are ignored.
+pub fn set_context(ctx: &egui::Context) {
+    let _ = CONTEXT.set(ctx.clone());
+    let _ = UI_THREAD.set(std::thread::current().id());
+}
+
+/// Asks for a new frame. Cheap and callable from any thread; several calls
+/// before the next frame still produce a single frame.
+///
+/// Does nothing when called from the UI thread itself (the one that ran
+/// [`set_context`]). That thread either already has a frame in flight -- in
+/// which case a repaint is redundant -- or will drain the queue on its next
+/// frame regardless. Forcing one here is actively unsafe: `egui::Context`'s
+/// internal `RwLock` isn't reentrant, and `request_repaint` takes a read
+/// lock on it. If the UI thread is already inside a `Context::write`/`read`
+/// section -- e.g. `Context::tessellate`, held for the whole tessellation
+/// pass -- and something logged from deep inside that section reaches here
+/// through `log_bridge` (as `epaint`'s tessellator does on some text/font
+/// paths), calling `request_repaint` re-enters the same lock on the same
+/// thread and deadlocks forever, surfacing as epaint's own "Failed to
+/// acquire RwLock read after 10s" debug panic. Background threads (the
+/// intel detection thread, the file watcher, log records from dependencies)
+/// are exactly what this function exists for, and still go through as before.
+///
+/// A message queued on the UI thread after the queue was drained for this
+/// frame (a file picked in a dialog, a button that sends a message) would
+/// otherwise wait for the next input: the request is only recorded, and the
+/// app asks for the frame at the end of `ui()`, outside any context lock (see
+/// [`take_pending`]).
+pub fn request() {
+    if UI_THREAD.get().copied() == Some(std::thread::current().id()) {
+        PENDING.store(true, Ordering::Relaxed);
+        return;
+    }
+    if let Some(ctx) = CONTEXT.get() {
+        ctx.request_repaint();
+    }
+}
+
+/// Whether the UI thread asked for a frame since the last call (see
+/// [`request`]). Called by the app at the end of each frame, where asking
+/// the context for a repaint is safe.
+pub fn take_pending() -> bool {
+    PENDING.swap(false, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One test: the UI thread and the context are process-wide statics, so
+    /// the checks that depend on them must not interleave.
+    #[test]
+    fn requests_from_the_ui_thread_are_deferred_and_others_reach_the_context() {
+        let ctx = egui::Context::default();
+        set_context(&ctx);
+        // Whatever an earlier test left behind.
+        take_pending();
+
+        // From the UI thread: only recorded, granted once by `take_pending`.
+        request();
+        request();
+        assert!(take_pending());
+        assert!(!take_pending());
+
+        // From another thread: straight to the context, nothing recorded.
+        std::thread::spawn(request).join().unwrap();
+        assert!(!take_pending());
+    }
+}

@@ -6,7 +6,6 @@
 //! of each log has already been read.
 
 use crate::app::intel::IntelLogName;
-use chrono::{DateTime, Utc};
 use sde::builder::BuildUrls;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,6 +14,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use std::{
     error,
     fmt::{Display, Formatter},
@@ -32,7 +32,7 @@ struct FilePaths {
     db: PathBuf,
     /// Directory the bundled alarm sounds live in (see `app::audio`'s module
     /// docs), relative to wherever Telescope is run from -- same convention
-    /// as `sde.db`/`patterns.toml`/`telescope.toml`. Not user-editable, so
+    /// as `sde.db`/`telescope.toml`. Not user-editable, so
     /// it isn't persisted to `telescope.toml`.
     #[serde(skip)]
     alerts_dir: PathBuf,
@@ -55,7 +55,7 @@ impl Default for FilePaths {
         // A real default path (instead of the previous empty `PathBuf`)
         // so `database_updater::DatabaseUpdater` has somewhere to build
         // `sde.db` on a first run without the user having to type a path
-        // into Settings -> Data Sources first. Relative and next to
+        // into Settings -> Application first. Relative and next to
         // `telescope.toml` (i.e. wherever Telescope is run from) rather
         // than an OS data/home directory -- `sde.db` is meant to sit
         // alongside the app, not get tucked away somewhere the user has
@@ -99,10 +99,19 @@ pub(crate) struct Mapping {
     /// files written before this option existed get the default.
     #[serde(default = "default_alert_duration_secs")]
     pub alert_duration_secs: u32,
+    /// Strongest opacity of the glow over the node of a system with a linked
+    /// character, 0 (off) to 1. `serde(default)`: settings files written
+    /// before this option existed get the default.
+    #[serde(default = "default_glow_intensity")]
+    pub glow_intensity: f32,
 }
 
 fn default_alert_duration_secs() -> u32 {
     Mapping::DEFAULT_ALERT_DURATION_SECS
+}
+
+fn default_glow_intensity() -> f32 {
+    Mapping::DEFAULT_GLOW_INTENSITY
 }
 
 impl Default for Mapping {
@@ -112,6 +121,7 @@ impl Default for Mapping {
             warning_area: 4,
             center_on_alert: false,
             alert_duration_secs: Mapping::DEFAULT_ALERT_DURATION_SECS,
+            glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
         }
     }
 }
@@ -123,21 +133,28 @@ impl Mapping {
     pub(crate) const MIN_ALERT_DURATION_SECS: u32 = 10;
     /// Longest visual alert the Settings slider allows, in seconds.
     pub(crate) const MAX_ALERT_DURATION_SECS: u32 = 600;
+    /// Default of [`Mapping::glow_intensity`].
+    pub(crate) const DEFAULT_GLOW_INTENSITY: f32 = 0.6;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Channels {
+    /// Every channel with a log in the intel directory (plus the monitored
+    /// ones without any), and whether it is monitored in the Settings
+    /// window: the draft of `monitored`.
     #[serde(skip)]
     available: HashMap<String, bool>,
+    /// When each channel's log last changed: the files' modification times
+    /// at the last scan, updated live as monitored logs are read.
     #[serde(skip)]
-    log_files: HashMap<String, (u64, DateTime<Utc>)>,
+    activity: HashMap<String, SystemTime>,
     monitored: Arc<Vec<String>>,
 }
 
-/// Layout and language of the main window, remembered between runs. Saved on
-/// its own, as soon as it changes (see [`Settings::save_ui_state`]), without
-/// the Settings window's Save button: the log panel layout isn't edited in
-/// that window, and a language change is already visible on the next frame.
+/// Layout and language of the main window, remembered between runs. The
+/// layout is saved on its own, as soon as it changes (see
+/// [`Settings::save_ui_state`]): the log panel isn't edited in the Settings
+/// window. The language is, so it is saved with the other settings.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub(crate) struct UiState {
@@ -162,6 +179,7 @@ impl Default for UiState {
 
 /// Tuning for the on-screen notification log (`app::notifications`). Not
 /// user-editable, so not persisted to `telescope.toml`.
+#[derive(Clone)]
 pub(crate) struct NotificationLimits {
     /// Maximum number of entries kept in `TelescopeApp::app_messages`
     /// before the oldest are dropped.
@@ -222,16 +240,13 @@ pub(crate) struct CharacterCardStyle {
     pub(crate) portrait_size: f32,
     /// Height of the placeholder shown when no character is linked.
     pub(crate) empty_state_height: f32,
-    /// Vertical gap between character cards.
-    pub(crate) card_spacing: f32,
 }
 
 impl Default for CharacterCardStyle {
     fn default() -> Self {
         Self {
-            portrait_size: 80.0,
-            empty_state_height: 200.0,
-            card_spacing: 4.0,
+            portrait_size: 64.0,
+            empty_state_height: 120.0,
         }
     }
 }
@@ -240,7 +255,7 @@ impl Default for CharacterCardStyle {
 /// discoverability, but aren't part of `telescope.toml` and aren't shown in
 /// the Settings window -- each field has its own `Default`, reproducing the
 /// value a plain `const` used to hold before it moved here.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct InternalDefaults {
     /// Where `DatabaseUpdater` fetches the SDE from. Not user-editable
     /// (there's nowhere in Settings' UI to change it), so it isn't
@@ -259,7 +274,7 @@ pub(crate) struct InternalDefaults {
     pub(crate) character_card: CharacterCardStyle,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Settings {
     paths: FilePaths,
     mapping: Mapping,
@@ -325,7 +340,7 @@ impl Default for Settings {
             internal: InternalDefaults::default(),
             channels: Channels {
                 available: HashMap::new(),
-                log_files: HashMap::new(),
+                activity: HashMap::new(),
                 monitored: Arc::new(Vec::new()),
             },
         };
@@ -354,12 +369,32 @@ impl Settings {
             .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
         let mut document: toml::Table =
             toml::from_str(&text).map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
-        let ui = toml::Table::try_from(&state)
+        let mut ui = toml::Table::try_from(&state)
             .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
+        // The language is edited in the Settings window like any other
+        // setting: it reaches the file only with the rest of them (`save`).
+        match document
+            .get("ui")
+            .and_then(|table| table.get("language"))
+            .cloned()
+        {
+            Some(language) => {
+                ui.insert(String::from("language"), language);
+            }
+            None => {
+                ui.remove("language");
+            }
+        }
         document.insert(String::from("ui"), toml::Value::Table(ui));
         let text = toml::to_string(&document)
             .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
         std::fs::write(path, text).map_err(|t_error| SettingsError::Other(t_error.to_string()))
+    }
+
+    /// Takes the log panel layout of `state`, leaving the language as it is.
+    pub(crate) fn set_layout(&mut self, state: &UiState) {
+        self.ui.log_expanded = state.log_expanded;
+        self.ui.log_height = state.log_height;
     }
 
     pub(crate) fn save(&mut self) -> Result<bool> {
@@ -401,8 +436,26 @@ impl Settings {
         self.saved = false;
     }
 
+    /// Lists the channels with a log in the intel directory and when each
+    /// last changed. A channel keeps the monitored flag it had (a change not
+    /// saved yet survives a rescan); one seen for the first time is flagged
+    /// if it is monitored. Monitored channels without any log stay listed,
+    /// so saving never drops them.
     pub(crate) fn scan_channels_logs(&mut self) -> Result<()> {
-        self.channels.available.clear();
+        let previous = std::mem::take(&mut self.channels.available);
+        self.channels.activity.clear();
+        let monitored = Arc::clone(&self.channels.monitored);
+        let flag = |channel: &str| {
+            previous
+                .get(channel)
+                .copied()
+                .unwrap_or_else(|| monitored.iter().any(|name| name == channel))
+        };
+        for channel in monitored.iter() {
+            self.channels
+                .available
+                .insert(channel.clone(), flag(channel));
+        }
         if !self.get_intel().exists() {
             return Err(SettingsError::InvalidDirectory(String::new()));
         }
@@ -417,24 +470,34 @@ impl Settings {
                     continue;
                 };
 
+                let channel = log.channel.to_string();
+                let monitored_flag = flag(&channel);
                 self.channels
                     .available
-                    .entry(log.channel.to_string())
-                    .or_insert(false);
-
-                self.channels
-                    .log_files
-                    .entry(format!("{}_{}", log.channel, log.suffix))
-                    .and_modify(|hash_entry| {
-                        hash_entry.1 = Utc::now();
-                        hash_entry.0 = entry.metadata().unwrap().len();
-                    })
-                    .or_insert_with(|| (entry.metadata().unwrap().len(), Utc::now()));
+                    .entry(channel.clone())
+                    .or_insert(monitored_flag);
+                if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) {
+                    let latest = self.channels.activity.entry(channel).or_insert(modified);
+                    if modified > *latest {
+                        *latest = modified;
+                    }
+                }
             }
             Ok(())
         } else {
             Err(SettingsError::ReadError)
         }
+    }
+
+    /// When each channel's log last changed (see [`Channels`]).
+    pub(crate) fn get_channel_activity(&self) -> &HashMap<String, SystemTime> {
+        &self.channels.activity
+    }
+
+    /// Records that `channel`'s log changed at `when` (a monitored log was
+    /// just read).
+    pub(crate) fn note_channel_activity(&mut self, channel: &str, when: SystemTime) {
+        self.channels.activity.insert(channel.to_string(), when);
     }
 
     pub fn set_intel(&mut self, path: &Path) -> Result<()> {
@@ -518,7 +581,27 @@ impl Settings {
         self.paths.sde = path.to_path_buf();
     }
 
-    pub fn its_saved(&self) -> bool {
+    /// Settings whose files all live in `dir`, with no channels: what the
+    /// tests build an app on, so nothing outside `dir` is read or written.
+    #[cfg(test)]
+    pub(crate) fn in_dir_for_test(dir: &Path) -> Self {
+        let mut settings = Self::default();
+        settings.paths.settings = dir.join("telescope.toml");
+        settings.paths.intel = dir.join("ChatLogs");
+        settings.paths.sde = dir.join("sde.db");
+        settings.paths.db = dir.join("players.db");
+        settings.channels = Channels {
+            available: HashMap::new(),
+            activity: HashMap::new(),
+            monitored: Arc::new(Vec::new()),
+        };
+        settings
+    }
+
+    /// Whether everything was written by the last `save` (the Settings
+    /// window now compares against its snapshot instead).
+    #[cfg(test)]
+    pub(crate) fn its_saved(&self) -> bool {
         self.saved
     }
 
@@ -577,10 +660,6 @@ impl Settings {
         self.region_factor
     }
 
-    pub(crate) fn get_log_files_channels(&self) -> HashMap<String, (u64, DateTime<Utc>)> {
-        self.channels.log_files.clone()
-    }
-
     pub(crate) fn get_available_channels(&self) -> HashMap<String, bool> {
         self.channels.available.clone()
     }
@@ -588,16 +667,6 @@ impl Settings {
     pub(crate) fn set_available_channels(&mut self, new_available_channels: HashMap<String, bool>) {
         if self.channels.available != new_available_channels {
             self.channels.available = new_available_channels;
-            self.saved = false;
-        }
-    }
-
-    pub(crate) fn set_log_files_channels(
-        &mut self,
-        new_log_channels: HashMap<String, (u64, DateTime<Utc>)>,
-    ) {
-        if self.channels.log_files != new_log_channels {
-            self.channels.log_files = new_log_channels;
             self.saved = false;
         }
     }
@@ -651,9 +720,35 @@ impl Settings {
         self.internal.notifications.log_panel_min_height
     }
 
-    /// Geometry of a node's box on the regional maps.
+    /// Geometry of a node's box on the regional maps, with the character
+    /// glow at [`Mapping::glow_intensity`].
     pub(crate) fn get_node_style(&self) -> NodeStyle {
-        self.internal.node_style
+        NodeStyle {
+            glow_max_alpha: self.mapping.glow_intensity,
+            ..self.internal.node_style
+        }
+    }
+
+    /// Opacity of the character glow, 0 (off) to 1.
+    pub(crate) fn get_glow_intensity(&self) -> f32 {
+        self.mapping.glow_intensity
+    }
+
+    pub(crate) fn set_glow_intensity(&mut self, intensity: f32) {
+        let intensity = intensity.clamp(0.0, 1.0);
+        if self.mapping.glow_intensity != intensity {
+            self.mapping.glow_intensity = intensity;
+            self.saved = false;
+        }
+    }
+
+    /// Sets the interface language (see `crate::i18n`) as an unsaved change:
+    /// it is written with the rest of the settings.
+    pub(crate) fn set_language(&mut self, language: &str) {
+        if self.ui.language != language {
+            self.ui.language = language.to_string();
+            self.saved = false;
+        }
     }
 
     /// Layout of the Settings -> Characters page.
@@ -816,8 +911,9 @@ mod tests {
         assert_eq!(loaded.language, crate::i18n::AUTO);
     }
 
-    // Saving the layout patches only `[ui]`: an unsaved change made in the
-    // Settings window must not reach the file this way.
+    // Saving the layout patches only `[ui]`, and not its language: an
+    // unsaved change made in the Settings window must not reach the file
+    // this way.
     #[test]
     fn save_ui_state_only_writes_the_ui_table() {
         let dir = temp_dir("ui-save");
@@ -835,7 +931,13 @@ mod tests {
         settings.save_ui_state(state.clone()).unwrap();
 
         let loaded = Settings::try_from(path).unwrap();
-        assert_eq!(loaded.get_ui_state(), state);
+        assert_eq!(
+            loaded.get_ui_state(),
+            UiState {
+                language: UiState::default().language,
+                ..state
+            }
+        );
         assert_ne!(loaded.get_warning_area(), 9);
         assert!(!settings.its_saved());
     }
@@ -918,8 +1020,10 @@ mod tests {
 
     #[test]
     fn set_alert_sound_for_test_marks_settings_as_unsaved() {
-        let mut settings = Settings::default();
-        settings.saved = true;
+        let mut settings = Settings {
+            saved: true,
+            ..Settings::default()
+        };
 
         settings.set_alert_sound_for_test("7_gong_solemne.wav");
 
@@ -973,5 +1077,212 @@ mod tests {
             old.alert_duration_secs,
             Mapping::DEFAULT_ALERT_DURATION_SECS
         );
+    }
+
+    /// Settings that count as already saved, to see which calls dirty them.
+    fn saved_settings() -> Settings {
+        Settings {
+            saved: true,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn plain_setters_store_the_value_and_mark_the_settings_unsaved() {
+        let mut settings = saved_settings();
+        settings.set_startup_regions(vec![3, 1]);
+        assert_eq!(settings.get_startup_regions(), &vec![3, 1]);
+        assert!(!settings.its_saved());
+
+        let mut settings = saved_settings();
+        settings.set_monitored_channels(vec![String::from("Intel")]);
+        assert_eq!(*settings.get_cloned_monitored_channels(), vec!["Intel"]);
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn unchanged_values_do_not_dirty_the_settings() {
+        let mut settings = saved_settings();
+        let available = settings.get_available_channels();
+        settings.set_available_channels(available);
+        let glow = settings.get_glow_intensity();
+        settings.set_glow_intensity(glow);
+        let language = settings.ui.language.clone();
+        settings.set_language(&language);
+        assert!(settings.its_saved());
+
+        settings.set_available_channels(HashMap::from([(String::from("Intel"), true)]));
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn the_glow_intensity_is_clamped_and_reaches_the_node_style() {
+        let mut settings = saved_settings();
+        settings.set_glow_intensity(7.0);
+        assert_eq!(settings.get_glow_intensity(), 1.0);
+        assert_eq!(settings.get_node_style().glow_max_alpha, 1.0);
+        settings.set_glow_intensity(-2.0);
+        assert_eq!(settings.get_glow_intensity(), 0.0);
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn changing_the_language_is_an_unsaved_change() {
+        let mut settings = saved_settings();
+        settings.set_language("es");
+        assert_eq!(settings.ui.language, "es");
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn channel_activity_is_recorded_per_channel() {
+        let mut settings = Settings::default();
+        let first = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+        let second = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(20);
+        settings.note_channel_activity("Intel", first);
+        settings.note_channel_activity("Intel", second);
+        settings.note_channel_activity("Alliance", first);
+        let activity = settings.get_channel_activity();
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity["Intel"], second);
+    }
+
+    #[test]
+    fn set_sde_accepts_only_existing_paths() {
+        let dir = temp_dir("set-sde");
+        let mut settings = saved_settings();
+        assert_eq!(
+            settings.set_sde(&dir.join("missing.db")),
+            Err(SettingsError::InvalidDirectory(
+                dir.join("missing.db").to_string_lossy().to_string()
+            ))
+        );
+        assert!(settings.its_saved());
+
+        assert_eq!(settings.set_sde(&dir), Ok(()));
+        assert_eq!(settings.get_sde(), dir.as_path());
+        assert!(!settings.its_saved());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_internal_defaults_are_usable() {
+        let settings = Settings::default();
+        assert!(settings.get_max_app_messages() > 0);
+        assert!(settings.get_log_panel_min_height() > 0.0);
+        assert!(settings.get_notification_dedup_window() > std::time::Duration::ZERO);
+        assert!(settings.get_factor().is_finite());
+        assert!(settings.get_region_factor().is_finite());
+        assert!(!settings.get_data_source_urls().sde_url.is_empty());
+        assert_eq!(settings.get_settings(), Settings::default().get_settings());
+        let card = settings.get_character_card_style();
+        assert!(card.portrait_size > 0.0);
+    }
+
+    #[test]
+    fn set_layout_takes_the_panel_and_keeps_the_language() {
+        let mut settings = Settings::default();
+        settings.set_language("es");
+        settings.set_layout(&UiState {
+            log_expanded: false,
+            log_height: 321.0,
+            language: String::from("fr"),
+        });
+        assert!(!settings.ui.log_expanded);
+        assert_eq!(settings.ui.log_height, 321.0);
+        assert_eq!(settings.ui.language, "es");
+    }
+
+    #[test]
+    fn saving_the_layout_without_a_file_only_keeps_it_in_memory() {
+        let dir = temp_dir("ui-no-file");
+        let mut settings = Settings::default();
+        settings.paths.settings = dir.join("telescope.toml");
+        let state = UiState {
+            log_expanded: false,
+            log_height: 200.0,
+            language: String::from("auto"),
+        };
+        assert_eq!(settings.save_ui_state(state.clone()), Ok(()));
+        assert_eq!(settings.ui, state);
+        assert!(!dir.join("telescope.toml").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_the_layout_patches_only_the_ui_table_of_the_file() {
+        let dir = temp_dir("ui-patch");
+        let path = dir.join("telescope.toml");
+        fs::write(
+            &path,
+            "[other]\nkept = 1\n\n[ui]\nlanguage = \"es\"\nlog_expanded = true\nlog_height = 50.0\n",
+        )
+        .unwrap();
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        settings
+            .save_ui_state(UiState {
+                log_expanded: false,
+                log_height: 240.0,
+                // Ignored: the language only reaches the file with `save`.
+                language: String::from("fr"),
+            })
+            .unwrap();
+
+        let document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document["other"]["kept"].as_integer(), Some(1));
+        assert_eq!(document["ui"]["language"].as_str(), Some("es"));
+        assert_eq!(document["ui"]["log_expanded"].as_bool(), Some(false));
+        assert_eq!(document["ui"]["log_height"].as_float(), Some(240.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_the_layout_does_not_invent_a_language_the_file_lacks() {
+        let dir = temp_dir("ui-patch-no-language");
+        let path = dir.join("telescope.toml");
+        fs::write(&path, "[other]\nkept = 1\n").unwrap();
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        settings.save_ui_state(UiState::default()).unwrap();
+
+        let document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(document["ui"].get("language").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_the_layout_over_an_unreadable_file_is_an_error() {
+        let dir = temp_dir("ui-bad-file");
+        let path = dir.join("telescope.toml");
+        fs::write(&path, "this is = = not toml").unwrap();
+        let mut settings = Settings::default();
+        settings.paths.settings = path;
+        assert!(matches!(
+            settings.save_ui_state(UiState::default()),
+            Err(SettingsError::Other(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_errors_read_well_and_have_no_source() {
+        use std::error::Error as _;
+        for (error, text) in [
+            (
+                SettingsError::FileNotFound(String::from("a")),
+                "File not found: a",
+            ),
+            (
+                SettingsError::InvalidDirectory(String::from("b")),
+                "Path not found: b",
+            ),
+            (SettingsError::ReadError, "read error"),
+            (SettingsError::WriteError, "write error"),
+            (SettingsError::Other(String::from("c")), "Other Error: c"),
+        ] {
+            assert_eq!(error.to_string(), text);
+            assert!(error.source().is_none());
+        }
     }
 }

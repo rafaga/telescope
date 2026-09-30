@@ -14,11 +14,11 @@ each other. For how to build and run it see [BUILD.md](BUILD.md).
 | Crate | Path | Role |
 |-------|------|------|
 | `telescope` | `crates/telescope` | The application: a binary plus a small library (`TelescopeApp`). UI, settings, file watching and alerting. |
-| `sputnik` | `crates/sputnik` | The pattern-matching engine: `patterns.toml` rules/dictionaries evaluated against raw chat-log text, condensed into map-tooltip alerts (`patterns`, `map_alerts`). No dependency on `TelescopeApp`, `egui`, `sde` or `notify` -- reading the file, resolving a system name against the SDE and deciding whether to sound the alarm stays in `telescope` (`app/intel.rs`). |
-| `webb` | `crates/webb` | EVE back end with no UI: the local OAuth callback server, the ESI client and the local player database. |
+| `webb` | `crates/webb` | EVE back end with no UI: the local OAuth callback server, the ESI client, the local player database, the intel rules (`graph`, `rules`, `intel`) and the map-tooltip `map_alerts`. |
 | `native_tools` | `crates/native_tools` | OS-specific code: native file / folder dialogs and per-machine identification. |
+| `egui-panels` | `crates/egui-panels` | Building blocks for settings screens in egui (pages, sections, forms, switches, sliders, tiles, side navigation, action bar, `Draft`), with no dependency on the rest of the workspace so other projects can use it. |
 
-![Crate dependencies: telescope depends on webb, sputnik and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
+![Crate dependencies: telescope depends on webb and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
 
 Two more crates by the same author, published on crates.io, are used from outside this workspace:
 
@@ -31,13 +31,6 @@ commented-out `[patch.crates-io]` entries that point at sibling checkouts
 (`../sde` and `../egui-map`): uncomment them to develop those crates together
 with Telescope.
 
-### `crates/sputnik`
-
-| Module | Purpose |
-|--------|---------|
-| `patterns` | `PatternEngine`: loads and validates `patterns.toml` (`[[patterns]]`/`[[dictionaries]]`), evaluates chat-log text against a combined `regex::RegexSet` plus one `aho_corasick::AhoCorasick` automaton per dictionary, and produces `PatternMatch`es (rule id, category, action, captured text). |
-| `map_alerts` | `AlertSummary::from_line` condenses a line's matches into what a map node's tooltip shows (ships, pilot count, or leftover text); `AlertLog` keeps each system's active alerts, deduplicated and expiring on their own. |
-
 ### `crates/webb`
 
 | Module | Purpose |
@@ -45,8 +38,13 @@ with Telescope.
 | `auth_service` | Tiny `hyper` server that receives the SSO redirect (`/login?code=...&state=...`) and hands both values to the application. |
 | `esi` | `EsiManagerCore`: authorization, token refresh, location and portrait queries, and reading / writing characters, corporations and alliances. |
 | `esi/player_database` | SQLite schema and queries of the player database (encrypted with SQLCipher under the default `crypted-db` feature). |
+| `esi/cipher` | Encryption of the player database (`crypted-db`, enabled by Telescope): a raw SQLCipher key, SHA-256 of the machine identifier from `native_tools`; before the first open it encrypts a plain file or re-keys one under the older passphrase key. |
 | `esi/data` | ESI client configuration. |
 | `objects` | Domain types: tokens and the `Character`, `Corporation` and `Alliance` entities. |
+| `graph` | The intel node graph: typed `Node`s (Input/Detection/Output/Aggregator/Gate/Formatter) and `Edge`s, `RuleGraph` validation, the per-line `Executor` (which propagates a true / false / absent signal per pin: a Detection's T is true when it matched, F when it did not; absent means "not evaluated", and a `not` of it stays absent), the embedded default graph (`default_graph`, from `rules.toml`) and the `SystemResolver`. This is the model persisted in the player database and edited by *Settings -> Rules*. |
+| `rules` | The typed building blocks the graph shares: `DetectionRuleKind`/`DetectionType`, `OutputKind`/`OutputType`, `InputKind`, the built-in `Dictionaries`, `IntelLine` and `parse_line`. |
+| `intel` | What the intel modules share: `IntelLine`, `IntelCategory`, `PatternError` (rule validation errors), the size limits and text helpers. The old `patterns.toml` engine (and the file) were removed; the graph replaced them. |
+| `map_alerts` | `AlertSummary::from_messages` condenses a line's `Mensaje`s into what a map node's tooltip shows; `AlertLog` keeps each system's active alerts, deduplicated and expiring on their own. |
 
 ### `crates/native_tools`
 
@@ -63,6 +61,7 @@ crates/telescope/src
 ├── main.rs                  entry point: logging / tracing setup, opens the window
 ├── lib.rs                   exports TelescopeApp and patterns; loads the translations
 ├── i18n.rs                  interface language: available languages, "auto", switching
+├── repaint.rs               wakes the UI from other threads (request_repaint)
 ├── app.rs                   TelescopeApp: state, construction, per-frame ui(),
 │                            event_manager() and map pane management
 └── app/
@@ -70,8 +69,13 @@ crates/telescope/src
     ├── database.rs          storing linked characters, SDE build cache, reload after an SDE update
     ├── database_updater.rs  progress window + background SDE check / build
     ├── file.rs              notify event handler for the chat log directory
-    ├── intel.rs             chat log name parsing (IntelLogName), reading and decoding
-    │                        logs, running the patterns, apply_intel_settings()
+    ├── intel/               the intel pipeline (see "Chat log -> alert")
+    │   ├── mod.rs           TelescopeApp methods: apply_intel_settings(), load_intel_file(),
+    │   │                    process_detected_line(), the visual/sound/log resolvers
+    │   ├── input.rs         IntelLogName, UTF-16LE decoding, ChatLogSource -> InputEvent,
+    │   │                    IntelOffsets (where each monitored log was last read)
+    │   ├── detection.rs     the detection thread (graph Executor behind an RwLock)
+    │   └── resolve.rs       UniverseResolver / SharedResolver (system ids) and jump distance
     ├── messages.rs          Message, MapSync, CharacterSync, spawners and send helpers
     ├── notifications.rs     the on-screen status log
     ├── persistence.rs       save_settings()
@@ -82,12 +86,15 @@ crates/telescope/src
     └── windows/
         ├── about.rs         About window
         ├── debug.rs         debug window
-        ├── settings.rs      Settings window frame (menu, page match, Save button)
+        ├── settings.rs      Settings screen (egui-panels): navigation, pages, Cancel / Apply / Accept,
+        │                    which pages have changes not applied
         └── settings/
-            ├── general.rs        interface language
-            ├── intelligence.rs   alerts, monitored channels, start-up maps
-            ├── data_sources.rs   database paths, SDE update button
-            └── characters.rs     linked characters
+            ├── sources.rs        chat log folder and watched channels, with their activity
+            ├── patterns.rs       Rules: input cards + node editor, live graph validity
+            ├── alerts.rs         alert distance, map alert, sound, "Test the full alert"
+            ├── maps.rs           start-up regions, character glow intensity
+            ├── characters.rs     linked characters
+            └── application.rs    interface language, SDE and private database paths
 ```
 
 The interface texts live in `crates/telescope/locales/<code>.toml` (see
@@ -106,9 +113,9 @@ Telescope reads and writes these in the directory it runs from:
 | File | Content |
 |------|---------|
 | `telescope.toml` | User settings (`Settings`). |
-| `patterns.toml` | Alert rules. Created from a built-in template when missing, and regenerated (keeping a backup) when corrupt. |
+| `rules.toml` | Optional export/import of the whole rule configuration (*Settings -> Rules*). |
 | `sde.db` | The SDE database. Built automatically when it does not exist. |
-| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Data Sources*). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. |
+| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Application*), plus the intel rules (the `node`/`edge` graph tables). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. |
 
 ## Languages
 
@@ -120,14 +127,14 @@ tests check that every file has exactly the keys of `en.toml`, and the same
 `%{placeholders}` in every value that isn't empty.
 
 - **Adding a language** is adding its file (copy `en.toml`, translate the
-  values, including `language.name`). *Settings -> General* lists it on its own
+  values, including `language.name`). *Settings -> Application* lists it on its own
   once `language.name` has a value. `es.toml` is such a template today: every
   key, empty values, not offered yet.
 - **The chosen language** is `language` in `telescope.toml`'s `[ui]` table:
   `"auto"` (the operating system's language, English when there is no file for
   it) or a file name such as `"es"`. It is applied at start-up and as soon as
-  it changes in *Settings -> General*, and saved right away like the rest of
-  `[ui]`.
+  it changes in *Settings -> Application* (a preview: *Cancel* goes back to
+  the previous language), and saved with the other settings on *Apply*.
 - **Not translated:** `tracing` output, the log panel messages and the Debug
   window, so bug reports read the same in every language.
 - **Fonts:** Noto Sans CJK (`assets/NotoSansCJK-Medium.ttc`, Simplified
@@ -168,26 +175,35 @@ callback server (`AuthSpawner`), the watchdog and the `DatabaseUpdater`.
    `Message::IntelFileChanged`; files appearing or disappearing become
    `Message::ScanIntelFiles`. Channels are recognised with
    `IntelLogName::parse`, the only place that knows the log file name format.
-2. `event_manager` calls `load_intel_file`, which reads only the bytes added
-   since the last read and decodes them from UTF-16LE.
-3. `parse_intel_data` runs `PatternEngine::evaluate` on the text. Each match
-   carries an action:
-   * `notify` sends a `GenericNotification`, shown in the status log
-     (`notifications.rs`).
-   * `map_alert` resolves the captured solar system through the SDE and sends
-     `MapSync::SystemNotification`, which the map panes highlight.
+2. `event_manager` calls `load_intel_file`, which reads only the complete
+   lines added since the last read (`IntelOffsets`: a monitored log starts at
+   its end when first seen, so history is never replayed; a rescan never moves
+   a known offset), decodes them from UTF-16LE (`intel/input.rs`) and emits
+   one `InputEvent` per parsed line to the detection thread. Every sender of
+   work for the UI (app messages, the detection thread, the log bridge) wakes
+   it with `repaint::request`, so nothing waits for the next mouse move.
+3. The detection thread (`intel/detection.rs`) runs the graph `Executor` over the
+   line and sends its `Activation`s back to the UI.
+4. `process_detected_line` (`intel/mod.rs`) dispatches the Output nodes that
+   fired: *visual* pulses the map node (`MapSync::SystemAlert`; the systems were
+   resolved by the Detection node through the injected `SystemResolver`,
+   `intel/resolve.rs`), *sound* plays the alarm and centers the maps, *log*
+   sends a `GenericNotification` shown in the status log (`notifications.rs`),
+   *tooltip* lists the line in the node tooltips (`MapSync::SystemTooltip`), and
+   *suppress* vetoes the visual and sound alerts.
 
 ### Linking a character
 
 ![Sequence diagram: linking a character through EVE SSO until the watchdog starts](docs/architecture/flow-character.svg)
 
-1. *Settings -> Characters -> Add* asks `EsiManager` for the authorize URL,
+1. *Settings -> Characters -> Link character* asks `EsiManager` for the authorize URL,
    hands `AuthSpawner` an `AuthRequest` (a clone of the `EsiManager` plus that
    authorize info) and opens the URL in the browser.
 2. The `AuthSpawner` thread runs `webb::auth_service` on
    `http://localhost:56123/login`. When the redirect's `code` and `state`
    arrive, that same background thread completes the authorization with its
-   `EsiManager` clone (`EsiManager::auth_user`: token exchange, character,
+   `EsiManager` clone (`EsiManager::auth_user`: the `state` must be the one
+   sent in the login URL, then token exchange, character,
    corporation and alliance lookups, and storing the character), so the UI
    thread never waits on the network.
 3. The result comes back as `Message::CharacterAuthenticated`.
@@ -213,24 +229,48 @@ The task ends when no characters are left.
 ### SDE database
 
 `DatabaseUpdater` runs on its own thread: it checks CCP's SDE index, downloads
-and extracts it when needed, creates the schema and builds the database,
-reporting through `Message::DatabaseUpdateProgress` and
+and extracts it when needed, creates the schema and builds the database
+into `sde.db.building`, which replaces `sde.db` only once complete (a failed
+update keeps the previous database), reporting through `Message::DatabaseUpdateProgress` and
 `Message::DatabaseUpdated`. It starts automatically when the database does not
-exist and on demand from *Settings -> Data Sources*.
+exist and on demand from *Settings -> Application* (its progress window shows
+over the Settings screen too).
 
 ### Saving settings
 
-The Save button calls `save_settings` (`persistence.rs`): it records the
-start-up regions, calls `apply_intel_settings` (updates the channel list the
-watcher reads and re-registers the directory watch) and writes the settings
-file.
+The Settings screen is full-window, built with `egui-panels`. Its pages follow
+an intel line (*Sources -> Rules -> Alerts*, with a stepper at the top of
+those three), then *Maps*, *Characters* and *Application*.
+
+Every change is a draft. Opening the screen rescans the chat log folder and
+snapshots `Settings` (the rules editor keeps its own working graph); a page
+whose values differ from the snapshot (or, for *Rules*, whose graph differs
+from the running one) shows a dot in the navigation, and the bar lists them.
+*Apply* merges the rule open in the node editor, validates the rules, calls
+`save_settings` (`persistence.rs`: records the start-up regions, calls
+`apply_intel_settings` to update the channel list the watcher reads and
+re-register the directory watch, and writes the settings file), redraws the
+maps with the new node style (the character glow) and applies the rules
+(persists them to `telescope.db` and reloads the executor), then takes a new
+snapshot; *Accept* does the same and closes. *Cancel* restores the snapshot,
+the previewed language and the start-up region checks, and re-applies them.
+Linking and unlinking characters are not drafts: they go through EVE SSO and
+apply at once.
 
 ## Extending Telescope
 
-* **A settings page:** add a variant to `SettingsPage` and to `SettingsPage::ALL`
-  and `title()` (`messages.rs`), write `show_<name>_page` in a new file under
-  `windows/settings/`, and add its arm to the `match` in `windows/settings.rs`.
-* **A pattern action:** add a variant to `ActionConfig` (`crates/sputnik/src/patterns.rs`)
-  and handle it in `parse_intel_data` (`telescope`'s `app/intel.rs`).
+* **A settings page:** add a variant to `SettingsPage` with its `title()` and
+  `icon()` (`messages.rs`), write `show_<name>_page` in a new file under
+  `windows/settings/` with the `egui-panels` components (`page`,
+  `page_header`, `Section`, `form`...), put it in a navigation group and the
+  `match` in `windows/settings.rs`, and compare its values in
+  `dirty_settings_pages`.
+* **A rule:** edit it in *Settings -> Rules*: the rule cards (description
+  and id editable in the card, an enable switch, what the rule is made of and
+  the outputs it reaches) open the graph editor, whose toolbar creates detections, outputs and logic nodes
+  (aggregator / gates / formatter). Import/export `rules.toml`; the model is
+  `RuleGraph` in `crates/webb/src/graph.rs`, the tables (`node`/`edge`) are
+  created by the player database's `migrate_1_to_2`, and the built-in default
+  graph is the embedded `rules.toml` (`RuleGraph::default_graph`).
 * **A message:** add a variant to `Message` and to `Message::kind()`
   (`messages.rs`), and handle it in `event_manager` (`app.rs`).

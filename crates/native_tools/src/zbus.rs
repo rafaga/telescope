@@ -1,16 +1,21 @@
-//! Identificación persistente de hardware en Linux con detección de disponibilidad de D-Bus.
+//! Machine identification on Linux, with detection of whether D-Bus is
+//! available.
 //!
-//! Estrategia (de mayor a menor confiabilidad):
-//!   1. UUID de DMI/SMBIOS (`/sys/class/dmi/id/product_uuid`) — requiere root.
-//!   2. D-Bus system bus -> `org.freedesktop.hostname1` -> `GetProductUUID` (con root vía polkit)
-//!      o `org.freedesktop.machine1` para variantes de machine-id.
-//!   3. `/etc/machine-id` vía lectura directa de archivo (sin D-Bus, sin root).
-//!   4. `/var/lib/dbus/machine-id` (symlink legado, mismo contenido que /etc/machine-id).
-//!   5. Serial de placa/chasis (`board_serial`, `product_serial`) como último recurso.
+//! [`get_persistent_hardware_id`] tries the hardware first (most specific):
+//!   1. The DMI/SMBIOS UUID (`/sys/class/dmi/id/product_uuid`) -- needs root.
+//!   2. System bus -> `org.freedesktop.hostname1` -> `GetProductUUID` (root
+//!      through polkit, when its policy allows it).
+//!   3. `/etc/machine-id`, read directly (no D-Bus, no root).
+//!   4. `/var/lib/dbus/machine-id` (legacy symlink, same content).
+//!   5. The board / product serial (`board_serial`, `product_serial`).
+//!
+//! [`get_stable_machine_id`] tries the same sources with the machine-id files
+//! first: they are readable by every user, so the answer doesn't depend on
+//! whether the program runs as root or on the polkit policy. Use it for
+//! anything derived from the identifier that has to stay the same (a key).
 
-// Garantía a nivel de compilador: este módulo es 100% Rust seguro — sin
-// bloques `unsafe` ni bloques `extern "C"` (que en edición 2024 requieren
-// `unsafe` de todos modos).
+// Compiler-checked: this module is 100% safe Rust -- no `unsafe` blocks nor
+// `extern "C"` blocks (which need `unsafe` in edition 2024 anyway).
 #![forbid(unsafe_code)]
 
 use std::error::Error;
@@ -19,7 +24,7 @@ use std::fs;
 use std::path::Path;
 
 // ============================================================================
-// Jerarquía de errores (implementada a mano, sin thiserror)
+// Error types (by hand, without thiserror)
 // ============================================================================
 
 #[cfg(target_os = "linux")]
@@ -50,30 +55,24 @@ impl fmt::Display for HwIdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HwIdError::FileRead { path, source } => {
-                write!(
-                    f,
-                    "no se pudo leer el archivo de identificador: {path}: {source}"
-                )
+                write!(f, "could not read the identifier file {path}: {source}")
             }
             HwIdError::EmptyOrPlaceholder { path } => {
-                write!(
-                    f,
-                    "el valor leído en {path} está vacío o es un placeholder inválido"
-                )
+                write!(f, "the value read from {path} is empty or a placeholder")
             }
             HwIdError::PermissionDenied { path } => {
                 write!(
                     f,
-                    "permisos insuficientes para leer {path} (requiere root o CAP_DAC_OVERRIDE)"
+                    "not allowed to read {path} (needs root or CAP_DAC_OVERRIDE)"
                 )
             }
             HwIdError::DbusUnavailable(source) => {
-                write!(f, "D-Bus no está disponible: {source}")
+                write!(f, "D-Bus is not available: {source}")
             }
             HwIdError::AllSourcesExhausted { sources_tried } => {
                 write!(
                     f,
-                    "ninguna fuente de identificador produjo un valor válido; fuentes intentadas: {sources_tried:?}"
+                    "no identifier source gave a valid value; sources tried: {sources_tried:?}"
                 )
             }
         }
@@ -122,13 +121,13 @@ impl fmt::Display for DbusError {
         match self {
             DbusError::SessionBusNotFound => write!(
                 f,
-                "variable de entorno DBUS_SESSION_BUS_ADDRESS no definida y socket por defecto ausente"
+                "DBUS_SESSION_BUS_ADDRESS is not set and the default socket is missing"
             ),
             DbusError::SystemBusSocketMissing(path) => {
-                write!(f, "socket del system bus no encontrado en {path}")
+                write!(f, "system bus socket not found at {path}")
             }
             DbusError::ConnectionFailed(detail) => {
-                write!(f, "fallo al conectar con el bus: {detail}")
+                write!(f, "could not connect to the bus: {detail}")
             }
             DbusError::MethodCallFailed {
                 interface,
@@ -137,14 +136,11 @@ impl fmt::Display for DbusError {
             } => {
                 write!(
                     f,
-                    "el método D-Bus '{method}' en '{interface}' falló: {detail}"
+                    "D-Bus method '{method}' on '{interface}' failed: {detail}"
                 )
             }
             DbusError::PolicyDenied(method) => {
-                write!(
-                    f,
-                    "acceso denegado por policy de D-Bus/polkit al llamar '{method}'"
-                )
+                write!(f, "D-Bus/polkit policy denied calling '{method}'")
             }
         }
     }
@@ -153,8 +149,7 @@ impl fmt::Display for DbusError {
 #[cfg(target_os = "linux")]
 impl Error for DbusError {}
 
-/// Resultado tipado análogo a tu `DialogResult<T>` de Windows: separa el valor
-/// exitoso del error Y conserva metadata sobre qué fuente lo produjo.
+/// An identifier and the source it came from.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct HwIdResult<T> {
@@ -178,7 +173,7 @@ pub enum IdSource {
 impl fmt::Display for IdSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            IdSource::DmiUuidDirect => "DMI product_uuid (lectura directa)",
+            IdSource::DmiUuidDirect => "DMI product_uuid (read directly)",
             IdSource::DbusHostname1 => "D-Bus org.freedesktop.hostname1",
             IdSource::DbusMachine1 => "D-Bus org.freedesktop.machine1",
             IdSource::EtcMachineId => "/etc/machine-id",
@@ -191,7 +186,7 @@ impl fmt::Display for IdSource {
 }
 
 // ============================================================================
-// Detección de disponibilidad de D-Bus
+// D-Bus availability
 // ============================================================================
 
 #[cfg(target_os = "linux")]
@@ -210,9 +205,9 @@ impl DbusAvailability {
     }
 }
 
-/// Detección *estática* (sin abrir conexión real): revisa variables de entorno
-/// y existencia de sockets Unix. Es rápida y no dispara alertas de EDR porque
-/// no hace I/O de red ni llamadas D-Bus reales.
+/// *Static* detection (no connection is opened): checks the environment
+/// variables and whether the Unix sockets exist. Fast, and it trips no EDR
+/// alert since it does no network I/O nor real D-Bus calls.
 #[cfg(target_os = "linux")]
 #[tracing::instrument]
 pub fn detect_dbus_static() -> DbusAvailability {
@@ -221,8 +216,9 @@ pub fn detect_dbus_static() -> DbusAvailability {
     let session_bus_available = match &session_bus_address {
         Some(addr) => dbus_address_socket_exists(addr),
         None => {
-            // Fallback al path convencional cuando la env var no está seteada
-            // (algunos entornos headless/systemd la omiten pero el socket existe).
+            // The conventional path when the variable isn't set (some
+            // headless/systemd environments leave it out, but the socket
+            // exists).
             let uid = rustix::process::getuid();
             let default_path = format!("/run/user/{uid}/bus");
             Path::new(&default_path).exists()
@@ -242,17 +238,16 @@ pub fn detect_dbus_static() -> DbusAvailability {
 
 #[cfg(target_os = "linux")]
 fn dbus_address_socket_exists(addr: &str) -> bool {
-    // Formato típico: "unix:path=/run/user/1000/bus,guid=..."
+    // Usually "unix:path=/run/user/1000/bus,guid=..."
     addr.split(',')
         .find_map(|part| part.strip_prefix("unix:path="))
         .map(|p| Path::new(p).exists())
         .unwrap_or(false)
 }
 
-/// Detección *dinámica*: intenta abrir una conexión real al system bus y
-/// hacer una llamada de bajo costo (`Peer.Ping`) para confirmar que no solo
-/// existe el socket, sino que hay un daemon respondiendo del otro lado.
-/// Esto es lo que realmente quieres antes de intentar `GetProductUUID`.
+/// *Live* detection: opens a real connection to each bus and makes a cheap
+/// call (`Peer.Ping`) to confirm not only that the socket exists but that a
+/// daemon answers on it. What to check before trying `GetProductUUID`.
 #[cfg(target_os = "linux")]
 #[tracing::instrument]
 pub async fn detect_dbus_live() -> Result<DbusAvailability, DbusError> {
@@ -300,7 +295,7 @@ async fn ping_peer(conn: &zbus::Connection, destination: &str) -> zbus::Result<(
 }
 
 // ============================================================================
-// Fuentes individuales de identificador
+// Identifier sources
 // ============================================================================
 #[cfg(target_os = "linux")]
 const DMI_UUID_PATH: &str = "/sys/class/dmi/id/product_uuid";
@@ -313,7 +308,7 @@ const ETC_MACHINE_ID_PATH: &str = "/etc/machine-id";
 #[cfg(target_os = "linux")]
 const VAR_LIB_DBUS_MACHINE_ID_PATH: &str = "/var/lib/dbus/machine-id";
 
-/// Placeholders comunes que fabricantes dejan sin llenar en el firmware.
+/// Placeholders manufacturers commonly leave in the firmware.
 #[cfg(target_os = "linux")]
 const KNOWN_PLACEHOLDERS: &[&str] = &[
     "to be filled by o.e.m.",
@@ -395,11 +390,11 @@ pub fn try_product_serial() -> Result<HwIdResult<String>, HwIdError> {
     })
 }
 
-/// Vía D-Bus: `org.freedesktop.hostname1.GetProductUUID`. Esta es la ruta
-/// "oficial" de systemd para obtener el UUID de producto sin depender de
-/// permisos de archivo directos — el daemon `systemd-hostnamed` ya corre
-/// como root y expone el dato vía policy de polkit, que puede permitir
-/// lectura a usuarios normales dependiendo de la configuración del sistema.
+/// Through D-Bus: `org.freedesktop.hostname1.GetProductUUID`, systemd's
+/// "official" way to get the product UUID without file permissions: the
+/// `systemd-hostnamed` daemon runs as root and hands it out as its polkit
+/// policy allows, which may include normal users. Non-interactive: polkit
+/// never asks the user for a password here.
 #[cfg(target_os = "linux")]
 #[tracing::instrument]
 pub async fn try_dbus_hostname1_uuid() -> Result<HwIdResult<String>, HwIdError> {
@@ -413,7 +408,7 @@ pub async fn try_dbus_hostname1_uuid() -> Result<HwIdResult<String>, HwIdError> 
             "/org/freedesktop/hostname1",
             Some("org.freedesktop.hostname1"),
             "GetProductUUID",
-            &(true,), // interactive=true permite prompt de polkit si aplica
+            &(false,), // interactive = false: no polkit password prompt
         )
         .await
         .map_err(|e| {
@@ -434,7 +429,7 @@ pub async fn try_dbus_hostname1_uuid() -> Result<HwIdResult<String>, HwIdError> 
         HwIdError::DbusUnavailable(DbusError::MethodCallFailed {
             interface: "org.freedesktop.hostname1".to_string(),
             method: "GetProductUUID".to_string(),
-            detail: format!("deserialización de respuesta falló: {e}"),
+            detail: format!("could not read the reply: {e}"),
         })
     })?;
 
@@ -478,23 +473,23 @@ fn uuid_bytes_to_string(bytes: &[u8]) -> String {
 }
 
 // ============================================================================
-// Orquestador: cadena de fallback completa
+// The fallback chains
 // ============================================================================
 
-/// Intenta cada fuente en orden de confiabilidad y regresa la primera que
-/// funcione, junto con metadata de qué se intentó y por qué falló lo demás.
+/// Tries each source, hardware first (see the module docs), and returns the
+/// first that works; the error lists what was tried and why it failed.
 #[cfg(target_os = "linux")]
 #[tracing::instrument]
 pub async fn get_persistent_hardware_id() -> Result<HwIdResult<String>, HwIdError> {
     let mut attempts_log: Vec<String> = Vec::new();
 
-    // 1. Lectura directa de DMI (requiere root, pero es instantánea sin D-Bus)
+    // 1. DMI read directly (needs root, but instant and without D-Bus)
     match try_dmi_uuid_direct() {
         Ok(result) => return Ok(result),
         Err(e) => attempts_log.push(format!("{}: {e}", IdSource::DmiUuidDirect)),
     }
 
-    // 2. D-Bus hostname1 (funciona sin root si polkit lo permite)
+    // 2. D-Bus hostname1 (works without root when polkit allows it)
     let dbus_status = detect_dbus_live().await.unwrap_or(DbusAvailability {
         session_bus_available: false,
         system_bus_available: false,
@@ -509,25 +504,25 @@ pub async fn get_persistent_hardware_id() -> Result<HwIdResult<String>, HwIdErro
         }
     } else {
         attempts_log.push(format!(
-            "{}: system bus no disponible ({:?})",
+            "{}: system bus not available ({:?})",
             IdSource::DbusHostname1,
             dbus_status
         ));
     }
 
-    // 3. /etc/machine-id (sin root, sin D-Bus — el más portable)
+    // 3. /etc/machine-id (no root, no D-Bus: the most portable)
     match try_etc_machine_id() {
         Ok(result) => return Ok(result),
         Err(e) => attempts_log.push(format!("{}: {e}", IdSource::EtcMachineId)),
     }
 
-    // 4. Symlink legado
+    // 4. Legacy symlink
     match try_var_lib_dbus_machine_id() {
         Ok(result) => return Ok(result),
         Err(e) => attempts_log.push(format!("{}: {e}", IdSource::VarLibDbusMachineId)),
     }
 
-    // 5. Seriales de hardware como último recurso
+    // 5. Hardware serials, as a last resort
     match try_board_serial() {
         Ok(result) => return Ok(result),
         Err(e) => attempts_log.push(format!("{}: {e}", IdSource::DmiBoardSerial)),
@@ -541,6 +536,34 @@ pub async fn get_persistent_hardware_id() -> Result<HwIdResult<String>, HwIdErro
     Err(HwIdError::AllSourcesExhausted {
         sources_tried: attempts_log,
     })
+}
+
+/// Like [`get_persistent_hardware_id`], with the machine-id files first:
+/// every user can read them, so the identifier doesn't change with the
+/// privileges the program runs with (root can read the DMI UUID, a normal
+/// user usually can't) or with the polkit policy. The hardware sources are
+/// only tried on a system without a machine id.
+#[cfg(target_os = "linux")]
+#[tracing::instrument]
+pub async fn get_stable_machine_id() -> Result<HwIdResult<String>, HwIdError> {
+    let mut attempts_log: Vec<String> = Vec::new();
+    for source in [try_etc_machine_id, try_var_lib_dbus_machine_id] {
+        match source() {
+            Ok(result) => return Ok(result),
+            Err(e) => attempts_log.push(e.to_string()),
+        }
+    }
+    get_persistent_hardware_id()
+        .await
+        .map_err(|error| match error {
+            HwIdError::AllSourcesExhausted { mut sources_tried } => {
+                attempts_log.append(&mut sources_tried);
+                HwIdError::AllSourcesExhausted {
+                    sources_tried: attempts_log,
+                }
+            }
+            other => other,
+        })
 }
 
 #[cfg(test)]
@@ -560,23 +583,33 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn dbus_static_detection_does_not_panic() {
-        // Solo verifica que la detección estática corre sin error en CI,
-        // sin asumir que D-Bus esté presente en el runner.
+        // Only checks that static detection runs, without assuming D-Bus
+        // is there on the runner.
         let _ = detect_dbus_static();
     }
 
     #[tokio::test]
     #[cfg(target_os = "linux")]
+    async fn the_stable_id_prefers_the_machine_id() {
+        if let Ok(machine_id) = try_etc_machine_id() {
+            let stable = get_stable_machine_id().await.unwrap();
+            assert_eq!(stable.source, IdSource::EtcMachineId);
+            assert_eq!(stable.value, machine_id.value);
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn full_chain_resolves_or_reports_all_failures() {
-        // En CI sin permisos root ni D-Bus, esto normalmente cae hasta
-        // /etc/machine-id, que casi siempre existe en contenedores modernos.
+        // Without root nor D-Bus (CI) this usually ends at /etc/machine-id,
+        // which nearly every modern container has.
         let result = get_persistent_hardware_id().await;
         match result {
-            Ok(r) => println!("ID obtenido vía {}: {}", r.source, r.value),
+            Ok(r) => println!("id from {}: {}", r.source, r.value),
             Err(HwIdError::AllSourcesExhausted { sources_tried }) => {
-                println!("Todas las fuentes fallaron:\n{}", sources_tried.join("\n"));
+                println!("every source failed:\n{}", sources_tried.join("\n"));
             }
-            Err(e) => panic!("error inesperado: {e}"),
+            Err(e) => panic!("unexpected error: {e}"),
         }
     }
 }

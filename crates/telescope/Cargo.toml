@@ -25,6 +25,7 @@ profile-memory = ["profile"]
 # Embeds assets/icon.ico in the Windows executable (see build.rs).
 [build-dependencies]
 winresource = "0.1.31"
+serde_json = "1"
 
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
@@ -43,18 +44,23 @@ sde = { version = "0.5.0", features = ["builder"] }
 rusqlite = { version = "0.40" }
 kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.9.5" }
+egui-map = { version = "0.12.0" }
 open = "5.3.2"
-webb = { path = "../webb/", default-features = false, features = []}
-# The pattern-matching engine (patterns.toml rules -> notifications/map
-# alerts), split out because it has no dependency on TelescopeApp/egui/sde
-# and stays buildable for wasm32 on its own. See crates/sputnik/src/lib.rs.
-sputnik = { path = "../sputnik/" }
+# `crypted-db` explicitly: with `default-features = false` alone the player
+# database was encrypted or not depending on whether the build also selected
+# `webb` itself (its default features), e.g. `cargo build` at the workspace
+# root vs `cargo build -p telescope`.
+webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
+egui-panels = { path = "../egui-panels/" }
 chrono = "0.4.42"
 tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.36", features = ["all_loaders"] }
 image = { version = "0.25.8", features = ["jpeg","png"] }
+# The window handle eframe exposes (same version as eframe/winit), to own the
+# native file dialogs.
+raw-window-handle = "0.6"
 egui_tiles = { version = "0.17.0" }
+egui-snarl = "0.12.0"
 toml = "1.1.2"
 hyper = { version = "1.7.0", features = ["server", "http1", "client"] }
 esi-openapi = {version = "0.1.0", default-features = false, features = ["random_state", "validate_jwt"] }
@@ -95,6 +101,7 @@ rodio = { version = "0.22.2", default-features = false, features = ["wav","mp3",
 rust-i18n = "4.2.2"
 # The operating system's language, for `language = "auto"` in `[ui]`.
 sys-locale = "0.3.2"
+
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

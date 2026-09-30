@@ -1,12 +1,11 @@
 //! Intel alerts listed in the map node tooltips.
 //!
-//! When an intel line raises a map alert, [`AlertSummary::from_line`]
+//! When an intel line raises a map alert, [`AlertSummary::from_messages`]
 //! condenses it into the few words the tooltip shows after the icon and the
 //! age of the report: the ships reported, how many pilots, or -- when the
 //! line has neither -- its leftover text, which is usually the pilot names.
-//! What each rule contributes is set by its `category` in `patterns.toml`
-//! (see [`IntelCategory`]). A `clear` report is listed with a check mark and
-//! raises no visual alert.
+//! What each detection contributes is set by its category (see
+//! [`IntelCategory`]). A `clear` report is listed with a check mark.
 //!
 //! Every map pane keeps an [`AlertLog`]. Each entry lives as long as its own
 //! visual alert would (received + the alert duration from Settings), no
@@ -14,10 +13,15 @@
 //! the node's animation, so the node keeps pulsing while any of its entries
 //! is still listed.
 
-use crate::patterns::{COUNT_GROUP, IntelCategory, PatternMatch, sanitize_display};
+use crate::graph::{Data, Mensaje};
+use crate::intel::{IntelCategory, sanitize_display};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
 
 /// Icon of an alert line in the tooltip (painted red).
 pub const ALERT_ICON: &str = "🔥";
@@ -42,48 +46,36 @@ pub struct AlertSummary {
     /// Number of pilots reported (first `count` match of the line).
     pub count: Option<u32>,
     /// The line without the reported system and the categorized matches,
-    /// whitespace collapsed and cut to [`MAX_LEFTOVER_CHARS`].
+    /// whitespace collapsed.
     pub leftover: String,
 }
 
 impl AlertSummary {
-    /// Condenses `text` (the payload of an intel line) using `matches`, the
-    /// pattern matches of that same line. `system_spans` are the byte ranges
-    /// of the candidates that resolved to a real system: only those are
-    /// dropped from the leftover text, so a pilot name that merely fit the
-    /// system pattern stays.
-    pub fn from_line(
-        text: &str,
-        matches: &[&PatternMatch],
-        system_spans: Vec<Range<usize>>,
-    ) -> Self {
+    /// Condenses the messages of one input line into what the tooltip shows.
+    pub fn from_messages(messages: &[&Mensaje]) -> Self {
         let mut summary = Self::default();
-        let mut spans = system_spans;
-        for intel_match in matches {
-            let Some(category) = intel_match.category else {
-                continue;
-            };
-            spans.push(intel_match.span.clone());
-            match category {
-                IntelCategory::Ship => summary.add_ship(&intel_match.matched),
-                IntelCategory::Count => {
+        for message in messages {
+            match &message.data {
+                Data::Ships(ships) => {
+                    for (name, times) in ships {
+                        for _ in 0..*times {
+                            summary.add_ship(name);
+                        }
+                    }
+                }
+                Data::Count(count) => {
                     if summary.count.is_none() {
-                        summary.count = intel_match
-                            .named
-                            .get(COUNT_GROUP)
-                            .and_then(|count| count.parse().ok());
+                        summary.count = Some(*count);
                     }
                 }
-                IntelCategory::Clear => {
-                    if summary.clear.is_none() {
-                        summary.clear = Some(intel_match.matched.clone());
+                Data::Words(words) => {
+                    if message.category == Some(IntelCategory::Clear) && summary.clear.is_none() {
+                        summary.clear = words.first().cloned();
                     }
                 }
-                // `Query` lines never get here: `parse_intel_data` drops them.
-                IntelCategory::Keyword | IntelCategory::Query => {}
+                Data::Systems(_) | Data::Text(_) => {}
             }
         }
-        summary.leftover = leftover(text, spans);
         summary
     }
 
@@ -104,14 +96,14 @@ impl AlertSummary {
         self.clear.is_some()
     }
 
-    /// The text shown after the icon and the age: the clear word; else the
-    /// ships and the pilot count (`pilots` words it, so it can be
-    /// localized); else the leftover text. May be empty.
-    pub fn detail(&self, pilots: impl Fn(u32) -> String) -> String {
-        if let Some(word) = &self.clear {
-            return word.clone();
-        }
+    /// The text shown after the icon and the age, split into sections so the
+    /// caller can add an emoji and a color per kind. `pilots` words the count,
+    /// so it can be localized.
+    pub fn parts(&self, pilots: impl Fn(u32) -> String) -> Vec<AlertPart> {
         let mut parts = Vec::new();
+        if let Some(word) = &self.clear {
+            parts.push(AlertPart::Clear(word.clone()));
+        }
         if !self.ships.is_empty() {
             let ships: Vec<String> = self
                 .ships
@@ -121,37 +113,63 @@ impl AlertSummary {
                     _ => format!("{name} ×{times}"),
                 })
                 .collect();
-            parts.push(ships.join(", "));
+            parts.push(AlertPart::Ships(ships.join(", ")));
         }
         if let Some(count) = self.count {
-            parts.push(pilots(count));
+            parts.push(AlertPart::Count(pilots(count)));
         }
-        if parts.is_empty() {
-            self.leftover.clone()
-        } else {
-            parts.join(" · ")
+        if parts.is_empty() && !self.leftover.is_empty() {
+            parts.push(AlertPart::Text(self.leftover.clone()));
         }
+        parts
     }
 }
 
-/// `text` without the byte ranges in `spans`, whitespace collapsed,
-/// punctuation trimmed from both ends and cut to [`MAX_LEFTOVER_CHARS`].
-fn leftover(text: &str, mut spans: Vec<Range<usize>>) -> String {
+/// One section of a tooltip line, so the renderer can prefix it with its own
+/// emoji and color.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlertPart {
+    /// The `clear` word.
+    Clear(String),
+    /// Ship names, grouped and joined.
+    Ships(String),
+    /// The pilot count, already worded.
+    Count(String),
+    /// The leftover text.
+    Text(String),
+}
+
+/// What is left of `line` once every span of `messages` is removed (the
+/// reported system, the ships, the count, keywords such as `nv`...): usually
+/// the pilot names. Whitespace is collapsed, punctuation trimmed from both
+/// ends, and the result cut to 40 characters (ellipsis included).
+///
+/// Messages that did not read the line itself carry no spans and remove
+/// nothing.
+pub fn leftover(line: &str, messages: &[&Mensaje]) -> String {
+    let mut spans: Vec<Range<usize>> = messages
+        .iter()
+        .flat_map(|message| message.spans.iter().cloned())
+        .filter(|span| {
+            span.end <= line.len()
+                && line.is_char_boundary(span.start)
+                && line.is_char_boundary(span.end)
+        })
+        .collect();
     spans.sort_by_key(|span| span.start);
-    let mut kept = String::with_capacity(text.len());
+    let mut kept = String::with_capacity(line.len());
     let mut position = 0;
     for span in spans {
         if span.start > position {
-            kept.push_str(&text[position..span.start]);
+            kept.push_str(&line[position..span.start]);
         }
         kept.push(' ');
         position = position.max(span.end);
     }
-    if position < text.len() {
-        kept.push_str(&text[position..]);
+    if position < line.len() {
+        kept.push_str(&line[position..]);
     }
-    let words: Vec<&str> = kept.split_whitespace().collect();
-    let joined = words.join(" ");
+    let joined = kept.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = joined.trim_matches(|c: char| !c.is_alphanumeric());
     let clean = sanitize_display(trimmed);
     if clean.chars().count() <= MAX_LEFTOVER_CHARS {
@@ -161,16 +179,6 @@ fn leftover(text: &str, mut spans: Vec<Range<usize>>) -> String {
     cut.truncate(cut.trim_end().len());
     cut.push('…');
     cut
-}
-
-/// Whether a line (`matches` are all of its matches) asks about a system
-/// instead of reporting it (`category = "query"`, e.g. `H-5GUI status?`).
-/// Such a line raises no map alert at all: no visual alert, no sound, no
-/// tooltip entry.
-pub fn is_query(matches: &[&PatternMatch]) -> bool {
-    matches
-        .iter()
-        .any(|intel_match| intel_match.category == Some(IntelCategory::Query))
 }
 
 /// How long ago something happened, condensed: `5s`, `4m`, `2h`.
@@ -196,6 +204,8 @@ pub struct IntelAlert {
     /// earlier entry instead of adding a second one.
     pub key: String,
     pub summary: AlertSummary,
+    /// Whether the tooltip line prefixes each section with its emoji.
+    pub emojis: bool,
 }
 
 impl IntelAlert {
@@ -205,6 +215,7 @@ impl IntelAlert {
         duration: Duration,
         text: &str,
         summary: AlertSummary,
+        emojis: bool,
     ) -> Self {
         let key = text
             .split_whitespace()
@@ -217,6 +228,7 @@ impl IntelAlert {
             duration,
             key,
             summary,
+            emojis,
         }
     }
 
@@ -277,100 +289,42 @@ impl AlertLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::patterns::{ActionConfig, template_engine};
 
-    const CHANNEL: &str = "wc.Vale+Tribute";
-    /// The systems these tests treat as real (resolving needs the SDE).
-    const KNOWN_SYSTEMS: [&str; 2] = ["H-5GUI", "1DQ1-A"];
-
-    /// The summary of `text` with the rules of the shipped `patterns.toml`,
-    /// counting only [`KNOWN_SYSTEMS`] as resolved.
-    fn summarize(text: &str) -> AlertSummary {
-        let engine = template_engine();
-        let matches = engine.evaluate(CHANNEL, &format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"));
-        let refs: Vec<&PatternMatch> = matches.iter().collect();
-        let systems: Vec<Range<usize>> = refs
-            .iter()
-            .filter(|m| matches!(m.action, ActionConfig::MapAlert { .. }))
-            .filter(|m| KNOWN_SYSTEMS.contains(&m.matched.as_str()))
-            .map(|m| m.span.clone())
-            .collect();
-        assert!(!systems.is_empty(), "{text} names no known system");
-        AlertSummary::from_line(text, &refs, systems)
-    }
-
-    fn detail(text: &str) -> String {
-        summarize(text).detail(|count| format!("{count} pilots"))
+    /// A message standing for the bytes `start..end` of the line.
+    fn message(start: usize, end: usize) -> Mensaje {
+        Mensaje {
+            tag: String::from("keyword"),
+            text: String::new(),
+            data: Data::Words(Vec::new()),
+            spans: std::iter::once(start..end).collect(),
+            category: None,
+        }
     }
 
     #[test]
-    fn a_sighting_shows_the_pilot_names() {
-        assert_eq!(detail("H-5GUI*  Floris Saucus  nv"), "Floris Saucus");
-        assert!(!summarize("H-5GUI*  Floris Saucus  nv").is_clear());
+    fn the_leftover_is_the_line_without_the_spans() {
+        let line = "H-5GUI*  Floris Saucus  nv";
+        let system = message(0, 6);
+        let nv = message(24, 26);
+        assert_eq!(leftover(line, &[&system, &nv]), "Floris Saucus");
+        // Without spans nothing is removed.
+        assert_eq!(leftover(line, &[]), line.replace("  ", " "));
     }
 
     #[test]
-    fn a_pilot_named_before_the_system_stays_in_the_text() {
-        assert_eq!(detail("Floris Saucus H-5GUI nv"), "Floris Saucus");
-        assert_eq!(detail("Floris Saucus 1DQ1-A H-5GUI"), "Floris Saucus");
-    }
-
-    #[test]
-    fn ships_are_grouped_and_hide_the_leftover_text() {
-        assert_eq!(
-            detail("1DQ1-A Some Pilot Drake drake Caracal"),
-            "Drake ×2, Caracal"
-        );
-    }
-
-    #[test]
-    fn the_pilot_count_goes_after_the_ships() {
-        assert_eq!(detail("1DQ1-A +3 Sabre"), "Sabre · 3 pilots");
-        assert_eq!(detail("1DQ1-A 4 neuts"), "4 pilots");
-    }
-
-    #[test]
-    fn a_clear_report_shows_its_word_and_raises_no_visual() {
-        let summary = summarize("H-5GUI clr");
-        assert!(summary.is_clear());
-        assert_eq!(summary.detail(|_| String::new()), "clr");
-        let alert = IntelAlert::new(
-            1,
-            Instant::now(),
-            Duration::from_secs(60),
-            "H-5GUI clr",
-            summary,
-        );
-        assert!(!alert.raises_visual());
-    }
-
-    #[test]
-    fn a_status_question_is_a_query() {
-        let engine = template_engine();
-        let query = |text: &str| {
-            let matches =
-                engine.evaluate(CHANNEL, &format!("[ 2023.04.03 18:02:00 ] Pilot > {text}"));
-            is_query(&matches.iter().collect::<Vec<_>>())
-        };
-        assert!(query("H-5GUI status?"));
-        assert!(query("H-5GUI status ？"));
-        assert!(!query("H-5GUI  Floris Saucus  nv"));
-        assert!(!query("H-5GUI clr"));
-    }
-
-    #[test]
-    fn a_bare_system_has_no_detail() {
-        assert_eq!(detail("H-5GUI"), "");
-    }
-
-    #[test]
-    fn the_leftover_text_is_cut_to_40_characters() {
-        let text = detail("H-5GUI Aaron Bartholomew Cornelius Dmitri Evangeline");
+    fn the_leftover_is_cut_to_40_characters() {
+        let line = "H-5GUI Aaron Bartholomew Cornelius Dmitri Evangeline";
+        let text = leftover(line, &[&message(0, 6)]);
         assert!(text.chars().count() <= MAX_LEFTOVER_CHARS, "{text}");
         assert!(
             text.starts_with("Aaron Bartholomew") && text.ends_with('…'),
             "{text}"
         );
+    }
+
+    #[test]
+    fn spans_outside_the_line_are_ignored() {
+        assert_eq!(leftover("abc", &[&message(1, 99)]), "abc");
     }
 
     #[test]
@@ -389,6 +343,7 @@ mod tests {
             Duration::from_secs(secs),
             text,
             AlertSummary::default(),
+            true,
         )
     }
 

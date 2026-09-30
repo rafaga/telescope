@@ -5,7 +5,7 @@
 //! `lib.rs`; the UI reads them with `t!("section.key")`. A key missing from a
 //! language falls back to English, but an empty value is shown as it is
 //! (blank). Adding a language is adding its file: the selector in Settings ->
-//! General lists every file whose `language.name` key has a value, by that
+//! Application lists every file whose `language.name` key has a value, by that
 //! name. A template with empty values (such as `es.toml` until it is
 //! translated) is therefore left out.
 //!
