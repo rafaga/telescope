@@ -1584,4 +1584,76 @@ mod tests {
         .unwrap();
         assert!(photo.is_empty());
     }
+
+    // ---- LiveEsiApi: what it does without the network ----
+
+    #[test]
+    fn a_new_live_api_holds_no_tokens() {
+        let (manager, path) = test_manager("live-no-tokens");
+        assert!(!manager.api.has_token_state());
+        assert!(manager.api.current_tokens().is_none());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn tokens_set_on_the_live_api_come_back_unchanged() {
+        let (mut manager, path) = test_manager("live-tokens");
+        // ESI expirations carry milliseconds, not finer.
+        let expiration = chrono::DateTime::from_timestamp_millis(1_900_000_123_456);
+        let tokens = TokenSet {
+            token: String::from("access"),
+            refresh_token: String::from("refresh"),
+            expiration,
+        };
+
+        manager.api.set_tokens(&tokens);
+
+        assert!(manager.api.has_token_state());
+        assert_eq!(manager.api.current_tokens(), Some(tokens));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn tokens_without_an_expiration_are_not_a_usable_state() {
+        let (mut manager, path) = test_manager("live-no-expiration");
+        manager.api.set_tokens(&TokenSet {
+            token: String::from("access"),
+            refresh_token: String::from("refresh"),
+            expiration: None,
+        });
+        assert!(!manager.api.has_token_state());
+        // Without the expiration there is no complete set to hand back.
+        assert!(manager.api.current_tokens().is_none());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_authorize_url_asks_for_the_configured_client_and_scope() {
+        let (manager, path) = test_manager("live-authorize");
+        let info = manager.api.authorize_url().unwrap();
+        assert!(
+            info.url.starts_with("https://login.eveonline.com/"),
+            "{}",
+            info.url
+        );
+        assert!(
+            info.url.contains("client_id=test-client-id"),
+            "{}",
+            info.url
+        );
+        assert!(info.url.contains("publicData"), "{}", info.url);
+        assert!(!info.state.is_empty());
+        assert!(info.url.contains(&info.state), "the state is in the URL");
+        // Each attempt gets its own state.
+        let other = manager.api.authorize_url().unwrap();
+        assert_ne!(info.state, other.state);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn updating_the_spec_is_a_no_op_because_it_is_embedded() {
+        let (mut manager, path) = test_manager("live-spec");
+        assert!(manager.api.update_spec().await.is_ok());
+        cleanup(&path);
+    }
 }

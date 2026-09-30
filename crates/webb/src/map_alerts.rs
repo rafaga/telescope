@@ -402,4 +402,114 @@ mod tests {
             MAX_ALERTS_PER_SYSTEM
         );
     }
+
+    fn with_data(data: Data, category: Option<IntelCategory>) -> Mensaje {
+        Mensaje {
+            tag: String::from("test"),
+            text: String::new(),
+            data,
+            spans: Vec::new(),
+            category,
+        }
+    }
+
+    fn ships(list: &[(&str, u32)]) -> Mensaje {
+        with_data(
+            Data::Ships(
+                list.iter()
+                    .map(|(name, times)| (name.to_string(), *times))
+                    .collect(),
+            ),
+            Some(IntelCategory::Ship),
+        )
+    }
+
+    fn pilots(count: u32) -> String {
+        format!("{count} pilots")
+    }
+
+    #[test]
+    fn a_line_with_nothing_categorized_has_an_empty_summary() {
+        let system = with_data(Data::Systems(vec![30000142]), None);
+        let text = with_data(Data::Text(String::from("hi")), None);
+        let summary = AlertSummary::from_messages(&[&system, &text]);
+        assert_eq!(summary, AlertSummary::default());
+        assert!(!summary.is_clear());
+        assert!(summary.parts(pilots).is_empty());
+    }
+
+    #[test]
+    fn ships_are_grouped_ignoring_case_in_order_of_appearance() {
+        let first = ships(&[("Rifter", 2), ("Loki", 1)]);
+        let second = ships(&[("rifter", 1)]);
+        let summary = AlertSummary::from_messages(&[&first, &second]);
+        assert_eq!(
+            summary.ships,
+            vec![(String::from("Rifter"), 3), (String::from("Loki"), 1)]
+        );
+    }
+
+    #[test]
+    fn the_first_count_wins() {
+        let a = with_data(Data::Count(4), Some(IntelCategory::Count));
+        let b = with_data(Data::Count(9), Some(IntelCategory::Count));
+        assert_eq!(AlertSummary::from_messages(&[&a, &b]).count, Some(4));
+    }
+
+    #[test]
+    fn only_a_clear_category_marks_the_line_clear_and_the_first_word_is_kept() {
+        let clear = with_data(
+            Data::Words(vec![String::from("clr"), String::from("clear")]),
+            Some(IntelCategory::Clear),
+        );
+        let later = with_data(
+            Data::Words(vec![String::from("clear")]),
+            Some(IntelCategory::Clear),
+        );
+        let summary = AlertSummary::from_messages(&[&clear, &later]);
+        assert_eq!(summary.clear.as_deref(), Some("clr"));
+        assert!(summary.is_clear());
+
+        // Other words (keywords, queries) do not make a line clear.
+        let keyword = with_data(
+            Data::Words(vec![String::from("nv")]),
+            Some(IntelCategory::Keyword),
+        );
+        let query = with_data(
+            Data::Words(vec![String::from("status")]),
+            Some(IntelCategory::Query),
+        );
+        let summary = AlertSummary::from_messages(&[&keyword, &query]);
+        assert!(!summary.is_clear());
+    }
+
+    #[test]
+    fn the_parts_come_in_order_and_word_the_count_and_repeats() {
+        let summary = AlertSummary {
+            clear: Some(String::from("clr")),
+            ships: vec![(String::from("Rifter"), 3), (String::from("Loki"), 1)],
+            count: Some(5),
+            leftover: String::from("ignored while there are other parts"),
+        };
+        assert_eq!(
+            summary.parts(pilots),
+            vec![
+                AlertPart::Clear(String::from("clr")),
+                AlertPart::Ships(String::from("Rifter ×3, Loki")),
+                AlertPart::Count(String::from("5 pilots")),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_leftover_text_is_shown_only_when_nothing_else_is() {
+        let only_text = AlertSummary {
+            leftover: String::from("Floris Saucus"),
+            ..AlertSummary::default()
+        };
+        assert_eq!(
+            only_text.parts(pilots),
+            vec![AlertPart::Text(String::from("Floris Saucus"))]
+        );
+    }
 }
