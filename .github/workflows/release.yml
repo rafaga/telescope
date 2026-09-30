@@ -189,7 +189,7 @@ jobs:
 
       - name: Keep the installer as an artifact
         if: github.event_name != 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installer-${{ runner.os }}
           path: |

@@ -482,3 +482,72 @@ fn the_alarm_jump_graph_follows_the_universe() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---- Saving settings ----
+
+fn region(name: &str, on_startup: bool) -> crate::app::tiles::TileData {
+    crate::app::tiles::TileData::new(name.to_string(), on_startup)
+}
+
+#[test]
+fn saving_records_the_startup_regions_sorted_and_writes_the_file() {
+    let (mut app, dir) = app("save-startup");
+    app.behavior
+        .tile_data
+        .insert(10000043, region("Domain", true));
+    app.behavior
+        .tile_data
+        .insert(10000002, region("The Forge", true));
+    app.behavior
+        .tile_data
+        .insert(10000030, region("Heimatar", false));
+
+    app.save_settings();
+
+    assert_eq!(*app.settings.get_startup_regions(), [10000002, 10000043]);
+    let written = crate::app::settings::Settings::try_from(dir.join("telescope.toml")).unwrap();
+    assert_eq!(*written.get_startup_regions(), [10000002, 10000043]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn saving_with_no_maps_built_yet_keeps_the_stored_startup_regions() {
+    let (mut app, dir) = app("save-no-maps");
+    app.settings.set_startup_regions(vec![10000002]);
+    assert!(app.behavior.tile_data.is_empty());
+
+    app.save_settings();
+
+    assert_eq!(*app.settings.get_startup_regions(), [10000002]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn saving_an_unchanged_selection_does_not_dirty_the_settings() {
+    let (mut app, dir) = app("save-unchanged");
+    app.behavior
+        .tile_data
+        .insert(10000002, region("The Forge", true));
+    app.save_settings();
+    assert!(app.settings.its_saved());
+
+    app.save_settings();
+
+    assert!(app.settings.its_saved());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_settings_file_that_cannot_be_written_is_reported() {
+    let (mut app, dir) = app("save-fails");
+    // A folder where the file should go.
+    std::fs::create_dir_all(dir.join("telescope.toml")).unwrap();
+    app.settings.set_warning_area(7);
+
+    app.save_settings();
+    pump(&mut app);
+
+    assert!(logged(&app, "save_settings"));
+    assert!(!app.settings.its_saved());
+    let _ = std::fs::remove_dir_all(dir);
+}
