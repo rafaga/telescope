@@ -136,7 +136,7 @@ jobs:
             cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-lcov
           path: lcov.info

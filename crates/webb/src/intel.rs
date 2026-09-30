@@ -451,4 +451,188 @@ mod tests {
         let line = crate::rules::parse_line(&raw).unwrap();
         assert!(line.text.len() < MAX_LINE_LEN);
     }
+
+    fn text(error: PatternError) -> String {
+        error.to_string()
+    }
+
+    #[test]
+    fn every_error_names_what_is_wrong_and_where() {
+        let s = |value: &str| value.to_string();
+        let cases: Vec<(PatternError, Vec<&str>)> = vec![
+            (
+                PatternError::InvalidId(s("bad id")),
+                vec!["bad id", "A-Za-z0-9"],
+            ),
+            (
+                PatternError::DuplicateId(s("dup")),
+                vec!["duplicated", "dup"],
+            ),
+            (
+                PatternError::PatternTooLong(s("long")),
+                vec!["long", "exceeds"],
+            ),
+            (
+                PatternError::InvalidPattern {
+                    id: s("rx"),
+                    reason: s("unclosed group"),
+                },
+                vec!["rx", "does not compile", "unclosed group"],
+            ),
+            (
+                PatternError::TooManyChannels(s("many")),
+                vec!["many", "too many channels"],
+            ),
+            (
+                PatternError::InvalidChannel(s("a/b")),
+                vec!["a/b", "invalid channel"],
+            ),
+            (
+                PatternError::InvalidSystemGroup {
+                    id: s("sys"),
+                    group: s("system"),
+                },
+                vec!["sys", "system", "capture group"],
+            ),
+            (
+                PatternError::InvalidDictionarySize(s("words")),
+                vec!["dictionary 'words'", "no words"],
+            ),
+            (
+                PatternError::InvalidDictionaryWord {
+                    id: s("words"),
+                    word: s("w"),
+                },
+                vec!["dictionary 'words'", "empty word", "'w...'"],
+            ),
+            (
+                PatternError::MissingCountGroup(s("cnt")),
+                vec!["cnt", COUNT_GROUP, "capture group"],
+            ),
+            (
+                PatternError::DictionaryBuildFailed {
+                    id: s("words"),
+                    reason: s("too big"),
+                },
+                vec!["dictionary 'words'", "could not be built", "too big"],
+            ),
+            (
+                PatternError::InvalidTag {
+                    id: s("rule"),
+                    tag: s("bad tag"),
+                },
+                vec!["rule", "bad tag", "invalid tag"],
+            ),
+            (
+                PatternError::InvalidCondition {
+                    id: s("out"),
+                    reason: s("empty"),
+                },
+                vec!["output rule 'out'", "invalid condition", "empty"],
+            ),
+            (
+                PatternError::InvalidInput {
+                    id: s("in"),
+                    reason: s("no path"),
+                },
+                vec!["input rule 'in'", "no path"],
+            ),
+            (
+                PatternError::InvalidSource {
+                    id: s("det"),
+                    source: s("nowhere"),
+                },
+                vec!["detection rule 'det'", "invalid source", "nowhere"],
+            ),
+            (
+                PatternError::OutputWithoutDetection(s("out")),
+                vec!["output rule 'out'", "not wired to any detection"],
+            ),
+            (
+                PatternError::DetectionWithoutOutput(s("det")),
+                vec!["detection rule 'det'", "not wired to any output"],
+            ),
+            (
+                PatternError::UnknownDictionary {
+                    id: s("rule"),
+                    name: s("ghost"),
+                },
+                vec!["rule", "unknown dictionary", "ghost"],
+            ),
+            (
+                PatternError::DuplicateOutputKind(s("sound")),
+                vec!["more than one output", "sound"],
+            ),
+            (
+                PatternError::MissingInput(s("node")),
+                vec!["node", "no input cable"],
+            ),
+            (
+                PatternError::InvalidPin {
+                    node: s("node"),
+                    pin: s("out9"),
+                },
+                vec!["node", "out9", "does not expose"],
+            ),
+            (
+                PatternError::GraphCycle(vec![s("a"), s("b"), s("a")]),
+                vec!["cycle", "a -> b -> a"],
+            ),
+            (
+                PatternError::TooManyInputs(s("agg")),
+                vec!["aggregator 'agg'", "more inputs"],
+            ),
+        ];
+        for (error, fragments) in cases {
+            let message = text(error.clone());
+            for fragment in fragments {
+                assert!(
+                    message.contains(fragment),
+                    "{error:?} -> {message:?} lacks {fragment:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dictionary_word_is_shown_cut_to_32_bytes() {
+        let message = text(PatternError::InvalidDictionaryWord {
+            id: String::from("words"),
+            word: "w".repeat(100),
+        });
+        assert!(
+            message.contains(&format!("'{}...'", "w".repeat(32))),
+            "{message}"
+        );
+        assert!(!message.contains(&"w".repeat(33)));
+    }
+
+    #[test]
+    fn a_pattern_error_is_a_plain_error_with_no_source() {
+        let error: Box<dyn std::error::Error> =
+            Box::new(PatternError::DuplicateId(String::from("x")));
+        assert!(error.source().is_none());
+        assert_eq!(error.to_string(), "duplicated rule id 'x'");
+    }
+
+    #[test]
+    fn categories_are_written_in_snake_case() {
+        #[derive(Deserialize, Serialize)]
+        struct Holder {
+            category: IntelCategory,
+        }
+        for (name, category) in [
+            ("ship", IntelCategory::Ship),
+            ("count", IntelCategory::Count),
+            ("clear", IntelCategory::Clear),
+            ("keyword", IntelCategory::Keyword),
+            ("query", IntelCategory::Query),
+        ] {
+            let parsed: Holder = toml::from_str(&format!("category = \"{name}\"")).unwrap();
+            assert_eq!(parsed.category, category);
+            let written = toml::to_string(&Holder { category }).unwrap();
+            assert_eq!(written.trim(), format!("category = \"{name}\""));
+        }
+        assert!(toml::from_str::<Holder>("category = \"Ship\"").is_err());
+    }
 }

@@ -17,6 +17,17 @@ pub struct AppData<'a> {
 impl<'a> AppData<'a> {
     #[tracing::instrument]
     pub fn new() -> Self {
+        Self::with_credentials(
+            option_env!("ESI_CLIENT_ID")
+                .expect("ESI_CLIENT_ID is not set: define it as an environment variable when building (see BUILD.md)."),
+            option_env!("ESI_SECRET_KEY")
+                .expect("ESI_SECRET_KEY is not set: define it as an environment variable when building (see BUILD.md)."),
+        )
+    }
+
+    /// The application data around the given credentials: everything but the
+    /// client id and the secret key is fixed.
+    fn with_credentials(client_id: &'a str, secret_key: &'a str) -> Self {
         AppData {
             scope: vec![
                 "publicData",
@@ -28,10 +39,8 @@ impl<'a> AppData<'a> {
                 "esi-corporations.read_standings.v1",
                 "esi-alliances.read_contacts.v1",
             ],
-            secret_key: option_env!("ESI_SECRET_KEY")
-                .expect("ESI_SECRET_KEY is not set: define it as an environment variable when building (see BUILD.md)."),
-            client_id: option_env!("ESI_CLIENT_ID")
-                .expect("ESI_CLIENT_ID is not set: define it as an environment variable when building (see BUILD.md)."),
+            secret_key,
+            client_id,
             url: String::from("http://localhost:56123/login"),
             user_agent: String::from("telescope/dev"),
         }
@@ -43,13 +52,7 @@ impl<'a> AppData<'a> {
     /// Placeholder credentials, so tests do not depend on the build
     /// environment.
     pub fn for_test() -> Self {
-        AppData {
-            scope: Vec::new(),
-            secret_key: "test-secret",
-            client_id: "test-client",
-            url: String::from("http://localhost:56123/login"),
-            user_agent: String::from("telescope/test"),
-        }
+        Self::with_credentials("test-client", "test-secret")
     }
 }
 
@@ -57,18 +60,9 @@ impl<'a> AppData<'a> {
 mod tests {
     use super::*;
 
-    /// The ESI credentials are baked in at compile time from the build environment;
-    /// without them `AppData::new` panics by design, so there is nothing to test.
-    fn configured() -> bool {
-        option_env!("ESI_SECRET_KEY").is_some() && option_env!("ESI_CLIENT_ID").is_some()
-    }
-
     #[test]
     fn the_app_asks_for_the_scopes_it_uses() {
-        if !configured() {
-            return;
-        }
-        let data = AppData::new();
+        let data = AppData::for_test();
         for scope in [
             "publicData",
             "esi-location.read_location.v1",
@@ -76,17 +70,32 @@ mod tests {
         ] {
             assert!(data.scope.contains(&scope), "{scope} missing");
         }
+        // No scope is asked for twice.
+        let unique: std::collections::HashSet<&&str> = data.scope.iter().collect();
+        assert_eq!(unique.len(), data.scope.len());
     }
 
     #[test]
-    fn the_callback_is_local_and_the_credentials_are_present() {
-        if !configured() {
-            return;
-        }
-        let data = AppData::new();
+    fn the_callback_is_local_and_the_credentials_are_kept() {
+        let data = AppData::with_credentials("the-id", "the-secret");
         assert!(data.url.starts_with("http://localhost:"));
         assert!(data.user_agent.starts_with("telescope/"));
-        assert!(!data.client_id.is_empty());
-        assert!(!data.secret_key.is_empty());
+        assert_eq!(data.client_id, "the-id");
+        assert_eq!(data.secret_key, "the-secret");
+    }
+
+    /// When the build environment has the credentials, `new` hands them over.
+    /// Without them it panics by design (see `BUILD.md`), so there is nothing
+    /// to call.
+    #[test]
+    fn new_uses_the_build_environment_when_it_is_there() {
+        let (Some(id), Some(secret)) =
+            (option_env!("ESI_CLIENT_ID"), option_env!("ESI_SECRET_KEY"))
+        else {
+            return;
+        };
+        let data = AppData::new();
+        assert_eq!(data.client_id, id);
+        assert_eq!(data.secret_key, secret);
     }
 }
