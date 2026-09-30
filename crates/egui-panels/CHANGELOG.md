@@ -40,3 +40,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `scroll(false)` for pages that fill the area themselves), `Draft` and
   `Theme` / `Palette` (colors derived from `egui::Visuals`).
 * `settings_demo` example and headless interaction tests.
+* `tests/components.rs`: headless tests of the navigation, action bar, layout,
+  controls, `SettingsLayout` and `Draft`.

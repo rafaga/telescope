@@ -9,7 +9,22 @@ period it happened in.
 
 ## [Unreleased]
 
+### Fixed
+
+* Adding nodes in the open rules editor could give two of them the same id
+  (`PatternsEditor::rule_ids` ignored the canvas), which made closing the
+  editor fail with a duplicate node id error (September 2026).
+
 ### Changed
+
+* `.cargo/config.toml` is no longer tracked by git; the ESI credentials come
+  from the build environment (`BUILD.md`). The values that had been committed
+  were rotated (September 2026).
+* `TelescopeApp::default()` builds the app through `with_settings`, which also
+  serves the tests (no SDE update check, placeholder ESI credentials); the
+  behaviour of the normal startup is unchanged (September 2026).
+* CI and `check.sh` run clippy with `-D warnings`; the test fixtures that
+  tripped it were rewritten (September 2026).
 
 * The Settings screen, the SDE update window and the rule graph editor use
   egui's own look-and-feel (flat sections separated by hairlines, check box
@@ -20,6 +35,11 @@ period it happened in.
 
 ### Added
 
+* Unit tests for the rule engine (`webb::rules`), the chat log reader, the
+  rules editor, the SDE updater (against a local HTTP server), the character
+  link helpers and `TelescopeApp` itself (`app_tests.rs`), and component tests
+  for `egui-panels`. Line coverage of the workspace went from about 65 % to
+  72 % (`cargo llvm-cov`, see `BUILD.md`) (September 2026).
 * `egui-panels`, a new workspace crate with the building blocks of a settings
   screen in egui (page, `Section`, `form`, `switch`, `Slider`, `segmented`,
   `tile`, `PathPicker`, `stepper`, `EntityCard`, `SideNav`, `ActionBar`,
