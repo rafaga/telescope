@@ -73,15 +73,19 @@ cargo run --release    # optimized build
 * Optional features of the `telescope` crate (see
   [Profiling with Tracy](#profiling-with-tracy)):
   `profile` and `profile-memory`.
-* Web build (uses `Trunk.toml` and `index.html`):
+* Web build (Trunk reads `index.html`; there is no `Trunk.toml`):
 
 > **Warning:** the `wasm32-unknown-unknown` target is still under development.
 > There is no guarantee that it compiles, and the native build is the only
 > supported one for now.
 
 ```sh
-trunk build            # or `trunk serve` to try it in the browser
+trunk build --filehash false    # or `trunk serve --filehash false` to try it in the browser
 ```
+
+`--filehash false` keeps the output file names as they are (`telescope_bg.wasm`):
+the service worker (`assets/sw.js`) lists them by name, and Trunk adds a hash to
+them by default. It used to be set in `Trunk.toml`, which was removed.
 
 ## Checks
 
