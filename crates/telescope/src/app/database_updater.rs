@@ -969,6 +969,18 @@ fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(name)
 }
 
+/// The update lock and cancel flag are process-wide: the tests that touch
+/// them (or read them through `run`, `spawn` and `show`) take this first.
+#[cfg(test)]
+static FLAG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    FLAG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod building_path_tests {
     use super::{building_path, format_size, is_sqlite, latest_build};
@@ -1149,7 +1161,7 @@ mod updater_state_tests {
         let build_file = dir.join(format!("sde-{}.build", urls.sde_variant));
         std::fs::write(&build_file, "100").unwrap();
 
-        // Only test touching the process-wide cancel flag.
+        let _guard = super::serial();
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         assert!(!DatabaseUpdater::cancelled(&dir, &urls));
         assert!(build_file.exists());
@@ -1160,5 +1172,529 @@ mod updater_state_tests {
 
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// `run` and `spawn` against a local HTTP server that plays CCP's SDE index:
+/// no test here reaches the real network or a real `sde.db`.
+#[cfg(test)]
+mod updater_run_tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::path::Path;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::sync::mpsc;
+
+    const INDEX: &str = "{\"_key\": \"sde\", \"buildNumber\": 100, \"releaseDate\": \"x\"}\n";
+    const ZIP_PATH: &str = "/eve-online-static-data-100-jsonl.zip";
+
+    /// Answers each request with the body registered for its path, or 404.
+    fn serve(routes: Vec<(&'static str, Vec<u8>)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match std::io::Read::read(&mut stream, &mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (status, body) = match routes.iter().find(|(route, _)| *route == path) {
+                    Some((_, body)) => ("200 OK", body.clone()),
+                    None => ("404 Not Found", Vec::new()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        base
+    }
+
+    /// An address nothing listens on.
+    fn dead_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/", listener.local_addr().unwrap())
+    }
+
+    fn urls(base: &str) -> BuildUrls {
+        BuildUrls {
+            sde_variant: String::from("jsonl"),
+            sde_url: base.to_string(),
+            maps_url: base.to_string(),
+        }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "telescope-updater-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A file with the SQLite header, standing for the installed `sde.db`.
+    fn installed_database(dir: &Path) -> PathBuf {
+        let path = dir.join("sde.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute("CREATE TABLE marker (x)", []).unwrap();
+        path
+    }
+
+    fn summary(message: &Message) -> String {
+        match message {
+            Message::DatabaseUpdateProgress(phase) => format!("progress:{phase:?}"),
+            Message::DatabaseUpdateInfo(SdeInfo::Versions {
+                installed,
+                available,
+            }) => format!("versions:{installed:?}->{available}"),
+            Message::DatabaseUpdateInfo(SdeInfo::Downloaded(bytes)) => {
+                format!("downloaded:{bytes}")
+            }
+            Message::DatabaseUpdateInfo(SdeInfo::Verified) => String::from("verified"),
+            Message::DatabaseUpdated(rebuilt) => format!("updated:{rebuilt}"),
+            Message::GenericNotification((_, _, _, text)) => format!("note:{text}"),
+            _ => String::from("other"),
+        }
+    }
+
+    fn drain(receiver: &mut mpsc::Receiver<Message>) -> Vec<String> {
+        std::iter::from_fn(|| receiver.try_recv().ok())
+            .map(|message| summary(&message))
+            .collect()
+    }
+
+    fn run_update(
+        sde_path: &Path,
+        data_dir: &Path,
+        urls: &BuildUrls,
+    ) -> (Result<Outcome, Error>, Vec<String>) {
+        let (sender, mut receiver) = mpsc::channel(64);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(DatabaseUpdater::run(
+            sde_path,
+            data_dir,
+            &data_dir.join("sde"),
+            false,
+            urls,
+            &sender,
+        ));
+        (result, drain(&mut receiver))
+    }
+
+    fn build_file(dir: &Path) -> PathBuf {
+        dir.join("sde-jsonl.build")
+    }
+
+    fn zip_file(dir: &Path) -> PathBuf {
+        dir.join("sde-jsonl.zip")
+    }
+
+    /// Waits for the thread `spawn` started to release the update lock.
+    fn wait_until_idle() {
+        for _ in 0..1000 {
+            if !UPDATE_IN_PROGRESS.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the update thread did not finish");
+    }
+
+    // ---- run ----
+
+    #[test]
+    fn an_installed_current_build_is_up_to_date_and_downloads_nothing() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("current");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "100\n").unwrap();
+        std::fs::write(zip_file(&dir), "old zip").unwrap();
+        let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert_eq!(
+            messages,
+            ["progress:Checking", "versions:Some(\"100\")->100"]
+        );
+        assert_eq!(std::fs::read_to_string(zip_file(&dir)).unwrap(), "old zip");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_new_build_is_downloaded_and_a_cancel_stops_before_extracting() {
+        let _guard = serial();
+        let dir = temp_dir("cancel");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "99").unwrap();
+        std::fs::write(zip_file(&dir), "old zip").unwrap();
+        let payload = b"not really a zip".to_vec();
+        let base = serve(vec![
+            ("/latest.jsonl", INDEX.as_bytes().to_vec()),
+            (ZIP_PATH, payload.clone()),
+        ]);
+        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+
+        assert_eq!(result.unwrap(), Outcome::Cancelled);
+        assert_eq!(
+            messages,
+            [
+                "progress:Checking".to_string(),
+                "versions:Some(\"99\")->100".to_string(),
+                "progress:Downloading".to_string(),
+                format!("downloaded:{}", payload.len()),
+            ]
+        );
+        // The zip was replaced, and the recorded build forgotten so the next
+        // check does not take the old database for current.
+        assert_eq!(std::fs::read(zip_file(&dir)).unwrap(), payload);
+        assert!(!build_file(&dir).exists());
+        assert!(is_sqlite(&database));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_broken_zip_fails_the_update_and_keeps_the_installed_database() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("badzip");
+        let database = installed_database(&dir);
+        let before = std::fs::read(&database).unwrap();
+        std::fs::write(build_file(&dir), "99").unwrap();
+        let base = serve(vec![
+            ("/latest.jsonl", INDEX.as_bytes().to_vec()),
+            (ZIP_PATH, b"not really a zip".to_vec()),
+        ]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert!(result.is_err());
+        assert!(messages.contains(&String::from("progress:Extracting")));
+        assert!(!messages.contains(&String::from("progress:Rebuilding")));
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        assert!(!building_path(&database).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_download_is_an_error_and_keeps_the_recorded_build() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("nodownload");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "99").unwrap();
+        // The index is there, the zip is not (404).
+        let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert!(result.is_err());
+        assert!(messages.contains(&String::from("progress:Downloading")));
+        assert_eq!(std::fs::read_to_string(build_file(&dir)).unwrap(), "99");
+        assert!(is_sqlite(&database));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offline_with_an_installed_database_counts_as_up_to_date() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("offline");
+        let database = installed_database(&dir);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&dead_server()));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert_eq!(messages, ["progress:Checking", "progress:Downloading"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offline_without_a_database_fails_and_builds_nothing() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("firstrun");
+        let database = dir.join("sub").join("sde.db");
+
+        let (result, messages) = run_update(&database, &dir, &urls(&dead_server()));
+
+        assert!(result.is_err());
+        assert!(messages.contains(&String::from("progress:Extracting")));
+        assert!(!database.exists());
+        assert!(!building_path(&database).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_index_without_the_sde_build_is_treated_like_no_index() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("noindex");
+        let database = installed_database(&dir);
+        let base = serve(vec![(
+            "/latest.jsonl",
+            b"{\"_key\": \"other\", \"buildNumber\": 1}\n".to_vec(),
+        )]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.starts_with("versions"))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notify_sends_a_notification_with_the_text() {
+        let (sender, mut receiver) = mpsc::channel(4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(DatabaseUpdater::notify(&sender, Type::Info, "hello"));
+        assert_eq!(drain(&mut receiver), ["note:hello"]);
+    }
+
+    // ---- spawn ----
+
+    #[test]
+    fn spawn_skips_an_unconfigured_database_path() {
+        let _guard = serial();
+        let dir = temp_dir("nopath");
+        let (sender, mut receiver) = mpsc::channel(8);
+
+        DatabaseUpdater::spawn(
+            PathBuf::new(),
+            dir.clone(),
+            dir.join("sde"),
+            Arc::new(sender),
+            false,
+            urls(&dead_server()),
+        );
+
+        let messages = drain(&mut receiver);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("No SDE database path"), "{messages:?}");
+        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn spawn_reports_a_corrupted_database_and_a_run_already_going() {
+        let _guard = serial();
+        let dir = temp_dir("running");
+        let database = dir.join("sde.db");
+        std::fs::write(&database, "this is not sqlite").unwrap();
+        let (sender, mut receiver) = mpsc::channel(8);
+        UPDATE_IN_PROGRESS.store(true, Ordering::SeqCst);
+
+        DatabaseUpdater::spawn(
+            database.clone(),
+            dir.clone(),
+            dir.join("sde"),
+            Arc::new(sender),
+            false,
+            urls(&dead_server()),
+        );
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+
+        let messages = drain(&mut receiver);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("corrupted"), "{messages:?}");
+        assert!(messages[1].contains("already running"), "{messages:?}");
+        // Nothing touched the file.
+        assert_eq!(
+            std::fs::read_to_string(&database).unwrap(),
+            "this is not sqlite"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn spawn_and_collect(database: &Path, dir: &Path, base: &str) -> Vec<String> {
+        let (sender, mut receiver) = mpsc::channel(64);
+        DatabaseUpdater::spawn(
+            database.to_path_buf(),
+            dir.to_path_buf(),
+            dir.join("sde"),
+            Arc::new(sender),
+            false,
+            urls(base),
+        );
+        wait_until_idle();
+        drain(&mut receiver)
+    }
+
+    #[test]
+    fn a_spawned_check_of_a_current_database_reports_and_finishes() {
+        let _guard = serial();
+        let dir = temp_dir("spawn-current");
+        let database = installed_database(&dir);
+        std::fs::write(build_file(&dir), "100").unwrap();
+        std::fs::write(zip_file(&dir), "old zip").unwrap();
+        let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
+
+        let messages = spawn_and_collect(&database, &dir, &base);
+
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("updated:false"),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message == "note:SDE database is already up to date."),
+            "{messages:?}"
+        );
+        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_spawned_update_that_fails_reports_the_error_and_releases_the_lock() {
+        let _guard = serial();
+        let dir = temp_dir("spawn-fail");
+        let database = dir.join("sde.db");
+
+        let messages = spawn_and_collect(&database, &dir, &dead_server());
+
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("updated:false"),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("note:") && message.len() > "note:".len()),
+            "{messages:?}"
+        );
+        assert!(!database.exists());
+        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        // And a second update can start afterwards.
+        let again = spawn_and_collect(&database, &dir, &dead_server());
+        assert_eq!(again.last().map(String::as_str), Some("updated:false"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- The window ----
+
+    fn frame(ctx: &egui::Context, draw: impl FnMut(&egui::Context)) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1000.0, 700.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        let mut draw = draw;
+        let mut output = ctx.run_ui(input, |ui| draw(ui.ctx()));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_window_only_exists_while_an_update_runs() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let ctx = egui::Context::default();
+        let mut updater = DatabaseUpdater::default();
+        let id = egui::Id::new("sde_update_window");
+
+        frame(&ctx, |ctx| updater.show(ctx));
+        assert!(ctx.memory(|memory| memory.area_rect(id)).is_none());
+
+        updater.set_phase(SdePhase::Checking);
+        frame(&ctx, |ctx| updater.show(ctx));
+        frame(&ctx, |ctx| updater.show(ctx));
+        assert!(ctx.memory(|memory| memory.area_rect(id)).is_some());
+
+        updater.hide();
+        frame(&ctx, |ctx| updater.show(ctx));
+        assert!(updater.phase.is_none());
+    }
+
+    #[test]
+    fn the_window_draws_every_phase_with_and_without_details() {
+        let _guard = serial();
+        for cancelling in [false, true] {
+            CANCEL_REQUESTED.store(cancelling, Ordering::SeqCst);
+            for phase in SdePhase::ALL {
+                for finished in [false, true] {
+                    let ctx = egui::Context::default();
+                    let mut updater = DatabaseUpdater::default();
+                    updater.set_phase(phase);
+                    updater.set_info(SdeInfo::Versions {
+                        installed: None,
+                        available: String::from("100"),
+                    });
+                    updater.set_info(SdeInfo::Downloaded(50_540_000));
+                    updater.set_info(SdeInfo::Verified);
+                    if finished {
+                        updater.finish();
+                    }
+                    frame(&ctx, |ctx| updater.show(ctx));
+                    frame(&ctx, |ctx| updater.show(ctx));
+                    assert!(
+                        ctx.memory(|memory| memory.area_rect(egui::Id::new("sde_update_window")))
+                            .is_some(),
+                        "{phase:?} finished={finished} cancelling={cancelling}"
+                    );
+                }
+            }
+        }
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn the_close_button_is_a_small_square_that_only_clicks_when_enabled() {
+        let ctx = egui::Context::default();
+        let (mut enabled_size, mut disabled_size) = (Vec2::ZERO, Vec2::ZERO);
+        let (mut enabled_click, mut disabled_click) = (false, true);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1000.0, 700.0),
+            )),
+            ..egui::RawInput::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let enabled = close_button(ui, true);
+            let disabled = close_button(ui, false);
+            enabled_size = enabled.rect.size();
+            disabled_size = disabled.rect.size();
+            enabled_click = enabled.sense.senses_click();
+            disabled_click = disabled.sense.senses_click();
+        });
+        output.textures_delta.clear();
+        assert_eq!(enabled_size, Vec2::splat(22.0));
+        assert_eq!(disabled_size, Vec2::splat(22.0));
+        assert!(enabled_click);
+        assert!(!disabled_click);
     }
 }
