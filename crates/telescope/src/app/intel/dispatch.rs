@@ -11,6 +11,7 @@ use super::detection::DetectedLine;
 use super::resolve::{JumpGraph, nearest_origin_within};
 use crate::app::audio::AudioHandle;
 use crate::app::messages::{MapSync, Message, MessageSpawner, Target, Type};
+use crate::app::settings::Settings;
 use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
 use webb::graph::{Activation, Data, FORMATTED_TAG, Mensaje};
 use webb::map_alerts::{AlertSummary, IntelAlert, leftover};
+use webb::objects::Character;
 use webb::rules::{IntelLine, OutputKind};
 
 /// The settings the dispatch reads, copied out of `Settings`.
@@ -29,6 +31,18 @@ pub(crate) struct AlarmConfig {
     pub center_on_alert: bool,
     /// How long a pulse / tooltip entry stays on the map.
     pub alert_duration: Duration,
+}
+
+impl AlarmConfig {
+    /// The alarm settings as they are in `settings`.
+    pub(crate) fn from_settings(settings: &Settings) -> Self {
+        Self {
+            warning_area: settings.get_warning_area(),
+            sound_path: settings.get_alert_sound_path(),
+            center_on_alert: settings.get_center_on_alert(),
+            alert_duration: settings.get_alert_duration(),
+        }
+    }
 }
 
 impl Default for AlarmConfig {
@@ -50,6 +64,58 @@ pub(crate) struct AlarmShared {
     pub locations: RwLock<Vec<u32>>,
     /// Stargate connections of the loaded universe.
     pub jumps: RwLock<JumpGraph>,
+}
+
+/// The known solar systems of `characters` (those with a location).
+pub(crate) fn character_locations(characters: &[Character]) -> Vec<u32> {
+    characters
+        .iter()
+        .filter_map(|character| u32::try_from(character.location).ok())
+        .filter(|location| *location > 0)
+        .collect()
+}
+
+impl AlarmShared {
+    /// Stores `config` and `locations`, writing (and logging) only what
+    /// changed. Returns whether anything did.
+    pub(crate) fn update(&self, config: AlarmConfig, locations: Vec<u32>) -> bool {
+        let mut changed = false;
+        if *self
+            .config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            != config
+        {
+            tracing::debug!(?config, "alarm config updated");
+            *self
+                .config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
+            changed = true;
+        }
+        if *self
+            .locations
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            != locations
+        {
+            tracing::debug!(?locations, "character locations updated");
+            *self
+                .locations
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = locations;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Replaces the stargate graph (see `TelescopeApp::sync_alarm_jumps`).
+    pub(crate) fn set_jumps(&self, graph: JumpGraph) {
+        *self
+            .jumps
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = graph;
+    }
 }
 
 /// What the dispatch thread works with.
@@ -473,6 +539,61 @@ mod tests {
             }
             _ => panic!("expected an Info notification"),
         }
+    }
+
+    #[test]
+    fn character_locations_keep_only_known_systems() {
+        let located = |location: i32| {
+            let mut character = Character::default();
+            character.location = location;
+            character
+        };
+        assert_eq!(
+            character_locations(&[
+                located(30000142),
+                located(0),
+                located(-5),
+                located(30000001)
+            ]),
+            vec![30000142, 30000001]
+        );
+    }
+
+    #[test]
+    fn alarm_config_follows_the_settings() {
+        let mut settings = Settings::default();
+        settings.set_warning_area(4);
+        settings.set_center_on_alert(true);
+        settings.set_alert_duration_secs(20);
+        let config = AlarmConfig::from_settings(&settings);
+        assert_eq!(config.warning_area, 4);
+        assert!(config.center_on_alert);
+        assert_eq!(config.alert_duration, settings.get_alert_duration());
+        assert_eq!(config.sound_path, settings.get_alert_sound_path());
+    }
+
+    #[test]
+    fn update_reports_only_real_changes() {
+        let shared = AlarmShared::default();
+        let config = AlarmConfig::from_settings(&Settings::default());
+        // The default shared config is not the settings' one.
+        assert!(shared.update(config.clone(), vec![1]));
+        assert!(!shared.update(config.clone(), vec![1]));
+        assert!(shared.update(config.clone(), vec![2]));
+        let mut other = config;
+        other.warning_area += 1;
+        assert!(shared.update(other.clone(), vec![2]));
+        assert_eq!(*shared.config.read().unwrap(), other);
+        assert_eq!(*shared.locations.read().unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn set_jumps_replaces_the_graph() {
+        let shared = AlarmShared::default();
+        shared.set_jumps(JumpGraph::from([(1, vec![2]), (2, vec![1])]));
+        assert_eq!(shared.jumps.read().unwrap().len(), 2);
+        shared.set_jumps(JumpGraph::new());
+        assert!(shared.jumps.read().unwrap().is_empty());
     }
 
     #[test]

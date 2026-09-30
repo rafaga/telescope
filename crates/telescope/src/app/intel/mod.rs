@@ -173,49 +173,10 @@ impl TelescopeApp {
     /// idempotent -- writes only what changed -- so it runs on every pass of
     /// `event_manager`.
     pub(crate) fn sync_alarm_shared(&self) {
-        let config = AlarmConfig {
-            warning_area: self.settings.get_warning_area(),
-            sound_path: self.settings.get_alert_sound_path(),
-            center_on_alert: self.settings.get_center_on_alert(),
-            alert_duration: self.settings.get_alert_duration(),
-        };
-        {
-            let current = self
-                .alarm_shared
-                .config
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if *current != config {
-                drop(current);
-                tracing::debug!(?config, "alarm config updated");
-                *self
-                    .alarm_shared
-                    .config
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
-            }
-        }
-        let locations: Vec<u32> = self
-            .esi
-            .characters
-            .iter()
-            .filter_map(|character| u32::try_from(character.location).ok())
-            .filter(|location| *location > 0)
-            .collect();
-        let unchanged = *self
-            .alarm_shared
-            .locations
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            == locations;
-        if !unchanged {
-            tracing::debug!(?locations, "character locations updated");
-            *self
-                .alarm_shared
-                .locations
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = locations;
-        }
+        self.alarm_shared.update(
+            AlarmConfig::from_settings(&self.settings),
+            dispatch::character_locations(&self.esi.characters),
+        );
     }
 
     /// Rebuilds the stargate graph the alarm measures distances on from the
@@ -223,10 +184,6 @@ impl TelescopeApp {
     pub(crate) fn sync_alarm_jumps(&self) {
         let graph = resolve::jump_graph(&self.universe);
         tracing::debug!(systems = graph.len(), "alarm jump graph rebuilt");
-        *self
-            .alarm_shared
-            .jumps
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = graph;
+        self.alarm_shared.set_jumps(graph);
     }
 }
