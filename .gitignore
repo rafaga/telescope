@@ -5,10 +5,8 @@
 *.db
 .DS_Store
 src/app/data.rs
-Cargo.lock
 /.cargo
 /.cargo-packager
-Cargo.lock
 *.db.old
 telescope.toml
 /crates/webb/target/

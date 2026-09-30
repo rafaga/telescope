@@ -6,15 +6,37 @@ name: Release installers
 # valid for the host OS it's running on and skips the rest (it logs "ignoring
 # wix" on macOS, "ignoring dmg" on Windows) -- so one job per OS, no extra
 # format selection needed.
+#
+# Run by hand ("Run workflow", with a `tag` such as v0.0.0-test) it builds the
+# same installers but keeps them as workflow artifacts instead of attaching them
+# to a release, to try the packaging without publishing anything.
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag the installer version is derived from (nothing is published)"
+        required: true
+        default: v0.0.0-test
+
+# One release at a time per tag; a second run for the same tag waits.
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  # Pinned so the cache below has a stable key; bump it on purpose.
+  PACKAGER_VERSION: 0.11.8
+
 jobs:
   build:
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +48,32 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      # The lockfile is versioned: a release must build exactly what was
+      # tested, so a Cargo.lock that no longer matches the manifests stops here
+      # instead of being re-resolved. (`beforePackagingCommand` in
+      # packager.json runs the actual build and cannot take `--locked`.)
+      - name: Check that Cargo.lock is up to date
+        run: cargo metadata --locked --format-version 1 > /dev/null
+        shell: bash
+
+      # Without the ESI credentials the build still succeeds (`option_env!`
+      # yields None) and the installer panics for every user at start-up, so
+      # stop before spending the build.
+      - name: Check the ESI secrets
+        shell: bash
+        env:
+          ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
+          ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
+        run: |
+          missing=0
+          for name in ESI_CLIENT_ID ESI_SECRET_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::The repository secret $name is empty or missing; the installer would panic at start-up."
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       # packager.json's "version" is a hand-maintained literal (currently
       # "0.0.1", already out of sync with the workspace Cargo.toml's 0.1.0)
@@ -60,7 +108,7 @@ jobs:
       - name: Sync packager.json version with the release tag
         shell: bash
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           version="${TAG#v}"
@@ -70,8 +118,17 @@ jobs:
           jq --arg v "$version" '.version = $v' packager.json > packager.json.tmp
           mv packager.json.tmp packager.json
 
+      # Building cargo-packager from source takes minutes on every release.
+      - name: Cache cargo-packager
+        id: packager
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-packager*
+          key: cargo-packager-${{ env.PACKAGER_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        if: steps.packager.outputs.cache-hit != 'true'
+        run: cargo install cargo-packager --locked --version ${{ env.PACKAGER_VERSION }}
 
       # packager.json's beforePackagingCommand already runs
       # `cargo build --release -p telescope`, so this alone builds the
@@ -105,10 +162,38 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: cargo packager --release
 
+      # Fails when nothing was produced (the upload alone would not), and
+      # records a SHA-256 of each installer next to it.
+      - name: Checksums
+        shell: bash
+        working-directory: target/release
+        run: |
+          files=$(ls *.msi *.dmg 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "::error::cargo packager produced no .msi or .dmg in target/release"
+            exit 1
+          fi
+          if command -v sha256sum > /dev/null; then sum=sha256sum; else sum="shasum -a 256"; fi
+          $sum $files > "SHA256SUMS-${{ runner.os }}.txt"
+          cat "SHA256SUMS-${{ runner.os }}.txt"
+
       - name: Upload installer to the release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           files: |
             target/release/*.msi
             target/release/*.dmg
+            target/release/SHA256SUMS-*.txt
+
+      - name: Keep the installer as an artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ runner.os }}
+          path: |
+            target/release/*.msi
+            target/release/*.dmg
+            target/release/SHA256SUMS-*.txt
+          if-no-files-found: error

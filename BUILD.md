@@ -85,15 +85,37 @@ trunk build            # or `trunk serve` to try it in the browser
 
 ## Checks
 
-CI (GitHub Actions, `.github/workflows/`) runs on Linux, Windows and macOS:
-`cargo check --all-features`, `cargo test --workspace`, `cargo fmt --check`
-and `cargo clippy --workspace --all-targets -- -D warnings`.
+`Cargo.lock` is versioned and CI builds with `--locked`, so a change to a
+`Cargo.toml` needs its lockfile update in the same commit.
 
-`check.sh` runs those checks locally, plus the wasm ones: `cargo check`
-(native and wasm), `cargo fmt --check`, `cargo clippy` with warnings as
-errors, the tests (including doc tests) and `trunk build`. Since the wasm target is still under
-development, its steps (`cargo check ... --target wasm32-unknown-unknown` and
-`trunk build`) may fail even when the native build is fine.
+CI (GitHub Actions, `.github/workflows/`):
+
+* `ci.yml`, on pull requests to `master` and `dev` and on pushes to `master`
+  (documentation-only changes are skipped; a new push to a pull request
+  cancels the run in progress). `fmt` checks the formatting once. On Linux,
+  Windows and macOS one job runs, in this order, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo check --workspace --all-features` and
+  `cargo test --workspace`, so the dependencies (OpenSSL, Tracy, egui) are
+  compiled once per system. `ci-ok` sums it all up: it is the one check to
+  require if branch protection is turned on. The build cache is written by
+  pushes to `master` and only read by pull requests. Pushes to `master` also
+  run `coverage` (`cargo llvm-cov`): the summary is in the run's page and
+  `lcov.info` is kept as an artifact.
+* `security.yml`, when a manifest, `Cargo.lock` or `deny.toml` changes and
+  every Monday: `cargo deny check` (RustSec advisories, licenses, banned and
+  duplicated crates, sources). The two advisories that have no fix yet
+  (`rsa` through `jsonwebtoken`, and the unmaintained `paste`) are listed in
+  `deny.toml` with the reason; run `cargo deny check` locally
+  (`cargo install cargo-deny --locked`) before touching them.
+* `release.yml`, when a release is published (or by hand, with a tag, to try
+  the packaging: the installers are then kept as artifacts). It stops early if
+  the `ESI_CLIENT_ID` or `ESI_SECRET_KEY` repository secrets are missing, and
+  attaches a `SHA256SUMS-<system>.txt` next to the installers.
+
+`check.sh` runs the same checks locally with all features, and the wasm check
+too when the `wasm32-unknown-unknown` target is installed. Since the wasm
+target is still under development, that step may fail even when the native
+build is fine.
 
 ```sh
 ./check.sh

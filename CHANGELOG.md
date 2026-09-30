@@ -9,6 +9,13 @@ period it happened in.
 
 ## [Unreleased]
 
+### Security
+
+* `security.yml` runs `cargo deny check` (advisories, licenses, bans, sources)
+  on manifest changes and weekly; `deny.toml` was adapted to the actual
+  dependency tree, with the two advisories that have no fix documented, and
+  the yanked `yoke-derive` was updated (September 2026).
+
 ### Fixed
 
 * Adding nodes in the open rules editor could give two of them the same id
@@ -17,6 +24,18 @@ period it happened in.
 
 ### Changed
 
+* CI rebuilt around one `ci.yml`: a single job per operating system runs
+  clippy, the all-features check and the tests on a shared build, `fmt` runs
+  once, and there is a `ci-ok` summary check, run cancellation, least
+  privilege permissions and timeouts. The build cache is written only by
+  pushes to `master`. Pushes to `dev` are no longer built twice (the pull
+  request already covers them), and `master` gets a coverage report
+  (`cargo llvm-cov`) (September 2026).
+* `Cargo.lock` is versioned and CI and the release build with `--locked`
+  (September 2026).
+* `release.yml` fails early without the ESI secrets, caches `cargo-packager`,
+  publishes SHA-256 checksums, and can be run by hand to try the packaging
+  without publishing (September 2026).
 * `.cargo/config.toml` is no longer tracked by git; the ESI credentials come
   from the build environment (`BUILD.md`). The values that had been committed
   were rotated (September 2026).

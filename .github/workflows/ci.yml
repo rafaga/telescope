@@ -1,0 +1,143 @@
+name: CI
+
+# One workflow for the three operating systems. Per system a single job runs
+# clippy, the all-features check and the tests one after the other, so the
+# expensive part of the build (OpenSSL/SQLCipher, Tracy, egui) is compiled once
+# and shared. Pull requests only read the build cache; it is written by pushes
+# to master, so three systems' worth of `target/` do not crowd out the
+# repository's cache quota.
+on:
+  pull_request:
+    branches: [master, dev]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A new push to a pull request replaces the run in progress; a run on master
+  # always finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
+  CARGO_HTTP_MULTIPLEXING: false
+  # Backtraces with line numbers only: smaller artifacts and a faster build.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  test:
+    name: clippy and test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          # A failed run still leaves the dependencies compiled for the next one.
+          cache-on-failure: true
+      # ALSA for the alarm sound (rodio/cpal), OpenSSL for SQLCipher and TLS.
+      # The window system libraries are loaded at run time, not linked.
+      - name: Install the Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
+      # OpenSSL is built from source (SQLCipher); the `perl` that ships with
+      # Git for Windows cannot do it, Strawberry Perl can.
+      - name: Put Strawberry Perl first on the PATH
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'C:\Strawberry\perl\bin' >> "$GITHUB_PATH"
+      # Every crate, tests and examples included.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # All features (Tracy profiling included): compiled, not run.
+      - run: cargo check --workspace --all-features --locked
+      # `webb` with its default features (the encrypted player database), like
+      # Telescope uses it. Includes the doc tests.
+      - run: cargo test --workspace --locked
+
+  # The one check to require if branch protection is turned on.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [fmt, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a job failed or was cancelled
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "::error::a CI job did not pass"
+            exit 1
+          fi
+
+  # Line coverage of the workspace; kept as an artifact, no external service.
+  coverage:
+    name: coverage
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
+      - name: Install the Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run the tests with coverage
+        run: cargo llvm-cov --workspace --locked --no-report
+      - name: Write the report
+        env:
+          IGNORE: '(cargo/registry|rustc)'
+        run: |
+          cargo llvm-cov report --ignore-filename-regex "$IGNORE" --lcov --output-path lcov.info
+          {
+            echo '## Line coverage'
+            echo '```'
+            cargo llvm-cov report --ignore-filename-regex "$IGNORE" --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
