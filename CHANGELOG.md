@@ -35,8 +35,10 @@ period it happened in.
   diagrams), the six D2 diagrams and their SVGs (now rendered with the `elk`
   layout), a `README.md` with working CI badges and the current features, a
   rewritten `crates/webb/README.md`, a new `crates/native_tools/README.md`, an
-  *Installers* section in `BUILD.md`, and the stale names of pages, functions
-  and messages in comments and in `assets/telescope.default.toml`.
+  *Installers* section in `BUILD.md`, the stale names of pages, functions
+  and messages in comments and in `assets/telescope.default.toml`, and new
+  screenshots of the current interface (`docs/screenshots`, English, taken on
+  Windows 11) in the `README.md`.
 * CI rebuilt around one `ci.yml`: a single job per operating system runs
   clippy, the all-features check and the tests on a shared build, `fmt` runs
   once, and there is a `ci-ok` summary check, run cancellation, least

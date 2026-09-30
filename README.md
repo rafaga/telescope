@@ -52,12 +52,16 @@ Platforms tested by hand:
 
 CI builds and tests every change on Linux, Windows and macOS.
 
-Screenshots:
+## Screenshots
 
-<img width="400" height="315" alt="Universe Map" src="https://github.com/user-attachments/assets/9a2fcc8d-c52c-42cd-b6c3-9529345ea29e" />
-<img width="400" height="315" alt="Great Wildlands Region" src="https://github.com/user-attachments/assets/2960adac-d001-4fe2-9f5e-0e502a408c90" />
-<img width="400" height="352" alt="Settings" src="https://github.com/user-attachments/assets/e4e0b25c-54bb-42b9-a9fd-dc07966556ae" />
-<img width="400" height="317" alt="Aridia Region on MacOS" src="https://github.com/user-attachments/assets/1f821a55-2ae7-4aa3-b3f6-dea25e3a2f32" />
+| | |
+|---|---|
+| ![The universe map, with a tab for each region that opens at start-up](docs/screenshots/universe.png) | ![A region map: the nodes that an intel line reports pulse in red](docs/screenshots/region-alerts.png) |
+| **Universe map.** Every region you choose opens as a tab; alerts show here too. | **Region map.** The nodes an intel line reports pulse, and the line lands in the status log. |
+| ![Settings, Sources: the chat log folder and the channels it watches](docs/screenshots/settings-sources.png) | ![Settings, Rules: the node graph editor with a detection selected](docs/screenshots/settings-rules-editor.png) |
+| **Sources.** The chat log folder, its channels and when each last spoke. | **Rules.** The graph of detections, logic and outputs, with the selected node's fields. |
+| ![Settings, Alerts: distance, duration and sound](docs/screenshots/settings-alerts.png) | ![The window that shows the SDE database being built](docs/screenshots/sde-update.png) |
+| **Alerts.** How close, for how long and with which sound. | **SDE database.** Built automatically the first time Telescope runs. |
 
 ## Building and running
 
