@@ -157,26 +157,6 @@ fn restart() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn restarts_only_after_a_reported_loss() {
-        let long = Duration::from_secs(60);
-        assert!(should_restart(true, long, 0));
-        assert!(!should_restart(false, long, 0));
-    }
-
-    #[test]
-    fn does_not_restart_in_a_loop() {
-        let long = Duration::from_secs(60);
-        assert!(should_restart(true, long, MAX_RESTARTS - 1));
-        assert!(!should_restart(true, long, MAX_RESTARTS));
-        assert!(!should_restart(true, Duration::from_secs(2), 0));
-    }
-}
-
 /// Called at the start of every frame: notes when it happened and logs a
 /// long gap since the previous one.
 pub(crate) fn frame_tick() {
@@ -233,4 +213,24 @@ fn report(panic_message: &str) {
     );
     tracing::error!("{text}");
     eprintln!("{text}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restarts_only_after_a_reported_loss() {
+        let long = Duration::from_secs(60);
+        assert!(should_restart(true, long, 0));
+        assert!(!should_restart(false, long, 0));
+    }
+
+    #[test]
+    fn does_not_restart_in_a_loop() {
+        let long = Duration::from_secs(60);
+        assert!(should_restart(true, long, MAX_RESTARTS - 1));
+        assert!(!should_restart(true, long, MAX_RESTARTS));
+        assert!(!should_restart(true, Duration::from_secs(2), 0));
+    }
 }

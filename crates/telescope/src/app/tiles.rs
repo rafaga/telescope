@@ -1318,9 +1318,10 @@ mod logic_tests {
     use webb::map_alerts::AlertSummary;
 
     fn sde_point(x: f64, y: f64) -> SdePoint {
-        let mut point = SdePoint::default();
-        point.coords = [x, y, 0.0];
-        point
+        SdePoint {
+            coords: [x, y, 0.0],
+            ..SdePoint::default()
+        }
     }
 
     #[test]
@@ -1367,7 +1368,7 @@ mod logic_tests {
             point1: [1.25, 2.5],
             point2: [-3.0, 4.0],
         };
-        let converted = sde_segment_to_map((1, 2), segment.clone());
+        let converted = sde_segment_to_map((1, 2), segment);
         assert_eq!(converted.id, (1, 2));
         assert_eq!(converted.point1, [1.25, 2.5]);
         assert_eq!(converted.point2, [-3.0, 4.0]);

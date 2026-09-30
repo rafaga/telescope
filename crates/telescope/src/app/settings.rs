@@ -1081,9 +1081,10 @@ mod tests {
 
     /// Settings that count as already saved, to see which calls dirty them.
     fn saved_settings() -> Settings {
-        let mut settings = Settings::default();
-        settings.saved = true;
-        settings
+        Settings {
+            saved: true,
+            ..Settings::default()
+        }
     }
 
     #[test]

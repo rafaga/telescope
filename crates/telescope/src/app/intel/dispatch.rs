@@ -543,10 +543,9 @@ mod tests {
 
     #[test]
     fn character_locations_keep_only_known_systems() {
-        let located = |location: i32| {
-            let mut character = Character::default();
-            character.location = location;
-            character
+        let located = |location: i32| Character {
+            location,
+            ..Character::default()
         };
         assert_eq!(
             character_locations(&[
