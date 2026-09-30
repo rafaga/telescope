@@ -22,6 +22,11 @@ period it happened in.
   (`PatternsEditor::rule_ids` ignored the canvas), which made closing the
   editor fail with a duplicate node id error (September 2026).
 
+### Removed
+
+* `Trunk.toml`: the experimental web build is run with
+  `trunk build --filehash false` (`BUILD.md`) (September 2026).
+
 ### Changed
 
 * CI rebuilt around one `ci.yml`: a single job per operating system runs
