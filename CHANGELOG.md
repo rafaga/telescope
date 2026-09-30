@@ -9,6 +9,15 @@ period it happened in.
 
 ## [Unreleased]
 
+### Changed
+
+* The Settings screen, the SDE update window and the rule graph editor use
+  egui's own look-and-feel (flat sections separated by hairlines, check box
+  rows, small radii, no shadows except on floating windows) instead of a card
+  based one; the pages fill the available width. *Alerts* no longer lists the
+  characters the distance is measured from, and *Maps* picks start-up regions
+  with toggle buttons (September 2026).
+
 ### Added
 
 * `egui-panels`, a new workspace crate with the building blocks of a settings
@@ -112,6 +121,9 @@ period it happened in.
 
 ### Fixed
 
+* When the GPU device is lost (sleep, driver reset), the app now restarts
+  itself instead of dying with a `egui-wgpu` panic (exit code 101). At most
+  three restarts in a row, and only if wgpu reported the loss.
 * Settings -> Rules: the buttons, switch and fields of an entry's card
   didn't respond (Open, Remove, the on/off switch, renaming): the card sensed
   clicks over its whole area on top of them. The same held for *Unlink* on

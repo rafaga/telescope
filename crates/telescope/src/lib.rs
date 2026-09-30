@@ -13,6 +13,8 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 mod app;
 pub mod app_dirs;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_diagnostics;
 mod i18n;
 pub mod log_bridge;
 pub mod repaint;

@@ -22,7 +22,7 @@ use sde::{SdeManager, objects::Universe};
 use settings::Settings;
 use std::{
     path::PathBuf,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 use tokio::sync::broadcast::{self, Receiver as BCReceiver, Sender as BCSender};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -131,19 +131,19 @@ pub struct TelescopeApp {
     /// The chat log folder the watcher watches, if any. It changes only when
     /// the settings are applied, while the folder in `settings` can be a
     /// draft of the Settings screen: logs are read from this one.
-    intel_watched: Option<PathBuf>,
+    intel_watched: intel::reader::WatchedDir,
     /// Live graph executor, shared with the detection thread.
     intel_executor: intel::detection::ExecutorHandle,
     /// System resolver injected into the executor (backed by the SDE).
     intel_resolver: intel::detection::ResolverHandle,
     /// The graph the executor was built from (source of truth for the editor).
     intel_graph: RuleGraph,
-    /// UI -> detection thread.
-    intel_input: mpsc::Sender<intel::input::InputEvent>,
-    /// Detection thread -> UI.
-    intel_output: Receiver<intel::detection::DetectedLine>,
-    /// Where the reading of each monitored chat log stopped.
-    intel_offsets: intel::input::IntelOffsets,
+    /// Where the reading of each monitored chat log stopped; shared with the
+    /// reader thread (`intel::reader`).
+    intel_offsets: intel::reader::SharedOffsets,
+    /// What the dispatch thread reads (alarm settings, character locations,
+    /// stargate graph); refreshed by `sync_alarm_shared`.
+    alarm_shared: Arc<intel::dispatch::AlarmShared>,
     /// In-memory state of the Settings -> Rules page (rules being edited).
     patterns_editor: PatternsEditor,
     /// View state of the other Settings pages (filters, dialogs).
@@ -153,7 +153,7 @@ pub struct TelescopeApp {
     // Alarm sound for the intel rules' Sound output -- see the
     // `audio` module docs for why this has to be a long-lived field
     // rather than something opened per alert.
-    audio: audio::AlarmPlayer,
+    audio: Arc<audio::AudioHandle>,
     // UI state for the "updating the SDE database" progress window --
     // see `database_updater`'s module docs.
     database_updater: database_updater::DatabaseUpdater,
@@ -272,7 +272,7 @@ impl Default for TelescopeApp {
         // anything else in that same literal that still needs a clone of
         // it (this, and `behavior`'s `TreeBehavior::new`) has to grab one
         // before that move happens.
-        let audio = audio::AlarmPlayer::new(Arc::clone(&msgmon));
+        let audio = Arc::new(audio::AudioHandle::spawn(Arc::clone(&msgmon)));
 
         // Load the intel node graph from the player database (seeded with the
         // built-in default graph, `rules.toml`, by the schema migration),
@@ -340,7 +340,7 @@ impl Default for TelescopeApp {
         let intel_executor: intel::detection::ExecutorHandle = Arc::new(RwLock::new(executor));
         let (intel_input, intel_input_rx) =
             mpsc::channel::<intel::input::InputEvent>(intel::detection::INPUT_CAPACITY);
-        let (intel_output_tx, intel_output) =
+        let (intel_output_tx, intel_output_rx) =
             mpsc::channel::<intel::detection::DetectedLine>(intel::detection::OUTPUT_CAPACITY);
         intel::detection::spawn(
             Arc::clone(&intel_executor),
@@ -348,13 +348,43 @@ impl Default for TelescopeApp {
             intel_input_rx,
             intel_output_tx,
         );
+        // Detection -> dispatch (map messages, alarm sound, status log): its
+        // own thread, so alarms don't wait for the UI loop.
+        let alarm_shared = Arc::new(intel::dispatch::AlarmShared::default());
+        *alarm_shared
+            .jumps
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            intel::resolve::jump_graph(&universe);
+        intel::dispatch::spawn(
+            intel::dispatch::Dispatcher {
+                shared: Arc::clone(&alarm_shared),
+                audio: Arc::clone(&audio),
+                map_msg: Arc::clone(&arc_map_sender),
+                task_msg: Arc::clone(&msgmon),
+            },
+            intel_output_rx,
+        );
 
         // Everything already in the monitored logs is history: start at
         // their current end.
-        let mut intel_offsets = intel::input::IntelOffsets::default();
-        intel_offsets.sync(
+        let mut offsets = intel::input::IntelOffsets::default();
+        offsets.sync(
             settings.get_intel(),
             &settings.get_cloned_monitored_channels(),
+        );
+        let intel_offsets: intel::reader::SharedOffsets = Arc::new(Mutex::new(offsets));
+        let intel_watched: intel::reader::WatchedDir = Arc::new(RwLock::new(None));
+        // Watcher -> reader thread -> detection.
+        let (intel_files_tx, intel_files_rx) = std::sync::mpsc::channel::<String>();
+        intel::reader::spawn(
+            intel::reader::ReaderShared {
+                watched: Arc::clone(&intel_watched),
+                offsets: Arc::clone(&intel_offsets),
+                input: intel_input,
+                app_msg: Arc::clone(&arc_msg_sender),
+            },
+            intel_files_rx,
         );
 
         // Sorted: the watcher's event handler binary-searches it, and a
@@ -362,13 +392,20 @@ impl Default for TelescopeApp {
         let mut monitored = (*settings.get_cloned_monitored_channels()).clone();
         monitored.sort_unstable();
         let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(monitored));
-        let intel_event_handler =
-            IntelEventHandler::new(Arc::clone(&intel_channels), Arc::clone(&arc_msg_sender));
+        let intel_event_handler = IntelEventHandler::new(
+            Arc::clone(&intel_channels),
+            Arc::clone(&arc_msg_sender),
+            intel_files_tx,
+        );
         let mut watcher = RecommendedWatcher::new(intel_event_handler, Config::default()).unwrap();
-        let mut intel_watched = None;
         if settings.get_intel().exists() && !settings.get_cloned_monitored_channels().is_empty() {
             match watcher.watch(settings.get_intel(), RecursiveMode::NonRecursive) {
-                Ok(()) => intel_watched = Some(settings.get_intel().to_path_buf()),
+                Ok(()) => {
+                    *intel_watched
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(settings.get_intel().to_path_buf())
+                }
                 // Reported, not fatal: the maps work without intel, and
                 // applying the Sources page tries again.
                 Err(error) => msgmon.spawn(Message::GenericNotification((
@@ -417,9 +454,8 @@ impl Default for TelescopeApp {
             intel_executor,
             intel_resolver,
             intel_graph,
-            intel_input,
-            intel_output,
             intel_offsets,
+            alarm_shared,
             patterns_editor: PatternsEditor::default(),
             settings_ui: windows::settings::SettingsUi::default(),
             licenses: None,
@@ -435,10 +471,38 @@ impl eframe::App for TelescopeApp {
     /*fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }*/
+    /// The work that must go on while the window is minimized or hidden.
+    ///
+    /// eframe runs no egui pass then, so `ui()` is never called -- and
+    /// everything the intel pipeline does on this thread lives in
+    /// [`Self::event_manager`]: reading the chat log that changed, handing its
+    /// lines to the detection thread, dispatching what the rules matched
+    /// (alarm sound, map pulses, tooltip entries, the status log), and the
+    /// characters' locations the alarm radius depends on. Without this hook
+    /// the alerts of a minimized app sat in the queues until the window came
+    /// back (and the message channel dropped whatever overflowed meanwhile).
+    /// eframe calls this about every 100 ms while hidden, and before every
+    /// `ui()` while shown; nothing here draws.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The first frame builds the maps and starts the watchers (see `ui`).
+        if !self.initialized {
+            return;
+        }
+        self.event_manager();
+        self.drain_map_messages();
+        // What the UI thread queued for itself while handling the above (a
+        // notification, a message) gets its own pass, as at the end of `ui`.
+        if crate::repaint::take_pending() {
+            ctx.request_repaint();
+        }
+    }
+
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     #[tracing::instrument(skip_all)]
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::gpu_diagnostics::frame_tick();
         let Self {
             initialized: _,
             app_msg: _,
@@ -448,15 +512,15 @@ impl eframe::App for TelescopeApp {
             esi: _,
             app_messages: _,
             #[cfg(debug_assertions)]
-            search_text: _,
+                search_text: _,
             #[cfg(debug_assertions)]
-            emit_notification: _,
+                emit_notification: _,
             #[cfg(debug_assertions)]
-            search_selected_row: _,
+                search_selected_row: _,
             #[cfg(debug_assertions)]
-            search_results: _,
+                search_results: _,
             #[cfg(debug_assertions)]
-            debug: _,
+                debug: _,
             tree: _,
             universe: _,
             selected_settings_page: _,
@@ -471,9 +535,8 @@ impl eframe::App for TelescopeApp {
             intel_executor: _,
             intel_resolver: _,
             intel_graph: _,
-            intel_input: _,
-            intel_output: _,
             intel_offsets: _,
+            alarm_shared: _,
             patterns_editor: _,
             settings_ui: _,
             licenses: _,
@@ -706,8 +769,9 @@ impl TelescopeApp {
                 Message::PlayerNewLocation((player_id, solar_system_id)) => {
                     self.update_player_location(player_id, solar_system_id)
                 }
-                Message::IntelFileChanged(file_name) => {
-                    self.load_intel_file(file_name);
+                Message::ChannelActivity(channel, when) => {
+                    // Last activity of the channel, for Settings -> Sources.
+                    self.settings.note_channel_activity(&channel, when);
                 }
                 Message::UpdateIntelDirectory(directory_path) => {
                     match self.settings.set_intel(directory_path.as_path()) {
@@ -722,10 +786,15 @@ impl TelescopeApp {
                 Message::DatabaseUpdateProgress(phase) => {
                     self.database_updater.set_phase(phase);
                 }
+                Message::DatabaseUpdateInfo(info) => {
+                    self.database_updater.set_info(info);
+                }
                 Message::DatabaseUpdated(rebuilt) => {
-                    self.database_updater.hide();
                     if rebuilt {
+                        self.database_updater.finish();
                         self.reload_sde();
+                    } else {
+                        self.database_updater.hide();
                     }
                 }
                 Message::DefaultIntelDirectory => {
@@ -761,10 +830,9 @@ impl TelescopeApp {
                 }
             };
         }
-        // Lines evaluated by the detection thread since the last frame.
-        while let Ok(detected) = self.intel_output.try_recv() {
-            self.process_detected_line(detected);
-        }
+        // What the dispatch thread reads (it acts on detected lines on its
+        // own, without this loop).
+        self.sync_alarm_shared();
     }
 
     /// End of a frame: a message queued on the UI thread during it gets the
@@ -879,6 +947,9 @@ impl TelescopeApp {
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
         // cc.egui_ctx.set_visuals(egui::Visuals::light());
         cc.egui_ctx.set_fonts(Self::font_definitions());
+        // Record why the GPU stops working, if it does (e.g. after sleep).
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::gpu_diagnostics::install(cc);
         let app: TelescopeApp = Default::default();
         crate::i18n::apply_language(&app.settings.get_ui_state().language);
         app

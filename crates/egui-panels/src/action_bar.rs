@@ -2,7 +2,7 @@
 
 use crate::theme::Theme;
 use crate::widgets::{Variant, button};
-use egui::{Align, Layout, RichText, Sense, Ui, vec2};
+use egui::{Align, Label, Layout, RichText, Sense, Ui, vec2};
 
 /// What the user asked for in an [`ActionBar`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,19 +58,8 @@ impl<'a> ActionBar<'a> {
         let mut action = None;
         ui.horizontal(|ui| {
             ui.set_min_height(theme.control_height + 16.0);
-            match self.pending {
-                Some(message) => {
-                    let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                    ui.painter()
-                        .circle_filled(rect.center(), 4.0, palette.dirty);
-                    ui.label(RichText::new(message).color(palette.dirty));
-                }
-                None => {
-                    if let Some(message) = self.saved {
-                        ui.label(RichText::new(message).color(palette.muted_text));
-                    }
-                }
-            }
+            // The buttons take their room at the right end first; the message
+            // gets what is left and is cut short when there is little.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if button(ui, self.accept, Variant::Primary).clicked() {
                     action = Some(Action::Accept);
@@ -81,6 +70,27 @@ impl<'a> ActionBar<'a> {
                 if button(ui, self.cancel, Variant::Ghost).clicked() {
                     action = Some(Action::Cancel);
                 }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    match self.pending {
+                        Some(message) => {
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                            ui.painter()
+                                .circle_filled(rect.center(), 4.0, palette.dirty);
+                            ui.add(
+                                Label::new(RichText::new(message).color(palette.dirty)).truncate(),
+                            );
+                        }
+                        None => {
+                            if let Some(message) = self.saved {
+                                ui.add(
+                                    Label::new(RichText::new(message).color(palette.muted_text))
+                                        .truncate(),
+                                );
+                            }
+                        }
+                    }
+                });
             });
         });
         action

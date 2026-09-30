@@ -1,6 +1,6 @@
 //! The side navigation of a settings screen.
 
-use crate::theme::{Theme, mix};
+use crate::theme::Theme;
 use egui::{
     Align2, Color32, CornerRadius, FontId, Response, RichText, Sense, Ui, WidgetInfo, WidgetType,
     pos2, vec2,
@@ -175,7 +175,7 @@ fn nav_entry<T>(ui: &mut Ui, theme: &Theme, item: &NavItem<T>, selected: bool) -
         let fill = if selected {
             palette.accent
         } else if response.hovered() {
-            mix(palette.nav_fill, palette.strong_text, 0.06)
+            palette.hover_fill
         } else {
             Color32::TRANSPARENT
         };
@@ -197,17 +197,20 @@ fn nav_entry<T>(ui: &mut Ui, theme: &Theme, item: &NavItem<T>, selected: bool) -
             );
             x += 24.0;
         }
-        ui.painter().text(
+        let right = rect.right() - if item.dirty { 22.0 } else { 8.0 };
+        crate::widgets::paint_fitted(
+            ui,
             pos2(x, rect.center().y),
             Align2::LEFT_CENTER,
             &item.label,
             font,
             color,
+            right - x,
         );
         if item.dirty {
             ui.painter().circle_filled(
                 pos2(rect.right() - 12.0, rect.center().y),
-                4.0,
+                3.0,
                 palette.dirty,
             );
         }

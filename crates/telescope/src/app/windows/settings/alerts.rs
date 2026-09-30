@@ -16,12 +16,12 @@ const RADII: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
 impl TelescopeApp {
     pub(super) fn show_alerts_page(&mut self, ui: &mut egui::Ui) {
         egui_panels::page(ui, |ui| {
+            self.intel_flow_stepper(ui, SettingsPage::Alerts);
             egui_panels::page_header(
                 ui,
                 &SettingsPage::Alerts.title(),
                 Some(&t!("settings.alerts.description")),
             );
-            self.intel_flow_stepper(ui, SettingsPage::Alerts);
             self.show_distance_section(ui);
             self.show_map_alert_section(ui);
             self.show_sound_section(ui);
@@ -45,30 +45,6 @@ impl TelescopeApp {
                             self.settings.set_warning_area(radius);
                         }
                         ui.label(t!("settings.alerts.jumps"));
-                    });
-                    let origins = self.character_locations();
-                    form.row(t!("settings.alerts.measured_from"), |ui| {
-                        if origins.is_empty() {
-                            egui_panels::status(
-                                ui,
-                                StatusKind::Warning,
-                                &t!("settings.alerts.no_locations"),
-                            );
-                        }
-                        for (name, system) in &origins {
-                            egui_panels::chip(ui, name, Some(system));
-                        }
-                    });
-                    form.note(|ui| {
-                        if egui_panels::button(
-                            ui,
-                            t!("settings.alerts.manage_characters"),
-                            Variant::Ghost,
-                        )
-                        .clicked()
-                        {
-                            self.selected_settings_page = SettingsPage::Characters;
-                        }
                     });
                 });
             });
@@ -120,7 +96,7 @@ impl TelescopeApp {
                         .into_owned();
                     egui::ComboBox::from_id_salt("alert_sound")
                         .selected_text(current.clone())
-                        .width(220.0)
+                        .width(220.0_f32.min(ui.available_width()))
                         .show_ui(ui, |ui| {
                             let mut sounds: Vec<String> = self
                                 .settings
@@ -167,19 +143,6 @@ impl TelescopeApp {
                 });
             });
         });
-    }
-
-    /// Linked characters with a known location: name and solar system.
-    fn character_locations(&self) -> Vec<(String, String)> {
-        self.esi
-            .characters
-            .iter()
-            .filter_map(|character| {
-                let system = u32::try_from(character.location).ok()?;
-                let name = self.universe.solar_systems.get(&system)?.name.clone();
-                Some((character.name.clone(), name))
-            })
-            .collect()
     }
 
     /// Plays a whole alert with the values being edited, without saving

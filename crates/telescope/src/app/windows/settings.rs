@@ -214,7 +214,15 @@ impl TelescopeApp {
             .iter()
             .position(|page| *page == current)
             .unwrap_or_default();
-        if let Some(step) = egui_panels::stepper(ui, &steps, index) {
+        let clicked = ui
+            .horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let clicked = egui_panels::stepper(ui, &steps, index);
+                ui.weak(t!("settings.intel_flow_hint"));
+                clicked
+            })
+            .inner;
+        if let Some(step) = clicked {
             self.selected_settings_page = SettingsPage::INTEL_FLOW[step];
             self.settings_ui.step_clicked = true;
         }

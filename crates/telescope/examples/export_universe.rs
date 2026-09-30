@@ -36,7 +36,9 @@ fn main() -> Result<(), String> {
             .into_owned()
     });
     if !Path::new(&database).is_file() {
-        return Err(format!("{database} does not exist: pass the path to sde.db"));
+        return Err(format!(
+            "{database} does not exist: pass the path to sde.db"
+        ));
     }
     let factor = match args.next() {
         Some(value) => value

@@ -67,7 +67,7 @@ impl SettingsLayout {
             .inner;
         Panel::left(self.id.with("nav"))
             .resizable(false)
-            .exact_size(theme.nav_width)
+            .exact_size(theme.nav_width.min((ui.available_width() * 0.3).max(140.0)))
             .frame(side_frame)
             .show(ui, |ui| {
                 ScrollArea::vertical()

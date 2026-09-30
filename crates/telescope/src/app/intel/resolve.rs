@@ -1,7 +1,7 @@
 //! Resolvers shared by the intel output stages: turning reported text into
 //! solar-system ids and measuring stargate distance.
 
-use sde::objects::{SolarSystem, Universe};
+use sde::objects::Universe;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::RwLock;
 use webb::graph::SystemResolver;
@@ -95,12 +95,26 @@ pub(crate) fn allows_partial_match(name: &str) -> bool {
     name.chars().any(|c| c.is_ascii_digit() || c == '-')
 }
 
+/// Stargate connections by system id: all `nearest_origin_within` needs of
+/// the universe. Unlike the full SDE map it is cheap to share with the
+/// alarm thread behind an `Arc<RwLock<..>>` (see `dispatch::AlarmShared`).
+pub(crate) type JumpGraph = HashMap<u32, Vec<u32>>;
+
+/// Extracts the [`JumpGraph`] from the loaded universe.
+pub(crate) fn jump_graph(universe: &Universe) -> JumpGraph {
+    universe
+        .solar_systems
+        .iter()
+        .map(|(id, system)| (*id, system.connections.clone()))
+        .collect()
+}
+
 /// The member of `origins` closest to `target` in stargate jumps, if it is at
 /// most `max_jumps` away (breadth-first search over
-/// [`SolarSystem::connections`], so the first origin to reach `target` is the
+/// [`JumpGraph`], so the first origin to reach `target` is the
 /// nearest one; ties go to the earlier origin in the list).
 pub(crate) fn nearest_origin_within(
-    systems: &HashMap<u32, SolarSystem>,
+    systems: &JumpGraph,
     origins: &[u32],
     target: u32,
     max_jumps: u8,
@@ -115,10 +129,10 @@ pub(crate) fn nearest_origin_within(
         if jumps == max_jumps {
             continue;
         }
-        let Some(solar_system) = systems.get(&system) else {
+        let Some(connections) = systems.get(&system) else {
             continue;
         };
-        for &next in &solar_system.connections {
+        for &next in connections {
             if seen.insert(next) {
                 queue.push_back((next, origin, jumps + 1));
             }
@@ -129,12 +143,10 @@ pub(crate) fn nearest_origin_within(
 
 #[cfg(test)]
 mod nearest_origin_tests {
-    use super::nearest_origin_within;
-    use sde::objects::SolarSystem;
-    use std::collections::HashMap;
+    use super::{JumpGraph, nearest_origin_within};
 
     /// A straight chain 1 - 2 - 3 - 4 - 5, plus 6 connected to nothing.
-    fn chain() -> HashMap<u32, SolarSystem> {
+    fn chain() -> JumpGraph {
         let links: [(u32, &[u32]); 6] = [
             (1, &[2]),
             (2, &[1, 3]),
@@ -145,12 +157,7 @@ mod nearest_origin_tests {
         ];
         links
             .into_iter()
-            .map(|(id, connections)| {
-                let mut system = SolarSystem::new(1.0);
-                system.id = id;
-                system.connections = connections.to_vec();
-                (id, system)
-            })
+            .map(|(id, connections)| (id, connections.to_vec()))
             .collect()
     }
 

@@ -1623,6 +1623,145 @@ mod tests {
         activations.remove(0).messages.remove(0)
     }
 
+    /// `in -> sys, ship -> gate -> log`, the gate being of `kind`.
+    fn gate_graph(kind: GateKind) -> Executor {
+        let mut graph = RuleGraph::default();
+        graph.nodes.push(input_node("in"));
+        graph
+            .nodes
+            .push(detection_node("sys", DetectionRuleKind::SystemReport));
+        graph.nodes.push(detection_node(
+            "ship",
+            DetectionRuleKind::ShipNames {
+                dictionaries: vec![String::from("ship_report_en")],
+            },
+        ));
+        graph.nodes.push(Node {
+            id: String::from("gate"),
+            enabled: true,
+            x: 0.0,
+            y: 0.0,
+            kind: NodeKind::Gate(GateNode { kind, inputs: 2 }),
+        });
+        graph.nodes.push(output_node("log"));
+        graph.edges.push(edge("in", Pin::Out, "sys", 0));
+        graph.edges.push(edge("in", Pin::Out, "ship", 0));
+        graph.edges.push(edge("sys", Pin::T, "gate", 0));
+        graph.edges.push(edge("ship", Pin::T, "gate", 1));
+        graph.edges.push(edge("gate", Pin::Out, "log", 0));
+        let (executor, errors) = Executor::new(graph);
+        assert!(errors.is_empty(), "{errors:?}");
+        executor
+    }
+
+    #[test]
+    fn an_or_gate_needs_at_least_one_input() {
+        let executor = gate_graph(GateKind::Or);
+        assert_eq!(executor.run(&line("Jita, Rifter"), &FixedResolver).len(), 1);
+        assert_eq!(executor.run(&line("Jita"), &FixedResolver).len(), 1);
+        assert_eq!(executor.run(&line("Rifter"), &FixedResolver).len(), 1);
+        assert!(executor.run(&line("nothing"), &FixedResolver).is_empty());
+    }
+
+    #[test]
+    fn an_xor_gate_needs_exactly_one_input() {
+        let executor = gate_graph(GateKind::Xor);
+        assert!(
+            executor
+                .run(&line("Jita, Rifter"), &FixedResolver)
+                .is_empty()
+        );
+        assert_eq!(executor.run(&line("Jita"), &FixedResolver).len(), 1);
+        assert_eq!(executor.run(&line("Rifter"), &FixedResolver).len(), 1);
+        assert!(executor.run(&line("nothing"), &FixedResolver).is_empty());
+    }
+
+    #[test]
+    fn disabled_nodes_stop_the_flow() {
+        for disabled in ["in", "det", "out"] {
+            let mut rules = graph(DetectionRuleKind::SystemReport);
+            let (executor, _) = Executor::new(rules.clone());
+            assert_eq!(executor.run(&line("Jita"), &FixedResolver).len(), 1);
+
+            rules
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == disabled)
+                .unwrap()
+                .enabled = false;
+            let (executor, errors) = Executor::new(rules);
+            assert!(errors.is_empty(), "{errors:?}");
+            assert!(
+                executor.run(&line("Jita"), &FixedResolver).is_empty(),
+                "disabling {disabled} should stop the line"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clear_report_detection_matches_its_keywords() {
+        let kind = || DetectionRuleKind::ClearReport {
+            keywords: vec![String::from("clear"), String::from("nv")],
+        };
+        let message = only_message(kind(), "Jita clear");
+        assert!(matches!(message.data, Data::Words(_)), "{:?}", message.data);
+        assert_eq!(message.category, Some(IntelCategory::Clear));
+        let (executor, _) = Executor::new(graph(kind()));
+        assert!(
+            executor
+                .run(&line("Jita hostile"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_keyword_detection_matches_its_words() {
+        let kind = || DetectionRuleKind::Keyword {
+            keywords: vec![String::from("bubble")],
+        };
+        let message = only_message(kind(), "gate has a bubble");
+        assert!(matches!(message.data, Data::Words(_)), "{:?}", message.data);
+        let (executor, _) = Executor::new(graph(kind()));
+        assert!(
+            executor
+                .run(&line("gate is quiet"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_pilot_count_detection_reads_both_count_shapes() {
+        assert_eq!(
+            only_message(DetectionRuleKind::PilotCount, "Jita +5").data,
+            Data::Count(5)
+        );
+        assert_eq!(
+            only_message(DetectionRuleKind::PilotCount, "Jita 12 reds").data,
+            Data::Count(12)
+        );
+        let (executor, _) = Executor::new(graph(DetectionRuleKind::PilotCount));
+        assert!(executor.run(&line("Jita quiet"), &FixedResolver).is_empty());
+    }
+
+    #[test]
+    fn a_chinese_ship_detection_needs_the_class_suffix() {
+        let message = only_message(DetectionRuleKind::ShipNamesZh, "破坏级 在 Jita");
+        assert!(matches!(message.data, Data::Ships(_)), "{:?}", message.data);
+        assert_eq!(message.category, Some(IntelCategory::Ship));
+        let (executor, _) = Executor::new(graph(DetectionRuleKind::ShipNamesZh));
+        // Han characters without the suffix are not a ship.
+        assert!(
+            executor
+                .run(&line("破坏者 在 Jita"), &FixedResolver)
+                .is_empty()
+        );
+        assert!(
+            executor
+                .run(&line("only latin text"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_custom_detection_produces_the_data_of_its_category() {
         let ships = only_message(

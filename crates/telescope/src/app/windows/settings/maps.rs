@@ -31,11 +31,11 @@ impl TelescopeApp {
                     .values()
                     .filter(|data| data.show_on_startup)
                     .count();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.settings_ui.region_filter)
                             .hint_text(t!("settings.maps.filter_hint"))
-                            .desired_width(220.0),
+                            .desired_width(220.0_f32.min(ui.available_width())),
                     );
                     egui_panels::badge(ui, &t!("settings.maps.selected", count = selected));
                 });
@@ -49,13 +49,21 @@ impl TelescopeApp {
                     .collect();
                 regions.sort_unstable_by(|a, b| a.1.cmp(&b.1));
                 let tile_data = &mut self.behavior.tile_data;
-                egui_panels::tile_grid(ui, 3, regions.len(), |ui, index| {
+                egui_panels::tile_grid(ui, 4, regions.len(), |ui, index| {
                     let (region, name) = &regions[index];
-                    let subtitle = characters_here
-                        .get(region)
-                        .map(|count| t!("settings.maps.characters_here", count = count));
+                    let count = characters_here.get(region);
+                    let tag = count.map(|count| t!("settings.maps.characters_tag", count = count));
                     if let Some(data) = tile_data.get_mut(region) {
-                        egui_panels::tile(ui, &mut data.show_on_startup, name, subtitle.as_deref());
+                        let response = egui_panels::toggle_button(
+                            ui,
+                            &mut data.show_on_startup,
+                            name,
+                            tag.as_deref(),
+                        );
+                        if let Some(count) = count {
+                            response
+                                .on_hover_text(t!("settings.maps.characters_here", count = count));
+                        }
                     }
                 });
             });

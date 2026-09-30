@@ -37,13 +37,16 @@ impl TelescopeApp {
             }
             let mut select = None;
             let mut unlink = None;
+            // The rows sit one under another, told apart by hairlines.
+            let row_spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+            egui_panels::divider(ui);
             for character in &self.esi.characters {
                 let selected = self.esi.active_character == Some(character.id);
                 let location = self.location_name(character);
                 let card = character_card(character, location, selected, style.portrait_size).show(
                     ui,
                     |ui| {
-                        egui_panels::button(ui, t!("settings.characters.remove"), Variant::Danger)
+                        egui_panels::button(ui, t!("settings.characters.remove"), Variant::Ghost)
                             .on_hover_text(t!(
                                 "settings.characters.remove_hint",
                                 name = character.name
@@ -61,6 +64,7 @@ impl TelescopeApp {
                     select = Some(character.id);
                 }
             }
+            ui.spacing_mut().item_spacing.y = row_spacing;
             if let Some(id) = select {
                 self.esi.active_character = Some(id);
             }

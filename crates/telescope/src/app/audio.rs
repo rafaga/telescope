@@ -1,7 +1,7 @@
 //! Alarm sound for the intel rules' Sound output.
 //!
-//! [`AlarmPlayer`] opens the default audio output device once, at startup,
-//! and keeps it open for the app's lifetime -- rodio's output handle has to
+//! [`AlarmPlayer`] opens the default audio output device at startup and
+//! keeps it open for the app's lifetime -- rodio's output handle has to
 //! stay alive for as long as anything should be audible, so it lives as a
 //! field on [`TelescopeApp`](super::TelescopeApp) rather than being opened
 //! per alert (which would also mean a slow device-open on the UI thread for
@@ -10,6 +10,16 @@
 //! (`AlarmPlayer::play_alarm`): the mixer takes ownership from there and
 //! plays it to completion on its own, so the call site never blocks and
 //! never has to hold on to anything.
+//!
+//! An open output is bound to one physical device, and rodio never rebinds
+//! it: once that device is unplugged, or Windows drops it on suspend/resume,
+//! the stream stays open but silent, and playing into it "succeeds" without
+//! a sound. So the stream is opened with an error callback (see
+//! [`on_stream_error`]) that flags the loss and tells the user, and the next
+//! alarm reopens the output on whatever the default device is by then --
+//! the same happens when the system default is switched to another device.
+//! Attempts are rate limited ([`REOPEN_COOLDOWN`]) and each outcome is
+//! logged with the device name.
 //!
 //! Unlike the window icon and the two UI fonts (embedded with
 //! `include_bytes!`, see `app.rs`/`main.rs`/`windows/about.rs`), the alarm
@@ -53,11 +63,14 @@
 use super::messages::{Message, MessageSpawner, Type};
 use rodio::Decoder;
 use rodio::MixerDeviceSink;
-use std::cell::Cell;
+use rodio::cpal::StreamError;
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufReader;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Opens and decodes the alarm sound at `path`. Split out of
@@ -80,15 +93,232 @@ fn open_alarm_sound(path: &Path) -> Result<Decoder<BufReader<File>>, String> {
     Decoder::try_from(file).map_err(|error| format!("could not decode the alarm sound: {error}"))
 }
 
-/// Owns the handle to the default audio output device and the message
-/// spawner used to surface playback failures. `sink` is `None` when no
-/// output device could be opened, so [`Self::play_alarm`] silently does
-/// nothing instead of failing on every single alert.
-pub(crate) struct AlarmPlayer {
+/// Shortest time between two attempts to (re)open the output device. A
+/// device that is gone stays gone for a while (unplugged, machine asleep),
+/// and every attempt enumerates the audio devices on the UI thread, so a
+/// burst of alerts must not turn into a burst of attempts.
+const REOPEN_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// A freshly opened output: the rodio handle plus the name of the device it
+/// is bound to (kept to log which device was lost and to notice when the
+/// system default has moved somewhere else).
+struct OpenedOutput {
+    sink: MixerDeviceSink,
+    device: String,
+}
+
+/// Opens the system's default output. `lost` is raised by the stream's
+/// error callback, from the audio thread, when the device goes away.
+type OpenOutput = fn(Arc<AtomicBool>, Arc<MessageSpawner>) -> Result<OpenedOutput, String>;
+
+/// The two calls that touch real audio hardware, behind function pointers so
+/// the reopen logic can be tested on a machine (or CI runner) without any.
+struct Backend {
+    open: OpenOutput,
+    /// Name of the device that is the system default right now, if any.
+    default_device: fn() -> Option<String>,
+}
+
+impl Backend {
+    fn system() -> Self {
+        Self {
+            open: open_default_output,
+            default_device: default_device_name,
+        }
+    }
+}
+
+/// The current output and what is known about its health.
+struct Output {
     sink: Option<MixerDeviceSink>,
+    /// Name of the device `sink` was opened on.
+    device: Option<String>,
+    /// Raised by the stream's error callback when the device is lost. Each
+    /// opened stream gets its own flag, so a late callback from a stream
+    /// that was already replaced cannot mark the new one as lost.
+    lost: Arc<AtomicBool>,
+    last_attempt: Option<Instant>,
+    /// Whether the last failed attempt was already shown to the user, so a
+    /// device that stays missing is reported once, not on every retry.
+    failure_reported: bool,
+    /// Whether an output was ever opened, to tell a recovery (worth telling
+    /// the user about) from the first open at startup.
+    ever_opened: bool,
+}
+
+impl Output {
+    fn closed() -> Self {
+        Self {
+            sink: None,
+            device: None,
+            lost: Arc::new(AtomicBool::new(false)),
+            last_attempt: None,
+            failure_reported: false,
+            ever_opened: false,
+        }
+    }
+
+    fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
+    /// The sink, only while it can actually be heard.
+    fn usable_sink(&self) -> Option<&MixerDeviceSink> {
+        if self.is_lost() {
+            None
+        } else {
+            self.sink.as_ref()
+        }
+    }
+
+    /// Reopens the output when there is none, when it was lost, or when the
+    /// system default device is no longer the one it is bound to. Rate
+    /// limited by [`REOPEN_COOLDOWN`]; reports every outcome that matters
+    /// to the user, once.
+    fn refresh(&mut self, backend: &Backend, task_msg: &Arc<MessageSpawner>) {
+        let reason = if self.sink.is_none() {
+            "no output is open"
+        } else if self.is_lost() {
+            "the output device was lost"
+        } else if (backend.default_device)()
+            .zip(self.device.as_deref())
+            .is_some_and(|(default, open)| default != open)
+        {
+            "the system default output device changed"
+        } else {
+            return;
+        };
+        if self
+            .last_attempt
+            .is_some_and(|last| last.elapsed() < REOPEN_COOLDOWN)
+        {
+            return;
+        }
+        self.last_attempt = Some(Instant::now());
+
+        let lost = Arc::new(AtomicBool::new(false));
+        match (backend.open)(Arc::clone(&lost), Arc::clone(task_msg)) {
+            Ok(opened) => {
+                tracing::info!("audio output opened on '{}' ({reason})", opened.device);
+                if self.ever_opened {
+                    notify(
+                        task_msg,
+                        Type::Info,
+                        format!("Audio output restored on '{}'.", opened.device),
+                    );
+                }
+                self.sink = Some(opened.sink);
+                self.device = Some(opened.device);
+                self.lost = lost;
+                self.failure_reported = false;
+                self.ever_opened = true;
+            }
+            Err(error) => {
+                tracing::warn!("could not open the audio output ({reason}): {error}");
+                if !self.failure_reported {
+                    self.failure_reported = true;
+                    notify(
+                        task_msg,
+                        Type::Warning,
+                        format!(
+                            "Audio output unavailable ({error}); alarm sounds are muted. \
+                             It is retried on the next alert."
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn notify(task_msg: &MessageSpawner, kind: Type, text: String) {
+    task_msg.spawn(Message::GenericNotification((
+        kind,
+        String::from("AlarmPlayer"),
+        String::from("audio_output"),
+        text,
+    )));
+}
+
+/// Whether a stream error means the output can no longer be heard and has to
+/// be reopened, as opposed to a glitch the stream survives (an underrun).
+fn is_device_loss(error: &StreamError) -> bool {
+    !matches!(error, StreamError::BufferUnderrun)
+}
+
+/// The stream's error callback, running on the audio thread. rodio's own
+/// default only logs the error and leaves the (now silent) sink in place, so
+/// this is what lets [`AlarmPlayer`] notice the loss: it raises `lost` and
+/// tells the user, once per stream however many errors follow.
+fn on_stream_error(
+    error: &StreamError,
+    device: &str,
+    lost: &AtomicBool,
+    task_msg: &MessageSpawner,
+) {
+    if !is_device_loss(error) {
+        tracing::debug!("audio stream glitch on '{device}': {error}");
+        return;
+    }
+    if !lost.swap(true, Ordering::SeqCst) {
+        tracing::error!("audio output '{device}' lost: {error}");
+        notify(
+            task_msg,
+            Type::Warning,
+            format!(
+                "Audio output '{device}' was lost ({error}). Alarm sounds resume on the \
+                 next alert if an output device is available."
+            ),
+        );
+    }
+}
+
+fn default_output_device() -> Option<rodio::Device> {
+    use rodio::cpal::traits::HostTrait;
+    rodio::cpal::default_host().default_output_device()
+}
+
+fn describe(device: &rodio::Device) -> String {
+    use rodio::DeviceTrait;
+    device
+        .description()
+        .map_or_else(|_| String::from("unknown device"), |d| d.to_string())
+}
+
+fn default_device_name() -> Option<String> {
+    default_output_device().map(|device| describe(&device))
+}
+
+/// Opens the system default output with an error callback that reports a
+/// lost device (see [`on_stream_error`]). Like rodio's own
+/// `open_default_sink`, it falls back to the device's other supported
+/// configurations when the default one is refused.
+fn open_default_output(
+    lost: Arc<AtomicBool>,
     task_msg: Arc<MessageSpawner>,
-    /// When an intel alarm last started (see [`Self::play_alert`]).
-    last_alert: Cell<Option<Instant>>,
+) -> Result<OpenedOutput, String> {
+    let device = default_output_device().ok_or("no default audio output device")?;
+    let name = describe(&device);
+    let callback_name = name.clone();
+    let sink = rodio::DeviceSinkBuilder::from_device(device)
+        .map_err(|error| error.to_string())?
+        .with_error_callback(move |error| {
+            on_stream_error(&error, &callback_name, &lost, &task_msg);
+        })
+        .open_sink_or_fallback()
+        .map_err(|error| error.to_string())?;
+    Ok(OpenedOutput { sink, device: name })
+}
+
+/// Owns the audio output and the message spawner used to surface playback
+/// failures. The output is opened on the system default device and reopened
+/// by [`Self::play_alarm`] when it is missing, lost (unplugged, machine
+/// resumed from sleep) or no longer the default, so alarms keep sounding
+/// after the device changes instead of going silently to a dead stream.
+pub(crate) struct AlarmPlayer {
+    output: RefCell<Output>,
+    backend: Backend,
+    task_msg: Arc<MessageSpawner>,
 }
 
 /// Shortest time between two intel alarms: a report is usually repeated by
@@ -96,63 +326,124 @@ pub(crate) struct AlarmPlayer {
 /// again on top of the one still playing.
 const ALERT_COOLDOWN: Duration = Duration::from_secs(3);
 
+/// Thread-safe front of the [`AlarmPlayer`]. The player (and the output
+/// stream it owns, which is not `Send` on every platform) lives on its own
+/// thread; this handle sends it the sounds to play, so the alarm can be
+/// triggered from any thread -- in particular from the intel dispatch
+/// thread, which does not depend on the UI loop running.
+pub(crate) struct AudioHandle {
+    tx: Sender<PathBuf>,
+    /// When an intel alarm last started (see [`Self::play_alert`]).
+    last_alert: Mutex<Option<Instant>>,
+}
+
+impl AudioHandle {
+    /// Starts the audio thread, which opens the output device itself.
+    pub(crate) fn spawn(task_msg: Arc<MessageSpawner>) -> Self {
+        let (tx, rx) = channel::<PathBuf>();
+        let spawned = std::thread::Builder::new()
+            .name(String::from("telescope-audio"))
+            .spawn(move || {
+                let player = AlarmPlayer::new(task_msg);
+                while let Ok(path) = rx.recv() {
+                    let _span = tracing::info_span!("audio_play", path = %path.display()).entered();
+                    let started = Instant::now();
+                    player.play_alarm(&path);
+                    tracing::debug!(
+                        elapsed_us = started.elapsed().as_micros() as u64,
+                        "alarm queued"
+                    );
+                }
+                tracing::debug!("audio thread stopped");
+            });
+        if let Err(error) = spawned {
+            tracing::error!("could not start the audio thread: {error}");
+        }
+        Self {
+            tx,
+            last_alert: Mutex::new(None),
+        }
+    }
+
+    /// A handle wired to a channel the caller reads instead of an audio
+    /// thread: what would be played arrives as a path on the receiver.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> (Self, std::sync::mpsc::Receiver<PathBuf>) {
+        let (tx, rx) = channel::<PathBuf>();
+        (
+            Self {
+                tx,
+                last_alert: Mutex::new(None),
+            },
+            rx,
+        )
+    }
+
+    /// Plays `sound_path` on the audio thread. Non-blocking.
+    pub(crate) fn play_alarm(&self, sound_path: &Path) {
+        if self.tx.send(sound_path.to_path_buf()).is_err() {
+            tracing::warn!("the audio thread is not running; alarm skipped");
+        }
+    }
+
+    /// Plays the alarm of an intel alert, unless one started less than
+    /// [`ALERT_COOLDOWN`] ago. Returns whether it played.
+    pub(crate) fn play_alert(&self, sound_path: &Path) -> bool {
+        if !self.claim_cooldown(Instant::now()) {
+            tracing::debug!("alarm suppressed by the cooldown");
+            return false;
+        }
+        self.play_alarm(sound_path);
+        true
+    }
+
+    /// Whether an alarm may start at `now`; if so, records it as the last one.
+    fn claim_cooldown(&self, now: Instant) -> bool {
+        let mut last = self
+            .last_alert
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last.is_some_and(|previous| now.duration_since(previous) < ALERT_COOLDOWN) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+}
+
 impl AlarmPlayer {
     /// Opens the default output device. Never panics: a machine with no
     /// usable audio device, or whose driver fails to open, gets a silent
-    /// app instead of a crash at startup.
+    /// app instead of a crash at startup (and a retry on later alerts).
     #[tracing::instrument(skip(task_msg))]
     pub(crate) fn new(task_msg: Arc<MessageSpawner>) -> Self {
-        let sink = match rodio::DeviceSinkBuilder::open_default_sink() {
-            Ok(sink) => Some(sink),
-            Err(error) => {
-                tracing::warn!(
-                    "no audio output device available, alarm sounds are disabled: {error}"
-                );
-                task_msg.spawn(Message::GenericNotification((
-                    Type::Warning,
-                    String::from("AlarmPlayer"),
-                    String::from("new"),
-                    format!(
-                        "No audio output device available; alarm sounds are disabled ({error})."
-                    ),
-                )));
-                None
-            }
-        };
+        Self::with_backend(task_msg, Backend::system())
+    }
+
+    fn with_backend(task_msg: Arc<MessageSpawner>, backend: Backend) -> Self {
+        let mut output = Output::closed();
+        output.refresh(&backend, &task_msg);
         Self {
-            sink,
+            output: RefCell::new(output),
+            backend,
             task_msg,
-            last_alert: Cell::new(None),
         }
     }
 
     /// Plays `sound_path` (see `Settings::get_alert_sound_path`) on the
     /// mixer. Non-blocking: the mixer queues and plays it on its own, this
-    /// call never waits for playback to finish. Reports and does nothing
-    /// if there is no output device (see [`Self::new`]) -- without even
-    /// trying to open `sound_path`, so a headless machine with no audio
-    /// device doesn't also get a spurious "file not found" if
-    /// `assets/alerts/` happens to be missing too -- or if
-    /// [`open_alarm_sound`] fails for any reason.
-    /// Plays the alarm of an intel alert, unless one started less than
-    /// [`ALERT_COOLDOWN`] ago. Returns whether it played.
-    pub(crate) fn play_alert(&self, sound_path: &Path) -> bool {
-        let now = Instant::now();
-        if self
-            .last_alert
-            .get()
-            .is_some_and(|last| now.duration_since(last) < ALERT_COOLDOWN)
-        {
-            return false;
-        }
-        self.last_alert.set(Some(now));
-        self.play_alarm(sound_path);
-        true
-    }
-
+    /// call never waits for playback to finish. First makes sure the output
+    /// is still the right one (see [`Output::refresh`]). Does nothing if
+    /// there is no usable output -- without even trying to open
+    /// `sound_path`, so a headless machine with no audio device doesn't
+    /// also get a spurious "file not found" if `assets/alerts/` happens to
+    /// be missing too -- and reports if [`open_alarm_sound`] fails for any
+    /// reason.
     #[tracing::instrument(skip(self))]
     pub(crate) fn play_alarm(&self, sound_path: &Path) {
-        let Some(sink) = &self.sink else {
+        let mut output = self.output.borrow_mut();
+        output.refresh(&self.backend, &self.task_msg);
+        let Some(sink) = output.usable_sink() else {
             return;
         };
         match open_alarm_sound(sound_path) {
@@ -233,46 +524,105 @@ mod tests {
         assert!(open_alarm_sound(&path).is_ok());
     }
 
-    #[test]
-    fn play_alarm_without_an_output_device_reports_nothing_and_does_not_panic() {
-        // `sink: None` is what `AlarmPlayer::new` produces on a machine
-        // with no usable audio output (see its doc comment) -- constructed
-        // directly here (this test module can reach `AlarmPlayer`'s
-        // private fields, being a child of the module that declares them)
-        // rather than through `new()`, since opening a real device isn't
-        // something a test can rely on either way.
-        let (task_msg, mut rx) = task_msg_with_receiver();
-        let player = AlarmPlayer {
-            sink: None,
-            task_msg,
-            last_alert: Cell::new(None),
-        };
+    /// A backend with no audio hardware at all: every open fails and there
+    /// is no default device. The counter lets a test see how many attempts
+    /// were made.
+    fn backend_without_device() -> Backend {
+        Backend {
+            open: |_, _| Err(String::from("no default audio output device")),
+            default_device: || None,
+        }
+    }
 
-        // Must not panic, and -- since `new()` already reported the
-        // missing device once at startup -- must not report anything a
-        // second time here, whether or not `sound_path` itself is real.
+    fn drain(rx: &mut mpsc::Receiver<Message>) -> usize {
+        std::iter::from_fn(|| rx.try_recv().ok()).count()
+    }
+
+    #[test]
+    fn a_missing_device_is_reported_once_and_playing_stays_silent() {
+        let (task_msg, mut rx) = task_msg_with_receiver();
+        let player = AlarmPlayer::with_backend(task_msg, backend_without_device());
+        // The failed open at startup is what the user is told about.
+        assert_eq!(drain(&mut rx), 1);
+
+        // Must not panic, and must not report again -- whether or not
+        // `sound_path` itself is real.
         player.play_alarm(Path::new(
             "/nonexistent-telescope-alerts-directory/whatever.wav",
         ));
+        assert_eq!(drain(&mut rx), 0);
+    }
 
-        assert!(rx.try_recv().is_err());
+    #[test]
+    fn reopening_is_retried_only_after_the_cooldown_and_reported_once() {
+        use std::sync::atomic::AtomicUsize;
+        static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+        let (task_msg, mut rx) = task_msg_with_receiver();
+        let player = AlarmPlayer::with_backend(
+            task_msg,
+            Backend {
+                open: |_, _| {
+                    ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+                    Err(String::from("still gone"))
+                },
+                default_device: || None,
+            },
+        );
+        assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 1);
+        assert_eq!(drain(&mut rx), 1);
+
+        // Inside the cooldown: no new attempt.
+        player.play_alarm(Path::new("alarm.wav"));
+        assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 1);
+
+        // After it: one more attempt, and the failure is not reported again.
+        player.output.borrow_mut().last_attempt =
+            Some(Instant::now() - REOPEN_COOLDOWN - Duration::from_millis(1));
+        player.play_alarm(Path::new("alarm.wav"));
+        assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 2);
+        assert_eq!(drain(&mut rx), 0);
+    }
+
+    #[test]
+    fn only_glitches_are_not_treated_as_a_lost_device() {
+        assert!(is_device_loss(&StreamError::DeviceNotAvailable));
+        assert!(is_device_loss(&StreamError::StreamInvalidated));
+        assert!(!is_device_loss(&StreamError::BufferUnderrun));
+    }
+
+    #[test]
+    fn a_lost_device_is_flagged_and_reported_once() {
+        let (task_msg, mut rx) = task_msg_with_receiver();
+        let lost = AtomicBool::new(false);
+
+        on_stream_error(&StreamError::BufferUnderrun, "Speakers", &lost, &task_msg);
+        assert!(!lost.load(Ordering::SeqCst));
+        assert_eq!(drain(&mut rx), 0);
+
+        // The callback keeps firing while the device stays gone.
+        for _ in 0..3 {
+            on_stream_error(
+                &StreamError::DeviceNotAvailable,
+                "Speakers",
+                &lost,
+                &task_msg,
+            );
+        }
+        assert!(lost.load(Ordering::SeqCst));
+        assert_eq!(drain(&mut rx), 1);
     }
 
     #[test]
     fn an_alert_repeated_within_the_cooldown_does_not_play_again() {
-        let (task_msg, _rx) = task_msg_with_receiver();
-        let player = AlarmPlayer {
-            sink: None,
-            task_msg,
-            last_alert: Cell::new(None),
+        let (tx, _rx) = channel::<PathBuf>();
+        let handle = AudioHandle {
+            tx,
+            last_alert: Mutex::new(None),
         };
-        let sound = Path::new("alarm.wav");
-        assert!(player.play_alert(sound));
-        assert!(!player.play_alert(sound));
+        let now = Instant::now();
+        assert!(handle.claim_cooldown(now));
+        assert!(!handle.claim_cooldown(now + Duration::from_millis(500)));
         // Once the cooldown is over it plays again.
-        player.last_alert.set(Some(
-            Instant::now() - ALERT_COOLDOWN - Duration::from_millis(1),
-        ));
-        assert!(player.play_alert(sound));
+        assert!(handle.claim_cooldown(now + ALERT_COOLDOWN + Duration::from_millis(1)));
     }
 }

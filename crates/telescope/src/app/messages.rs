@@ -191,7 +191,9 @@ pub enum Message {
     MapHidden(usize),
     MapShown(usize),
     PlayerNewLocation((i32, i32)),
-    IntelFileChanged(String),
+    /// Sent by the intel reader thread after it read new lines of a
+    /// channel's log: the channel and when, for Settings -> Sources.
+    ChannelActivity(String, std::time::SystemTime),
     UpdateIntelDirectory(PathBuf),
     DefaultIntelDirectory,
     /// A file picked with *Browse…* for the SDE database (Settings ->
@@ -205,9 +207,13 @@ pub enum Message {
     /// status text in `database_updater::DatabaseUpdater`'s progress
     /// window (`DatabaseUpdater::set_phase`).
     DatabaseUpdateProgress(super::database_updater::SdePhase),
+    /// Sent by `database_updater::DatabaseUpdater` when it learns
+    /// something the progress window shows (the builds, the download size).
+    DatabaseUpdateInfo(super::database_updater::SdeInfo),
     /// Sent by `database_updater::DatabaseUpdater` once its background
     /// update check finishes; also hides the progress window
-    /// (`DatabaseUpdater::hide`). `true` means `sde.db` was (re)built
+    /// (`DatabaseUpdater::hide`, or `DatabaseUpdater::finish` after a
+    /// rebuild: that one waits for the user). `true` means `sde.db` was (re)built
     /// and should be reloaded (see `TelescopeApp::reload_sde`);
     /// `false` means it was already up to date, or the check/build
     /// failed (the failure itself was already reported separately via a
@@ -222,8 +228,8 @@ pub enum Message {
 impl Message {
     /// Returns the variant's name, for lightweight tagging of spans/events
     /// (e.g. in Tracy) without dumping potentially large or arbitrary
-    /// payloads (`GenericNotification`'s error text, `IntelFileChanged`'s
-    /// path, etc.) into every trace.
+    /// payloads (`GenericNotification`'s error text, `ChannelActivity`'s
+    /// channel, etc.) into every trace.
     pub fn kind(&self) -> &'static str {
         match self {
             Message::CharacterAuthenticated(_) => "CharacterAuthenticated",
@@ -232,12 +238,13 @@ impl Message {
             Message::MapHidden(_) => "MapHidden",
             Message::MapShown(_) => "MapShown",
             Message::PlayerNewLocation(_) => "PlayerNewLocation",
-            Message::IntelFileChanged(_) => "IntelFileChanged",
+            Message::ChannelActivity(..) => "ChannelActivity",
             Message::UpdateIntelDirectory(_) => "UpdateIntelDirectory",
             Message::DefaultIntelDirectory => "DefaultIntelDirectory",
             Message::SdePathPicked(_) => "SdePathPicked",
             Message::DbPathPicked(_) => "DbPathPicked",
             Message::DatabaseUpdateProgress(_) => "DatabaseUpdateProgress",
+            Message::DatabaseUpdateInfo(_) => "DatabaseUpdateInfo",
             Message::DatabaseUpdated(_) => "DatabaseUpdated",
             Message::ScanIntelFiles => "ScanIntelFiles",
         }

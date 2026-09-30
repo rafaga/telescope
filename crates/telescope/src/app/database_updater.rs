@@ -36,8 +36,7 @@
 //! There used to be a stub here that called a nonexistent
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
-use eframe::egui::{self, Align2, RichText, Vec2};
-use egui_panels::StatusKind;
+use eframe::egui::{self, Align2, Margin, RichText, Stroke, Vec2};
 use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
 use sde::builder::{BuildUrls, extract, http, schema, sde_index};
@@ -59,20 +58,52 @@ use super::messages::{Message, Type, send_app_message, try_send_app_message};
 /// rather than letting two pipelines fight over the same `sde.db` file.
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// Set by the window's Cancel button, read by `DatabaseUpdater::run` at the
+/// end of each phase: the phase that is running finishes, the next one does
+/// not start.
+static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 /// The phases of an SDE update, in the order they run; each is sent to the
 /// window as [`Message::DatabaseUpdateProgress`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SdePhase {
-    /// Asking CCP's SDE index whether there is a newer build.
+    /// Asking CCP's SDE index which build is the latest.
     Checking,
-    /// Downloading and decompressing the new export.
+    /// Downloading the new export.
     Downloading,
+    /// Decompressing the export.
+    Extracting,
     /// Parsing the export into a new `sde.db`.
     Rebuilding,
+    /// Checking the new database before it replaces the old one.
+    Verifying,
+}
+
+/// Something learned while an update runs, shown next to the steps and in
+/// the window's log; sent as [`Message::DatabaseUpdateInfo`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SdeInfo {
+    /// The build installed (if any) and the latest one CCP offers.
+    Versions {
+        /// The build number recorded by the last update.
+        installed: Option<String>,
+        /// The latest build number in CCP's index.
+        available: String,
+    },
+    /// The export was downloaded: its size in bytes.
+    Downloaded(u64),
+    /// The new database passed its integrity check.
+    Verified,
 }
 
 impl SdePhase {
-    const ALL: [Self; 3] = [Self::Checking, Self::Downloading, Self::Rebuilding];
+    const ALL: [Self; 5] = [
+        Self::Checking,
+        Self::Downloading,
+        Self::Extracting,
+        Self::Rebuilding,
+        Self::Verifying,
+    ];
 
     fn index(self) -> usize {
         Self::ALL
@@ -86,24 +117,48 @@ impl SdePhase {
         match self {
             Self::Checking => t!("sde_update.step_check"),
             Self::Downloading => t!("sde_update.step_download"),
+            Self::Extracting => t!("sde_update.step_extract"),
             Self::Rebuilding => t!("sde_update.step_rebuild"),
+            Self::Verifying => t!("sde_update.step_verify"),
         }
         .into_owned()
     }
 
-    /// What is happening now, under the steps.
+    /// What is happening now: the phase's line in the log.
     fn detail(self) -> String {
         match self {
             Self::Checking => t!("sde_update.checking"),
             Self::Downloading => t!("sde_update.downloading"),
+            Self::Extracting => t!("sde_update.extracting"),
             Self::Rebuilding => t!("sde_update.rebuilding"),
+            Self::Verifying => t!("sde_update.verifying"),
         }
         .into_owned()
     }
 }
 
-/// Width of the update window's content.
-const WINDOW_WIDTH: f32 = 400.0;
+/// Width of the update window.
+const WINDOW_WIDTH: f32 = 568.0;
+
+/// Room left at each side of the window on a small screen.
+const WINDOW_MARGIN: f32 = 24.0;
+
+/// Height of the window's own title bar.
+const TITLE_BAR_HEIGHT: f32 = 34.0;
+
+/// Height of the log area.
+const LOG_HEIGHT: f32 = 92.0;
+
+/// How an update run ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outcome {
+    /// `sde.db` was (re)built.
+    Rebuilt,
+    /// The database was already up to date.
+    UpToDate,
+    /// The user cancelled before the rebuild started.
+    Cancelled,
+}
 
 /// UI state for the "updating the SDE database" window, owned by
 /// `TelescopeApp` and painted every frame via [`Self::show`]. Doesn't
@@ -114,105 +169,343 @@ const WINDOW_WIDTH: f32 = 400.0;
 pub struct DatabaseUpdater {
     /// The phase running, `None` while no update is.
     phase: Option<SdePhase>,
-    /// When the window was shown, for the elapsed time.
-    started: Option<Instant>,
+    /// The update is over and the new database is in place; the window
+    /// stays until the user accepts it.
+    finished: bool,
+    /// When the running phase began.
+    phase_started: Option<Instant>,
+    /// The installed and the latest build, once known.
+    versions: Option<(Option<String>, String)>,
+    /// The size of the downloaded export, once known.
+    downloaded: Option<u64>,
+    /// One line per event, each led by the time of day.
+    log: Vec<String>,
+}
+
+/// `m:ss` for a duration.
+fn clock(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 impl DatabaseUpdater {
     /// Paints the progress window if an update is currently running (see
     /// `Self::set_phase`/`Self::hide`) -- a no-op otherwise. It is drawn
-    /// like the Settings screen (`egui_panels`): a title with the elapsed
-    /// time, a progress rail, the three phases as steps and what the
-    /// current one is doing.
+    /// like a dialog of the Settings screen (`egui_panels`): a title bar
+    /// with a close button, a progress bar, the three
+    /// phases as steps, a log of what began and when, and a Cancel button
+    /// that takes effect at the end of the running phase (not during the
+    /// rebuild, which can't be interrupted).
     #[tracing::instrument(skip(self, ctx))]
-    pub fn show(&self, ctx: &egui::Context) {
+    pub fn show(&mut self, ctx: &egui::Context) {
         let Some(phase) = self.phase else {
             return;
         };
+        let mut accepted = false;
         egui::Window::new(t!("sde_update.title"))
             .id(egui::Id::new("sde_update_window"))
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .frame(egui_panels::dialog_frame(ctx))
+            .frame(egui_panels::dialog_frame(ctx).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let theme = egui_panels::Theme::get(ui.ctx());
                 let palette = theme.palette(ui.visuals());
-                ui.set_width(WINDOW_WIDTH);
-                ui.spacing_mut().item_spacing.y = theme.section_spacing;
+                let cancelling = CANCEL_REQUESTED.load(Ordering::SeqCst);
+                let finished = self.finished;
+                let can_cancel = matches!(
+                    phase,
+                    SdePhase::Checking | SdePhase::Downloading | SdePhase::Extracting
+                ) && !cancelling
+                    && !finished;
+                // Narrower than usual when the application window is.
+                let window_width = WINDOW_WIDTH
+                    .min(ui.ctx().content_rect().width() - 2.0 * WINDOW_MARGIN)
+                    .max(280.0);
+                ui.set_width(window_width);
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
 
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    ui.horizontal(|ui| {
+                // Title bar.
+                ui.allocate_ui_with_layout(
+                    Vec2::new(window_width, TITLE_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(14.0);
                         ui.label(
                             RichText::new(t!("sde_update.title"))
-                                .size(theme.section_title_size + 2.0)
+                                .size(theme.section_title_size)
                                 .color(palette.strong_text),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let elapsed = self
-                                .started
-                                .map_or(0, |started| started.elapsed().as_secs());
-                            egui_panels::badge(
-                                ui,
-                                &format!("{}:{:02}", elapsed / 60, elapsed % 60),
+                            ui.add_space(8.0);
+                            let hover = if finished {
+                                t!("sde_update.accept")
+                            } else {
+                                t!("sde_update.cancel")
+                            };
+                            if close_button(ui, can_cancel || finished)
+                                .on_hover_text(hover)
+                                .clicked()
+                            {
+                                if finished {
+                                    accepted = true;
+                                } else {
+                                    Self::request_cancel();
+                                }
+                            }
+                        });
+                    },
+                );
+                egui_panels::divider(ui);
+
+                egui::Frame::NONE
+                    .inner_margin(Margin {
+                        left: 18,
+                        right: 18,
+                        top: 16,
+                        bottom: 18,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(window_width - 36.0);
+                        ui.spacing_mut().item_spacing.y = 14.0;
+
+                        let info = match &self.versions {
+                            Some((installed, available)) => t!(
+                                "sde_update.versions",
+                                installed = installed
+                                    .clone()
+                                    .unwrap_or_else(|| t!("sde_update.none").into_owned()),
+                                available = available
                             )
-                            .on_hover_text(t!("sde_update.elapsed"));
+                            .into_owned(),
+                            None => t!("sde_update.description").into_owned(),
+                        };
+                        ui.label(
+                            RichText::new(info)
+                                .size(theme.small_size)
+                                .color(palette.muted_text),
+                        );
+
+                        // Half a phase in while it runs, so the bar moves at once.
+                        let target = if finished {
+                            1.0
+                        } else {
+                            (phase.index() as f32 + 0.5) / SdePhase::ALL.len() as f32
+                        };
+                        let current = if finished {
+                            SdePhase::ALL.len()
+                        } else {
+                            phase.index()
+                        };
+                        let fraction = ui.ctx().animate_value_with_time(
+                            egui::Id::new("sde_update_progress"),
+                            target,
+                            0.4,
+                        );
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            let width = ui.available_width() - 44.0;
+                            ui.add_sized(
+                                [width, 8.0],
+                                egui::ProgressBar::new(fraction)
+                                    .desired_height(8.0)
+                                    .corner_radius(4)
+                                    .fill(palette.accent),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.0} %", fraction * 100.0))
+                                    .size(theme.small_size)
+                                    .color(palette.muted_text),
+                            );
+                        });
+
+                        let steps: Vec<String> =
+                            SdePhase::ALL.iter().map(|phase| phase.step()).collect();
+                        let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
+                        let notes: Vec<String> = (0..steps.len())
+                            .map(|index| match index {
+                                0 => self
+                                    .versions
+                                    .as_ref()
+                                    .filter(|_| current > 0)
+                                    .map(|(_, available)| {
+                                        t!("sde_update.available", build = available).into_owned()
+                                    })
+                                    .unwrap_or_default(),
+                                1 => self
+                                    .downloaded
+                                    .filter(|_| current > 1)
+                                    .map(format_size)
+                                    .unwrap_or_default(),
+                                _ => String::new(),
+                            })
+                            .enumerate()
+                            .map(|(index, note)| {
+                                if index == current && note.is_empty() {
+                                    self.phase_started
+                                        .map(|began| clock(began.elapsed()))
+                                        .unwrap_or_default()
+                                } else {
+                                    note
+                                }
+                            })
+                            .collect();
+                        egui_panels::progress_steps_with_notes(ui, &steps, &notes, current);
+
+                        // What began and when.
+                        egui::Frame::NONE
+                            .fill(ui.visuals().extreme_bg_color)
+                            .stroke(Stroke::new(1.0, palette.card_stroke))
+                            .corner_radius(3)
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                egui::ScrollArea::vertical()
+                                    .id_salt("sde_update_log")
+                                    .max_height(LOG_HEIGHT - 16.0)
+                                    .auto_shrink([false, false])
+                                    .stick_to_bottom(true)
+                                    .show(ui, |ui| {
+                                        for line in &self.log {
+                                            ui.label(
+                                                RichText::new(line)
+                                                    .monospace()
+                                                    .size(theme.small_size - 1.0)
+                                                    .color(palette.muted_text),
+                                            );
+                                        }
+                                    });
+                            });
+
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let accept = ui.add_enabled_ui(finished, |ui| {
+                                        egui_panels::button(
+                                            ui,
+                                            t!("sde_update.accept").into_owned(),
+                                            if finished {
+                                                egui_panels::Variant::Primary
+                                            } else {
+                                                egui_panels::Variant::Secondary
+                                            },
+                                        )
+                                    });
+                                    if accept.inner.clicked() {
+                                        accepted = true;
+                                    }
+                                    let label = if cancelling {
+                                        t!("sde_update.cancelling")
+                                    } else {
+                                        t!("sde_update.cancel")
+                                    };
+                                    let cancel = ui.add_enabled_ui(can_cancel, |ui| {
+                                        egui_panels::button(
+                                            ui,
+                                            label.into_owned(),
+                                            egui_panels::Variant::Ghost,
+                                        )
+                                    });
+                                    if cancel.inner.clicked() {
+                                        Self::request_cancel();
+                                    }
+                                },
+                            );
                         });
                     });
-                    ui.label(
-                        RichText::new(t!("sde_update.description"))
-                            .size(theme.small_size)
-                            .color(palette.muted_text),
-                    );
-                });
-
-                // Half a phase in while it runs, so the rail moves at once.
-                let target = (phase.index() as f32 + 0.5) / SdePhase::ALL.len() as f32;
-                let fraction = ui.ctx().animate_value_with_time(
-                    egui::Id::new("sde_update_progress"),
-                    target,
-                    0.4,
-                );
-                ui.add(
-                    egui::ProgressBar::new(fraction)
-                        .desired_height(4.0)
-                        .corner_radius(2)
-                        .fill(palette.accent),
-                );
-
-                let steps: Vec<String> = SdePhase::ALL.iter().map(|phase| phase.step()).collect();
-                let steps: Vec<&str> = steps.iter().map(String::as_str).collect();
-                egui_panels::progress_steps(ui, &steps, phase.index());
-
-                ui.separator();
-                egui_panels::status(ui, StatusKind::Info, &phase.detail());
-                ui.label(
-                    RichText::new(t!("sde_update.hint"))
-                        .size(theme.small_size)
-                        .color(palette.muted_text),
-                );
             });
+        if accepted {
+            self.hide();
+            return;
+        }
         // The elapsed time counts even while nothing else repaints.
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
+    }
+
+    /// Asks the running update to stop at the end of its current phase.
+    fn request_cancel() {
+        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
     }
 
     /// Shows the window (if it wasn't already) at `phase`. Called from
     /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdateProgress`].
     pub fn set_phase(&mut self, phase: SdePhase) {
         if self.phase.is_none() {
-            self.started = Some(Instant::now());
+            self.finished = false;
+            self.versions = None;
+            self.downloaded = None;
+            self.log.clear();
         }
+        self.log_line(phase.detail());
+        self.phase_started = Some(Instant::now());
         self.phase = Some(phase);
     }
 
+    /// Records something learned during the update. Called from
+    /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdateInfo`].
+    pub fn set_info(&mut self, info: SdeInfo) {
+        match info {
+            SdeInfo::Versions {
+                installed,
+                available,
+            } => {
+                let line = t!(
+                    "sde_update.log_versions",
+                    installed = installed
+                        .clone()
+                        .unwrap_or_else(|| t!("sde_update.none").into_owned()),
+                    available = available
+                )
+                .into_owned();
+                self.log_line(line);
+                self.versions = Some((installed, available));
+            }
+            SdeInfo::Downloaded(bytes) => {
+                self.log_line(
+                    t!("sde_update.log_downloaded", size = format_size(bytes)).into_owned(),
+                );
+                self.downloaded = Some(bytes);
+            }
+            SdeInfo::Verified => {
+                self.log_line(t!("sde_update.log_verified").into_owned());
+            }
+        }
+    }
+
+    /// Adds a line to the log, led by the time of day.
+    fn log_line(&mut self, text: String) {
+        self.log.push(format!(
+            "{}  {text}",
+            chrono::Local::now().format("%H:%M:%S")
+        ));
+    }
+
+    /// The new database is in place: every step is done and the window
+    /// waits for the user to accept it. Called from
+    /// `TelescopeApp::event_manager` on [`Message::DatabaseUpdated`] when
+    /// the database was rebuilt.
+    pub fn finish(&mut self) {
+        if self.phase.is_some() {
+            self.finished = true;
+            self.phase_started = None;
+            self.log_line(t!("sde_update.log_done").into_owned());
+        }
+    }
+
     /// Hides the window. Called from `TelescopeApp::event_manager` on
-    /// [`Message::DatabaseUpdated`], which is sent once the
-    /// check/build finishes (successfully or not).
+    /// [`Message::DatabaseUpdated`] when nothing was rebuilt (up to date,
+    /// cancelled or failed), and when the user accepts a finished update.
     pub fn hide(&mut self) {
         self.phase = None;
-        self.started = None;
+        self.finished = false;
+        self.phase_started = None;
+        self.versions = None;
+        self.downloaded = None;
+        self.log.clear();
     }
 
     /// Spawns the update check/build on its own thread, with its own
@@ -297,6 +590,7 @@ impl DatabaseUpdater {
             return;
         }
 
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -314,22 +608,29 @@ impl DatabaseUpdater {
                 )
                 .await;
                 match result {
-                    Ok(rebuilt) => {
-                        if rebuilt {
-                            Self::notify(
-                                &app_msg,
-                                Type::Info,
-                                "SDE database updated successfully.",
-                            )
-                            .await;
-                        } else {
-                            Self::notify(
-                                &app_msg,
-                                Type::Info,
-                                "SDE database is already up to date.",
-                            )
-                            .await;
+                    Ok(outcome) => {
+                        match outcome {
+                            Outcome::Rebuilt => {
+                                Self::notify(
+                                    &app_msg,
+                                    Type::Info,
+                                    "SDE database updated successfully.",
+                                )
+                                .await;
+                            }
+                            Outcome::UpToDate => {
+                                Self::notify(
+                                    &app_msg,
+                                    Type::Info,
+                                    "SDE database is already up to date.",
+                                )
+                                .await;
+                            }
+                            Outcome::Cancelled => {
+                                Self::notify(&app_msg, Type::Info, "SDE update cancelled.").await;
+                            }
                         }
+                        let rebuilt = outcome == Outcome::Rebuilt;
                         let _ = send_app_message(&app_msg, Message::DatabaseUpdated(rebuilt)).await;
                     }
                     Err(err) => {
@@ -382,8 +683,8 @@ impl DatabaseUpdater {
     /// `sde_path` doesn't exist yet (`!db_exists`). Skipping only requires
     /// both "nothing changed" and "the database is already there".
     ///
-    /// Returns `Ok(true)` if the database was (re)built, `Ok(false)` if it
-    /// was already up to date (nothing to do). Errors -- no network, a
+    /// Returns whether the database was rebuilt, was already up to date or
+    /// the user cancelled (see [`Outcome`]). Errors -- no network, a
     /// malformed zip, a SQL failure -- are returned rather than panicking;
     /// the caller decides how to surface them.
     async fn run(
@@ -393,24 +694,71 @@ impl DatabaseUpdater {
         with_third_party: bool,
         urls: &BuildUrls,
         app_msg: &Sender<Message>,
-    ) -> Result<bool, Error> {
+    ) -> Result<Outcome, Error> {
         send_app_message(app_msg, Message::DatabaseUpdateProgress(SdePhase::Checking))
             .await
             .ok();
 
         let client = http::build_client()?;
+        let build_file = data_dir.join(format!("sde-{}.build", urls.sde_variant));
+        let installed = std::fs::read_to_string(&build_file)
+            .ok()
+            .map(|build| build.trim().to_string())
+            .filter(|build| !build.is_empty());
+        // Only for the window: `sde_index::update_as_needed` reads the index
+        // again and decides on its own.
+        let available = http::fetch_text(&client, &format!("{}latest.jsonl", urls.sde_url))
+            .await
+            .ok()
+            .and_then(|index| latest_build(&index));
+        if let Some(available) = &available {
+            send_app_message(
+                app_msg,
+                Message::DatabaseUpdateInfo(SdeInfo::Versions {
+                    installed: installed.clone(),
+                    available: available.clone(),
+                }),
+            )
+            .await
+            .ok();
+        }
+
+        let db_exists = is_sqlite(sde_path);
+        let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
+        let expect_download = !db_exists
+            || !zip_path.exists()
+            || available
+                .as_ref()
+                .is_none_or(|available| installed.as_ref() != Some(available));
+        if expect_download {
+            send_app_message(
+                app_msg,
+                Message::DatabaseUpdateProgress(SdePhase::Downloading),
+            )
+            .await
+            .ok();
+        }
         let changed =
             sde_index::update_as_needed(&client, data_dir, &urls.sde_url, &urls.sde_variant)
                 .await?;
-
-        let db_exists = is_sqlite(sde_path);
         if !changed && db_exists {
-            return Ok(false);
+            return Ok(Outcome::UpToDate);
+        }
+        if let Ok(zip) = std::fs::metadata(&zip_path) {
+            send_app_message(
+                app_msg,
+                Message::DatabaseUpdateInfo(SdeInfo::Downloaded(zip.len())),
+            )
+            .await
+            .ok();
+        }
+        if Self::cancelled(data_dir, urls) {
+            return Ok(Outcome::Cancelled);
         }
 
         send_app_message(
             app_msg,
-            Message::DatabaseUpdateProgress(SdePhase::Downloading),
+            Message::DatabaseUpdateProgress(SdePhase::Extracting),
         )
         .await
         .ok();
@@ -421,8 +769,10 @@ impl DatabaseUpdater {
             std::fs::create_dir_all(parent)?;
         }
 
-        let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
         extract::prepare_sde_directory(&zip_path, sde_dir)?;
+        if Self::cancelled(data_dir, urls) {
+            return Ok(Outcome::Cancelled);
+        }
 
         // Read back the build number `sde_index::update_as_needed` just
         // wrote (or confirmed unchanged) to `sde-{sde_variant}.build`,
@@ -483,18 +833,123 @@ impl DatabaseUpdater {
                 build_number.as_deref(),
             )
             .await;
+        let verified = match built {
+            Ok(_) => {
+                send_app_message(
+                    app_msg,
+                    Message::DatabaseUpdateProgress(SdePhase::Verifying),
+                )
+                .await
+                .ok();
+                Self::verify(&connection)
+            }
+            Err(error) => Err(error),
+        };
         // Closed before the file is moved or removed.
         drop(connection);
-        if let Err(error) = built {
+        if let Err(error) = verified {
             let _ = std::fs::remove_file(&building);
             return Err(error);
         }
+        send_app_message(app_msg, Message::DatabaseUpdateInfo(SdeInfo::Verified))
+            .await
+            .ok();
         // One step on every platform: the old database stays whole until
         // the new one replaces it.
         std::fs::rename(&building, sde_path)?;
 
-        Ok(true)
+        Ok(Outcome::Rebuilt)
     }
+
+    /// SQLite's own quick integrity check of the database just built.
+    fn verify(connection: &rusqlite::Connection) -> Result<(), Error> {
+        let result: String =
+            connection.pragma_query_value(None, "quick_check", |row| row.get(0))?;
+        if result == "ok" {
+            return Ok(());
+        }
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            Some(format!(
+                "the new SDE database failed its integrity check: {result}"
+            )),
+        )
+        .into())
+    }
+
+    /// Whether the user asked to stop. A cancelled run forgets the build
+    /// number it recorded, so the next check still sees the export as new
+    /// instead of taking the old database for up to date.
+    fn cancelled(data_dir: &std::path::Path, urls: &BuildUrls) -> bool {
+        let cancelled = CANCEL_REQUESTED.load(Ordering::SeqCst);
+        if cancelled {
+            let _ = std::fs::remove_file(data_dir.join(format!("sde-{}.build", urls.sde_variant)));
+        }
+        cancelled
+    }
+}
+
+/// The latest build number in the text of CCP's SDE index (`latest.jsonl`),
+/// `None` when it has none: the window then simply has no version to show.
+fn latest_build(index: &str) -> Option<String> {
+    index.lines().find_map(|line| {
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if !compact.contains("\"_key\":\"sde\"") {
+            return None;
+        }
+        let rest = compact.split("\"buildNumber\":").nth(1)?;
+        let build: String = rest
+            .trim_start_matches('"')
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        (!build.is_empty()).then_some(build)
+    })
+}
+
+/// A byte count for people: `48.2 MB`.
+fn format_size(bytes: u64) -> String {
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    }
+}
+
+/// The title bar's close button: a 22 px square with a drawn cross, the same
+/// hover as a side navigation item. Disabled it is dimmed and inert.
+fn close_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    let theme = egui_panels::Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), sense);
+    if ui.is_rect_visible(rect) {
+        if enabled && response.hovered() {
+            ui.painter().rect_filled(rect, 3.0, palette.hover_fill);
+        }
+        let color = if enabled {
+            palette.muted_text
+        } else {
+            palette.muted_text.gamma_multiply(0.4)
+        };
+        let arm = 4.0;
+        let center = rect.center();
+        let stroke = Stroke::new(1.4, color);
+        ui.painter().line_segment(
+            [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [center + Vec2::new(-arm, arm), center + Vec2::new(arm, -arm)],
+            stroke,
+        );
+    }
+    response
 }
 
 /// Whether `path` is a file starting with the SQLite header (a missing,
@@ -503,7 +958,7 @@ fn is_sqlite(path: &std::path::Path) -> bool {
     let mut header = [0u8; 16];
     File::open(path)
         .and_then(|mut file| file.read_exact(&mut header))
-        .is_ok_and(|()| &header == b"SQLite format 3 ")
+        .is_ok_and(|()| &header == b"SQLite format 3\0")
 }
 
 /// Where a new SDE database is built before it replaces `sde_path`
@@ -516,7 +971,28 @@ fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod building_path_tests {
-    use super::{building_path, is_sqlite};
+    use super::{building_path, format_size, is_sqlite, latest_build};
+
+    #[test]
+    fn the_latest_build_is_read_from_the_index() {
+        let index =
+            "{\"_key\": \"sde\", \"buildNumber\": 3458726, \"releaseDate\": \"2026-08-06\"}\r\n";
+        assert_eq!(latest_build(index).as_deref(), Some("3458726"));
+        let text =
+            "{\"_key\":\"other\",\"buildNumber\":1}\n{\"_key\":\"sde\",\"buildNumber\":\"77\"}";
+        assert_eq!(latest_build(text).as_deref(), Some("77"));
+        assert_eq!(
+            latest_build("{\"_key\": \"other\", \"buildNumber\": 1}"),
+            None
+        );
+        assert_eq!(latest_build(""), None);
+    }
+
+    #[test]
+    fn sizes_are_shown_in_megabytes_or_kilobytes() {
+        assert_eq!(format_size(50_540_000), "48.2 MB");
+        assert_eq!(format_size(2048), "2 KB");
+    }
 
     #[test]
     fn only_a_file_with_the_sqlite_header_is_a_database() {

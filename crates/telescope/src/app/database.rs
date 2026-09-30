@@ -58,6 +58,7 @@ impl TelescopeApp {
         // The intel detection resolves reported systems against this same
         // data.
         self.intel_resolver.replace(&self.universe);
+        self.sync_alarm_jumps();
         self.behavior
             .set_path(self.settings.get_sde().to_path_buf());
         self.sync_region_list();

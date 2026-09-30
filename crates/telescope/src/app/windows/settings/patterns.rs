@@ -14,7 +14,7 @@ use eframe::egui::{self, Color32, Pos2, RichText, Ui};
 use egui_panels::{StatusKind, Variant};
 use egui_snarl::{
     InPin, InPinId, NodeId, OutPin, OutPinId, Snarl,
-    ui::{PinInfo, SnarlPin, SnarlViewer, SnarlWidget},
+    ui::{BackgroundPattern, Grid, PinInfo, SnarlPin, SnarlStyle, SnarlViewer, SnarlWidget},
 };
 use std::collections::{HashMap, HashSet};
 use webb::graph::{
@@ -52,7 +52,10 @@ const OUTPUT_KINDS: [OutputKind; 5] = [
 #[derive(Default)]
 struct GraphState {
     dirty: bool,
+    /// The node the side panel shows: the one last clicked.
     selected: Option<NodeId>,
+    /// The side panel is folded away.
+    inspector_collapsed: bool,
 }
 
 /// In-memory editing state of the Rules page: the working copy of the graph
@@ -214,6 +217,7 @@ impl PatternsEditor {
 
     fn open_editor(&mut self, input_id: &str) {
         self.build_component(input_id);
+        self.state.selected = None;
         self.open_input = Some(input_id.to_string());
     }
 
@@ -372,6 +376,19 @@ impl PatternsEditor {
             .nodes()
             .filter(|node| matches!(&node.kind, NodeKind::Output(_)))
             .count()
+    }
+
+    /// Adds a copy of the node `node_id` (with a new id) next to it, not
+    /// connected to anything.
+    fn duplicate_node(&mut self, node_id: NodeId) {
+        let Some(info) = self.snarl.get_node_info(node_id) else {
+            return;
+        };
+        let (mut node, pos) = (info.value.clone(), info.pos);
+        node.id = unique_id(&self.rule_ids(), &format!("{}_copy", node.id));
+        let copy = self.snarl.insert_node(pos + egui::vec2(28.0, 28.0), node);
+        self.state.selected = Some(copy);
+        self.state.dirty = true;
     }
 
     fn find_node(&self, id: &str) -> Option<NodeId> {
@@ -643,30 +660,74 @@ impl TelescopeApp {
         }
 
         egui_panels::page(ui, |ui| {
-            let (add, import, export) = egui_panels::page_header_with(
+            self.intel_flow_stepper(ui, SettingsPage::Rules);
+            egui_panels::page_header(
                 ui,
                 &SettingsPage::Rules.title(),
                 Some(&t!("settings.patterns.description")),
-                |ui| {
-                    let export =
-                        egui_panels::button(ui, t!("settings.patterns.export"), Variant::Ghost)
-                            .clicked();
-                    let import =
-                        egui_panels::button(ui, t!("settings.patterns.import"), Variant::Ghost)
-                            .clicked();
-                    let add = egui_panels::button(
+            );
+            let has_inputs = !self.patterns_editor.input_ids().is_empty();
+            let (mut add, mut open, mut import, mut export) = (false, false, false, false);
+            // With little room the buttons share wrapped lines instead of the
+            // right-hand group pushing the left-hand one out of view.
+            let narrow = ui.available_width() < 560.0;
+            let layout = if narrow {
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            };
+            ui.with_layout(layout, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+                add =
+                    egui_panels::button(ui, t!("settings.patterns.add_input"), Variant::Secondary)
+                        .clicked();
+                ui.add_enabled_ui(has_inputs, |ui| {
+                    open = egui_panels::button(
                         ui,
-                        t!("settings.patterns.add_input"),
+                        t!("settings.patterns.open_editor"),
                         Variant::Primary,
                     )
                     .clicked();
-                    (add, import, export)
-                },
-            )
-            .inner;
+                });
+                let mut file_buttons = |ui: &mut egui::Ui| {
+                    let (first, second) = if narrow { (1, 0) } else { (0, 1) };
+                    for which in [first, second] {
+                        if which == 0 {
+                            export = egui_panels::button(
+                                ui,
+                                t!("settings.patterns.export"),
+                                Variant::Ghost,
+                            )
+                            .clicked();
+                        } else {
+                            import = egui_panels::button(
+                                ui,
+                                t!("settings.patterns.import"),
+                                Variant::Ghost,
+                            )
+                            .clicked();
+                        }
+                    }
+                };
+                if narrow {
+                    file_buttons(ui);
+                } else {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        file_buttons,
+                    );
+                }
+            });
             if add {
                 let id = self.patterns_editor.add_input();
                 self.patterns_editor.selected_input = Some(id);
+            }
+            if open {
+                let first = self.patterns_editor.input_ids().into_iter().next();
+                let target = self.patterns_editor.selected_input.clone().or(first);
+                if let Some(id) = target {
+                    self.patterns_editor.open_editor(&id);
+                }
             }
             if import {
                 self.import_rules();
@@ -674,7 +735,6 @@ impl TelescopeApp {
             if export {
                 self.export_rules();
             }
-            self.intel_flow_stepper(ui, SettingsPage::Rules);
 
             let input_ids = self.patterns_editor.input_ids();
             if input_ids.is_empty() {
@@ -717,14 +777,14 @@ impl TelescopeApp {
     /// Whether the rule graph being edited is valid, and its errors.
     fn show_graph_status(&mut self, ui: &mut egui::Ui) {
         for error in &self.patterns_editor.errors {
-            egui_panels::status(ui, StatusKind::Error, error);
+            egui_panels::notice(ui, StatusKind::Error, error);
         }
         let graph = self.patterns_editor.graph.clone();
         let errors = self.settings_ui.validation_errors(&graph);
         if errors.is_empty() {
-            egui_panels::status(ui, StatusKind::Ok, &t!("settings.patterns.valid"));
+            egui_panels::notice(ui, StatusKind::Ok, &t!("settings.patterns.valid"));
         } else {
-            egui_panels::status(
+            egui_panels::notice(
                 ui,
                 StatusKind::Error,
                 &t!("settings.patterns.invalid", count = errors.len()),
@@ -798,60 +858,76 @@ impl TelescopeApp {
         };
         let theme = egui_panels::Theme::get(ui.ctx());
         let palette = theme.palette(ui.visuals());
-        let (description, enabled) = self
+        let (description, _enabled) = self
             .patterns_editor
             .input_summary(&input_id)
             .unwrap_or_default();
+        let summary = self.patterns_editor.component_summary(&input_id);
+        let graph = self.patterns_editor.graph.clone();
+        let problems = self.settings_ui.validation_errors(&graph).len();
         let mut close = false;
+        let wide = ui.available_width() >= INSPECTOR_MIN_VIEWPORT;
+        let selected_before = self.patterns_editor.state.selected;
         ui.spacing_mut().item_spacing.y = theme.section_spacing;
-        // The header of a page, like the list of rules: the way back, the
-        // rule's name and id, and the nodes that can be added.
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                if egui_panels::button(ui, t!("settings.patterns.back_to_rules"), Variant::Ghost)
-                    .on_hover_text(t!("settings.patterns.back_hint"))
-                    .clicked()
-                {
-                    close = true;
-                }
-                ui.label(
-                    RichText::new(&description)
-                        .font(egui::FontId::proportional(theme.title_size))
+
+        // The toolbar: the way back, the rule, whether its graph is valid
+        // and the menu that adds nodes.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if egui_panels::button(ui, t!("settings.patterns.back_to_rules"), Variant::Ghost)
+                .on_hover_text(t!("settings.patterns.back_hint"))
+                .clicked()
+            {
+                close = true;
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(&input_id)
+                        .size(theme.section_title_size + 1.0)
                         .color(palette.strong_text),
-                );
-                egui_panels::chip(
-                    ui,
-                    &input_id,
-                    Some(&if enabled {
-                        t!("settings.patterns.state_on")
+                )
+                .truncate(),
+            )
+            .on_hover_text(t!("settings.patterns.editor_hint"));
+            ui.add(
+                egui::Label::new(
+                    RichText::new(&description)
+                        .size(theme.small_size)
+                        .color(palette.muted_text),
+                )
+                .truncate(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if wide {
+                    let collapsed = self.patterns_editor.state.inspector_collapsed;
+                    let (arrow, hint) = if collapsed {
+                        ("◀", t!("settings.patterns.inspector_show"))
                     } else {
-                        t!("settings.patterns.state_off")
-                    }),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let missing = self.patterns_editor.missing_output_kinds();
-                    let outputs = egui_panels::menu_button(
-                        ui,
-                        t!("settings.patterns.menu_output"),
-                        Variant::Ghost,
-                        |ui| {
-                            for kind in missing {
-                                if ui.button(output_kind_label(kind)).clicked() {
-                                    self.patterns_editor.add_output_of(kind);
+                        ("▶", t!("settings.patterns.inspector_hide"))
+                    };
+                    if egui_panels::button(ui, arrow, Variant::Ghost)
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        self.patterns_editor.state.inspector_collapsed = !collapsed;
+                    }
+                }
+                let missing = self.patterns_editor.missing_output_kinds();
+                egui_panels::menu_button(
+                    ui,
+                    t!("settings.patterns.menu_node"),
+                    Variant::Primary,
+                    |ui| {
+                        ui.menu_button(t!("settings.patterns.menu_detection"), |ui| {
+                            for type_name in DETECTION_TYPES {
+                                if ui.button(detection_type_label(type_name)).clicked() {
+                                    self.patterns_editor.add_detection_of(type_name);
                                     ui.close();
                                 }
                             }
-                        },
-                    );
-                    outputs.on_hover_text(t!("settings.patterns.add_output"));
-                    egui_panels::menu_button(
-                        ui,
-                        t!("settings.patterns.menu_logic"),
-                        Variant::Ghost,
-                        |ui| {
+                        });
+                        ui.menu_button(t!("settings.patterns.menu_logic"), |ui| {
                             if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
                                 self.patterns_editor.add_aggregator();
                                 ui.close();
@@ -869,41 +945,363 @@ impl TelescopeApp {
                                 self.patterns_editor.add_formatter();
                                 ui.close();
                             }
-                        },
-                    )
-                    .on_hover_text(t!("settings.patterns.add_logic"));
-                    egui_panels::menu_button(
-                        ui,
-                        t!("settings.patterns.menu_detection"),
-                        Variant::Primary,
-                        |ui| {
-                            for type_name in DETECTION_TYPES {
-                                if ui.button(detection_type_label(type_name)).clicked() {
-                                    self.patterns_editor.add_detection_of(type_name);
-                                    ui.close();
+                        });
+                        ui.add_enabled_ui(!missing.is_empty(), |ui| {
+                            ui.menu_button(t!("settings.patterns.menu_output"), |ui| {
+                                for kind in missing {
+                                    if ui.button(output_kind_label(kind)).clicked() {
+                                        self.patterns_editor.add_output_of(kind);
+                                        ui.close();
+                                    }
                                 }
-                            }
-                        },
+                            });
+                        });
+                    },
+                );
+                ui.add_space(4.0);
+                let (text, kind) = if problems == 0 {
+                    (
+                        t!(
+                            "settings.patterns.editor_valid",
+                            detections = summary.detections,
+                            logic = summary.logic,
+                            outputs = summary.outputs.len()
+                        )
+                        .into_owned(),
+                        StatusKind::Ok,
                     )
-                    .on_hover_text(t!("settings.patterns.add_detection"));
-                });
+                } else {
+                    (
+                        t!("settings.patterns.invalid", count = problems)
+                            .trim_end_matches(':')
+                            .to_owned(),
+                        StatusKind::Error,
+                    )
+                };
+                ui.add(
+                    egui::Label::new(status_text(kind, &palette, &text, theme.small_size))
+                        .truncate(),
+                );
             });
-            ui.label(RichText::new(t!("settings.patterns.editor_hint")).color(palette.muted_text));
         });
+        egui_panels::divider(ui);
         for error in &self.patterns_editor.errors {
             egui_panels::status(ui, StatusKind::Error, error);
         }
-        {
+
+        // The canvas and, when there is room, the panel of the selected node.
+        let area = ui.available_rect_before_wrap();
+        let show_inspector = area.width() >= INSPECTOR_MIN_VIEWPORT
+            && !self.patterns_editor.state.inspector_collapsed;
+        let inspector_width = if show_inspector { INSPECTOR_WIDTH } else { 0.0 };
+        let canvas = egui::Rect::from_min_max(
+            area.min,
+            egui::pos2(area.right() - inspector_width, area.bottom()),
+        );
+        let graph_id = egui::Id::new("rules_graph");
+        let snarl_selection = egui_snarl::ui::get_selected_nodes(graph_id, ui.ctx());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(canvas), |ui| {
             let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
             let mut viewer = RulesViewer { state: &mut *state };
             SnarlWidget::new()
-                .id(egui::Id::new("rules_graph"))
-                .min_size(ui.available_size())
+                .id(graph_id)
+                .style(graph_style(ui))
+                .min_size(canvas.size())
                 .show(snarl, &mut viewer, ui);
+        });
+        // A Shift click or a rectangle selects in the canvas itself: follow it.
+        let now = egui_snarl::ui::get_selected_nodes(graph_id, ui.ctx());
+        if now != snarl_selection {
+            self.patterns_editor.state.selected = now.first().copied();
+        }
+        if show_inspector {
+            let panel = egui::Rect::from_min_max(egui::pos2(canvas.right(), area.top()), area.max);
+            ui.painter().vline(
+                panel.left(),
+                panel.y_range(),
+                egui::Stroke::new(1.0, palette.separator),
+            );
+            ui.scope_builder(egui::UiBuilder::new().max_rect(panel), |ui| {
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(panel.width() - 28.0);
+                        ui.set_min_height(panel.height() - 28.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("rules_inspector")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let selected = self.patterns_editor.state.selected;
+                                self.show_inspector(ui, selected);
+                            });
+                    });
+            });
+        }
+        ui.advance_cursor_after_rect(area);
+        // A click selects after the panel was drawn: draw it again.
+        if self.patterns_editor.state.selected != selected_before {
+            ui.ctx().request_repaint();
         }
         if close {
             self.patterns_editor.close_editor();
         }
+    }
+
+    /// The panel at the right of the graph editor: the selected node's
+    /// fields, what it is connected to and the actions on it.
+    fn show_inspector(&mut self, ui: &mut egui::Ui, selected: Option<NodeId>) {
+        let theme = egui_panels::Theme::get(ui.ctx());
+        let palette = theme.palette(ui.visuals());
+        ui.spacing_mut().item_spacing.y = 10.0;
+        let Some(node_id) =
+            selected.filter(|id| self.patterns_editor.snarl.get_node(*id).is_some())
+        else {
+            ui.label(
+                RichText::new(t!("settings.patterns.inspector_empty"))
+                    .size(theme.small_size)
+                    .color(palette.muted_text),
+            );
+            return;
+        };
+        let mut changed = false;
+        let mut delete = false;
+        let mut duplicate = false;
+        let mut connections = Vec::new();
+        {
+            let snarl = &self.patterns_editor.snarl;
+            for output in 0..output_pin_count(&snarl[node_id].kind) {
+                let pin = snarl.out_pin(OutPinId {
+                    node: node_id,
+                    output,
+                });
+                let targets: Vec<String> = pin
+                    .remotes
+                    .iter()
+                    .filter_map(|remote| snarl.get_node(remote.node))
+                    .map(|node| node.id.clone())
+                    .collect();
+                connections.push((output, targets));
+            }
+        }
+        {
+            let node = &mut self.patterns_editor.snarl[node_id];
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 7.0;
+                let (mark, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(mark, 2.0, node_kind_color(&node.kind));
+                ui.label(
+                    RichText::new(node_kind_label(&node.kind))
+                        .size(theme.section_title_size)
+                        .color(palette.strong_text),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(t!("settings.patterns.inspector_selected"))
+                            .size(theme.small_size)
+                            .color(palette.muted_text),
+                    );
+                });
+            });
+            egui_panels::divider(ui);
+            changed |= field_row(ui, &t!("settings.patterns.field_id"), |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut node.id.clone())
+                        .font(egui::TextStyle::Monospace)
+                        .interactive(false)
+                        .desired_width(ui.available_width()),
+                );
+                false
+            });
+            changed |= field_row(ui, &t!("settings.patterns.field_enabled"), |ui| {
+                ui.checkbox(&mut node.enabled, "").changed()
+            });
+            changed |= match &mut node.kind {
+                NodeKind::Input(input) => input_body(ui, input),
+                NodeKind::Detection(detection) => detection_body(ui, detection),
+                NodeKind::Output(output) => output_body(ui, output),
+                NodeKind::Aggregator(aggregator) => aggregator_body(ui, aggregator),
+                NodeKind::Gate(gate) => gate_body(ui, gate),
+                NodeKind::Formatter(formatter) => formatter_body(ui, formatter),
+            };
+        }
+        if !connections.is_empty() {
+            egui_panels::divider(ui);
+            ui.label(RichText::new(t!("settings.patterns.connections")).color(palette.strong_text));
+            let is_detection = matches!(
+                self.patterns_editor.snarl[node_id].kind,
+                NodeKind::Detection(_)
+            );
+            for (output, targets) in &connections {
+                let (name, color) = if is_detection {
+                    if *output == 1 {
+                        ("F ➡", FALSE_WIRE_COLOR)
+                    } else {
+                        ("T ➡", palette.ok)
+                    }
+                } else {
+                    ("➡", palette.muted_text)
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(RichText::new(name).size(theme.small_size).color(color));
+                    let text = if targets.is_empty() {
+                        t!("settings.patterns.not_connected").into_owned()
+                    } else {
+                        targets.join(", ")
+                    };
+                    ui.label(
+                        RichText::new(text)
+                            .size(theme.small_size)
+                            .color(palette.muted_text),
+                    );
+                });
+            }
+        }
+        egui_panels::divider(ui);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            let can_duplicate =
+                !matches!(self.patterns_editor.snarl[node_id].kind, NodeKind::Input(_));
+            ui.add_enabled_ui(can_duplicate, |ui| {
+                duplicate =
+                    egui_panels::button(ui, t!("settings.patterns.duplicate_node"), Variant::Ghost)
+                        .clicked();
+            });
+            delete = egui_panels::button(ui, t!("settings.patterns.delete_node"), Variant::Ghost)
+                .clicked();
+        });
+        if changed {
+            self.patterns_editor.state.dirty = true;
+        }
+        if duplicate {
+            self.patterns_editor.duplicate_node(node_id);
+        }
+        if delete {
+            self.patterns_editor.snarl.remove_node(node_id);
+            self.patterns_editor.state.selected = None;
+            self.patterns_editor.state.dirty = true;
+        }
+    }
+}
+
+/// Width of the panel of the selected node in the graph editor.
+const INSPECTOR_WIDTH: f32 = 260.0;
+
+/// The panel is left out when the editor is narrower than this.
+const INSPECTOR_MIN_VIEWPORT: f32 = 640.0;
+
+/// The mark and the label of a node kind, in the node headers and the panel.
+fn node_kind_color(kind: &NodeKind) -> Color32 {
+    match kind {
+        NodeKind::Input(_) => Color32::from_rgb(90, 160, 220),
+        NodeKind::Detection(_) => Color32::from_rgb(110, 190, 120),
+        NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {
+            Color32::from_rgb(225, 170, 80)
+        }
+        NodeKind::Output(_) => Color32::from_rgb(200, 125, 200),
+    }
+}
+
+fn node_kind_label(kind: &NodeKind) -> String {
+    match kind {
+        NodeKind::Input(_) => t!("settings.patterns.node_input").into_owned(),
+        NodeKind::Detection(detection) => detection_type_label(detection.kind.type_name()),
+        NodeKind::Output(output) => output_kind_label(output.kind),
+        NodeKind::Aggregator(_) => t!("settings.patterns.kind_aggregator").into_owned(),
+        NodeKind::Gate(gate) => gate_kind_label(gate.kind),
+        NodeKind::Formatter(_) => t!("settings.patterns.kind_formatter").into_owned(),
+    }
+}
+
+/// One line saying what a node does, for its body on the canvas.
+fn node_summary(kind: &NodeKind) -> String {
+    match kind {
+        NodeKind::Input(input) => {
+            if input.channels.is_empty() {
+                t!("settings.patterns.all_channels").into_owned()
+            } else {
+                input.channels.join(", ")
+            }
+        }
+        NodeKind::Detection(detection) => match &detection.kind {
+            DetectionRuleKind::ClearReport { keywords }
+            | DetectionRuleKind::Query { keywords }
+            | DetectionRuleKind::Keyword { keywords } => keywords.join(" · "),
+            DetectionRuleKind::ShipNames { dictionaries } => dictionaries.join(" · "),
+            DetectionRuleKind::Custom { pattern, words, .. } => {
+                pattern.clone().unwrap_or_else(|| words.join(" · "))
+            }
+            DetectionRuleKind::SystemReport
+            | DetectionRuleKind::ShipNamesZh
+            | DetectionRuleKind::PilotCount => String::new(),
+        },
+        NodeKind::Output(_) => String::new(),
+        NodeKind::Aggregator(aggregator) => {
+            t!("settings.patterns.field_inputs").into_owned() + &format!(": {}", aggregator.inputs)
+        }
+        NodeKind::Gate(gate) => {
+            t!("settings.patterns.field_inputs").into_owned() + &format!(": {}", gate.inputs)
+        }
+        NodeKind::Formatter(formatter) => formatter.template.clone(),
+    }
+}
+
+/// The text of the graph's validity in the toolbar, in the color of `kind`.
+fn status_text(
+    kind: StatusKind,
+    palette: &egui_panels::Palette,
+    text: &str,
+    size: f32,
+) -> RichText {
+    let color = match kind {
+        StatusKind::Ok => palette.ok,
+        StatusKind::Warning => palette.warning,
+        StatusKind::Error => palette.error,
+        StatusKind::Info => palette.muted_text,
+    };
+    RichText::new(text).size(size).color(color)
+}
+
+/// The look of the node editor, drawn like egui's own frames: flat nodes with
+/// a one pixel border and small corners, a faintly tinted header, thin wires
+/// and a plain square grid on the extreme background color. No shadows.
+fn graph_style(ui: &egui::Ui) -> SnarlStyle {
+    let visuals = ui.visuals();
+    let theme = egui_panels::Theme::get(ui.ctx());
+    let palette = theme.palette(visuals);
+    let radius = theme.radius;
+    let top_corners = egui::CornerRadius {
+        nw: radius,
+        ne: radius,
+        sw: 0,
+        se: 0,
+    };
+    SnarlStyle {
+        node_frame: Some(
+            egui::Frame::new()
+                .fill(visuals.window_fill)
+                .stroke(egui::Stroke::new(1.0, palette.card_stroke))
+                .corner_radius(egui::CornerRadius::same(radius))
+                .inner_margin(egui::Margin::same(6)),
+        ),
+        header_frame: Some(
+            egui::Frame::new()
+                .fill(palette.hover_fill)
+                .corner_radius(top_corners)
+                .inner_margin(egui::Margin::symmetric(8, 4)),
+        ),
+        pin_size: Some(9.0),
+        wire_width: Some(1.6),
+        bg_frame: Some(egui::Frame::new().fill(visuals.extreme_bg_color)),
+        bg_pattern: Some(BackgroundPattern::Grid(Grid::new(
+            egui::vec2(24.0, 24.0),
+            0.0,
+        ))),
+        bg_pattern_stroke: Some(egui::Stroke::new(1.0, palette.separator)),
+        select_stoke: Some(egui::Stroke::new(1.0, palette.accent_stroke)),
+        select_fill: Some(palette.accent.gamma_multiply(0.25)),
+        ..SnarlStyle::new()
     }
 }
 
@@ -917,8 +1315,16 @@ enum CardAction {
     Rename(String),
 }
 
-/// The card of an input rule: its switch, description and id, what it is
-/// made of, the outputs it reaches, and Open / Remove.
+/// Rows at least this wide show their output tags at the right end.
+const TAGS_BESIDE_MIN_WIDTH: f32 = 760.0;
+
+/// Width of the column of output tags beside a row's text.
+const TAGS_WIDTH: f32 = 300.0;
+
+/// The row of an input rule: a dot that says whether it is on, its id and
+/// description, what it is made of and the outputs it reaches. A click
+/// selects it and a double click opens its editor; the right-click menu
+/// switches it on or off, edits its description and id, and removes it.
 fn input_card(
     ui: &mut egui::Ui,
     index: usize,
@@ -946,133 +1352,185 @@ fn input_card(
             },
         ))
         .corner_radius(egui::CornerRadius::same(theme.radius))
-        .inner_margin(theme.section_margin);
-    // The click sense (select the card) is the scope's own, registered
-    // before its contents so the switch, the fields and the buttons inside
-    // keep their clicks; sensing clicks on the frame's response afterwards
-    // put it on top of them and took every click.
+        .inner_margin(egui::Margin::symmetric(16, 12));
     let response = ui
         .scope_builder(
-            // Salted with the card's position, not the entry's id: renaming
+            // Salted with the row's position, not the entry's id: renaming
             // the entry would give every widget inside a new id, and the id
-            // field would lose the focus at each key.
+            // field in the menu would lose the focus at each key.
             egui::UiBuilder::new()
                 .id_salt(("input_card", index))
                 .sense(egui::Sense::click()),
             |ui| {
                 frame.show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    ui.horizontal(|ui| {
-                        let mut on = enabled;
-                        if egui_panels::switch(ui, &mut on)
-                            .on_hover_text(if enabled {
-                                t!("settings.patterns.state_on")
-                            } else {
-                                t!("settings.patterns.state_off")
-                            })
-                            .changed()
-                        {
-                            actions.push(CardAction::Enable(on));
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if egui_panels::button(
-                                ui,
-                                t!("settings.patterns.remove_input"),
-                                Variant::Danger,
-                            )
-                            .clicked()
-                            {
-                                actions.push(CardAction::Remove);
-                            }
-                            if egui_panels::button(
-                                ui,
-                                t!("settings.patterns.open"),
-                                Variant::Secondary,
-                            )
-                            .clicked()
-                            {
-                                actions.push(CardAction::Open);
-                            }
-                            let mut text = description.to_string();
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut text)
-                                        .font(egui::FontId::proportional(theme.section_title_size))
-                                        .frame(egui::Frame::NONE)
-                                        .desired_width(ui.available_width()),
-                                )
-                                .changed()
-                            {
-                                actions.push(CardAction::Describe(text));
-                            }
-                        });
-                    });
-                    ui.horizontal(|ui| {
-                        // The id is edited as a draft and applied when the
-                        // field is left (Enter, Tab or a click elsewhere):
-                        // applied at each key, an id being typed is usually
-                        // invalid (empty, or taken halfway through) and was
-                        // put back.
-                        let edit_id = ui.make_persistent_id("input_id");
-                        let draft_id = edit_id.with("draft");
-                        let mut id_text = ui
-                            .data(|data| data.get_temp::<String>(draft_id))
-                            .unwrap_or_else(|| id.to_string());
-                        let response = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut id_text)
-                                    .id(edit_id)
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_width(160.0),
-                            )
-                            .on_hover_text(t!("settings.patterns.id_hint"));
-                        if response.lost_focus() {
-                            ui.data_mut(|data| data.remove::<String>(draft_id));
-                            let new_id = id_text.trim();
-                            if new_id != id {
-                                actions.push(CardAction::Rename(new_id.to_string()));
-                            }
-                        } else if response.has_focus() {
-                            ui.data_mut(|data| data.insert_temp(draft_id, id_text));
-                        }
-                        let channels = if summary.channels.is_empty() {
-                            t!("settings.patterns.all_channels").into_owned()
-                        } else {
-                            summary.channels.join(", ")
-                        };
-                        ui.label(
-                            RichText::new(t!(
-                                "settings.patterns.summary",
-                                channels = channels,
-                                detections = summary.detections,
-                                logic = summary.logic,
-                                outputs = summary.outputs.len()
-                            ))
-                            .size(theme.small_size)
-                            .color(palette.muted_text),
+                    let width = ui.available_width();
+                    ui.set_width(width);
+                    // Wide enough, the output tags sit at the right end;
+                    // otherwise they wrap on a line of their own under the
+                    // text instead of covering it.
+                    let tags_beside = width >= TAGS_BESIDE_MIN_WIDTH;
+                    let tag_labels: Vec<String> = summary
+                        .outputs
+                        .iter()
+                        .map(|kind| output_kind_label(*kind))
+                        .collect();
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        let (dot, _) = ui.allocate_exact_size(
+                            egui::vec2(8.0, theme.section_title_size),
+                            egui::Sense::hover(),
                         );
-                    });
-                    if !summary.outputs.is_empty() {
-                        ui.horizontal_wrapped(|ui| {
-                            for kind in &summary.outputs {
-                                egui_panels::badge(ui, &output_kind_label(*kind));
+                        ui.painter().circle_filled(
+                            dot.center(),
+                            4.0,
+                            if enabled {
+                                palette.ok
+                            } else {
+                                palette.muted_text.gamma_multiply(0.6)
+                            },
+                        );
+                        let text_width = if tags_beside {
+                            width - 8.0 - TAGS_WIDTH - 2.0 * 14.0
+                        } else {
+                            width - 8.0 - 14.0
+                        };
+                        ui.vertical(|ui| {
+                            ui.set_width(text_width);
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 9.0;
+                                ui.label(
+                                    RichText::new(id)
+                                        .size(theme.section_title_size)
+                                        .color(palette.strong_text),
+                                );
+                                ui.label(
+                                    RichText::new(description)
+                                        .size(theme.small_size)
+                                        .color(palette.muted_text),
+                                );
+                            });
+                            let channels = if summary.channels.is_empty() {
+                                t!("settings.patterns.all_channels").into_owned()
+                            } else {
+                                summary.channels.join(", ")
+                            };
+                            ui.label(
+                                RichText::new(t!(
+                                    "settings.patterns.summary",
+                                    channels = channels,
+                                    detections = summary.detections,
+                                    logic = summary.logic,
+                                    outputs = summary.outputs.len()
+                                ))
+                                .size(theme.small_size)
+                                .color(palette.muted_text),
+                            );
+                            if !tags_beside && !summary.outputs.is_empty() {
+                                ui.add_space(3.0);
+                                egui_panels::badges(ui, &tag_labels);
                             }
                         });
-                    }
+                        if tags_beside && !summary.outputs.is_empty() {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(TAGS_WIDTH, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| egui_panels::badges(ui, &tag_labels),
+                            );
+                        }
+                    });
                 });
             },
         )
         .response;
-    if response.clicked() {
+    let response = response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(t!("settings.patterns.row_hint"));
+    if response.double_clicked() {
+        actions.push(CardAction::Open);
+    } else if response.clicked() {
         actions.push(CardAction::Select);
     }
+    response.context_menu(|ui| {
+        let mut on = enabled;
+        if ui
+            .checkbox(&mut on, t!("settings.patterns.state_on"))
+            .changed()
+        {
+            actions.push(CardAction::Enable(on));
+        }
+        ui.separator();
+        ui.label(RichText::new(t!("settings.patterns.field_description")).weak());
+        let mut text = description.to_string();
+        if ui
+            .add(egui::TextEdit::singleline(&mut text).desired_width(240.0))
+            .changed()
+        {
+            actions.push(CardAction::Describe(text));
+        }
+        // The id is edited as a draft and applied when the field is left
+        // (Enter, Tab or a click elsewhere): applied at each key, an id
+        // being typed is usually invalid (empty, or taken halfway through)
+        // and was put back.
+        ui.label(RichText::new(t!("settings.patterns.field_id")).weak());
+        let edit_id = ui.make_persistent_id("input_id");
+        let draft_id = edit_id.with("draft");
+        let mut id_text = ui
+            .data(|data| data.get_temp::<String>(draft_id))
+            .unwrap_or_else(|| id.to_string());
+        let field = ui
+            .add(
+                egui::TextEdit::singleline(&mut id_text)
+                    .id(edit_id)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(240.0),
+            )
+            .on_hover_text(t!("settings.patterns.id_hint"));
+        if field.lost_focus() {
+            ui.data_mut(|data| data.remove::<String>(draft_id));
+            let new_id = id_text.trim();
+            if new_id != id {
+                actions.push(CardAction::Rename(new_id.to_string()));
+            }
+        } else if field.has_focus() {
+            ui.data_mut(|data| data.insert_temp(draft_id, id_text));
+        }
+        ui.separator();
+        if ui.button(t!("settings.patterns.remove_input")).clicked() {
+            actions.push(CardAction::Remove);
+            ui.close();
+        }
+    });
     actions
 }
+
+/// The arrow that points along the flow of a node's pins: into an input, out
+/// of an output.
+const PIN_ARROW: &str = "➡";
+
+/// The widest a node's body gets on the canvas; longer text is cut short.
+const NODE_BODY_MAX_WIDTH: f32 = 170.0;
 
 /// The snarl viewer of the graph editor.
 struct RulesViewer<'a> {
     state: &'a mut GraphState,
+}
+
+impl RulesViewer<'_> {
+    /// Selects `node` when `rect` (a part of it) is clicked: the canvas only
+    /// selects with Shift or a rectangle, which is not how anyone expects a
+    /// click on a node to work.
+    fn select_on_click(&mut self, ui: &mut Ui, node: NodeId, rect: egui::Rect) {
+        let id = ui.id().with(("select_node", node));
+        if ui.interact(rect, id, egui::Sense::click()).clicked() {
+            self.state.selected = Some(node);
+        }
+    }
+}
+
+/// The border of the selected node.
+fn selection_color() -> Color32 {
+    Color32::from_rgb(70, 150, 200)
 }
 
 impl SnarlViewer<Node> for RulesViewer<'_> {
@@ -1104,10 +1562,13 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         match &snarl[pin.id.node].kind {
             NodeKind::Input(_) => {}
             NodeKind::Detection(_) => {
-                ui.label(t!("settings.patterns.node_input"));
+                ui.label(format!(
+                    "{PIN_ARROW} {}",
+                    t!("settings.patterns.node_input")
+                ));
             }
             NodeKind::Output(output) => {
-                ui.label(output_kind_label(output.kind));
+                ui.label(format!("{PIN_ARROW} {}", output_kind_label(output.kind)));
             }
             NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {}
         }
@@ -1130,17 +1591,23 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
     ) -> impl SnarlPin + 'static {
         let false_pin = match &snarl[pin.id.node].kind {
             NodeKind::Input(_) => {
-                ui.label(t!("settings.patterns.node_input"));
+                ui.label(format!(
+                    "{} {PIN_ARROW}",
+                    t!("settings.patterns.node_input")
+                ));
                 false
             }
             NodeKind::Detection(_) => {
                 let false_pin = pin.id.output == 1;
-                ui.label(if false_pin { "F" } else { "T" });
+                ui.label(format!("{} {PIN_ARROW}", if false_pin { "F" } else { "T" }));
                 false_pin
             }
             NodeKind::Output(_) => false,
             NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {
-                ui.label(t!("settings.patterns.node_output"));
+                ui.label(format!(
+                    "{} {PIN_ARROW}",
+                    t!("settings.patterns.node_output")
+                ));
                 false
             }
         };
@@ -1153,8 +1620,44 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         }
     }
 
-    fn has_body(&mut self, _node: &Node) -> bool {
-        true
+    fn node_frame(
+        &mut self,
+        default: egui::Frame,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        _snarl: &Snarl<Node>,
+    ) -> egui::Frame {
+        // The node the side panel shows gets the selection's border.
+        if self.state.selected == Some(node) {
+            default.stroke(egui::Stroke::new(1.5, selection_color()))
+        } else {
+            default
+        }
+    }
+
+    fn show_header(
+        &mut self,
+        node_id: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut Ui,
+        snarl: &mut Snarl<Node>,
+    ) {
+        let node = &snarl[node_id];
+        let row = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let (mark, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(mark, 2.0, node_kind_color(&node.kind));
+            ui.label(RichText::new(&node.id).strong());
+            ui.label(RichText::new(self.title(node)).small().weak());
+        });
+        self.select_on_click(ui, node_id, row.response.rect);
+    }
+
+    fn has_body(&mut self, node: &Node) -> bool {
+        !node_summary(&node.kind).is_empty() || !node.enabled
     }
 
     fn show_body(
@@ -1165,36 +1668,20 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         ui: &mut Ui,
         snarl: &mut Snarl<Node>,
     ) {
-        self.state.selected = Some(node_id);
-        let mut changed = false;
-        let mut delete = false;
-        {
-            let node = &mut snarl[node_id];
-            ui.vertical(|ui| {
-                changed |= field_row(ui, &t!("settings.patterns.field_enabled"), |ui| {
-                    ui.checkbox(&mut node.enabled, "").changed()
-                });
-                changed |= match &mut node.kind {
-                    NodeKind::Input(input) => input_body(ui, input),
-                    NodeKind::Detection(detection) => detection_body(ui, detection),
-                    NodeKind::Output(output) => output_body(ui, output),
-                    NodeKind::Aggregator(aggregator) => aggregator_body(ui, aggregator),
-                    NodeKind::Gate(gate) => gate_body(ui, gate),
-                    NodeKind::Formatter(formatter) => formatter_body(ui, formatter),
-                };
-                if ui.button(t!("settings.patterns.delete_node")).clicked() {
-                    delete = true;
-                }
-            });
-        }
-        if changed {
-            self.state.dirty = true;
-        }
-        if delete {
-            snarl.remove_node(node_id);
-            self.state.selected = None;
-            self.state.dirty = true;
-        }
+        let node = &snarl[node_id];
+        ui.set_max_width(NODE_BODY_MAX_WIDTH);
+        let summary = node_summary(&node.kind);
+        let body = ui.vertical(|ui| {
+            if !summary.is_empty() {
+                ui.add(
+                    egui::Label::new(RichText::new(summary).monospace().small().weak()).truncate(),
+                );
+            }
+            if !node.enabled {
+                ui.weak(t!("settings.patterns.state_off"));
+            }
+        });
+        self.select_on_click(ui, node_id, body.response.rect);
     }
 
     fn has_graph_menu(&mut self, _pos: Pos2, _snarl: &mut Snarl<Node>) -> bool {
@@ -1362,6 +1849,16 @@ const FALSE_WIRE_COLOR: Color32 = Color32::from_rgb(230, 60, 60);
 /// the right. The value is laid out vertically so multi-line values (lists)
 /// stack instead of running along the row.
 fn field_row(ui: &mut Ui, name: &str, value: impl FnOnce(&mut Ui) -> bool) -> bool {
+    // Narrow places (the side panel) put the name above its value.
+    if ui.available_width() < FIELD_NAME_WIDTH + 150.0 {
+        return ui
+            .vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(name);
+                value(ui)
+            })
+            .inner;
+    }
     ui.horizontal_top(|ui| {
         ui.add_sized(
             [FIELD_NAME_WIDTH, ui.spacing().interact_size.y],

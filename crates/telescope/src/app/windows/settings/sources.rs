@@ -11,12 +11,12 @@ use native_tools::dialog::DialogType;
 impl TelescopeApp {
     pub(super) fn show_sources_page(&mut self, ui: &mut egui::Ui) {
         egui_panels::page(ui, |ui| {
+            self.intel_flow_stepper(ui, SettingsPage::Sources);
             egui_panels::page_header(
                 ui,
                 &SettingsPage::Sources.title(),
                 Some(&t!("settings.sources.description")),
             );
-            self.intel_flow_stepper(ui, SettingsPage::Sources);
             self.show_folder_section(ui);
             self.show_channels_section(ui);
         });

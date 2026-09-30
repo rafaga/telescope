@@ -1,11 +1,32 @@
 //! Controls and feedback elements.
 
 use crate::theme::{Theme, mix};
+use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
     Align, Align2, Button, Color32, CornerRadius, FontId, Frame, ImageSource, InnerResponse, Label,
     Layout, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, Vec2,
     WidgetInfo, WidgetText, WidgetType, pos2, vec2,
 };
+
+/// Paints `text` on one line, cut with an ellipsis where it would pass
+/// `max_width`. `anchor` is the point of the text box that sits at `pos`
+/// (left or right end, vertically centered). Returns the rectangle painted.
+pub(crate) fn paint_fitted(
+    ui: &Ui,
+    pos: egui::Pos2,
+    anchor: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> Rect {
+    let mut job = LayoutJob::single_section(text.to_owned(), TextFormat::simple(font, color));
+    job.wrap = TextWrapping::truncate_at_width(max_width.max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let rect = anchor.anchor_size(pos, galley.size());
+    ui.painter().galley(rect.min, galley, color);
+    rect
+}
 
 /// What a [`status`] line reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +62,23 @@ pub fn status(ui: &mut Ui, kind: StatusKind, text: &str) -> Response {
     .response
 }
 
+/// A [`status`] line in a hairline box as wide as the space left: feedback
+/// about a whole page ("The rule graph is valid") rather than about one
+/// field.
+pub fn notice(ui: &mut Ui, kind: StatusKind, text: &str) -> Response {
+    let theme = Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    Frame::new()
+        .stroke(Stroke::new(1.0, palette.card_stroke))
+        .corner_radius(CornerRadius::same(theme.radius))
+        .inner_margin(egui::Margin::symmetric(14, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            status(ui, kind, text);
+        })
+        .response
+}
+
 fn paint_status_icon(ui: &Ui, rect: Rect, kind: StatusKind, color: Color32) {
     let painter = ui.painter();
     let stroke = Stroke::new(1.8, color);
@@ -73,21 +111,66 @@ fn paint_status_icon(ui: &Ui, rect: Rect, kind: StatusKind, color: Color32) {
     }
 }
 
-/// A small neutral pill: a tag, a count, an output kind.
+/// A small bordered tag: a count, an output kind, a version.
 pub fn badge(ui: &mut Ui, text: &str) -> Response {
     chip(ui, text, None)
 }
 
-/// A pill with a main text and, dimmed after it, a secondary one:
-/// "Kara Voss · H-5GUI".
+/// Several [`badge`]s flowing over as many lines as the width needs: a badge
+/// that does not fit in what is left of a line starts the next one, whole.
+pub fn badges(ui: &mut Ui, labels: &[String]) {
+    let theme = Theme::get(ui.ctx());
+    let font = FontId::proportional(theme.small_size);
+    let gap = 6.0;
+    let available = ui.available_width();
+    // Text plus the badge's margins (8 each side) and its border.
+    let widths: Vec<f32> = labels
+        .iter()
+        .map(|label| {
+            let galley = ui
+                .painter()
+                .layout_no_wrap(label.clone(), font.clone(), Color32::WHITE);
+            galley.size().x + 18.0
+        })
+        .collect();
+    let mut start = 0;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = gap;
+        while start < labels.len() {
+            let mut end = start;
+            let mut used = 0.0;
+            while end < labels.len() {
+                let next = used + widths[end] + if end > start { gap } else { 0.0 };
+                if end > start && next > available {
+                    break;
+                }
+                used = next;
+                end += 1;
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for label in &labels[start..end] {
+                    badge(ui, label);
+                }
+            });
+            start = end;
+        }
+    });
+}
+
+/// A tag with a main text and, dimmed after it, a secondary one:
+/// "Kara Voss · H-5GUI". A one pixel border and small corners, no fill.
 pub fn chip(ui: &mut Ui, text: &str, secondary: Option<&str>) -> Response {
     let theme = Theme::get(ui.ctx());
     let palette = theme.palette(ui.visuals());
     Frame::new()
         .fill(palette.badge_fill)
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(egui::Margin::symmetric(9, 3))
+        .stroke(Stroke::new(1.0, palette.card_stroke))
+        .corner_radius(CornerRadius::same(theme.radius.saturating_sub(1)))
+        .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
+            // A tag is never squeezed to a column of letters: it keeps its width.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             ui.spacing_mut().item_spacing.x = 5.0;
             ui.label(
                 RichText::new(text)
@@ -157,7 +240,9 @@ fn styled_button(ui: &Ui, text: impl Into<String>, variant: Variant) -> Button<'
                 mix(palette.card_stroke, palette.error, 0.45),
             )),
     };
-    widget.min_size(vec2(0.0, theme.control_height))
+    widget
+        .corner_radius(CornerRadius::same(theme.radius.saturating_sub(1)))
+        .min_size(vec2(0.0, theme.control_height))
 }
 
 trait MaxColor {
@@ -229,6 +314,11 @@ pub fn segmented<T: PartialEq + Copy>(
             (galley.size().x + 20.0).max(theme.control_height)
         })
         .collect();
+    // With less room than the labels need, every segment gets narrower by the
+    // same factor and its label is cut short.
+    let natural: f32 = widths.iter().sum();
+    let scale = (ui.available_width() / natural).clamp(0.3, 1.0);
+    let widths: Vec<f32> = widths.iter().map(|width| width * scale).collect();
     let total = vec2(widths.iter().sum(), theme.control_height);
     let (rect, mut response) = ui.allocate_exact_size(total, Sense::hover());
     let radius = CornerRadius::same(4);
@@ -275,17 +365,19 @@ pub fn segmented<T: PartialEq + Copy>(
             _ => CornerRadius::ZERO,
         };
         ui.painter().rect_filled(segment, corner, fill);
-        ui.painter().text(
-            segment.center(),
-            Align2::CENTER_CENTER,
-            *label,
-            font.clone(),
-            if selected {
-                palette.on_accent
-            } else {
-                palette.text
-            },
+        let text_color = if selected {
+            palette.on_accent
+        } else {
+            palette.text
+        };
+        let mut job = LayoutJob::single_section(
+            label.to_string(),
+            TextFormat::simple(font.clone(), text_color),
         );
+        job.wrap = TextWrapping::truncate_at_width((segment.width() - 8.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        let text_rect = Align2::CENTER_CENTER.anchor_size(segment.center(), galley.size());
+        ui.painter().galley(text_rect.min, galley, text_color);
         if index > 0 {
             ui.painter().line_segment(
                 [segment.left_top(), segment.left_bottom()],
@@ -305,19 +397,17 @@ pub fn segmented<T: PartialEq + Copy>(
     response
 }
 
-/// A clickable card showing whether an item of a list is picked: a check box,
-/// a title and an optional dimmed subtitle. Returns a response marked changed
-/// when it was flipped.
+/// A row of a list of things to pick from: a check box, the title and, dimmed
+/// right after it, an optional subtitle. There is no card: the row only gets
+/// a faint wash under the pointer. Returns a response marked changed when it
+/// was flipped.
 pub fn tile(ui: &mut Ui, on: &mut bool, title: &str, subtitle: Option<&str>) -> Response {
     let theme = Theme::get(ui.ctx());
     let palette = theme.palette(ui.visuals());
-    let width = ui.available_width();
-    let height = if subtitle.is_some() {
-        theme.tile_min_height
-    } else {
-        theme.tile_min_height.min(theme.control_height + 6.0)
-    };
-    let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme.tile_min_height),
+        Sense::click(),
+    );
     if response.clicked() {
         *on = !*on;
         response.mark_changed();
@@ -325,16 +415,112 @@ pub fn tile(ui: &mut Ui, on: &mut bool, title: &str, subtitle: Option<&str>) -> 
     response
         .widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, title));
     if ui.is_rect_visible(rect) {
-        let radius = CornerRadius::same(theme.radius.min(4));
-        let (fill, stroke) = if *on {
-            (palette.card_fill_selected, palette.accent_stroke)
+        if response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(theme.radius.saturating_sub(1)),
+                palette.hover_fill,
+            );
+        }
+        let box_size = 14.0;
+        let box_rect = Rect::from_center_size(
+            pos2(rect.left() + 8.0 + box_size / 2.0, rect.center().y),
+            Vec2::splat(box_size),
+        );
+        paint_check_box(ui, box_rect, *on);
+        let font = FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
+        let color = if *on {
+            palette.strong_text
+        } else {
+            palette.text
+        };
+        let left = box_rect.right() + 10.0;
+        let right = rect.right() - 8.0;
+        let title_rect = paint_fitted(
+            ui,
+            pos2(left, rect.center().y),
+            Align2::LEFT_CENTER,
+            title,
+            font,
+            color,
+            right - left,
+        );
+        if let Some(subtitle) = subtitle {
+            let start = title_rect.right() + 8.0;
+            if right - start > 24.0 {
+                paint_fitted(
+                    ui,
+                    pos2(start, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    subtitle,
+                    FontId::proportional(theme.small_size - 0.5),
+                    palette.muted_text,
+                    right - start,
+                );
+            }
+        }
+    }
+    response
+}
+
+/// A check box like egui's: a small rounded square, filled with the accent
+/// and holding a check mark when `on`.
+fn paint_check_box(ui: &Ui, rect: Rect, on: bool) {
+    let theme = Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    let radius = CornerRadius::same(3);
+    if on {
+        ui.painter().rect_filled(rect, radius, palette.accent);
+        let stroke = Stroke::new(1.8, palette.on_accent);
+        let at = |x: f32, y: f32| {
+            pos2(
+                rect.left() + rect.width() * x,
+                rect.top() + rect.height() * y,
+            )
+        };
+        ui.painter()
+            .line_segment([at(0.22, 0.52), at(0.43, 0.74)], stroke);
+        ui.painter()
+            .line_segment([at(0.43, 0.74), at(0.8, 0.3)], stroke);
+    } else {
+        ui.painter().rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0, palette.muted_text),
+            StrokeKind::Inside,
+        );
+    }
+}
+
+/// A button that stays pressed: filled with the accent while `on`, a plain
+/// bordered button otherwise, with an optional dimmed `tag` at its right end.
+/// Meant for picking several items from a grid (see [`tile_grid`]). Returns a
+/// response marked changed when it was flipped.
+pub fn toggle_button(ui: &mut Ui, on: &mut bool, label: &str, tag: Option<&str>) -> Response {
+    let theme = Theme::get(ui.ctx());
+    let palette = theme.palette(ui.visuals());
+    let (rect, mut response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme.control_height + 4.0),
+        Sense::click(),
+    );
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response
+        .widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, label));
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(theme.radius.saturating_sub(1));
+        let (fill, stroke, text) = if *on {
+            (palette.accent, palette.accent_stroke, palette.on_accent)
         } else if response.hovered() {
             (
-                mix(palette.card_fill, palette.strong_text, 0.04),
+                ui.visuals().widgets.hovered.weak_bg_fill,
                 palette.card_stroke,
+                palette.text,
             )
         } else {
-            (palette.card_fill, palette.card_stroke)
+            (Color32::TRANSPARENT, palette.card_stroke, palette.text)
         };
         ui.painter().rect(
             rect,
@@ -343,82 +529,52 @@ pub fn tile(ui: &mut Ui, on: &mut bool, title: &str, subtitle: Option<&str>) -> 
             Stroke::new(1.0, stroke),
             StrokeKind::Inside,
         );
-        let box_size = 15.0;
-        let box_rect = Rect::from_center_size(
-            pos2(rect.left() + 12.0 + box_size / 2.0, rect.center().y),
-            Vec2::splat(box_size),
-        );
-        if *on {
-            ui.painter()
-                .rect_filled(box_rect, CornerRadius::same(3), palette.accent);
-            let stroke = Stroke::new(2.0, palette.on_accent);
-            let at = |x: f32, y: f32| {
-                pos2(
-                    box_rect.left() + box_rect.width() * x,
-                    box_rect.top() + box_rect.height() * y,
-                )
-            };
-            ui.painter()
-                .line_segment([at(0.22, 0.52), at(0.43, 0.74)], stroke);
-            ui.painter()
-                .line_segment([at(0.43, 0.74), at(0.8, 0.3)], stroke);
-        } else {
-            ui.painter().rect_stroke(
-                box_rect,
-                CornerRadius::same(3),
-                Stroke::new(1.2, palette.muted_text),
-                StrokeKind::Inside,
+        let font = FontId::proportional(theme.small_size);
+        let right = rect.right() - 10.0;
+        let mut label_right = right;
+        if let Some(tag) = tag {
+            let tag_rect = paint_fitted(
+                ui,
+                pos2(right, rect.center().y),
+                Align2::RIGHT_CENTER,
+                tag,
+                FontId::proportional(theme.small_size - 1.5),
+                if *on { text } else { palette.muted_text },
+                (rect.width() * 0.4).max(0.0),
             );
+            label_right = tag_rect.left() - 8.0;
         }
-        let text_left = box_rect.right() + 10.0;
-        let text_color = if *on {
-            palette.strong_text
-        } else {
-            palette.text
-        };
-        let title_font = FontId::proportional(ui.style().text_styles[&egui::TextStyle::Body].size);
-        match subtitle {
-            Some(subtitle) => {
-                ui.painter().text(
-                    pos2(text_left, rect.center().y - 1.0),
-                    Align2::LEFT_BOTTOM,
-                    title,
-                    title_font,
-                    text_color,
-                );
-                ui.painter().text(
-                    pos2(text_left, rect.center().y + 2.0),
-                    Align2::LEFT_TOP,
-                    subtitle,
-                    FontId::proportional(theme.small_size - 0.5),
-                    palette.muted_text,
-                );
-            }
-            None => {
-                ui.painter().text(
-                    pos2(text_left, rect.center().y),
-                    Align2::LEFT_CENTER,
-                    title,
-                    title_font,
-                    text_color,
-                );
-            }
-        }
+        paint_fitted(
+            ui,
+            pos2(rect.left() + 10.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            label,
+            font,
+            text,
+            label_right - (rect.left() + 10.0),
+        );
     }
     response
 }
 
-/// Lays out `count` items in `columns` equal columns, row by row, calling
-/// `add_item` with each index. Meant for [`tile`]s.
+/// The narrowest a cell of a [`tile_grid`] gets before the grid drops a column.
+const TILE_MIN_WIDTH: f32 = 170.0;
+
+/// Lays out `count` items in up to `columns` equal columns, row by row, calling
+/// `add_item` with each index. Meant for [`tile`]s and [`toggle_button`]s.
 pub fn tile_grid(
     ui: &mut Ui,
     columns: usize,
     count: usize,
     mut add_item: impl FnMut(&mut Ui, usize),
 ) {
-    let columns = columns.max(1);
+    // `columns` is the most the grid uses: with less room it has fewer, so
+    // no cell is narrower than `TILE_MIN_WIDTH`.
+    let gap = 20.0;
+    let fitting = ((ui.available_width() + gap) / (TILE_MIN_WIDTH + gap)).floor() as usize;
+    let columns = columns.min(fitting).max(1);
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.spacing_mut().item_spacing = vec2(gap, 4.0);
         for row in 0..count.div_ceil(columns) {
             ui.columns(columns, |cells| {
                 for (column, cell) in cells.iter_mut().enumerate() {
@@ -524,72 +680,41 @@ impl<'a> PathPicker<'a> {
     }
 }
 
-/// Numbered steps joined by arrows ("1 · Sources → 2 · Rules → 3 ·
-/// Alerts"), the `current` one highlighted. Returns the index of a step that
-/// was clicked.
+/// Numbered steps in one joined group ("1 · Sources | 2 · Rules | 3 ·
+/// Alerts"), the `current` one filled with the accent: the same control as
+/// [`segmented`]. Returns the index of a step that was clicked.
 pub fn stepper(ui: &mut Ui, steps: &[&str], current: usize) -> Option<usize> {
-    let theme = Theme::get(ui.ctx());
-    let palette = theme.palette(ui.visuals());
-    let mut clicked = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        for (index, step) in steps.iter().enumerate() {
-            if index > 0 {
-                let (rect, _) = ui.allocate_exact_size(vec2(16.0, 12.0), Sense::hover());
-                let y = rect.center().y;
-                let stroke = Stroke::new(1.4, palette.muted_text);
-                ui.painter().line_segment(
-                    [pos2(rect.left() + 2.0, y), pos2(rect.right() - 2.0, y)],
-                    stroke,
-                );
-                ui.painter().line_segment(
-                    [
-                        pos2(rect.right() - 6.0, y - 4.0),
-                        pos2(rect.right() - 2.0, y),
-                    ],
-                    stroke,
-                );
-                ui.painter().line_segment(
-                    [
-                        pos2(rect.right() - 6.0, y + 4.0),
-                        pos2(rect.right() - 2.0, y),
-                    ],
-                    stroke,
-                );
-            }
-            let selected = index == current;
-            let text = RichText::new(format!("{} · {step}", index + 1))
-                .size(theme.small_size)
-                .color(if selected {
-                    palette.on_accent
-                } else {
-                    palette.text
-                });
-            let pill = Button::new(text)
-                .corner_radius(CornerRadius::same(12))
-                .fill(if selected {
-                    palette.accent
-                } else {
-                    Color32::TRANSPARENT
-                })
-                .stroke(Stroke::new(1.0, palette.card_stroke))
-                .selected(selected);
-            if ui.add(pill).clicked() {
-                clicked = Some(index);
-            }
-        }
-    });
-    clicked
+    let labels: Vec<String> = steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("{} · {step}", index + 1))
+        .collect();
+    let options: Vec<(usize, &str)> = labels.iter().map(String::as_str).enumerate().collect();
+    let mut value = current;
+    let response = segmented(ui, &mut value, &options);
+    response.changed().then_some(value)
 }
 
 /// The phases of a running task, one per line: those before `current` are
 /// done (a check mark), `current` is running (a spinner, emphasized text)
 /// and the ones after it are pending (dimmed).
 pub fn progress_steps(ui: &mut Ui, steps: &[&str], current: usize) -> Response {
+    progress_steps_with_notes(ui, steps, &[], current)
+}
+
+/// [`progress_steps`] with a small dimmed note at the right end of each
+/// line (a size, a duration). `notes[i]` belongs to `steps[i]`; a missing or
+/// empty note draws nothing.
+pub fn progress_steps_with_notes(
+    ui: &mut Ui,
+    steps: &[&str],
+    notes: &[String],
+    current: usize,
+) -> Response {
     let theme = Theme::get(ui.ctx());
     let palette = theme.palette(ui.visuals());
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.spacing_mut().item_spacing.y = 10.0;
         for (index, step) in steps.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
@@ -611,6 +736,15 @@ pub fn progress_steps(ui: &mut Ui, steps: &[&str], current: usize) -> Response {
                     palette.muted_text
                 };
                 ui.label(RichText::new(*step).color(color));
+                if let Some(note) = notes.get(index).filter(|note| !note.is_empty()) {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(note)
+                                .size(theme.small_size)
+                                .color(palette.muted_text),
+                        );
+                    });
+                }
             });
         }
     })
@@ -684,7 +818,7 @@ impl<'a> EntityCard<'a> {
         let stroke = if self.selected {
             palette.accent_stroke
         } else {
-            palette.card_stroke
+            Color32::TRANSPARENT
         };
         let fill = if self.selected {
             palette.card_fill_selected
@@ -699,11 +833,11 @@ impl<'a> EntityCard<'a> {
                 .fill(fill)
                 .stroke(Stroke::new(1.0, stroke))
                 .corner_radius(CornerRadius::same(theme.radius))
-                .inner_margin(egui::Margin::symmetric(16, 12))
+                .inner_margin(egui::Margin::symmetric(8, 14))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 14.0;
+                        ui.spacing_mut().item_spacing.x = 16.0;
                         let size = Vec2::splat(self.avatar_size);
                         match self.avatar {
                             Avatar::Image(source) => {
@@ -713,8 +847,8 @@ impl<'a> EntityCard<'a> {
                                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                                 ui.painter().rect_filled(
                                     rect,
-                                    CornerRadius::same(4),
-                                    mix(palette.card_fill, palette.accent, 0.55),
+                                    CornerRadius::same(theme.radius.saturating_sub(1)),
+                                    ui.visuals().widgets.inactive.bg_fill,
                                 );
                                 ui.painter().text(
                                     rect.center(),
@@ -735,9 +869,9 @@ impl<'a> EntityCard<'a> {
                             );
                             for (index, line) in self.lines.into_iter().enumerate() {
                                 let color = if index == 0 {
-                                    palette.text
-                                } else {
                                     palette.muted_text
+                                } else {
+                                    palette.muted_text.gamma_multiply(0.8)
                                 };
                                 ui.label(line.color(color));
                             }
@@ -749,12 +883,19 @@ impl<'a> EntityCard<'a> {
                 })
                 .inner
         });
+        // A hairline under each card tells the rows apart.
+        let rect = scope.response.rect;
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom(),
+            Stroke::new(1.0, palette.separator),
+        );
         InnerResponse::new(scope.inner, scope.response)
     }
 }
 
-/// A horizontal slider drawn with the theme: a rail filled with the accent up
-/// to a white knob. Drag or click to set it; with focus, the arrow keys move
+/// A horizontal slider drawn with the theme: a thin rail filled with the
+/// accent up to a small round knob. Drag or click to set it; with focus, the arrow keys move
 /// it one step. Show the value next to it yourself (it has no label, so any
 /// format fits: `4:00`, `60 %`).
 ///
@@ -778,7 +919,7 @@ impl<'a, N: egui::emath::Numeric> Slider<'a, N> {
             value,
             range,
             step: None,
-            width: 240.0,
+            width: 320.0,
         }
     }
 
@@ -788,7 +929,7 @@ impl<'a, N: egui::emath::Numeric> Slider<'a, N> {
         self
     }
 
-    /// Width of the rail, in points (default 240).
+    /// Width of the rail, in points (default 320).
     pub fn width(mut self, width: f32) -> Self {
         self.width = width;
         self
@@ -800,12 +941,14 @@ impl<'a, N: egui::emath::Numeric> Slider<'a, N> {
         let theme = Theme::get(ui.ctx());
         let palette = theme.palette(ui.visuals());
         let (min, max) = (self.range.start().to_f64(), self.range.end().to_f64());
-        let size = vec2(self.width, theme.control_height);
+        // Never wider than the room there is, but never a stub either.
+        let width = self.width.min(ui.available_width().max(80.0));
+        let size = vec2(width, theme.control_height);
         let (rect, mut response) = ui.allocate_exact_size(size, Sense::click_and_drag());
-        let knob_radius = (theme.control_height * 0.26).round();
+        let knob_radius = 5.0;
         let rail = Rect::from_min_max(
-            pos2(rect.left() + knob_radius, rect.center().y - 2.0),
-            pos2(rect.right() - knob_radius, rect.center().y + 2.0),
+            pos2(rect.left() + knob_radius + 3.0, rect.center().y - 1.0),
+            pos2(rect.right() - knob_radius - 3.0, rect.center().y + 1.0),
         );
         let snap = |raw: f64| -> f64 {
             let stepped = match self.step {
@@ -846,26 +989,23 @@ impl<'a, N: egui::emath::Numeric> Slider<'a, N> {
                 ((self.value.to_f64() - min) / (max - min)).clamp(0.0, 1.0) as f32
             };
             let knob_x = egui::lerp(rail.left()..=rail.right(), t);
-            let off = ui.visuals().widgets.inactive.bg_fill;
-            ui.painter().rect_filled(rail, CornerRadius::same(2), off);
+            ui.painter()
+                .rect_filled(rail, CornerRadius::same(1), palette.card_stroke);
             let filled = Rect::from_min_max(rail.min, pos2(knob_x, rail.max.y));
             ui.painter()
-                .rect_filled(filled, CornerRadius::same(2), palette.accent);
-            let border = if ui.visuals().dark_mode {
-                Stroke::NONE
-            } else {
-                Stroke::new(1.0, palette.muted_text)
-            };
+                .rect_filled(filled, CornerRadius::same(1), palette.accent);
             let radius = if response.hovered() || response.dragged() {
                 knob_radius + 1.0
             } else {
                 knob_radius
             };
+            // A small knob in the accent, ringed in the text color so it
+            // reads on both themes.
             ui.painter().circle(
                 pos2(knob_x, rect.center().y),
-                radius,
-                Color32::WHITE,
-                border,
+                radius - 1.0,
+                palette.accent,
+                Stroke::new(2.0, palette.strong_text),
             );
             if response.has_focus() {
                 ui.painter().circle_stroke(

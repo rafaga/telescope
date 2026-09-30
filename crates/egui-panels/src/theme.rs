@@ -9,18 +9,21 @@ use egui::{Color32, Context, Id, Margin, Vec2, Visuals};
 /// current [`Visuals`] unless [`Theme::colors`] fixes them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
-    /// Widest a [`crate::page`] grows; wider screens leave the rest empty so
-    /// lines stay readable.
+    /// Widest a [`crate::page`] grows. The default is unbounded: the page
+    /// fills the width the window leaves free. Set a finite value to keep
+    /// lines readable on very wide screens.
     pub page_max_width: f32,
     /// Vertical gap between the blocks of a page (header, sections).
     pub page_spacing: f32,
     /// Margin around the page inside [`crate::SettingsLayout`].
     pub page_margin: Margin,
-    /// Padding inside a [`crate::Section`].
+    /// Padding inside framed elements: cards, dialogs and the rule cards of a
+    /// host.
     pub section_margin: Margin,
-    /// Corner radius of sections, tiles and cards.
+    /// Corner radius of cards, tags and controls.
     pub radius: u8,
-    /// Vertical gap between the blocks inside a section.
+    /// Vertical gap between a section's heading and its contents, and between
+    /// the contents.
     pub section_spacing: f32,
     /// Width of the label column of a [`crate::form`].
     pub label_width: f32,
@@ -28,7 +31,7 @@ pub struct Theme {
     pub row_spacing: Vec2,
     /// Height of buttons, text fields and segmented controls.
     pub control_height: f32,
-    /// Smallest height of a [`crate::tile`].
+    /// Height of a [`crate::tile`] row.
     pub tile_min_height: f32,
     /// Font size of a page title.
     pub title_size: f32,
@@ -47,21 +50,21 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            page_max_width: 880.0,
-            page_spacing: 18.0,
+            page_max_width: f32::INFINITY,
+            page_spacing: 20.0,
             page_margin: Margin::symmetric(36, 26),
-            section_margin: Margin::symmetric(20, 16),
-            radius: 6,
+            section_margin: Margin::symmetric(16, 12),
+            radius: 4,
             section_spacing: 12.0,
-            label_width: 180.0,
-            row_spacing: Vec2::new(16.0, 10.0),
-            control_height: 30.0,
-            tile_min_height: 46.0,
-            title_size: 22.0,
-            section_title_size: 15.0,
+            label_width: 168.0,
+            row_spacing: Vec2::new(14.0, 10.0),
+            control_height: 28.0,
+            tile_min_height: 34.0,
+            title_size: 20.0,
+            section_title_size: 13.5,
             small_size: 12.5,
-            nav_width: 220.0,
-            nav_item_height: 34.0,
+            nav_width: 224.0,
+            nav_item_height: 30.0,
             colors: None,
         }
     }
@@ -100,12 +103,18 @@ pub struct Palette {
     pub accent_stroke: Color32,
     /// Text drawn on [`Self::accent`].
     pub on_accent: Color32,
-    /// Fill of sections, tiles and cards.
+    /// Fill of cards: transparent, so they take the page background like
+    /// egui's own frames.
     pub card_fill: Color32,
-    /// Fill of a selected tile: the accent, faint.
+    /// Fill of a selected card: the accent, faint.
     pub card_fill_selected: Color32,
-    /// Border of sections, tiles and cards.
+    /// Border of cards, controls and tags.
     pub card_stroke: Color32,
+    /// The hairline between sections and around the screen's panels: fainter
+    /// than [`Self::card_stroke`].
+    pub separator: Color32,
+    /// Wash drawn behind a row under the pointer.
+    pub hover_fill: Color32,
     /// Fill of the side navigation column.
     pub nav_fill: Color32,
     /// Regular text.
@@ -114,7 +123,8 @@ pub struct Palette {
     pub strong_text: Color32,
     /// Descriptions, hints and secondary text.
     pub muted_text: Color32,
-    /// Fill of badges and chips.
+    /// Fill of badges and chips (transparent by default: a tag is a bordered
+    /// label).
     pub badge_fill: Color32,
     /// Something is fine ([`crate::StatusKind::Ok`]).
     pub ok: Color32,
@@ -141,14 +151,21 @@ impl Palette {
             } else {
                 strong
             },
-            card_fill: mix(panel, strong, 0.035),
-            card_fill_selected: mix(panel, accent, 0.28),
+            card_fill: Color32::TRANSPARENT,
+            card_fill_selected: mix(panel, accent, 0.22),
             card_stroke: visuals.widgets.noninteractive.bg_stroke.color,
-            nav_fill: mix(panel, visuals.extreme_bg_color, 0.45),
+            separator: mix(panel, visuals.widgets.noninteractive.bg_stroke.color, 0.5),
+            hover_fill: Color32::from_rgba_unmultiplied(
+                strong.r(),
+                strong.g(),
+                strong.b(),
+                if visuals.dark_mode { 13 } else { 9 },
+            ),
+            nav_fill: panel,
             text: visuals.text_color(),
             strong_text: strong,
             muted_text: visuals.weak_text_color(),
-            badge_fill: mix(panel, strong, 0.09),
+            badge_fill: Color32::TRANSPARENT,
             ok: if visuals.dark_mode {
                 Color32::from_rgb(127, 196, 127)
             } else {

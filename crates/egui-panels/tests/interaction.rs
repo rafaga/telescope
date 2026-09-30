@@ -3,7 +3,7 @@
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, pos2, vec2};
 use egui_panels::{
     Action, ActionBar, EntityCard, NavGroup, NavItem, PathPicker, SideNav, Slider, Variant, button,
-    form, segmented, stepper, switch, tile,
+    form, page, segmented, stepper, switch, tile, toggle_button,
 };
 
 /// A headless context with a fixed 1000 x 700 screen.
@@ -240,4 +240,48 @@ fn an_entity_card_leaves_its_actions_their_clicks() {
         },
     );
     assert!(card_clicked);
+}
+
+#[test]
+fn a_toggle_button_flips_when_clicked() {
+    let harness = Harness::new();
+    let mut on = false;
+    let rect = std::cell::Cell::new(Rect::NOTHING);
+    harness.click(|| rect.get().center(), &mut |ui| {
+        rect.set(toggle_button(ui, &mut on, "Delve", Some("2 characters")).rect)
+    });
+    assert!(on);
+}
+
+#[test]
+fn a_page_fills_the_width_it_is_given() {
+    let harness = Harness::new();
+    let mut width = 0.0;
+    harness.frame(Vec::new(), &mut |ui| {
+        let available = ui.available_width();
+        page(ui, |ui| {
+            width = ui.available_width();
+        });
+        assert!((width - available).abs() < 0.5, "{width} vs {available}");
+    });
+    assert!(width > 900.0, "the 1000 point screen is used: {width}");
+}
+
+#[test]
+fn only_sections_after_the_first_get_a_divider() {
+    let harness = Harness::new();
+    let mut heights = Vec::new();
+    harness.frame(Vec::new(), &mut |ui| {
+        heights.clear();
+        for title in ["One", "Two", "Three"] {
+            let before = ui.min_rect().height();
+            egui_panels::Section::new(title).show(ui, |ui| {
+                ui.label("x");
+            });
+            heights.push(ui.min_rect().height() - before);
+        }
+    });
+    // The first section has no hairline above it, the next ones do.
+    assert!(heights[1] > heights[0] + 0.5, "{heights:?}");
+    assert!((heights[1] - heights[2]).abs() < 0.5, "{heights:?}");
 }
