@@ -43,7 +43,9 @@ rusqlite = { version = "0.40.1", features = ["backup", "blob", "array"], optiona
 native_tools = { path = "../native_tools/", optional = true }
 sha2 = { version = "0.10", optional = true }
 tracing = "0.1"
-# `std::time::Instant` panics on `wasm32-unknown-unknown`; `web-time` is the same type on native and uses the browser clock on web.
+
+# `std::time::Instant` panics on `wasm32-unknown-unknown`; `web-time` is the same type and uses the browser clock there. Every other target keeps `std::time::Instant`.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 web-time = "1"
 
 # Windows:

@@ -71,3 +71,28 @@ pub fn request() {
 pub fn take_pending() -> bool {
     PENDING.swap(false, Ordering::Relaxed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One test: the UI thread and the context are process-wide statics, so
+    /// the checks that depend on them must not interleave.
+    #[test]
+    fn requests_from_the_ui_thread_are_deferred_and_others_reach_the_context() {
+        let ctx = egui::Context::default();
+        set_context(&ctx);
+        // Whatever an earlier test left behind.
+        take_pending();
+
+        // From the UI thread: only recorded, granted once by `take_pending`.
+        request();
+        request();
+        assert!(take_pending());
+        assert!(!take_pending());
+
+        // From another thread: straight to the context, nothing recorded.
+        std::thread::spawn(request).join().unwrap();
+        assert!(!take_pending());
+    }
+}

@@ -36,3 +36,41 @@ impl<'a> AppData<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ESI credentials are baked in at compile time from `.cargo/config.toml`;
+    /// without them `AppData::new` panics by design, so there is nothing to test.
+    fn configured() -> bool {
+        option_env!("ESI_SECRET_KEY").is_some() && option_env!("ESI_CLIENT_ID").is_some()
+    }
+
+    #[test]
+    fn the_app_asks_for_the_scopes_it_uses() {
+        if !configured() {
+            return;
+        }
+        let data = AppData::new();
+        for scope in [
+            "publicData",
+            "esi-location.read_location.v1",
+            "esi-location.read_online.v1",
+        ] {
+            assert!(data.scope.contains(&scope), "{scope} missing");
+        }
+    }
+
+    #[test]
+    fn the_callback_is_local_and_the_credentials_are_present() {
+        if !configured() {
+            return;
+        }
+        let data = AppData::new();
+        assert!(data.url.starts_with("http://localhost:"));
+        assert!(data.user_agent.starts_with("telescope/"));
+        assert!(!data.client_id.is_empty());
+        assert!(!data.secret_key.is_empty());
+    }
+}

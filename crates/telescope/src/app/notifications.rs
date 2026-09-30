@@ -44,6 +44,46 @@ fn is_duplicate_notification(
     }
 }
 
+/// Builds the colored log entry of `message`, stamped with `time`.
+fn log_entry(time: &str, message: (Type, String, String, String)) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let format = |color: Color32| TextFormat {
+        font_id: FontId::new(12.0, FontFamily::Proportional),
+        color,
+        ..Default::default()
+    };
+    let normal_text = format(Color32::LIGHT_GRAY);
+    job.append("[", 0.0, normal_text.clone());
+    job.append(time, 0.0, format(Color32::DARK_GRAY));
+    job.append("] ", 0.0, normal_text.clone());
+    match message.0 {
+        Type::Error => {
+            job.append("ERROR: ", 0.0, format(Color32::RED));
+            job.append(
+                (message.1 + " - " + &message.2 + " - ").as_str(),
+                0.0,
+                normal_text.clone(),
+            );
+        }
+        Type::Warning => job.append("WARN: ", 0.0, format(Color32::KHAKI)),
+        Type::Info => job.append("INFO: ", 0.0, format(Color32::BLUE)),
+        Type::Debug => job.append("DEBUG: ", 0.0, format(Color32::DEBUG_COLOR)),
+    }
+    job.append(&message.3, 0.0, normal_text);
+    job
+}
+
+/// Appends `job`, dropping the oldest entry once the log is over `cap`, so
+/// it stays bounded no matter how long the app runs. `remove(0)` shifts at
+/// most `cap` elements -- bounded by the cap itself, not by session length --
+/// so this stays cheap even though it's O(n).
+fn push_capped(log: &mut Vec<LayoutJob>, job: LayoutJob, cap: usize) {
+    log.push(job);
+    if log.len() > cap {
+        log.remove(0);
+    }
+}
+
 impl TelescopeApp {
     /// Surfaces a `SettingsError` from an intel-directory change as an
     /// on-screen `GenericNotification` instead of letting it disappear
@@ -89,70 +129,12 @@ impl TelescopeApp {
         ));
 
         let full_time = chrono::Local::now().time().to_string();
-        let time = full_time.split_at(12);
-        let mut job = LayoutJob::default();
-        let normal_text = TextFormat {
-            font_id: FontId::new(12.0, FontFamily::Proportional),
-            color: Color32::LIGHT_GRAY,
-            ..Default::default()
-        };
-        let time_text = TextFormat {
-            font_id: FontId::new(12.0, FontFamily::Proportional),
-            color: Color32::DARK_GRAY,
-            ..Default::default()
-        };
-        let warn = TextFormat {
-            font_id: FontId::new(12.0, FontFamily::Proportional),
-            color: Color32::KHAKI,
-            ..Default::default()
-        };
-        let info = TextFormat {
-            font_id: FontId::new(12.0, FontFamily::Proportional),
-            color: Color32::BLUE,
-            ..Default::default()
-        };
-        let debug = TextFormat {
-            font_id: FontId::new(12.0, FontFamily::Proportional),
-            color: Color32::DEBUG_COLOR,
-            ..Default::default()
-        };
-        let error = TextFormat {
-            font_id: FontId::new(12.0, FontFamily::Proportional),
-            color: Color32::RED,
-            ..Default::default()
-        };
-        job.append("[", 0.0, normal_text.clone());
-        job.append(time.0, 0.0, time_text.clone());
-        job.append("] ", 0.0, normal_text.clone());
-        match message.0 {
-            Type::Error => {
-                job.append("ERROR: ", 0.0, error.clone());
-                job.append(
-                    (message.1 + " - " + &message.2 + " - ").as_str(),
-                    0.0,
-                    normal_text.clone(),
-                );
-            }
-            Type::Warning => {
-                job.append("WARN: ", 0.0, warn.clone());
-            }
-            Type::Info => {
-                job.append("INFO: ", 0.0, info.clone());
-            }
-            Type::Debug => {
-                job.append("DEBUG: ", 0.0, debug.clone());
-            }
-        }
-        job.append(&message.3, 0.0, normal_text.clone());
-        self.app_messages.push(job);
-        // Drop the oldest entry once we're over the cap, so this log stays
-        // bounded no matter how long the app runs. `remove(0)` shifts at
-        // most `Settings::get_max_app_messages` elements -- bounded by the
-        // cap itself, not by session length -- so this stays cheap even
-        // though it's O(n).
-        if self.app_messages.len() > self.settings.get_max_app_messages() {
-            self.app_messages.remove(0);
-        }
+        let job = log_entry(full_time.split_at(12).0, message);
+        push_capped(
+            &mut self.app_messages,
+            job,
+            self.settings.get_max_app_messages(),
+        );
     }
 }
 
@@ -240,6 +222,61 @@ impl TelescopeApp {
         {
             tracing::warn!("could not save the log panel layout: {t_error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod log_entry_tests {
+    use super::*;
+
+    fn entry(kind: Type) -> String {
+        log_entry(
+            "12:00:00",
+            (
+                kind,
+                String::from("source"),
+                String::from("context"),
+                String::from("text"),
+            ),
+        )
+        .text
+    }
+
+    #[test]
+    fn every_entry_starts_with_the_time_and_ends_with_the_text() {
+        for kind in [Type::Error, Type::Warning, Type::Info, Type::Debug] {
+            let text = entry(kind);
+            assert!(text.starts_with("[12:00:00] "), "{text}");
+            assert!(text.ends_with("text"), "{text}");
+        }
+    }
+
+    #[test]
+    fn each_type_has_its_own_label() {
+        assert!(entry(Type::Warning).contains("WARN: "));
+        assert!(entry(Type::Info).contains("INFO: "));
+        assert!(entry(Type::Debug).contains("DEBUG: "));
+        assert!(entry(Type::Error).contains("ERROR: "));
+    }
+
+    #[test]
+    fn only_errors_print_the_source_and_context() {
+        assert!(entry(Type::Error).contains("source - context - "));
+        for kind in [Type::Warning, Type::Info, Type::Debug] {
+            assert!(!entry(kind).contains("source"));
+        }
+    }
+
+    #[test]
+    fn the_log_drops_the_oldest_entry_over_the_cap() {
+        let mut log = Vec::new();
+        for n in 0..5 {
+            let mut job = LayoutJob::default();
+            job.append(&n.to_string(), 0.0, TextFormat::default());
+            push_capped(&mut log, job, 3);
+        }
+        let texts: Vec<&str> = log.iter().map(|job| job.text.as_str()).collect();
+        assert_eq!(texts, ["2", "3", "4"]);
     }
 }
 

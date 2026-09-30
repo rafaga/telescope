@@ -1310,3 +1310,174 @@ mod no_sde_tests {
         assert_eq!(outline.bounding_rect(), outer);
     }
 }
+
+#[cfg(test)]
+mod logic_tests {
+    use super::*;
+    use crate::app::messages::Message;
+    use webb::map_alerts::AlertSummary;
+
+    fn sde_point(x: f64, y: f64) -> SdePoint {
+        let mut point = SdePoint::default();
+        point.coords = [x, y, 0.0];
+        point
+    }
+
+    #[test]
+    fn an_sde_point_becomes_a_map_point_with_its_name_links_and_color() {
+        let mut point = sde_point(1.5, -2.5);
+        point.name = Some(String::from("Jita"));
+        point.connections = vec![(1, 2), (1, 3)];
+        point.color = Some(String::from("#FFE996"));
+        let map_point = sde_point_to_map(7, point);
+        assert_eq!(map_point.get_id(), 7);
+        assert_eq!(map_point.coords, [1.5, -2.5]);
+        assert_eq!(map_point.get_name(), "Jita");
+        assert_eq!(map_point.connections, vec![(1, 2), (1, 3)]);
+        assert_eq!(map_point.color, Color32::from_hex("#FFE996").ok());
+        assert!(map_point.color.is_some());
+    }
+
+    #[test]
+    fn a_missing_or_malformed_star_color_keeps_the_default_node_color() {
+        let mut point = sde_point(0.0, 0.0);
+        assert!(sde_point_to_map(1, point.clone()).color.is_none());
+        point.color = Some(String::from("not a color"));
+        assert!(sde_point_to_map(1, point).color.is_none());
+    }
+
+    #[test]
+    fn a_nameless_sde_point_stays_nameless() {
+        assert!(sde_point_to_map(1, sde_point(0.0, 0.0)).name.is_none());
+    }
+
+    #[test]
+    fn points_keep_their_ids_when_converted_in_bulk() {
+        let points = HashMap::from([(1, sde_point(1.0, 1.0)), (2, sde_point(2.0, 2.0))]);
+        let converted = sde_points_to_map(points);
+        assert_eq!(converted.len(), 2);
+        assert_eq!(converted[&2].get_id(), 2);
+        assert_eq!(converted[&2].coords, [2.0, 2.0]);
+    }
+
+    #[test]
+    fn segments_are_narrowed_to_f32_and_keep_their_id() {
+        let segment = SdeSegment {
+            id: (1, 2),
+            point1: [1.25, 2.5],
+            point2: [-3.0, 4.0],
+        };
+        let converted = sde_segment_to_map((1, 2), segment.clone());
+        assert_eq!(converted.id, (1, 2));
+        assert_eq!(converted.point1, [1.25, 2.5]);
+        assert_eq!(converted.point2, [-3.0, 4.0]);
+
+        let all = sde_segments_to_map(HashMap::from([((1, 2), segment)]));
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[&(1, 2)].id, (1, 2));
+    }
+
+    #[test]
+    fn tile_data_remembers_its_name_and_visibility() {
+        let mut data = TileData::new(String::from("The Forge"), true);
+        assert_eq!(data.get_name(), "The Forge");
+        assert!(!data.get_visible());
+        assert!(data.show_on_startup);
+        data.set_visible(true);
+        assert!(data.get_visible());
+    }
+
+    fn behavior() -> (TreeBehavior, tokio::sync::mpsc::Receiver<Message>) {
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let spawner = Arc::new(MessageSpawner::new(Arc::new(sender)));
+        (
+            TreeBehavior::new(spawner, 1.0, PathBuf::from("sde.db")),
+            receiver,
+        )
+    }
+
+    #[test]
+    fn toggling_a_region_asks_for_the_right_change_of_its_map() {
+        let (mut behavior, mut messages) = behavior();
+        behavior
+            .tile_data
+            .insert(1, TileData::new(String::from("Forge"), false));
+
+        // Hidden -> hide its map.
+        behavior.toggle_regions(1);
+        assert!(matches!(messages.try_recv(), Ok(Message::MapHidden(1))));
+
+        // Visible without a map yet -> create it.
+        behavior.tile_data.get_mut(&1).unwrap().set_visible(true);
+        behavior.toggle_regions(1);
+        assert!(matches!(
+            messages.try_recv(),
+            Ok(Message::NewRegionalPane(1))
+        ));
+
+        // Visible with a map -> show it.
+        behavior
+            .tile_data
+            .get_mut(&1)
+            .unwrap()
+            .set_tile_id(Some(TileId::from_u64(3)));
+        behavior.toggle_regions(1);
+        assert!(matches!(messages.try_recv(), Ok(Message::MapShown(1))));
+    }
+
+    #[test]
+    fn the_region_search_path_can_be_replaced() {
+        let (mut behavior, _messages) = behavior();
+        behavior.set_path(PathBuf::from("other.db"));
+        assert_eq!(behavior.path, PathBuf::from("other.db"));
+    }
+
+    fn alert(system_id: usize, text: &str) -> IntelAlert {
+        IntelAlert::new(
+            system_id,
+            Instant::now(),
+            Duration::from_secs(30),
+            text,
+            AlertSummary::default(),
+            true,
+        )
+    }
+
+    #[test]
+    fn pushed_alerts_are_listed_under_their_system() {
+        let mut log = AlertLog::default();
+        push_alert(&mut log, alert(1, "first"));
+        push_alert(&mut log, alert(1, "second"));
+        push_alert(&mut log, alert(2, "other"));
+        let now = Instant::now();
+        assert_eq!(log.active(1, now).len(), 2);
+        assert_eq!(log.active(2, now).len(), 1);
+        assert!(log.active(3, now).is_empty());
+    }
+
+    #[test]
+    fn an_alert_pulse_tolerates_nodes_the_map_does_not_have() {
+        let mut map = Map::new();
+        map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
+        pulse_alert(&mut map, &alert(1, "on the map"));
+        pulse_alert(&mut map, &alert(99, "not on this map"));
+    }
+
+    #[test]
+    fn node_geometry_scales_with_the_zoom() {
+        let style = NodeStyle::default();
+        let center = Pos2::new(100.0, 50.0);
+        let rect = node_rect(center, 2.0, style);
+        assert_eq!(rect.center(), center);
+        assert_eq!(rect.width(), style.width * 2.0);
+        assert_eq!(rect.height(), style.height * 2.0);
+
+        let outer = node_outer_rect(center, 2.0, style);
+        assert_eq!(outer.width(), rect.width() + 2.0 * style.border * 2.0);
+
+        assert_eq!(
+            node_corner_radius(2.0, style),
+            CornerRadius::same((style.corner_radius * 2.0).round() as u8)
+        );
+    }
+}

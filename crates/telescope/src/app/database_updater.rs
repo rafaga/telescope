@@ -1025,3 +1025,140 @@ mod building_path_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod updater_state_tests {
+    use super::*;
+
+    #[test]
+    fn the_phases_run_in_order_and_have_distinct_texts() {
+        let phases = [
+            SdePhase::Checking,
+            SdePhase::Downloading,
+            SdePhase::Extracting,
+            SdePhase::Rebuilding,
+            SdePhase::Verifying,
+        ];
+        for (expected, phase) in phases.iter().enumerate() {
+            assert_eq!(phase.index(), expected);
+            assert!(!phase.step().is_empty());
+            assert!(!phase.detail().is_empty());
+        }
+        let steps: std::collections::HashSet<String> =
+            phases.iter().map(|phase| phase.step()).collect();
+        assert_eq!(steps.len(), phases.len());
+    }
+
+    #[test]
+    fn the_clock_shows_minutes_and_padded_seconds() {
+        assert_eq!(clock(std::time::Duration::from_secs(0)), "0:00");
+        assert_eq!(clock(std::time::Duration::from_secs(9)), "0:09");
+        assert_eq!(clock(std::time::Duration::from_secs(75)), "1:15");
+        assert_eq!(clock(std::time::Duration::from_secs(3600)), "60:00");
+    }
+
+    #[test]
+    fn the_first_phase_opens_the_window_with_a_clean_state() {
+        let mut updater = DatabaseUpdater::default();
+        assert!(updater.phase.is_none());
+        updater.set_phase(SdePhase::Checking);
+        assert_eq!(updater.phase, Some(SdePhase::Checking));
+        assert!(updater.phase_started.is_some());
+        assert_eq!(updater.log.len(), 1);
+        // "HH:MM:SS  text"
+        assert_eq!(updater.log[0].as_bytes()[2], b':');
+        assert!(updater.log[0].contains("  "));
+    }
+
+    #[test]
+    fn later_phases_keep_what_was_learned() {
+        let mut updater = DatabaseUpdater::default();
+        updater.set_phase(SdePhase::Checking);
+        updater.set_info(SdeInfo::Versions {
+            installed: None,
+            available: String::from("100"),
+        });
+        updater.set_phase(SdePhase::Downloading);
+        assert_eq!(updater.versions, Some((None, String::from("100"))));
+        assert_eq!(updater.phase, Some(SdePhase::Downloading));
+        assert_eq!(updater.log.len(), 3);
+    }
+
+    #[test]
+    fn each_kind_of_info_is_recorded_and_logged() {
+        let mut updater = DatabaseUpdater::default();
+        updater.set_phase(SdePhase::Checking);
+        updater.set_info(SdeInfo::Versions {
+            installed: Some(String::from("90")),
+            available: String::from("100"),
+        });
+        assert_eq!(
+            updater.versions,
+            Some((Some(String::from("90")), String::from("100")))
+        );
+        updater.set_info(SdeInfo::Downloaded(50_540_000));
+        assert_eq!(updater.downloaded, Some(50_540_000));
+        assert!(updater.log.last().unwrap().contains("48.2 MB"));
+        let before = updater.log.len();
+        updater.set_info(SdeInfo::Verified);
+        assert_eq!(updater.log.len(), before + 1);
+    }
+
+    #[test]
+    fn finishing_needs_a_running_update_and_keeps_the_window_open() {
+        let mut updater = DatabaseUpdater::default();
+        updater.finish();
+        assert!(!updater.finished);
+        assert!(updater.log.is_empty());
+
+        updater.set_phase(SdePhase::Verifying);
+        updater.finish();
+        assert!(updater.finished);
+        assert!(updater.phase_started.is_none());
+        assert!(updater.phase.is_some());
+    }
+
+    #[test]
+    fn hiding_forgets_everything_and_a_new_update_starts_clean() {
+        let mut updater = DatabaseUpdater::default();
+        updater.set_phase(SdePhase::Checking);
+        updater.set_info(SdeInfo::Downloaded(1));
+        updater.finish();
+        updater.hide();
+        assert!(updater.phase.is_none());
+        assert!(!updater.finished);
+        assert!(updater.downloaded.is_none());
+        assert!(updater.log.is_empty());
+
+        updater.set_phase(SdePhase::Checking);
+        assert_eq!(updater.log.len(), 1);
+        assert!(!updater.finished);
+    }
+
+    #[test]
+    fn a_fresh_database_passes_its_integrity_check() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(DatabaseUpdater::verify(&connection).is_ok());
+    }
+
+    #[test]
+    fn a_cancelled_run_forgets_the_recorded_build_number() {
+        let dir = std::env::temp_dir().join(format!("telescope-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let urls = BuildUrls::default();
+        let build_file = dir.join(format!("sde-{}.build", urls.sde_variant));
+        std::fs::write(&build_file, "100").unwrap();
+
+        // Only test touching the process-wide cancel flag.
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        assert!(!DatabaseUpdater::cancelled(&dir, &urls));
+        assert!(build_file.exists());
+
+        DatabaseUpdater::request_cancel();
+        assert!(DatabaseUpdater::cancelled(&dir, &urls));
+        assert!(!build_file.exists());
+
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

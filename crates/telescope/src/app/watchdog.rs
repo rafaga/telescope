@@ -11,7 +11,7 @@ use std::thread;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 use tokio::time::{Instant, sleep_until};
-use webb::esi::EsiManager;
+use webb::objects::Character;
 
 /// Time between two location polls of every character.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -42,15 +42,15 @@ fn is_auth_rejection(error: &str) -> bool {
 }
 
 /// Character name for messages, falling back to its id.
-fn character_label(esi: &EsiManager, id: i32) -> String {
-    esi.characters
+fn character_label(characters: &[Character], id: i32) -> String {
+    characters
         .iter()
         .find(|character| character.id == id)
         .map(|character| character.name.clone())
         .unwrap_or_else(|| id.to_string())
 }
 
-fn relink_notification(esi: &EsiManager, id: i32, error: &str) -> Message {
+fn relink_notification(characters: &[Character], id: i32, error: &str) -> Message {
     Message::GenericNotification((
         Type::Warning,
         String::from("Telescope App"),
@@ -58,9 +58,49 @@ fn relink_notification(esi: &EsiManager, id: i32, error: &str) -> Message {
         format!(
             "{} is no longer tracked: its EVE login is not valid anymore ({error}). \
              Link the character again in Settings -> Characters.",
-            character_label(esi, id)
+            character_label(characters, id)
         ),
     ))
+}
+
+/// What the watchdog does after a link/unlink request.
+#[derive(Debug, PartialEq, Eq)]
+enum SyncOutcome {
+    /// Poll every character now (a character was linked).
+    PollNow,
+    /// Nothing else to do; keep waiting for the next poll.
+    Wait,
+    /// No character left to follow: the watchdog ends.
+    Stop,
+}
+
+/// Applies a link/unlink request to the followed characters.
+fn apply_sync(tracked: &mut Vec<Tracked>, sync: Option<CharacterSync>) -> SyncOutcome {
+    match sync {
+        Some(CharacterSync::Add(id)) => {
+            // Resume it and forget its last location, so the next poll
+            // reports it even if unchanged.
+            match tracked.iter_mut().find(|item| item.id == id) {
+                Some(item) => *item = Tracked::new(id),
+                None => tracked.push(Tracked::new(id)),
+            }
+            SyncOutcome::PollNow
+        }
+        Some(CharacterSync::Remove(id)) => {
+            tracked.retain(|item| item.id != id);
+            if tracked.is_empty() {
+                SyncOutcome::Stop
+            } else {
+                SyncOutcome::Wait
+            }
+        }
+        // Every sender is gone: the app dropped this watchdog (no characters
+        // left, or a new one replaced it).
+        None => {
+            tracked.clear();
+            SyncOutcome::Stop
+        }
+    }
 }
 
 impl TelescopeApp {
@@ -134,7 +174,7 @@ impl TelescopeApp {
                                             String::from("start_watchdog"),
                                             format!(
                                                 "token of {} refreshed successfully",
-                                                character_label(&t_esi, id)
+                                                character_label(&t_esi.characters, id)
                                             ),
                                         )),
                                     )
@@ -144,7 +184,7 @@ impl TelescopeApp {
                                     item.paused = true;
                                     let _ = send_app_message(
                                         &app_sender,
-                                        relink_notification(&t_esi, id, &t_error),
+                                        relink_notification(&t_esi.characters, id, &t_error),
                                     )
                                     .await;
                                     continue;
@@ -170,7 +210,7 @@ impl TelescopeApp {
                                 item.paused = true;
                                 let _ = send_app_message(
                                     &app_sender,
-                                    relink_notification(&t_esi, id, &t_error),
+                                    relink_notification(&t_esi.characters, id, &t_error),
                                 )
                                 .await;
                             }
@@ -182,7 +222,7 @@ impl TelescopeApp {
                                         String::from("Telescope App"),
                                         format!(
                                             "start_watchdog - get_location - {}",
-                                            character_label(&t_esi, id)
+                                            character_label(&t_esi.characters, id)
                                         ),
                                         t_error.to_string(),
                                     )),
@@ -198,8 +238,8 @@ impl TelescopeApp {
                     let mut poll_now = false;
                     while !poll_now {
                         tokio::select! {
-                            message = receiver.recv() => match message {
-                                Some(CharacterSync::Add(char_id)) => {
+                            message = receiver.recv() => {
+                                if matches!(message, Some(CharacterSync::Add(_))) {
                                     // The new (or re-linked) character's tokens
                                     // were stored by the auth thread; pick them up.
                                     if let Err(t_error) = t_esi.reload_auth() {
@@ -214,28 +254,13 @@ impl TelescopeApp {
                                         )
                                         .await;
                                     }
-                                    // Resume it and forget its last location, so
-                                    // the next poll reports it even if unchanged.
-                                    match character_ids.iter_mut().find(|item| item.id == char_id) {
-                                        Some(item) => *item = Tracked::new(char_id),
-                                        None => character_ids.push(Tracked::new(char_id)),
-                                    }
-                                    poll_now = true;
                                 }
-                                Some(CharacterSync::Remove(char_id)) => {
-                                    character_ids.retain(|item| item.id != char_id);
-                                    if character_ids.is_empty() {
-                                        break;
-                                    }
+                                match apply_sync(&mut character_ids, message) {
+                                    SyncOutcome::PollNow => poll_now = true,
+                                    SyncOutcome::Wait => {}
+                                    SyncOutcome::Stop => break,
                                 }
-                                // Every sender is gone: the app dropped this
-                                // watchdog (no characters left, or a new one
-                                // replaced it).
-                                None => {
-                                    character_ids.clear();
-                                    break;
-                                }
-                            },
+                            }
                             () = sleep_until(next_poll) => poll_now = true,
                         }
                     }
@@ -259,7 +284,18 @@ impl TelescopeApp {
 
 #[cfg(test)]
 mod tests {
-    use super::is_auth_rejection;
+    use super::*;
+
+    fn character(id: i32, name: &str) -> Character {
+        let mut character = Character::new();
+        character.id = id;
+        character.name = name.to_string();
+        character
+    }
+
+    fn ids(tracked: &[Tracked]) -> Vec<usize> {
+        tracked.iter().map(|item| item.id).collect()
+    }
 
     #[test]
     fn only_401_and_403_mean_the_token_was_rejected() {
@@ -267,5 +303,86 @@ mod tests {
         assert!(is_auth_rejection("Invalid HTTP status code received: 401"));
         assert!(!is_auth_rejection("Invalid HTTP status code received: 502"));
         assert!(!is_auth_rejection("Invalid Token"));
+    }
+
+    #[test]
+    fn a_character_is_named_or_falls_back_to_its_id() {
+        let characters = [character(1, "Alice")];
+        assert_eq!(character_label(&characters, 1), "Alice");
+        assert_eq!(character_label(&characters, 99), "99");
+    }
+
+    #[test]
+    fn the_relink_warning_names_the_character_and_the_cause() {
+        let characters = [character(1, "Alice")];
+        match relink_notification(&characters, 1, "401") {
+            Message::GenericNotification((Type::Warning, _, _, text)) => {
+                assert!(text.contains("Alice"), "{text}");
+                assert!(text.contains("(401)"), "{text}");
+                assert!(text.contains("Settings -> Characters"), "{text}");
+            }
+            _ => panic!("expected a warning notification"),
+        }
+    }
+
+    #[test]
+    fn a_new_tracked_character_starts_active_with_no_location() {
+        let tracked = Tracked::new(5);
+        assert_eq!(
+            (tracked.id, tracked.location, tracked.paused),
+            (5, 0, false)
+        );
+    }
+
+    #[test]
+    fn linking_a_new_character_adds_it_and_polls_now() {
+        let mut tracked = vec![Tracked::new(1)];
+        let outcome = apply_sync(&mut tracked, Some(CharacterSync::Add(2)));
+        assert_eq!(outcome, SyncOutcome::PollNow);
+        assert_eq!(ids(&tracked), vec![1, 2]);
+    }
+
+    #[test]
+    fn relinking_resumes_a_paused_character_and_forgets_its_location() {
+        let mut tracked = vec![Tracked::new(1)];
+        tracked[0].paused = true;
+        tracked[0].location = 30000142;
+        let outcome = apply_sync(&mut tracked, Some(CharacterSync::Add(1)));
+        assert_eq!(outcome, SyncOutcome::PollNow);
+        assert_eq!(ids(&tracked), vec![1]);
+        assert!(!tracked[0].paused);
+        assert_eq!(tracked[0].location, 0);
+    }
+
+    #[test]
+    fn unlinking_keeps_waiting_until_no_character_is_left() {
+        let mut tracked = vec![Tracked::new(1), Tracked::new(2)];
+        assert_eq!(
+            apply_sync(&mut tracked, Some(CharacterSync::Remove(1))),
+            SyncOutcome::Wait
+        );
+        assert_eq!(ids(&tracked), vec![2]);
+        assert_eq!(
+            apply_sync(&mut tracked, Some(CharacterSync::Remove(2))),
+            SyncOutcome::Stop
+        );
+        assert!(tracked.is_empty());
+    }
+
+    #[test]
+    fn unlinking_an_unknown_character_changes_nothing() {
+        let mut tracked = vec![Tracked::new(1)];
+        assert_eq!(
+            apply_sync(&mut tracked, Some(CharacterSync::Remove(9))),
+            SyncOutcome::Wait
+        );
+        assert_eq!(ids(&tracked), vec![1]);
+    }
+
+    #[test]
+    fn a_closed_channel_stops_the_watchdog_and_clears_the_list() {
+        let mut tracked = vec![Tracked::new(1), Tracked::new(2)];
+        assert_eq!(apply_sync(&mut tracked, None), SyncOutcome::Stop);
+        assert!(tracked.is_empty());
     }
 }

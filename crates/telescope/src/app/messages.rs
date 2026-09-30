@@ -620,3 +620,95 @@ mod auth_spawner_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod enum_tests {
+    use super::*;
+    use egui_map::map::Map;
+    use egui_map::map::objects::MapPoint;
+
+    #[test]
+    fn every_node_effect_has_its_own_label() {
+        let labels: std::collections::HashSet<&str> = NodeEffect::ALL
+            .iter()
+            .map(|effect| effect.label())
+            .collect();
+        assert_eq!(labels.len(), NodeEffect::ALL.len());
+        assert!(labels.iter().all(|label| !label.is_empty()));
+    }
+
+    #[test]
+    fn every_node_effect_can_be_applied_to_a_map_node() {
+        let mut map = Map::new();
+        map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
+        for effect in NodeEffect::ALL {
+            let node = map.node(1).expect("the node exists");
+            effect.apply(node);
+        }
+    }
+
+    #[test]
+    fn the_settings_pages_have_a_title_and_a_distinct_icon() {
+        let pages = [
+            SettingsPage::Sources,
+            SettingsPage::Rules,
+            SettingsPage::Alerts,
+            SettingsPage::Maps,
+            SettingsPage::Characters,
+            SettingsPage::Application,
+        ];
+        let icons: std::collections::HashSet<&str> = pages.iter().map(|p| p.icon()).collect();
+        assert_eq!(icons.len(), pages.len());
+        assert!(pages.iter().all(|page| !page.title().is_empty()));
+    }
+
+    #[test]
+    fn the_intel_flow_goes_from_the_sources_to_the_alerts() {
+        assert_eq!(
+            SettingsPage::INTEL_FLOW,
+            [
+                SettingsPage::Sources,
+                SettingsPage::Rules,
+                SettingsPage::Alerts
+            ]
+        );
+    }
+
+    #[test]
+    fn messages_are_tagged_with_their_variant_name() {
+        let cases: [(Message, &str); 8] = [
+            (
+                Message::GenericNotification((
+                    Type::Info,
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                )),
+                "GenericNotification",
+            ),
+            (Message::NewRegionalPane(1), "NewRegionalPane"),
+            (Message::MapHidden(1), "MapHidden"),
+            (Message::MapShown(1), "MapShown"),
+            (Message::PlayerNewLocation((1, 2)), "PlayerNewLocation"),
+            (
+                Message::ChannelActivity(String::new(), std::time::SystemTime::UNIX_EPOCH),
+                "ChannelActivity",
+            ),
+            (Message::DefaultIntelDirectory, "DefaultIntelDirectory"),
+            (Message::ScanIntelFiles, "ScanIntelFiles"),
+        ];
+        for (message, name) in cases {
+            assert_eq!(message.kind(), name);
+        }
+        assert_eq!(
+            Message::UpdateIntelDirectory(PathBuf::new()).kind(),
+            "UpdateIntelDirectory"
+        );
+        assert_eq!(
+            Message::SdePathPicked(PathBuf::new()).kind(),
+            "SdePathPicked"
+        );
+        assert_eq!(Message::DbPathPicked(PathBuf::new()).kind(), "DbPathPicked");
+        assert_eq!(Message::DatabaseUpdated(true).kind(), "DatabaseUpdated");
+    }
+}

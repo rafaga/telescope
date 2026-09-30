@@ -1061,4 +1061,210 @@ mod tests {
             Mapping::DEFAULT_ALERT_DURATION_SECS
         );
     }
+
+    /// Settings that count as already saved, to see which calls dirty them.
+    fn saved_settings() -> Settings {
+        let mut settings = Settings::default();
+        settings.saved = true;
+        settings
+    }
+
+    #[test]
+    fn plain_setters_store_the_value_and_mark_the_settings_unsaved() {
+        let mut settings = saved_settings();
+        settings.set_startup_regions(vec![3, 1]);
+        assert_eq!(settings.get_startup_regions(), &vec![3, 1]);
+        assert!(!settings.its_saved());
+
+        let mut settings = saved_settings();
+        settings.set_monitored_channels(vec![String::from("Intel")]);
+        assert_eq!(*settings.get_cloned_monitored_channels(), vec!["Intel"]);
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn unchanged_values_do_not_dirty_the_settings() {
+        let mut settings = saved_settings();
+        let available = settings.get_available_channels();
+        settings.set_available_channels(available);
+        let glow = settings.get_glow_intensity();
+        settings.set_glow_intensity(glow);
+        let language = settings.ui.language.clone();
+        settings.set_language(&language);
+        assert!(settings.its_saved());
+
+        settings.set_available_channels(HashMap::from([(String::from("Intel"), true)]));
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn the_glow_intensity_is_clamped_and_reaches_the_node_style() {
+        let mut settings = saved_settings();
+        settings.set_glow_intensity(7.0);
+        assert_eq!(settings.get_glow_intensity(), 1.0);
+        assert_eq!(settings.get_node_style().glow_max_alpha, 1.0);
+        settings.set_glow_intensity(-2.0);
+        assert_eq!(settings.get_glow_intensity(), 0.0);
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn changing_the_language_is_an_unsaved_change() {
+        let mut settings = saved_settings();
+        settings.set_language("es");
+        assert_eq!(settings.ui.language, "es");
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn channel_activity_is_recorded_per_channel() {
+        let mut settings = Settings::default();
+        let first = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+        let second = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(20);
+        settings.note_channel_activity("Intel", first);
+        settings.note_channel_activity("Intel", second);
+        settings.note_channel_activity("Alliance", first);
+        let activity = settings.get_channel_activity();
+        assert_eq!(activity.len(), 2);
+        assert_eq!(activity["Intel"], second);
+    }
+
+    #[test]
+    fn set_sde_accepts_only_existing_paths() {
+        let dir = temp_dir("set-sde");
+        let mut settings = saved_settings();
+        assert_eq!(
+            settings.set_sde(&dir.join("missing.db")),
+            Err(SettingsError::InvalidDirectory(
+                dir.join("missing.db").to_string_lossy().to_string()
+            ))
+        );
+        assert!(settings.its_saved());
+
+        assert_eq!(settings.set_sde(&dir), Ok(()));
+        assert_eq!(settings.get_sde(), dir.as_path());
+        assert!(!settings.its_saved());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_internal_defaults_are_usable() {
+        let settings = Settings::default();
+        assert!(settings.get_max_app_messages() > 0);
+        assert!(settings.get_log_panel_min_height() > 0.0);
+        assert!(settings.get_notification_dedup_window() > std::time::Duration::ZERO);
+        assert!(settings.get_factor().is_finite());
+        assert!(settings.get_region_factor().is_finite());
+        assert!(!settings.get_data_source_urls().sde_url.is_empty());
+        assert_eq!(settings.get_settings(), Settings::default().get_settings());
+        let card = settings.get_character_card_style();
+        assert!(card.portrait_size > 0.0);
+    }
+
+    #[test]
+    fn set_layout_takes_the_panel_and_keeps_the_language() {
+        let mut settings = Settings::default();
+        settings.set_language("es");
+        settings.set_layout(&UiState {
+            log_expanded: false,
+            log_height: 321.0,
+            language: String::from("fr"),
+        });
+        assert!(!settings.ui.log_expanded);
+        assert_eq!(settings.ui.log_height, 321.0);
+        assert_eq!(settings.ui.language, "es");
+    }
+
+    #[test]
+    fn saving_the_layout_without_a_file_only_keeps_it_in_memory() {
+        let dir = temp_dir("ui-no-file");
+        let mut settings = Settings::default();
+        settings.paths.settings = dir.join("telescope.toml");
+        let state = UiState {
+            log_expanded: false,
+            log_height: 200.0,
+            language: String::from("auto"),
+        };
+        assert_eq!(settings.save_ui_state(state.clone()), Ok(()));
+        assert_eq!(settings.ui, state);
+        assert!(!dir.join("telescope.toml").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_the_layout_patches_only_the_ui_table_of_the_file() {
+        let dir = temp_dir("ui-patch");
+        let path = dir.join("telescope.toml");
+        fs::write(
+            &path,
+            "[other]\nkept = 1\n\n[ui]\nlanguage = \"es\"\nlog_expanded = true\nlog_height = 50.0\n",
+        )
+        .unwrap();
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        settings
+            .save_ui_state(UiState {
+                log_expanded: false,
+                log_height: 240.0,
+                // Ignored: the language only reaches the file with `save`.
+                language: String::from("fr"),
+            })
+            .unwrap();
+
+        let document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document["other"]["kept"].as_integer(), Some(1));
+        assert_eq!(document["ui"]["language"].as_str(), Some("es"));
+        assert_eq!(document["ui"]["log_expanded"].as_bool(), Some(false));
+        assert_eq!(document["ui"]["log_height"].as_float(), Some(240.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_the_layout_does_not_invent_a_language_the_file_lacks() {
+        let dir = temp_dir("ui-patch-no-language");
+        let path = dir.join("telescope.toml");
+        fs::write(&path, "[other]\nkept = 1\n").unwrap();
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        settings.save_ui_state(UiState::default()).unwrap();
+
+        let document: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(document["ui"].get("language").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_the_layout_over_an_unreadable_file_is_an_error() {
+        let dir = temp_dir("ui-bad-file");
+        let path = dir.join("telescope.toml");
+        fs::write(&path, "this is = = not toml").unwrap();
+        let mut settings = Settings::default();
+        settings.paths.settings = path;
+        assert!(matches!(
+            settings.save_ui_state(UiState::default()),
+            Err(SettingsError::Other(_))
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_errors_read_well_and_have_no_source() {
+        use std::error::Error as _;
+        for (error, text) in [
+            (
+                SettingsError::FileNotFound(String::from("a")),
+                "File not found: a",
+            ),
+            (
+                SettingsError::InvalidDirectory(String::from("b")),
+                "Path not found: b",
+            ),
+            (SettingsError::ReadError, "read error"),
+            (SettingsError::WriteError, "write error"),
+            (SettingsError::Other(String::from("c")), "Other Error: c"),
+        ] {
+            assert_eq!(error.to_string(), text);
+            assert!(error.source().is_none());
+        }
+    }
 }

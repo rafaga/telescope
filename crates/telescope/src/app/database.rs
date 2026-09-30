@@ -10,9 +10,42 @@ use crate::app::settings::Settings;
 use crate::app::tiles::TileData;
 use egui_tiles::Tile;
 use sde::SdeManager;
+use sde::objects::Universe;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// The regions that get a map: k-space only, wormhole and abyssal regions
+/// (ids from 11,000,000) have none.
+fn kspace_regions(universe: &Universe) -> HashMap<usize, String> {
+    universe
+        .regions
+        .values()
+        .filter(|region| region.id < 11_000_000)
+        .map(|region| (region.id as usize, region.name.clone()))
+        .collect()
+}
+
+/// The listed regions that are no longer in `regions`.
+fn regions_gone(
+    tile_data: &HashMap<usize, TileData>,
+    regions: &HashMap<usize, String>,
+) -> Vec<usize> {
+    tile_data
+        .keys()
+        .filter(|id| !regions.contains_key(id))
+        .copied()
+        .collect()
+}
+
+/// The startup regions that have no map open yet.
+fn pending_startup_regions(tile_data: &HashMap<usize, TileData>) -> Vec<usize> {
+    tile_data
+        .iter()
+        .filter(|(_, data)| data.show_on_startup && data.get_tile_id().is_none())
+        .map(|(id, _)| *id)
+        .collect()
+}
 
 impl TelescopeApp {
     /// Base scratch directory for `database_updater::DatabaseUpdater`'s
@@ -82,21 +115,8 @@ impl TelescopeApp {
     /// menu) match `self.universe`: new regions are added, those gone are
     /// removed with their map, and the others keep their state.
     pub(crate) fn sync_region_list(&mut self) {
-        let regions: HashMap<usize, String> = self
-            .universe
-            .regions
-            .values()
-            // k-space only: wormhole and abyssal regions have no map.
-            .filter(|region| region.id < 11_000_000)
-            .map(|region| (region.id as usize, region.name.clone()))
-            .collect();
-        let gone: Vec<usize> = self
-            .behavior
-            .tile_data
-            .keys()
-            .filter(|id| !regions.contains_key(id))
-            .copied()
-            .collect();
+        let regions = kspace_regions(&self.universe);
+        let gone = regions_gone(&self.behavior.tile_data, &regions);
         for id in gone {
             if let Some(data) = self.behavior.tile_data.remove(&id)
                 && let (Some(tile_id), Some(tree)) = (data.get_tile_id(), self.tree.as_mut())
@@ -116,14 +136,7 @@ impl TelescopeApp {
     /// Opens the map of every startup region (Settings -> Maps) that has
     /// none yet.
     pub(crate) fn open_startup_regions(&mut self) {
-        let pending: Vec<usize> = self
-            .behavior
-            .tile_data
-            .iter()
-            .filter(|(_, data)| data.show_on_startup && data.get_tile_id().is_none())
-            .map(|(id, _)| *id)
-            .collect();
-        for region in pending {
+        for region in pending_startup_regions(&self.behavior.tile_data) {
             self.create_new_regional_pane(region);
         }
     }
@@ -183,5 +196,55 @@ mod sde_build_cache_dir_tests {
         settings.set_sde_for_test(Path::new(""));
         let cache_dir = TelescopeApp::sde_build_cache_dir(&settings);
         assert_eq!(cache_dir, Path::new("sde-build-cache"));
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    use egui_tiles::TileId;
+    use sde::objects::Region;
+
+    fn universe(regions: &[(u32, &str)]) -> Universe {
+        let mut universe = Universe::new(1.0);
+        for (id, name) in regions {
+            let mut region = Region::new();
+            region.id = *id;
+            region.name = name.to_string();
+            universe.regions.insert(*id, region);
+        }
+        universe
+    }
+
+    #[test]
+    fn only_kspace_regions_get_a_map() {
+        let universe = universe(&[
+            (10000002, "The Forge"),
+            (11000001, "A-R00001"),
+            (12000001, "Abyss"),
+        ]);
+        let regions = kspace_regions(&universe);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[&10000002], "The Forge");
+    }
+
+    #[test]
+    fn regions_missing_from_the_universe_are_reported_gone() {
+        let mut tile_data = HashMap::new();
+        tile_data.insert(1, TileData::new(String::from("kept"), false));
+        tile_data.insert(2, TileData::new(String::from("removed"), false));
+        let regions = HashMap::from([(1, String::from("kept"))]);
+        assert_eq!(regions_gone(&tile_data, &regions), vec![2]);
+    }
+
+    #[test]
+    fn only_startup_regions_without_a_map_are_pending() {
+        let mut tile_data = HashMap::new();
+        tile_data.insert(1, TileData::new(String::from("pending"), true));
+        tile_data.insert(2, TileData::new(String::from("not startup"), false));
+        let mut open = TileData::new(String::from("already open"), true);
+        open.set_tile_id(Some(TileId::from_u64(7)));
+        tile_data.insert(3, open);
+        assert_eq!(pending_startup_regions(&tile_data), vec![1]);
     }
 }
