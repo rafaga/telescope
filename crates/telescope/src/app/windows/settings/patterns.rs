@@ -129,12 +129,12 @@ impl PatternsEditor {
             })
     }
 
+    /// Every id in use: the working graph's and the open editor's canvas,
+    /// where nodes added since it opened are not merged into the graph yet.
     fn rule_ids(&self) -> HashSet<String> {
-        self.graph
-            .nodes
-            .iter()
-            .map(|node| node.id.clone())
-            .collect()
+        let mut ids = collect_node_ids(&self.snarl);
+        ids.extend(self.graph.nodes.iter().map(|node| node.id.clone()));
+        ids
     }
 
     fn add_input(&mut self) -> String {
@@ -2172,5 +2172,854 @@ fn output_kind_label(kind: OutputKind) -> String {
         OutputKind::Log => t!("settings.patterns.kind_log").into_owned(),
         OutputKind::Suppress => t!("settings.patterns.kind_suppress").into_owned(),
         OutputKind::Tooltip => t!("settings.patterns.kind_tooltip").into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Builders
+
+    fn node(id: &str, kind: NodeKind) -> Node {
+        Node {
+            id: id.to_string(),
+            enabled: true,
+            x: 0.0,
+            y: 0.0,
+            kind,
+        }
+    }
+
+    fn input(id: &str, channels: &[&str]) -> Node {
+        node(
+            id,
+            NodeKind::Input(InputNode {
+                description: format!("{id} description"),
+                kind: InputKind::ChatLog,
+                path: String::new(),
+                channels: channels.iter().map(|c| c.to_string()).collect(),
+                exclude_motd: true,
+            }),
+        )
+    }
+
+    fn detection(id: &str) -> Node {
+        node(
+            id,
+            NodeKind::Detection(DetectionNode {
+                kind: DetectionRuleKind::SystemReport,
+                case_insensitive: false,
+            }),
+        )
+    }
+
+    fn output(kind: OutputKind) -> Node {
+        node(
+            kind.type_name(),
+            NodeKind::Output(OutputNode {
+                kind,
+                tooltip: TooltipConfig { emojis: true },
+                log: LogConfig::default(),
+            }),
+        )
+    }
+
+    fn edge(from: &str, from_pin: Pin, to: &str, to_pin: u8) -> Edge {
+        Edge {
+            from: from.to_string(),
+            from_pin,
+            to: to.to_string(),
+            to_pin,
+        }
+    }
+
+    /// `in1 -> d1 -T-> visual`, `d1 -F-> log`; `in2 -> d2 -T-> visual` (the
+    /// output is shared); `in3` alone.
+    fn graph() -> RuleGraph {
+        RuleGraph {
+            nodes: vec![
+                input("in1", &["Intel"]),
+                detection("d1"),
+                input("in2", &[]),
+                detection("d2"),
+                input("in3", &[]),
+                output(OutputKind::Visual),
+                output(OutputKind::Log),
+            ],
+            edges: vec![
+                edge("in1", Pin::Out, "d1", 0),
+                edge("d1", Pin::T, "visual", 0),
+                edge("d1", Pin::F, "log", 0),
+                edge("in2", Pin::Out, "d2", 0),
+                edge("d2", Pin::T, "visual", 0),
+            ],
+        }
+    }
+
+    fn editor() -> PatternsEditor {
+        let mut editor = PatternsEditor::default();
+        editor.ensure_loaded(&graph());
+        editor
+    }
+
+    fn ids(editor: &PatternsEditor) -> Vec<String> {
+        editor.graph.nodes.iter().map(|n| n.id.clone()).collect()
+    }
+
+    fn set(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    // Free functions
+
+    #[test]
+    fn unique_id_takes_the_first_free_index() {
+        assert_eq!(unique_id(&HashSet::new(), "input"), "input_1");
+        assert_eq!(unique_id(&set(&["input_1", "input_2"]), "input"), "input_3");
+        // A gap is filled, and other prefixes do not interfere.
+        assert_eq!(unique_id(&set(&["input_2", "gate_1"]), "input"), "input_1");
+    }
+
+    #[test]
+    fn valid_id_follows_the_rule_id_charset_and_length() {
+        for id in ["a", "in_1", "Rule-2", &"x".repeat(64)] {
+            assert!(valid_id(id), "{id:?} should be valid");
+        }
+        for id in [
+            "",
+            "has space",
+            "dot.dot",
+            "\u{f1}and\u{fa}",
+            &"x".repeat(65),
+        ] {
+            assert!(!valid_id(id), "{id:?} should be invalid");
+        }
+    }
+
+    #[test]
+    fn every_offered_detection_type_has_a_default_of_that_type() {
+        for name in DETECTION_TYPES {
+            assert_eq!(default_detection_kind(name).type_name(), name);
+        }
+        assert_eq!(default_detection_kind("unknown").type_name(), "custom");
+    }
+
+    #[test]
+    fn default_detections_are_valid_where_they_can_be() {
+        let dictionaries = Dictionaries::defaults();
+        for name in [
+            "system_report",
+            "clear_report",
+            "ship_names",
+            "ship_names_zh",
+            "pilot_count",
+            "query",
+        ] {
+            assert_eq!(
+                default_detection_kind(name).validate("id", &dictionaries),
+                Ok(()),
+                "{name}"
+            );
+        }
+        // A fresh keyword or custom rule still needs the user's words.
+        assert!(
+            default_detection_kind("keyword")
+                .validate("id", &dictionaries)
+                .is_err()
+        );
+        assert!(
+            default_detection_kind("custom")
+                .validate("id", &dictionaries)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn default_ship_names_use_every_built_in_dictionary() {
+        match default_detection_kind("ship_names") {
+            DetectionRuleKind::ShipNames { dictionaries } => {
+                assert_eq!(dictionaries, Dictionaries::defaults().names());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_kinds_are_offered_without_repeats() {
+        let unique: HashSet<&str> = OUTPUT_KINDS.iter().map(|kind| kind.type_name()).collect();
+        assert_eq!(unique.len(), OUTPUT_KINDS.len());
+    }
+
+    #[test]
+    fn node_colors_group_the_special_nodes() {
+        let gate = node(
+            "g",
+            NodeKind::Gate(GateNode {
+                kind: GateKind::And,
+                inputs: 2,
+            }),
+        );
+        let aggregator = node("a", NodeKind::Aggregator(AggregatorNode { inputs: 2 }));
+        assert_eq!(
+            node_kind_color(&gate.kind),
+            node_kind_color(&aggregator.kind)
+        );
+        assert_ne!(
+            node_kind_color(&input("i", &[]).kind),
+            node_kind_color(&detection("d").kind)
+        );
+    }
+
+    #[test]
+    fn node_summary_shows_what_the_node_matches() {
+        let keywords = |list: &[&str]| DetectionRuleKind::Keyword {
+            keywords: list.iter().map(|w| w.to_string()).collect(),
+        };
+        let summary = |kind: DetectionRuleKind| {
+            node_summary(&NodeKind::Detection(DetectionNode {
+                kind,
+                case_insensitive: false,
+            }))
+        };
+        assert_eq!(summary(keywords(&["a", "b"])), "a \u{b7} b");
+        assert_eq!(summary(DetectionRuleKind::SystemReport), "");
+        assert_eq!(
+            summary(DetectionRuleKind::Custom {
+                pattern: Some(String::from("x+")),
+                words: vec![String::from("w")],
+                category: None,
+                system_group: None,
+            }),
+            "x+"
+        );
+        assert_eq!(
+            summary(DetectionRuleKind::Custom {
+                pattern: None,
+                words: vec![String::from("w1"), String::from("w2")],
+                category: None,
+                system_group: None,
+            }),
+            "w1 \u{b7} w2"
+        );
+        assert_eq!(
+            node_summary(&NodeKind::Formatter(FormatterNode {
+                template: String::from("{all}"),
+                inputs: 2
+            })),
+            "{all}"
+        );
+        assert_eq!(node_summary(&output(OutputKind::Log).kind), "");
+        assert_eq!(node_summary(&input("i", &["A", "B"]).kind), "A, B");
+    }
+
+    // Loading
+
+    #[test]
+    fn ensure_loaded_copies_the_graph_only_once() {
+        let mut editor = PatternsEditor::default();
+        editor.ensure_loaded(&graph());
+        editor.add_input();
+        editor.ensure_loaded(&RuleGraph::default());
+        assert_eq!(editor.graph.nodes.len(), graph().nodes.len() + 1);
+    }
+
+    #[test]
+    fn reset_reloads_and_drops_all_editing_state() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        editor.selected_input = Some(String::from("in2"));
+        editor.set_errors(vec![String::from("boom")]);
+
+        editor.reset(&RuleGraph::default());
+
+        assert!(editor.graph.nodes.is_empty());
+        assert!(!editor.is_open());
+        assert!(editor.selected_input.is_none());
+        assert!(editor.errors.is_empty());
+        assert!(editor.original_ids.is_empty());
+        assert!(!editor.state.dirty);
+        assert_eq!(editor.snarl.nodes().count(), 0);
+        assert_eq!(editor.to_graph(), RuleGraph::default());
+    }
+
+    #[test]
+    fn errors_can_be_set_and_cleared() {
+        let mut editor = editor();
+        editor.set_errors(vec![String::from("a"), String::from("b")]);
+        assert_eq!(editor.errors, ["a", "b"]);
+        editor.clear_errors();
+        assert!(editor.errors.is_empty());
+    }
+
+    // Inputs
+
+    #[test]
+    fn input_ids_and_summaries_only_cover_inputs() {
+        let editor = editor();
+        assert_eq!(editor.input_ids(), ["in1", "in2", "in3"]);
+        assert_eq!(
+            editor.input_summary("in1"),
+            Some((String::from("in1 description"), true))
+        );
+        assert_eq!(editor.input_summary("d1"), None);
+        assert_eq!(editor.input_summary("nope"), None);
+    }
+
+    #[test]
+    fn add_input_makes_a_unique_enabled_input_and_marks_the_graph_dirty() {
+        let mut editor = editor();
+        assert!(!editor.state.dirty);
+        let first = editor.add_input();
+        let second = editor.add_input();
+        assert_eq!((first.as_str(), second.as_str()), ("input_1", "input_2"));
+        assert!(editor.state.dirty);
+        let (description, enabled) = editor.input_summary("input_1").unwrap();
+        assert_eq!(description, "input");
+        assert!(enabled);
+    }
+
+    #[test]
+    fn remove_input_drops_its_edges_and_any_open_or_selected_state() {
+        let mut editor = editor();
+        editor.selected_input = Some(String::from("in1"));
+        editor.open_input = Some(String::from("in1"));
+
+        editor.remove_input("in1");
+
+        assert!(!ids(&editor).contains(&String::from("in1")));
+        assert!(
+            editor
+                .graph
+                .edges
+                .iter()
+                .all(|e| e.from != "in1" && e.to != "in1")
+        );
+        assert!(editor.open_input.is_none());
+        assert!(editor.selected_input.is_none());
+        assert!(editor.state.dirty);
+        // The detection it fed stays, now without a source.
+        assert!(ids(&editor).contains(&String::from("d1")));
+    }
+
+    #[test]
+    fn remove_input_keeps_an_unrelated_open_editor() {
+        let mut editor = editor();
+        editor.open_input = Some(String::from("in2"));
+        editor.selected_input = Some(String::from("in2"));
+        editor.remove_input("in3");
+        assert_eq!(editor.open_input.as_deref(), Some("in2"));
+        assert_eq!(editor.selected_input.as_deref(), Some("in2"));
+    }
+
+    #[test]
+    fn rename_input_updates_nodes_edges_and_selection() {
+        let mut editor = editor();
+        editor.selected_input = Some(String::from("in1"));
+
+        assert!(editor.rename_input("in1", "front_door"));
+
+        assert!(ids(&editor).contains(&String::from("front_door")));
+        assert!(!ids(&editor).contains(&String::from("in1")));
+        assert!(
+            editor
+                .graph
+                .edges
+                .contains(&edge("front_door", Pin::Out, "d1", 0))
+        );
+        assert_eq!(editor.selected_input.as_deref(), Some("front_door"));
+        assert!(editor.state.dirty);
+    }
+
+    #[test]
+    fn rename_input_to_itself_succeeds_without_marking_dirty() {
+        let mut editor = editor();
+        assert!(editor.rename_input("in1", "in1"));
+        assert!(!editor.state.dirty);
+        assert_eq!(editor.to_graph(), graph());
+    }
+
+    #[test]
+    fn rename_input_rejects_invalid_and_taken_ids() {
+        let mut editor = editor();
+        for new in ["", "bad id", "d1", "in2", "visual"] {
+            assert!(!editor.rename_input("in1", new), "{new:?}");
+        }
+        assert_eq!(editor.to_graph(), graph());
+        assert!(!editor.state.dirty);
+    }
+
+    #[test]
+    fn description_and_enabled_flag_are_editable() {
+        let mut editor = editor();
+        editor.set_input_description("in1", String::from("new text"));
+        assert_eq!(editor.input_summary("in1").unwrap().0, "new text");
+        assert!(editor.state.dirty);
+
+        editor.state.dirty = false;
+        editor.set_input_enabled("in1", false);
+        assert!(!editor.input_summary("in1").unwrap().1);
+        assert!(editor.state.dirty);
+    }
+
+    #[test]
+    fn description_of_a_non_input_or_missing_node_is_left_alone() {
+        let mut editor = editor();
+        editor.set_input_description("d1", String::from("nope"));
+        editor.set_input_description("missing", String::from("nope"));
+        editor.set_input_enabled("missing", false);
+        assert_eq!(editor.to_graph(), graph());
+        assert!(!editor.state.dirty);
+    }
+
+    // Components
+
+    #[test]
+    fn component_follows_the_wires_forward_but_not_through_outputs() {
+        let editor = editor();
+        // in2 shares the `visual` output with in1, but outputs are not crossed.
+        assert_eq!(
+            editor.component_ids("in1"),
+            set(&["in1", "d1", "visual", "log"])
+        );
+        assert_eq!(editor.component_ids("in2"), set(&["in2", "d2", "visual"]));
+        assert_eq!(editor.component_ids("in3"), set(&["in3"]));
+    }
+
+    #[test]
+    fn component_pulls_in_the_other_sources_of_a_shared_detection() {
+        let mut editor = editor();
+        editor.graph.edges.push(edge("in3", Pin::Out, "d1", 1));
+        assert_eq!(
+            editor.component_ids("in1"),
+            set(&["in1", "in3", "d1", "visual", "log"])
+        );
+        assert!(editor.component_ids("in3").contains("in1"));
+    }
+
+    #[test]
+    fn component_of_an_unknown_id_is_just_that_id() {
+        assert_eq!(editor().component_ids("ghost"), set(&["ghost"]));
+    }
+
+    #[test]
+    fn component_summary_counts_parts_and_orders_outputs() {
+        let mut editor = editor();
+        editor.graph.nodes.push(node(
+            "gate_1",
+            NodeKind::Gate(GateNode {
+                kind: GateKind::And,
+                inputs: 2,
+            }),
+        ));
+        editor.graph.edges.push(edge("d1", Pin::T, "gate_1", 0));
+
+        let summary = editor.component_summary("in1");
+
+        assert_eq!(summary.channels, ["Intel"]);
+        assert_eq!(summary.detections, 1);
+        assert_eq!(summary.logic, 1);
+        // Offered order: visual before log, whatever the graph's order.
+        assert_eq!(summary.outputs, [OutputKind::Visual, OutputKind::Log]);
+        assert!(editor.component_summary("in3").outputs.is_empty());
+    }
+
+    #[test]
+    fn build_component_places_nodes_in_columns_and_wires_the_pins() {
+        let mut editor = editor();
+        editor.build_component("in1");
+
+        assert_eq!(editor.snarl.nodes().count(), 4);
+        assert_eq!(editor.original_ids, set(&["in1", "d1", "visual", "log"]));
+        let x_of = |id: &str| {
+            let node_id = editor.find_node(id).unwrap();
+            editor.snarl.get_node_info(node_id).unwrap().pos.x
+        };
+        assert_eq!(x_of("in1"), 0.0);
+        assert_eq!(x_of("d1"), 360.0);
+        assert_eq!(x_of("visual"), 900.0);
+        assert_eq!(x_of("log"), 900.0);
+
+        // T is the detection's first output pin, F the second.
+        let mut wires: Vec<(String, usize, String)> = editor
+            .snarl
+            .wires()
+            .map(|(from, to)| {
+                (
+                    editor.snarl[from.node].id.clone(),
+                    from.output,
+                    editor.snarl[to.node].id.clone(),
+                )
+            })
+            .collect();
+        wires.sort();
+        assert_eq!(
+            wires,
+            [
+                (String::from("d1"), 0, String::from("visual")),
+                (String::from("d1"), 1, String::from("log")),
+                (String::from("in1"), 0, String::from("d1")),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_component_keeps_saved_positions() {
+        let mut editor = editor();
+        editor.graph.nodes[1].x = 123.0;
+        editor.graph.nodes[1].y = 45.0;
+        editor.build_component("in1");
+        let info = editor
+            .snarl
+            .get_node_info(editor.find_node("d1").unwrap())
+            .unwrap();
+        assert_eq!((info.pos.x, info.pos.y), (123.0, 45.0));
+    }
+
+    #[test]
+    fn opening_and_closing_without_changes_keeps_the_graph() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        assert!(editor.is_open());
+        assert!(editor.state.selected.is_none());
+
+        editor.close_editor();
+
+        assert!(!editor.is_open());
+        assert!(editor.errors.is_empty());
+        // Only the layout positions were filled in.
+        assert_eq!(ids(&editor).len(), graph().nodes.len());
+        let mut edges = editor.graph.edges.clone();
+        let mut expected = graph().edges;
+        let key = |e: &Edge| (e.from.clone(), e.from_pin as u8, e.to.clone());
+        edges.sort_by_key(key);
+        expected.sort_by_key(key);
+        assert_eq!(edges, expected);
+    }
+
+    #[test]
+    fn close_editor_with_nothing_open_does_nothing() {
+        let mut editor = editor();
+        editor.close_editor();
+        assert_eq!(editor.to_graph(), graph());
+        assert!(!editor.state.dirty);
+    }
+
+    #[test]
+    fn deleting_a_node_in_the_editor_removes_it_and_its_edges_on_close() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        let d1 = editor.find_node("d1").unwrap();
+        editor.snarl.remove_node(d1);
+
+        editor.close_editor();
+
+        assert!(!ids(&editor).contains(&String::from("d1")));
+        assert!(
+            editor
+                .graph
+                .edges
+                .iter()
+                .all(|e| e.from != "d1" && e.to != "d1")
+        );
+        // The other component is untouched.
+        assert!(
+            editor
+                .graph
+                .edges
+                .contains(&edge("d2", Pin::T, "visual", 0))
+        );
+        assert!(editor.graph.edges.contains(&edge("in2", Pin::Out, "d2", 0)));
+        assert!(editor.state.dirty);
+    }
+
+    #[test]
+    fn new_wires_in_the_editor_become_edges_on_close() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        editor.add_detection_of("query");
+        editor.close_editor();
+
+        let detection = editor
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == "detection_1")
+            .expect("the new detection was merged");
+        assert!(matches!(detection.kind, NodeKind::Detection(_)));
+        assert!(
+            editor
+                .graph
+                .edges
+                .contains(&edge("in1", Pin::Out, "detection_1", 0))
+        );
+    }
+
+    #[test]
+    fn duplicate_ids_in_the_editor_keep_it_open_with_an_error() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        let d1 = editor.find_node("d1").unwrap();
+        editor.snarl.get_node_mut(d1).unwrap().id = String::from("in1");
+        let before = editor.graph.clone();
+
+        editor.close_editor();
+
+        assert!(editor.is_open());
+        assert_eq!(editor.errors.len(), 1);
+        assert!(editor.errors[0].contains("duplicate node id 'in1'"));
+        assert_eq!(editor.graph, before, "a failed merge writes nothing");
+    }
+
+    #[test]
+    fn a_new_node_cannot_take_an_id_used_by_another_component() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        let d1 = editor.find_node("d1").unwrap();
+        editor.snarl.get_node_mut(d1).unwrap().id = String::from("d2");
+
+        assert_eq!(
+            editor.merge_component(),
+            Err(String::from("node id 'd2' is already in use"))
+        );
+    }
+
+    #[test]
+    fn an_output_of_another_component_can_be_reused() {
+        let mut editor = editor();
+        editor.open_editor("in3");
+        // `visual` lives in the other components' graph, not in this one.
+        editor.add_output_of(OutputKind::Visual);
+        assert_eq!(editor.merge_component(), Ok(()));
+        assert_eq!(
+            editor
+                .graph
+                .nodes
+                .iter()
+                .filter(|n| n.id == "visual")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn edges_to_nodes_outside_the_component_survive_a_merge() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        editor.close_editor();
+        // in2's edge into the shared output was not part of in1's component.
+        assert!(
+            editor
+                .graph
+                .edges
+                .contains(&edge("d2", Pin::T, "visual", 0))
+        );
+    }
+
+    #[test]
+    fn merge_records_the_canvas_positions() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        let d1 = editor.find_node("d1").unwrap();
+        editor.snarl.get_node_info_mut(d1).unwrap().pos = Pos2::new(11.0, 22.0);
+        editor.close_editor();
+        let node = editor.graph.nodes.iter().find(|n| n.id == "d1").unwrap();
+        assert_eq!((node.x, node.y), (11.0, 22.0));
+    }
+
+    // Adding nodes to the open component
+
+    #[test]
+    fn add_detection_connects_it_to_the_open_input_and_stacks_downwards() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        editor.add_detection_of("keyword");
+        editor.add_detection_of("query");
+
+        let first = editor.find_node("detection_1").unwrap();
+        let second = editor.find_node("detection_2").unwrap();
+        // d1 was already there, so the first new one is the second detection.
+        let y = |id| editor.snarl.get_node_info(id).unwrap().pos.y;
+        assert_eq!(y(first), 260.0);
+        assert_eq!(y(second), 520.0);
+        let from_input = editor
+            .snarl
+            .wires()
+            .filter(|(from, _)| editor.snarl[from.node].id == "in1")
+            .count();
+        assert_eq!(from_input, 3);
+        assert!(editor.state.dirty);
+    }
+
+    #[test]
+    fn add_detection_without_an_open_input_stays_unconnected() {
+        let mut editor = editor();
+        editor.add_detection_of("custom");
+        assert_eq!(editor.snarl.wires().count(), 0);
+        assert_eq!(editor.detection_count(), 1);
+    }
+
+    #[test]
+    fn each_output_kind_can_be_added_once() {
+        let mut editor = editor();
+        assert_eq!(editor.missing_output_kinds(), OUTPUT_KINDS);
+
+        editor.add_output_of(OutputKind::Sound);
+        editor.add_output_of(OutputKind::Sound);
+
+        assert_eq!(editor.output_count(), 1);
+        assert!(!editor.missing_output_kinds().contains(&OutputKind::Sound));
+        assert_eq!(editor.missing_output_kinds().len(), OUTPUT_KINDS.len() - 1);
+        let sound = editor.find_node("sound").expect("id is the output kind");
+        assert!(
+            matches!(&editor.snarl[sound].kind, NodeKind::Output(o) if o.kind == OutputKind::Sound)
+        );
+    }
+
+    #[test]
+    fn special_nodes_get_unique_ids_and_count_together() {
+        let mut editor = editor();
+        editor.add_aggregator();
+        editor.add_aggregator();
+        editor.add_gate(GateKind::Xor);
+        editor.add_formatter();
+
+        for id in ["aggregator_1", "aggregator_2", "xor_1", "formatter_1"] {
+            assert!(editor.find_node(id).is_some(), "{id}");
+        }
+        assert_eq!(editor.aggregator_count(), 2);
+        assert_eq!(editor.special_count(), 4);
+        assert_eq!(editor.detection_count(), 0);
+        // Each new one is placed below the previous ones.
+        let y_of = |id: &str| {
+            let node_id = editor.find_node(id).unwrap();
+            editor.snarl.get_node_info(node_id).unwrap().pos.y
+        };
+        assert_eq!(y_of("aggregator_1"), 0.0);
+        assert_eq!(y_of("aggregator_2"), 260.0);
+        assert_eq!(y_of("xor_1"), 520.0);
+        assert_eq!(y_of("formatter_1"), 780.0);
+    }
+
+    #[test]
+    fn ids_of_nodes_added_in_the_open_editor_are_not_reused() {
+        // The toolbar adds several nodes before the editor is closed, when
+        // none of them is in the graph yet.
+        let mut editor = editor();
+        editor.open_editor("in1");
+        editor.add_aggregator();
+        editor.add_aggregator();
+        editor.add_detection_of("keyword");
+        editor.add_detection_of("keyword");
+        let d1 = editor.find_node("d1").unwrap();
+        editor.duplicate_node(d1);
+        editor.duplicate_node(d1);
+
+        let canvas: Vec<String> = editor
+            .snarl
+            .node_ids()
+            .map(|(_, node)| node.id.clone())
+            .collect();
+        assert_eq!(canvas.len(), canvas.iter().collect::<HashSet<_>>().len());
+        assert_eq!(editor.merge_component(), Ok(()));
+    }
+
+    #[test]
+    fn new_special_nodes_start_with_two_or_four_inputs() {
+        let mut editor = editor();
+        editor.add_aggregator();
+        editor.add_gate(GateKind::And);
+        editor.add_formatter();
+        let kind = |id: &str| editor.snarl[editor.find_node(id).unwrap()].kind.clone();
+        assert!(matches!(kind("aggregator_1"), NodeKind::Aggregator(a) if a.inputs == 4));
+        assert!(matches!(kind("and_1"), NodeKind::Gate(g) if g.inputs == 2));
+        assert!(
+            matches!(kind("formatter_1"), NodeKind::Formatter(f) if f.template == "{all}" && f.inputs == 2)
+        );
+    }
+
+    #[test]
+    fn duplicate_node_copies_it_unconnected_with_a_new_id() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        let d1 = editor.find_node("d1").unwrap();
+
+        editor.duplicate_node(d1);
+
+        let copy = editor.find_node("d1_copy_1").expect("copy exists");
+        assert_eq!(editor.state.selected, Some(copy));
+        assert!(matches!(editor.snarl[copy].kind, NodeKind::Detection(_)));
+        assert!(
+            editor
+                .snarl
+                .wires()
+                .all(|(from, to)| from.node != copy && to.node != copy)
+        );
+        let original = editor.snarl.get_node_info(d1).unwrap().pos;
+        let moved = editor.snarl.get_node_info(copy).unwrap().pos;
+        assert_eq!(moved, original + egui::vec2(28.0, 28.0));
+
+        editor.duplicate_node(d1);
+        assert!(editor.find_node("d1_copy_2").is_some());
+    }
+
+    // Applying
+
+    #[test]
+    fn is_modified_needs_a_loaded_graph_that_differs_or_a_dirty_open_editor() {
+        let live = graph();
+        assert!(!PatternsEditor::default().is_modified(&live));
+
+        let mut editor = editor();
+        assert!(!editor.is_modified(&live));
+
+        editor.add_input();
+        assert!(editor.is_modified(&live));
+        assert!(editor.is_modified(&RuleGraph::default()));
+    }
+
+    #[test]
+    fn dirty_edits_in_an_open_editor_count_as_modified() {
+        let live = graph();
+        let mut editor = editor();
+        editor.open_editor("in1");
+        assert!(!editor.is_modified(&live));
+        editor.add_aggregator();
+        assert!(editor.is_modified(&live));
+        editor.mark_applied();
+        assert!(!editor.is_modified(&live));
+    }
+
+    #[test]
+    fn commit_open_editor_saves_the_edits_and_keeps_the_editor_open() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        editor.add_aggregator();
+
+        assert_eq!(editor.commit_open_editor(), Ok(()));
+
+        assert!(editor.is_open());
+        assert!(ids(&editor).contains(&String::from("aggregator_1")));
+        // Not asserted: the rebuilt canvas only shows what is wired to the
+        // input, so a node still unconnected is in the graph but not on it.
+    }
+
+    #[test]
+    fn commit_open_editor_reports_a_bad_id_and_does_not_rebuild() {
+        let mut editor = editor();
+        editor.open_editor("in1");
+        let d1 = editor.find_node("d1").unwrap();
+        editor.snarl.get_node_mut(d1).unwrap().id = String::from("in1");
+
+        assert!(editor.commit_open_editor().is_err());
+        assert!(editor.is_open());
+        assert_eq!(editor.snarl.nodes().count(), 4);
+    }
+
+    #[test]
+    fn commit_without_an_open_editor_is_a_no_op() {
+        let mut editor = editor();
+        assert_eq!(editor.commit_open_editor(), Ok(()));
+        assert_eq!(editor.to_graph(), graph());
     }
 }

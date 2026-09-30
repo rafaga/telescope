@@ -417,4 +417,470 @@ mod tests {
         let back: DetectionRuleKind = toml::from_str(&text).unwrap();
         assert_eq!(back, kind);
     }
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|word| word.to_string()).collect()
+    }
+
+    fn custom(pattern: Option<&str>, list: &[&str]) -> DetectionRuleKind {
+        DetectionRuleKind::Custom {
+            pattern: pattern.map(str::to_string),
+            words: words(list),
+            category: None,
+            system_group: None,
+        }
+    }
+
+    // parse_line
+
+    #[test]
+    fn parse_line_reads_timestamp_author_and_text() {
+        let line = parse_line("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear").unwrap();
+        assert_eq!(line.author, "Some Pilot");
+        assert_eq!(line.text, "1DQ1-A clear");
+        assert_eq!(
+            line.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2021-09-08 22:56:47"
+        );
+    }
+
+    #[test]
+    fn parse_line_keeps_the_first_separator_as_author_end() {
+        let line = parse_line("[ 2021.09.08 22:56:47 ] A > B > C").unwrap();
+        assert_eq!(line.author, "A");
+        assert_eq!(line.text, "B > C");
+    }
+
+    #[test]
+    fn parse_line_rejects_lines_out_of_format() {
+        for raw in [
+            "",
+            "not a log line",
+            "[ 2021.09.08 22:56:47 ] no separator",
+            "[ 2021.09.08 22:56:47 ] Pilot > ",
+            "[ 2021.09.08 22:56 ] Pilot > text",
+            "  [ 2021.09.08 22:56:47 ] Pilot > text",
+        ] {
+            assert!(parse_line(raw).is_none(), "{raw:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn parse_line_rejects_an_impossible_date() {
+        assert!(parse_line("[ 2021.13.40 25:61:61 ] Pilot > text").is_none());
+    }
+
+    #[test]
+    fn parse_line_cuts_long_lines() {
+        let raw = format!("[ 2021.09.08 22:56:47 ] Pilot > {}", "a".repeat(5000));
+        let line = parse_line(&raw).unwrap();
+        assert!(line.text.len() < 2048);
+        assert!(line.text.starts_with("aaa"));
+    }
+
+    // Dictionaries
+
+    #[test]
+    fn built_in_dictionaries_load_and_have_words() {
+        let dictionaries = Dictionaries::defaults();
+        assert!(!dictionaries.is_empty());
+        let names = dictionaries.names();
+        assert!(names.contains(&String::from("ship_report_en")));
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        for name in &names {
+            let list = dictionaries.words(name).unwrap();
+            assert!(!list.is_empty(), "{name} has no words");
+            assert!(list.len() <= MAX_DICTIONARY_WORDS, "{name} is too big");
+            assert!(list.iter().all(|word| !word.is_empty()));
+        }
+    }
+
+    #[test]
+    fn unknown_dictionary_has_no_words() {
+        assert!(Dictionaries::defaults().words("nope").is_none());
+        assert!(Dictionaries::default().is_empty());
+    }
+
+    #[test]
+    fn shared_dictionaries_equal_the_defaults() {
+        assert_eq!(&Dictionaries::defaults(), Dictionaries::shared());
+    }
+
+    // type_name, category, system_group
+
+    #[test]
+    fn type_names_match_the_serialized_tag() {
+        let kinds = [
+            DetectionRuleKind::SystemReport,
+            DetectionRuleKind::ClearReport {
+                keywords: words(&["clr"]),
+            },
+            DetectionRuleKind::ShipNames {
+                dictionaries: words(&["ship_report_en"]),
+            },
+            DetectionRuleKind::ShipNamesZh,
+            DetectionRuleKind::PilotCount,
+            DetectionRuleKind::Keyword {
+                keywords: words(&["k"]),
+            },
+            DetectionRuleKind::Query {
+                keywords: words(&["q"]),
+            },
+            custom(None, &["w"]),
+        ];
+        for kind in kinds {
+            let text = toml::to_string(&kind).unwrap();
+            assert!(
+                text.contains(&format!("type = \"{}\"", kind.type_name())),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn input_and_output_type_names() {
+        assert_eq!(InputKind::default().type_name(), "chat_log");
+        let outputs = [
+            (OutputKind::Visual, "visual"),
+            (OutputKind::Sound, "sound"),
+            (OutputKind::Log, "log"),
+            (OutputKind::Suppress, "suppress"),
+            (OutputKind::Tooltip, "tooltip"),
+        ];
+        for (kind, name) in outputs {
+            assert_eq!(kind.type_name(), name);
+        }
+    }
+
+    #[test]
+    fn built_in_types_imply_their_category() {
+        let keywords = words(&["x"]);
+        assert_eq!(DetectionRuleKind::SystemReport.category(), None);
+        assert_eq!(
+            DetectionRuleKind::ClearReport {
+                keywords: keywords.clone()
+            }
+            .category(),
+            Some(IntelCategory::Clear)
+        );
+        assert_eq!(
+            DetectionRuleKind::ShipNamesZh.category(),
+            Some(IntelCategory::Ship)
+        );
+        assert_eq!(
+            DetectionRuleKind::PilotCount.category(),
+            Some(IntelCategory::Count)
+        );
+        assert_eq!(
+            DetectionRuleKind::Keyword {
+                keywords: keywords.clone()
+            }
+            .category(),
+            Some(IntelCategory::Keyword)
+        );
+        assert_eq!(
+            DetectionRuleKind::Query { keywords }.category(),
+            Some(IntelCategory::Query)
+        );
+    }
+
+    #[test]
+    fn custom_category_and_system_group_come_from_its_fields() {
+        let kind = DetectionRuleKind::Custom {
+            pattern: Some(String::from("(?P<sys>x)")),
+            words: Vec::new(),
+            category: Some(IntelCategory::Ship),
+            system_group: Some(String::from("sys")),
+        };
+        assert_eq!(kind.category(), Some(IntelCategory::Ship));
+        assert_eq!(kind.system_group().as_deref(), Some("sys"));
+        assert_eq!(custom(None, &["w"]).system_group(), None);
+        assert_eq!(
+            DetectionRuleKind::SystemReport.system_group().as_deref(),
+            Some("system")
+        );
+        assert_eq!(DetectionRuleKind::PilotCount.system_group(), None);
+    }
+
+    // matcher
+
+    fn regexes(matcher: DetectionMatcher) -> Vec<String> {
+        match matcher {
+            DetectionMatcher::Regex(patterns) => patterns,
+            DetectionMatcher::Dictionary(_) => panic!("expected a regex matcher"),
+        }
+    }
+
+    fn dictionary(matcher: DetectionMatcher) -> Vec<String> {
+        match matcher {
+            DetectionMatcher::Dictionary(list) => list,
+            DetectionMatcher::Regex(_) => panic!("expected a dictionary matcher"),
+        }
+    }
+
+    #[test]
+    fn built_in_patterns_compile() {
+        let dictionaries = Dictionaries::defaults();
+        for kind in [
+            DetectionRuleKind::SystemReport,
+            DetectionRuleKind::PilotCount,
+            DetectionRuleKind::ShipNamesZh,
+        ] {
+            for pattern in regexes(kind.matcher(&dictionaries)) {
+                Regex::new(&pattern).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn system_pattern_captures_common_system_names() {
+        let re = Regex::new(DEFAULT_SYSTEM_PATTERN).unwrap();
+        for (text, expected) in [
+            ("J123456 red", "J123456"),
+            ("1DQ1-A clear", "1DQ1-A"),
+            ("go to Jita now", "Jita"),
+            ("Old Man Star", "Old Man Star"),
+        ] {
+            let caps = re.captures(text).unwrap();
+            assert_eq!(&caps["system"], expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn pilot_count_patterns_capture_the_number() {
+        let dictionaries = Dictionaries::defaults();
+        let patterns: Vec<Regex> = regexes(DetectionRuleKind::PilotCount.matcher(&dictionaries))
+            .iter()
+            .map(|pattern| Regex::new(pattern).unwrap())
+            .collect();
+        let count = |text: &str| -> Option<String> {
+            patterns
+                .iter()
+                .find_map(|re| re.captures(text))
+                .map(|caps| caps["count"].to_string())
+        };
+        assert_eq!(count("Jita +5").as_deref(), Some("5"));
+        assert_eq!(count("Jita x12").as_deref(), Some("12"));
+        assert_eq!(count("Jita 3 neuts").as_deref(), Some("3"));
+        assert_eq!(count("Jita 7x").as_deref(), Some("7"));
+        assert_eq!(count("Jita clear"), None);
+    }
+
+    #[test]
+    fn ship_zh_pattern_matches_han_class_names() {
+        let re = Regex::new(DEFAULT_SHIP_ZH_PATTERN).unwrap();
+        assert!(re.is_match("\u{53d1}\u{73b0}\u{6cf0}\u{5766}\u{7ea7}"));
+        assert!(!re.is_match("Titan class"));
+    }
+
+    #[test]
+    fn keyword_types_use_their_words_as_a_dictionary() {
+        let dictionaries = Dictionaries::defaults();
+        let keywords = words(&["clr", "clear"]);
+        for kind in [
+            DetectionRuleKind::ClearReport {
+                keywords: keywords.clone(),
+            },
+            DetectionRuleKind::Keyword {
+                keywords: keywords.clone(),
+            },
+            DetectionRuleKind::Query {
+                keywords: keywords.clone(),
+            },
+        ] {
+            assert_eq!(dictionary(kind.matcher(&dictionaries)), keywords);
+        }
+    }
+
+    #[test]
+    fn ship_names_matcher_concatenates_dictionaries_and_skips_unknown() {
+        let dictionaries = Dictionaries::defaults();
+        let en = dictionaries.words("ship_report_en").unwrap().len();
+        let es = dictionaries.words("ship_report_es").unwrap().len();
+        let kind = DetectionRuleKind::ShipNames {
+            dictionaries: words(&["ship_report_en", "missing", "ship_report_es"]),
+        };
+        assert_eq!(dictionary(kind.matcher(&dictionaries)).len(), en + es);
+    }
+
+    #[test]
+    fn custom_matcher_prefers_the_pattern_over_words() {
+        let dictionaries = Dictionaries::defaults();
+        assert_eq!(
+            regexes(custom(Some("ab+"), &["w"]).matcher(&dictionaries)),
+            words(&["ab+"])
+        );
+        assert_eq!(
+            dictionary(custom(None, &["w"]).matcher(&dictionaries)),
+            words(&["w"])
+        );
+    }
+
+    // validate
+
+    fn validate(kind: &DetectionRuleKind) -> Result<(), PatternError> {
+        kind.validate("rule", &Dictionaries::defaults())
+    }
+
+    #[test]
+    fn built_in_types_without_parameters_are_always_valid() {
+        for kind in [
+            DetectionRuleKind::SystemReport,
+            DetectionRuleKind::PilotCount,
+            DetectionRuleKind::ShipNamesZh,
+        ] {
+            assert_eq!(validate(&kind), Ok(()));
+        }
+    }
+
+    #[test]
+    fn keyword_lists_are_checked() {
+        let empty = DetectionRuleKind::Keyword {
+            keywords: Vec::new(),
+        };
+        assert_eq!(
+            validate(&empty),
+            Err(PatternError::InvalidDictionarySize(String::from("rule")))
+        );
+        let blank_word = DetectionRuleKind::Query {
+            keywords: words(&["ok", ""]),
+        };
+        assert_eq!(
+            validate(&blank_word),
+            Err(PatternError::InvalidDictionaryWord {
+                id: String::from("rule"),
+                word: String::new()
+            })
+        );
+        let long_word = "w".repeat(MAX_DICTIONARY_WORD_LEN + 1);
+        assert!(matches!(
+            validate(&DetectionRuleKind::ClearReport {
+                keywords: vec![long_word]
+            }),
+            Err(PatternError::InvalidDictionaryWord { .. })
+        ));
+        let at_limit = "w".repeat(MAX_DICTIONARY_WORD_LEN);
+        assert_eq!(
+            validate(&DetectionRuleKind::Keyword {
+                keywords: vec![at_limit]
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn too_many_words_are_rejected() {
+        let many: Vec<String> = (0..=MAX_DICTIONARY_WORDS).map(|n| n.to_string()).collect();
+        assert_eq!(
+            validate(&DetectionRuleKind::Keyword { keywords: many }),
+            Err(PatternError::InvalidDictionarySize(String::from("rule")))
+        );
+    }
+
+    #[test]
+    fn ship_names_need_known_dictionaries() {
+        let none = DetectionRuleKind::ShipNames {
+            dictionaries: Vec::new(),
+        };
+        assert_eq!(
+            validate(&none),
+            Err(PatternError::InvalidDictionarySize(String::from("rule")))
+        );
+        let unknown = DetectionRuleKind::ShipNames {
+            dictionaries: words(&["ship_report_en", "nope"]),
+        };
+        assert_eq!(
+            validate(&unknown),
+            Err(PatternError::UnknownDictionary {
+                id: String::from("rule"),
+                name: String::from("nope")
+            })
+        );
+        let known = DetectionRuleKind::ShipNames {
+            dictionaries: words(&["ship_report_en"]),
+        };
+        assert_eq!(validate(&known), Ok(()));
+    }
+
+    #[test]
+    fn custom_pattern_length_is_checked() {
+        assert_eq!(validate(&custom(Some("a+"), &[])), Ok(()));
+        assert_eq!(
+            validate(&custom(Some(""), &[])),
+            Err(PatternError::PatternTooLong(String::from("rule")))
+        );
+        let long = "a".repeat(MAX_PATTERN_LEN + 1);
+        assert_eq!(
+            validate(&custom(Some(&long), &[])),
+            Err(PatternError::PatternTooLong(String::from("rule")))
+        );
+    }
+
+    #[test]
+    fn custom_word_list_cannot_carry_count_or_system_group() {
+        let counting = DetectionRuleKind::Custom {
+            pattern: None,
+            words: words(&["w"]),
+            category: Some(IntelCategory::Count),
+            system_group: None,
+        };
+        assert_eq!(
+            validate(&counting),
+            Err(PatternError::MissingCountGroup(String::from("rule")))
+        );
+        let grouped = DetectionRuleKind::Custom {
+            pattern: None,
+            words: words(&["w"]),
+            category: None,
+            system_group: Some(String::from("sys")),
+        };
+        assert!(matches!(
+            validate(&grouped),
+            Err(PatternError::InvalidSystemGroup { .. })
+        ));
+    }
+
+    #[test]
+    fn custom_pattern_system_group_must_be_a_valid_name() {
+        let with_group = |group: &str| DetectionRuleKind::Custom {
+            pattern: Some(String::from("(?P<sys>x)")),
+            words: Vec::new(),
+            category: None,
+            system_group: Some(group.to_string()),
+        };
+        assert_eq!(validate(&with_group("sys")), Ok(()));
+        assert!(matches!(
+            validate(&with_group("bad name")),
+            Err(PatternError::InvalidSystemGroup { .. })
+        ));
+        assert!(matches!(
+            validate(&with_group("")),
+            Err(PatternError::InvalidSystemGroup { .. })
+        ));
+    }
+
+    #[test]
+    fn custom_pattern_with_count_category_passes_validation() {
+        // The `count` group of a pattern is checked when it is compiled.
+        let kind = DetectionRuleKind::Custom {
+            pattern: Some(String::from(r"(?P<count>\d+)")),
+            words: Vec::new(),
+            category: Some(IntelCategory::Count),
+            system_group: None,
+        };
+        assert_eq!(validate(&kind), Ok(()));
+    }
+
+    #[test]
+    fn custom_fields_default_when_missing_in_toml() {
+        let kind: DetectionRuleKind = toml::from_str("type = \"custom\"").unwrap();
+        assert_eq!(kind, custom(None, &[]));
+    }
+
+    #[test]
+    fn unknown_rule_type_fails_to_deserialize() {
+        assert!(toml::from_str::<DetectionRuleKind>("type = \"nope\"").is_err());
+    }
 }

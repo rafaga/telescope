@@ -145,4 +145,198 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    const NAME: &str = "Intel_20240101_120000.txt";
+
+    fn line(text: &str) -> String {
+        format!("[ 2024.01.01 12:00:01 ] Pilot > {text}\r\n")
+    }
+
+    /// A fresh temp folder per test (tests run in parallel).
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("telescope-reader-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn append(dir: &std::path::Path, name: &str, text: &str) {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(name))
+            .unwrap();
+        // The UTF-16LE BOM only at the start of the file, like the game does.
+        if file.metadata().unwrap().len() == 0 {
+            file.write_all(&[0xFF, 0xFE]).unwrap();
+        }
+        file.write_all(&utf16(text)).unwrap();
+    }
+
+    struct Harness {
+        shared: ReaderShared,
+        lines: mpsc::Receiver<InputEvent>,
+        app_rx: mpsc::Receiver<Message>,
+    }
+
+    fn harness(dir: Option<PathBuf>, capacity: usize) -> Harness {
+        let (input, lines) = mpsc::channel(capacity);
+        let (app_msg, app_rx) = mpsc::channel(8);
+        Harness {
+            shared: ReaderShared {
+                watched: Arc::new(RwLock::new(dir)),
+                offsets: Arc::new(Mutex::new(IntelOffsets::default())),
+                input,
+                app_msg: Arc::new(app_msg),
+            },
+            lines,
+            app_rx,
+        }
+    }
+
+    #[test]
+    fn a_change_without_a_watched_folder_is_ignored() {
+        let dir = temp_dir("unwatched");
+        append(&dir, NAME, &line("hello"));
+        let mut h = harness(None, 8);
+
+        read_file(&h.shared, NAME);
+
+        assert!(h.lines.try_recv().is_err());
+        assert!(h.app_rx.try_recv().is_err());
+        assert_eq!(lock(&h.shared.offsets).get(NAME), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_the_appended_lines_are_read_on_the_next_change() {
+        let dir = temp_dir("append");
+        append(&dir, NAME, &line("first"));
+        let mut h = harness(Some(dir.clone()), 8);
+
+        read_file(&h.shared, NAME);
+        assert_eq!(h.lines.try_recv().unwrap().line.text, "first");
+        let after_first = lock(&h.shared.offsets).get(NAME);
+
+        append(&dir, NAME, &line("second"));
+        read_file(&h.shared, NAME);
+        assert_eq!(h.lines.try_recv().unwrap().line.text, "second");
+        assert!(h.lines.try_recv().is_err());
+        assert!(lock(&h.shared.offsets).get(NAME) > after_first);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_full_queue_drops_lines_but_the_offset_still_advances() {
+        let dir = temp_dir("full");
+        append(
+            &dir,
+            NAME,
+            &format!("{}{}{}", line("one"), line("two"), line("three")),
+        );
+        let mut h = harness(Some(dir.clone()), 1);
+
+        read_file(&h.shared, NAME);
+
+        assert_eq!(h.lines.try_recv().unwrap().line.text, "one");
+        assert!(h.lines.try_recv().is_err(), "the rest was dropped");
+        // The dropped lines are not read again.
+        read_file(&h.shared, NAME);
+        assert!(h.lines.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_file_is_skipped_without_touching_the_offset() {
+        let dir = temp_dir("missing");
+        let mut h = harness(Some(dir.clone()), 8);
+
+        read_file(&h.shared, NAME);
+
+        assert!(h.lines.try_recv().is_err());
+        assert!(h.app_rx.try_recv().is_err());
+        assert_eq!(lock(&h.shared.offsets).get(NAME), 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_chat_log_is_read_without_channel_or_activity() {
+        let dir = temp_dir("notalog");
+        append(&dir, "notes.txt", &line("hello"));
+        let mut h = harness(Some(dir.clone()), 8);
+
+        read_file(&h.shared, "notes.txt");
+
+        let event = h.lines.try_recv().expect("the line is still read");
+        assert_eq!(event.channel, "");
+        assert_eq!(event.source, "notes.txt");
+        assert!(h.app_rx.try_recv().is_err(), "no channel, no activity");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_log_that_shrank_is_read_again_from_the_start() {
+        let dir = temp_dir("rotated");
+        append(
+            &dir,
+            NAME,
+            &format!("{}{}", line("old one"), line("old two")),
+        );
+        let mut h = harness(Some(dir.clone()), 8);
+        read_file(&h.shared, NAME);
+        while h.lines.try_recv().is_ok() {}
+
+        std::fs::remove_file(dir.join(NAME)).unwrap();
+        append(&dir, NAME, &line("new"));
+        read_file(&h.shared, NAME);
+
+        assert_eq!(h.lines.try_recv().unwrap().line.text, "new");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn offsets_are_kept_per_file() {
+        let dir = temp_dir("perfile");
+        let other = "Delve_20240101_120000.txt";
+        append(&dir, NAME, &line("a"));
+        append(&dir, other, &line("b"));
+        let mut h = harness(Some(dir.clone()), 8);
+
+        read_file(&h.shared, NAME);
+        read_file(&h.shared, other);
+
+        let channels: Vec<String> = std::iter::from_fn(|| h.lines.try_recv().ok())
+            .map(|event| event.channel)
+            .collect();
+        assert_eq!(channels, ["Intel", "Delve"]);
+        let offsets = lock(&h.shared.offsets);
+        assert!(offsets.get(NAME) > 0);
+        assert!(offsets.get(other) > 0);
+        drop(offsets);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_thread_reads_every_queued_name_and_stops_when_the_queue_closes() {
+        let dir = temp_dir("thread");
+        append(&dir, NAME, &line("threaded"));
+        let mut h = harness(Some(dir.clone()), 8);
+        let (files, queue) = std::sync::mpsc::channel();
+
+        spawn(
+            ReaderShared {
+                watched: h.shared.watched.clone(),
+                offsets: h.shared.offsets.clone(),
+                input: h.shared.input.clone(),
+                app_msg: h.shared.app_msg.clone(),
+            },
+            queue,
+        );
+        files.send(String::from(NAME)).unwrap();
+        let event = h.lines.blocking_recv().expect("the thread queued the line");
+        assert_eq!(event.line.text, "threaded");
+        drop(files);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
