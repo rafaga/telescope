@@ -179,6 +179,19 @@ impl Default for TelescopeApp {
 
         let _ = settings.save();
 
+        Self::with_settings(settings, false)
+    }
+}
+
+impl TelescopeApp {
+    /// Builds the app around `settings`, starting its background threads.
+    ///
+    /// `isolated` is for the tests: no SDE update check (which downloads and
+    /// rebuilds `sde.db`) and placeholder ESI credentials, so an app can be
+    /// built on a temporary folder without touching the network or the
+    /// developer's files.
+    #[tracing::instrument(skip(settings))]
+    fn with_settings(settings: Settings, isolated: bool) -> Self {
         // generic message handler
         let (gtx, grx) = mpsc::channel::<messages::Message>(APP_MESSAGE_CAPACITY);
         // map synchronization handler
@@ -188,6 +201,13 @@ impl Default for TelescopeApp {
         // `database_updater::DatabaseUpdater::spawn` here at startup.
         let arc_msg_sender = Arc::new(gtx);
 
+        #[cfg(test)]
+        let app_data = if isolated {
+            AppData::for_test()
+        } else {
+            AppData::new()
+        };
+        #[cfg(not(test))]
         let app_data = AppData::new();
         let esi = webb::esi::EsiManager::new(
             app_data.user_agent.as_str(),
@@ -256,14 +276,16 @@ impl Default for TelescopeApp {
         // the old stub here (a synchronous call to a nonexistent
         // `eframe::run_ui_native`) was replaced.
         let sde_cache_dir = Self::sde_build_cache_dir(&settings);
-        database_updater::DatabaseUpdater::spawn(
-            settings.get_sde().to_path_buf(),
-            sde_cache_dir.join("data"),
-            sde_cache_dir.join("sde"),
-            Arc::clone(&arc_msg_sender),
-            true,
-            settings.get_data_source_urls().clone(),
-        );
+        if !isolated {
+            database_updater::DatabaseUpdater::spawn(
+                settings.get_sde().to_path_buf(),
+                sde_cache_dir.join("data"),
+                sde_cache_dir.join("sde"),
+                Arc::clone(&arc_msg_sender),
+                true,
+                settings.get_data_source_urls().clone(),
+            );
+        }
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
         let authmon = AuthSpawner::new(Arc::clone(&arc_msg_sender));
@@ -463,6 +485,12 @@ impl Default for TelescopeApp {
             database_updater: database_updater::DatabaseUpdater::default(),
             last_notification: None,
         }
+    }
+
+    /// An app on a temporary folder, for the tests: see [`Self::with_settings`].
+    #[cfg(test)]
+    pub(crate) fn for_test(dir: &std::path::Path) -> Self {
+        Self::with_settings(Settings::in_dir_for_test(dir), true)
     }
 }
 
@@ -1093,6 +1121,9 @@ impl TelescopeApp {
         }
     }
 }
+
+#[cfg(test)]
+mod app_tests;
 
 #[cfg(test)]
 mod font_tests {

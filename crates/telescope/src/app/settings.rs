@@ -581,6 +581,23 @@ impl Settings {
         self.paths.sde = path.to_path_buf();
     }
 
+    /// Settings whose files all live in `dir`, with no channels: what the
+    /// tests build an app on, so nothing outside `dir` is read or written.
+    #[cfg(test)]
+    pub(crate) fn in_dir_for_test(dir: &Path) -> Self {
+        let mut settings = Self::default();
+        settings.paths.settings = dir.join("telescope.toml");
+        settings.paths.intel = dir.join("ChatLogs");
+        settings.paths.sde = dir.join("sde.db");
+        settings.paths.db = dir.join("players.db");
+        settings.channels = Channels {
+            available: HashMap::new(),
+            activity: HashMap::new(),
+            monitored: Arc::new(Vec::new()),
+        };
+        settings
+    }
+
     /// Whether everything was written by the last `save` (the Settings
     /// window now compares against its snapshot instead).
     #[cfg(test)]

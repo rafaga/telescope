@@ -38,6 +38,21 @@ impl<'a> AppData<'a> {
 }
 
 #[cfg(test)]
+impl<'a> AppData<'a> {
+    /// Placeholder credentials, so tests do not depend on the build
+    /// environment.
+    pub fn for_test() -> Self {
+        AppData {
+            scope: Vec::new(),
+            secret_key: "test-secret",
+            client_id: "test-client",
+            url: String::from("http://localhost:56123/login"),
+            user_agent: String::from("telescope/test"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
