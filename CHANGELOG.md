@@ -69,6 +69,11 @@ period it happened in.
 
 ### Added
 
+* Tests of the intel pipeline with lines the way players write them (about
+  forty variants of system names), through the default rules and the real
+  resolver: what is read, what is not (lowercase names are not detected), what
+  is left over as unrecognised text, and the limits of eight system candidates
+  per line and a hundred matches per detection (September 2026).
 * Unit tests for the rule engine (`webb::rules`), the chat log reader, the
   rules editor, the SDE updater (against a local HTTP server), the character
   link helpers and `TelescopeApp` itself (`app_tests.rs`), and component tests

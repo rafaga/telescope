@@ -1315,6 +1315,63 @@ mod tests {
     }
 
     #[test]
+    fn only_the_candidates_that_resolve_keep_their_span() {
+        // "Floris" is shaped like a system and is not one. Its bytes are not
+        // claimed by the detection, so they stay in the leftover text.
+        let message = only_message(DetectionRuleKind::SystemReport, "Floris at Jita");
+        assert_eq!(message.data, Data::Systems(vec![30000142]));
+        assert_eq!(message.text, "Jita");
+        assert_eq!(message.spans, vec![10..14]);
+        assert_eq!(
+            crate::map_alerts::leftover("Floris at Jita", &[&message]),
+            "Floris at"
+        );
+    }
+
+    #[test]
+    fn a_line_whose_candidates_all_fail_to_resolve_gives_no_message() {
+        let (executor, errors) = Executor::new(graph(DetectionRuleKind::SystemReport));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            executor
+                .run(&line("Floris at Dodixie"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    /// Resolves every `ADnnn` to its number.
+    struct Numbered;
+
+    impl SystemResolver for Numbered {
+        fn resolve(&self, name: &str) -> Option<usize> {
+            name.strip_prefix("AD")?.parse().ok()
+        }
+    }
+
+    #[test]
+    fn a_system_detection_reads_at_most_the_candidate_limit() {
+        let text = (1..=MAX_SYSTEM_CANDIDATES + 4)
+            .map(|n| format!("AD{n:03}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (executor, errors) = Executor::new(graph(DetectionRuleKind::SystemReport));
+        assert!(errors.is_empty(), "{errors:?}");
+        let message = executor
+            .run(&line(&text), &Numbered)
+            .remove(0)
+            .messages
+            .remove(0);
+        let expected: Vec<usize> = (1..=MAX_SYSTEM_CANDIDATES).collect();
+        assert_eq!(message.data, Data::Systems(expected));
+        assert_eq!(message.spans.len(), MAX_SYSTEM_CANDIDATES);
+        // The ones past the limit were not read: they stay in the leftover.
+        assert_eq!(
+            crate::map_alerts::leftover(&text, &[&message]),
+            "AD009 AD010 AD011 AD012"
+        );
+    }
+
+    #[test]
     fn ship_names_are_grouped() {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
