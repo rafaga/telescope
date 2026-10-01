@@ -421,23 +421,104 @@ mod real_line_tests {
         assert_eq!(systems_of("H-5 nv"), ["H-5GUI"]);
     }
 
+    #[test]
+    fn names_are_detected_in_any_case() {
+        for (text, expected) in [
+            ("h-5gui", "H-5GUI"),
+            ("H-5gui", "H-5GUI"),
+            ("j105443", "J105443"),
+            ("1dq1-a", "1DQ1-A"),
+            ("05r-7a", "05R-7A"),
+            ("ad001", "AD001"),
+            ("jita", "Jita"),
+            ("JITA", "Jita"),
+            ("jItA", "Jita"),
+            ("old man star", "Old Man Star"),
+            ("OLD MAN STAR", "Old Man Star"),
+            ("tash-murkon prime", "Tash-Murkon Prime"),
+            ("TASH-MURKON PRIME", "Tash-Murkon Prime"),
+            ("iyen-oursta", "Iyen-Oursta"),
+            ("du annes", "Du Annes"),
+            ("new caldari", "New Caldari"),
+        ] {
+            assert_eq!(systems_of(text), [expected], "{text:?}");
+        }
+        assert_eq!(
+            systems_of("hek? rens? dodixie?"),
+            ["Hek", "Rens", "Dodixie"]
+        );
+        assert_eq!(systems_of("h-5g"), ["H-5GUI"]);
+    }
+
+    #[test]
+    fn a_line_gives_the_same_alert_in_any_case() {
+        for text in [
+            "H-5GUI  Floris Saucus  nv",
+            "1DQ1-A gate camp 5 Rifter",
+            "Hek spike",
+            "H-5GUI > 1DQ1-A",
+            "H-5GUI Rifter Rifter Loki",
+            "Rifter in Ala",
+            "7-UH4Z blue",
+            "H-5GUI status?",
+            "H-5GUI Clear",
+            "Old Man Star +3",
+        ] {
+            let usual = outcome(text);
+            for variant in [text.to_lowercase(), text.to_uppercase()] {
+                let other = outcome(&variant);
+                assert_eq!(other.systems, usual.systems, "{variant:?}");
+                assert_eq!(other.kinds, usual.kinds, "{variant:?}");
+                assert_eq!(other.parts.len(), usual.parts.len(), "{variant:?}");
+                assert_eq!(
+                    other.leftover.clone().map(|text| text.to_lowercase()),
+                    usual.leftover.clone().map(|text| text.to_lowercase()),
+                    "{variant:?}"
+                );
+                let ships = |outcome: &Outcome| -> Vec<(String, usize)> {
+                    outcome
+                        .ships
+                        .iter()
+                        .map(|(name, times)| (name.to_lowercase(), *times))
+                        .collect()
+                };
+                assert_eq!(ships(&other), ships(&usual), "{variant:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_system_is_found_among_ordinary_lowercase_words() {
+        assert_eq!(systems_of("hostile in jita now"), ["Jita"]);
+        assert_eq!(
+            systems_of("gate camp in old man star now"),
+            ["Old Man Star"]
+        );
+        assert_eq!(
+            systems_of("jita to h-5gui via hek"),
+            ["Jita", "H-5GUI", "Hek"]
+        );
+    }
+
     // ---- What is not read ----
 
     #[test]
-    fn lowercase_names_are_not_detected() {
-        // The system pattern is case sensitive: the shapes of the names are
-        // told apart by their capitals. Players who type in lowercase get no
-        // alert, whatever the system.
+    fn everyday_lowercase_chat_is_not_taken_for_systems() {
         for text in [
-            "h-5gui",
-            "jita",
-            "JITA",
-            "old man star",
-            "j105443",
-            "1dq1-a",
+            "hostile in local",
+            "gate camp, 5 reds",
+            "clear now thanks",
+            "anyone have eyes",
+            "x-up",
+            "re-ship",
+            "o7",
         ] {
             let outcome = outcome(text);
-            assert!(outcome.systems.is_empty(), "{text:?}");
+            assert!(
+                outcome.systems.is_empty(),
+                "{text:?}: {:?}",
+                outcome.systems
+            );
             assert!(
                 !outcome.kinds.contains(&OutputKind::Visual),
                 "{text:?} raised a visual alert"

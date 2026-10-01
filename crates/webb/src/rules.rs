@@ -103,8 +103,12 @@ impl Dictionaries {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DetectionRuleKind {
-    /// Reports a solar system; it is highlighted on the maps. Uses the
-    /// built-in solar-system shape.
+    /// Reports a solar system; it is highlighted on the maps. Systems are
+    /// read whatever their case (`H-5GUI`, `h-5gui`, `JITA`, `old man star`):
+    /// the code-like names (`J123456`, `1DQ1-A`, `AD001`) by the built-in
+    /// pattern, the names made of words (`Jita`, `Old Man Star`) by trying the
+    /// words of the line against the universe. The node's case-insensitive
+    /// switch does not apply to it.
     SystemReport,
     /// Reports the system clear.
     ClearReport {
@@ -148,9 +152,14 @@ pub enum DetectionRuleKind {
     },
 }
 
-/// Built-in solar-system shape used by [`DetectionRuleKind::SystemReport`]
-/// (covers every name in the SDE). Its capture group is `system`.
-pub(crate) const DEFAULT_SYSTEM_PATTERN: &str = r"\b(?P<system>J\d{6}|[A-Z0-9]{1,5}-[A-Z0-9]{1,4}|[A-Z]{2}\d{3}|[A-Z][a-z]{1,13}(?:[ -][A-Z][a-z]{1,13}){0,2})\b";
+/// Built-in shape of the code-like solar-system names used by
+/// [`DetectionRuleKind::SystemReport`], in any case: wormholes (`J123456`),
+/// letters and digits around a dash (`1DQ1-A`) and the `AA000` shape. Its
+/// capture group is `system`. The names made of words are not in the pattern:
+/// once the case is ignored they cannot be told from other words by their
+/// shape, so the executor looks them up instead (`graph::named_systems`).
+pub(crate) const DEFAULT_SYSTEM_PATTERN: &str =
+    r"(?i)\b(?P<system>J\d{6}|[A-Z0-9]{1,5}-[A-Z0-9]{1,4}|[A-Z]{2}\d{3})\b";
 
 /// Built-in patterns used by [`DetectionRuleKind::PilotCount`]; each has a
 /// `count` capture group.
@@ -640,11 +649,20 @@ mod tests {
         for (text, expected) in [
             ("J123456 red", "J123456"),
             ("1DQ1-A clear", "1DQ1-A"),
-            ("go to Jita now", "Jita"),
-            ("Old Man Star", "Old Man Star"),
+            ("AD001 gate", "AD001"),
+            // Whatever the case.
+            ("j123456 red", "j123456"),
+            ("h-5gui clear", "h-5gui"),
+            ("1dq1-a", "1dq1-a"),
+            ("ad001", "ad001"),
         ] {
             let caps = re.captures(text).unwrap();
             assert_eq!(&caps["system"], expected, "{text}");
+        }
+        // The names made of words are not this pattern's business: the
+        // executor looks them up (`graph::named_systems`).
+        for text in ["go to Jita now", "Old Man Star", "Floris Saucus"] {
+            assert!(re.captures(text).is_none(), "{text}");
         }
     }
 
