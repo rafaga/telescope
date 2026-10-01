@@ -154,7 +154,7 @@ jobs:
       # certificate (see claude/release-ci-installers.md) -- this is the
       # no-cost stand-in until/unless that's set up. `packager.json` itself
       # is left untouched (macos.signingIdentity stays unset) so this only
-      # applies to this CI build, not Rafael's manual local packaging.
+      # applies to this CI build, not manual local packaging.
       - name: Build installer
         env:
           ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
