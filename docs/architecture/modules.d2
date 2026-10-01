@@ -1,40 +1,48 @@
 direction: down
 
 entry: "Entry points" {
-  main: "main.rs\n(logging setup, opens the window)"
-  lib: "lib.rs\n(exports TelescopeApp,\nre-exports webb::patterns)"
+  main: "main.rs\n(logging setup, working directory,\nopens the window)"
+  lib: "lib.rs\n(exports TelescopeApp,\nloads the translations)"
 }
 
 app: "app.rs: TelescopeApp\n(state, construction, ui(), event_manager(), map panes)"
 
 ui: "User interface" {
-  windows: "windows/\nabout, debug, settings"
-  pages: "windows/settings/\nintelligence, data_sources, characters, patterns"
+  windows: "windows/\nabout, debug, licenses, settings"
+  pages: "windows/settings/\nsources, patterns (Rules), alerts,\nmaps, characters, application"
   tiles: "tiles.rs\nUniversePane, RegionPane, TreeBehavior"
   notifications: "notifications.rs\n(status log)"
   windows -> pages
 }
 
-intel: "Intel pipeline" {
+intel: "Intel pipeline (own threads)" {
   file: "file.rs\nIntelEventHandler (notify)"
+  reader: "intel/reader.rs\nlog bytes -> lines"
   input: "intel/input.rs\nIntelLogName, ChatLogSource"
   detection: "intel/detection.rs\nExecutor (thread)"
-  process: "intel/mod.rs\nprocess_detected_line"
-  file -> input
-  input -> detection
-  detection -> process
+  dispatch: "intel/dispatch.rs\nmap messages, sound, log"
+  audio: "audio.rs\nAudioHandle"
+  resolve: "intel/resolve.rs\nsystem ids, jump distance"
+  file -> reader
+  reader -> input
+  reader -> detection
+  detection -> dispatch
+  dispatch -> audio
+  detection -> resolve
 }
 
-webb: "webb crate\n(graph, rules, patterns, map_alerts)" {
+webb: "webb crate\n(graph, rules, intel, map_alerts, ESI)" {
   graph: "graph.rs\nRuleGraph, Executor, Mensaje\n(Input/Detection/Output/Aggregator/\nGate/Formatter)"
-  rules: "rules.rs\nDetectionRuleKind, OutputKind"
-  patterns: "patterns.rs\nPatternEngine (legacy)"
+  rules: "rules.rs\nDetectionRuleKind, OutputKind,\nDictionaries, parse_line"
+  intel: "intel.rs\nIntelCategory, PatternError"
   map_alerts: "map_alerts.rs\nAlertSummary, IntelAlert, AlertLog"
+  esi: "esi.rs\nEsiManagerCore, encrypted\nplayer database"
 }
 
 eve: "EVE / ESI" {
   watchdog: "watchdog.rs\n(location polling)"
-  database: "database.rs\n(characters, SDE cache)"
+  character_link: "character_link.rs\n(link / unlink, SSO)"
+  database: "database.rs\n(SDE cache, reload)"
   updater: "database_updater.rs\n(SDE check and build)"
   data: "data.rs\n(ESI app data)"
 }
@@ -43,6 +51,7 @@ core: "Shared core" {
   messages: "messages.rs\nMessage, MapSync, CharacterSync"
   settings: "settings.rs\nSettings (telescope.toml)"
   persistence: "persistence.rs\nsave_settings()"
+  platform: "app_dirs.rs, repaint.rs, i18n.rs,\nlog_bridge.rs, gpu_diagnostics.rs"
   persistence -> settings
 }
 
@@ -52,5 +61,7 @@ app -> ui
 app -> intel
 app -> eve
 app -> core
-intel.detection -> webb.rules
+intel.detection -> webb.graph
+intel.dispatch -> ui.tiles: "MapSync"
 ui.tiles -> webb.map_alerts
+eve.character_link -> webb.esi

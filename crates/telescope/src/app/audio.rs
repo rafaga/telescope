@@ -27,8 +27,8 @@
 //! the binary -- so it can be swapped (or picked, see below) without a
 //! rebuild, and doesn't add its size to every build whether or not sound is
 //! ever used. It's read fresh (opened, decoded, handed off) on every alert
-//! instead of cached, same as `load_intel_file` re-reads its chat log
-//! chunk each time rather than keeping the file open: a clip is small
+//! instead of cached, same as the intel reader (`intel/reader.rs`) re-reads its chat
+//! log chunk each time rather than keeping the file open: a clip is small
 //! (well under a second of audio) and alerts are infrequent, so the I/O
 //! cost is negligible next to the simplicity of not managing a cache.
 //!

@@ -2,12 +2,12 @@
 #
 # On the first run of an installed Telescope this file is copied to the
 # per-user data folder as telescope.toml, and from then on that copy is the
-# one Telescope reads and rewrites (Settings -> Save). Anything left out
+# one Telescope reads and rewrites (Settings -> Apply / Accept). Anything left out
 # takes its default value.
 
 [paths]
 # intel (EVE's chat log folder) is left out on purpose: the default is
-# <home>/Documents/EVE/logs/ChatLogs. Change it in Settings -> Intelligence.
+# <home>/Documents/EVE/logs/ChatLogs. Change it in Settings -> Sources.
 sde = "sde.db"
 db = "telescope.db"
 alert_sound = "1_campana_info.wav"

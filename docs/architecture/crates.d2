@@ -1,9 +1,10 @@
 direction: right
 
 workspace: "telescope workspace" {
-  telescope: "telescope\n(application: UI, settings,\nfile watching, alerting)"
-  webb: "webb\n(ESI client, OAuth callback,\nplayer database,\npattern-matching engine)"
+  telescope: "telescope\n(application: UI, settings,\nfile watching, intel pipeline,\nalerting)"
+  webb: "webb\n(intel rule graph, ESI client,\nOAuth callback, encrypted\nplayer database)"
   native_tools: "native_tools\n(native dialogs,\nmachine identification)"
+  egui-panels: "egui-panels\n(settings screen components,\nno dependency on the rest)"
 }
 
 siblings: "External crates\n(crates.io)" {
@@ -13,5 +14,7 @@ siblings: "External crates\n(crates.io)" {
 
 workspace.telescope -> workspace.webb
 workspace.telescope -> workspace.native_tools
+workspace.telescope -> workspace.egui-panels
+workspace.webb -> workspace.native_tools: "crypted-db:\nkey from the machine id"
 workspace.telescope -> siblings.sde
 workspace.telescope -> siblings.egui-map

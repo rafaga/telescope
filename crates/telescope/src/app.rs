@@ -69,8 +69,8 @@ fn native_window_id(frame: &eframe::Frame) -> Option<isize> {
 }
 
 /// Capacity of the app message channel. Senders never wait on it (a full
-/// channel drops the message), so it has room for bursts: every write to a
-/// watched chat log is one `IntelFileChanged`.
+/// channel drops the message), so it has room for bursts: every read of a
+/// watched chat log reports a `ChannelActivity`.
 pub(crate) const APP_MESSAGE_CAPACITY: usize = 256;
 
 /// Capacity of the `MapSync` broadcast channel. Every pane drains it each
@@ -315,7 +315,7 @@ impl TelescopeApp {
                 RuleGraph::default_graph()
             }
         };
-        // The Patterns page lists input nodes, so there must always be at
+        // The Rules page lists input nodes, so there must always be at
         // least one. Create the chat-log input if none exists (and fill its
         // path, left empty by the migration, from the settings).
         let intel_dir = settings.get_intel().display().to_string();

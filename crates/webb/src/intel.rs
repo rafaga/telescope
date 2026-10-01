@@ -374,7 +374,7 @@ pub(crate) fn is_valid_id(id: &str) -> bool {
 
 pub(crate) fn is_valid_channel(name: &str) -> bool {
     // Real EVE channel names (as extracted verbatim from the log file name
-    // prefix by `load_intel_file`) commonly contain '.' and '+', e.g. an
+    // prefix by the intel reader) commonly contain '.' and '+', e.g. an
     // alliance channel literally named "wc.Vale+Tribute". A plain
     // `[A-Za-z0-9_-]` filter, as used for rule/channel *ids*, rejected such
     // names outright, making `channels` filtering unusable for them. This

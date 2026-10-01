@@ -197,7 +197,7 @@ pub struct IntelAlert {
     pub system_id: usize,
     /// When Telescope read the line.
     pub received: Instant,
-    /// How long its visual alert lasts (Settings -> Intelligence).
+    /// How long its visual alert lasts (Settings -> Alerts).
     pub duration: Duration,
     /// The line's text normalized (lowercase, single spaces): the same
     /// report read twice (from two channels, or repeated) replaces the
