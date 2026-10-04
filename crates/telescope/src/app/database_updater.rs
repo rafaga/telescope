@@ -1,19 +1,19 @@
 //! A small window showing progress while the local EVE Online SDE
 //! database (`sde.db`) is checked for updates and, if needed, rebuilt.
 //!
-//! There is no single "check and build" entry point in the `sde` crate
-//! itself (as of the `test` branch this workspace's `[patch.crates-io]`
-//! points `sde` at -- see the workspace root `Cargo.toml`) -- only the
-//! individual pieces `sde-builder`'s own CLI (`sde`'s `src/bin/cli.rs`)
-//! calls in sequence: [`sde_index::update_as_needed`] (check CCP's SDE
-//! index) -> [`extract::prepare_sde_directory`] (decompress the zip) ->
+//! `Self::run` first asks [`update::prepare`] whether sde-deltas'
+//! build-to-build deltas can bring `sde.db` up to date: they're applied to
+//! the mirror of the SDE the previous full build left behind, and `sde.db`
+//! then only has its recorded build moved or is rebuilt from that mirror,
+//! without downloading CCP's export. When they can't, it runs the same
+//! pieces `sde-builder`'s own CLI (`sde`'s `src/bin/cli.rs`) calls in
+//! sequence: [`sde_index::update_as_needed`] (check CCP's SDE index) ->
+//! [`extract::prepare_sde_directory`] (decompress the zip) ->
 //! [`schema::create_schema`] (create the tables) ->
-//! [`Parser::build_database`] (parse the SDE into them). `Self::run`
-//! below calls those same four functions in the same order the CLI
-//! does, for the same reason the CLI does: there is currently nowhere
-//! else this sequence lives. It intentionally goes no further than
-//! that -- no SDE parsing, downloading, or database logic is
-//! reimplemented here, only this crate's usual
+//! [`Parser::build_database`] (parse the SDE into them) ->
+//! [`update::create_mirror`] (keep what the next delta update needs). It
+//! intentionally goes no further than that -- no SDE parsing, downloading,
+//! or database logic is reimplemented here, only this crate's usual
 //! background-thread-plus-message-channel wiring around calls into
 //! `sde::builder`.
 //!
@@ -37,9 +37,10 @@
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
 use eframe::egui::{self, Align2, Margin, RichText, Stroke, Vec2};
-use sde::Error;
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
+use sde::builder::update::{self, FullReason, UpdateOptions, UpdatePlan};
 use sde::builder::{BuildUrls, extract, http, schema, sde_index};
+use sde::{Error, SdeManager};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -92,6 +93,14 @@ pub enum SdeInfo {
     },
     /// The export was downloaded: its size in bytes.
     Downloaded(u64),
+    /// This many build-to-build deltas from sde-deltas are being applied
+    /// instead of downloading the export.
+    Deltas(usize),
+    /// The deltas reached this build without changing anything `sde.db`
+    /// holds: only its recorded build moved.
+    Bumped(String),
+    /// Deltas couldn't be used, the export is downloaded instead: why.
+    FullBuild(String),
     /// The new database passed its integrity check.
     Verified,
 }
@@ -156,6 +165,9 @@ enum Outcome {
     Rebuilt,
     /// The database was already up to date.
     UpToDate,
+    /// The database's recorded build moved to a newer one whose changes
+    /// don't touch anything it holds: nothing to reload.
+    Bumped,
     /// The user cancelled before the rebuild started.
     Cancelled,
 }
@@ -178,6 +190,8 @@ pub struct DatabaseUpdater {
     versions: Option<(Option<String>, String)>,
     /// The size of the downloaded export, once known.
     downloaded: Option<u64>,
+    /// How many deltas are applied instead, when that's the case.
+    deltas: Option<usize>,
     /// One line per event, each led by the time of day.
     log: Vec<String>,
 }
@@ -333,11 +347,16 @@ impl DatabaseUpdater {
                                         t!("sde_update.available", build = available).into_owned()
                                     })
                                     .unwrap_or_default(),
-                                1 => self
-                                    .downloaded
-                                    .filter(|_| current > 1)
-                                    .map(format_size)
-                                    .unwrap_or_default(),
+                                1 => match self.deltas {
+                                    Some(count) => {
+                                        t!("sde_update.deltas", count = count).into_owned()
+                                    }
+                                    None => self
+                                        .downloaded
+                                        .filter(|_| current > 1)
+                                        .map(format_size)
+                                        .unwrap_or_default(),
+                                },
                                 _ => String::new(),
                             })
                             .enumerate()
@@ -438,6 +457,7 @@ impl DatabaseUpdater {
             self.finished = false;
             self.versions = None;
             self.downloaded = None;
+            self.deltas = None;
             self.log.clear();
         }
         self.log_line(phase.detail());
@@ -469,6 +489,16 @@ impl DatabaseUpdater {
                     t!("sde_update.log_downloaded", size = format_size(bytes)).into_owned(),
                 );
                 self.downloaded = Some(bytes);
+            }
+            SdeInfo::Deltas(count) => {
+                self.log_line(t!("sde_update.log_deltas", count = count).into_owned());
+                self.deltas = Some(count);
+            }
+            SdeInfo::Bumped(build) => {
+                self.log_line(t!("sde_update.log_bumped", build = build).into_owned());
+            }
+            SdeInfo::FullBuild(reason) => {
+                self.log_line(t!("sde_update.log_full", reason = reason).into_owned());
             }
             SdeInfo::Verified => {
                 self.log_line(t!("sde_update.log_verified").into_owned());
@@ -505,6 +535,7 @@ impl DatabaseUpdater {
         self.phase_started = None;
         self.versions = None;
         self.downloaded = None;
+        self.deltas = None;
         self.log.clear();
     }
 
@@ -626,6 +657,14 @@ impl DatabaseUpdater {
                                 )
                                 .await;
                             }
+                            Outcome::Bumped => {
+                                Self::notify(
+                                    &app_msg,
+                                    Type::Info,
+                                    "SDE database moved to the latest build: nothing the maps use changed.",
+                                )
+                                .await;
+                            }
                             Outcome::Cancelled => {
                                 Self::notify(&app_msg, Type::Info, "SDE update cancelled.").await;
                             }
@@ -671,21 +710,25 @@ impl DatabaseUpdater {
         .await;
     }
 
-    /// Checks CCP's SDE index and, if a newer build is available (or
-    /// `sde_path` doesn't exist yet), downloads it and rebuilds `sde.db`
-    /// from scratch -- the same four steps `sde-builder`'s CLI runs:
-    /// [`sde_index::update_as_needed`] -> [`extract::prepare_sde_directory`]
-    /// -> [`schema::create_schema`] -> [`Parser::build_database`].
+    /// Brings `sde.db` up to CCP's latest SDE build.
     ///
-    /// Whether to rebuild is decided entirely from observed state -- no
-    /// separate "force" flag: a rebuild happens whenever
+    /// First through sde-deltas ([`update::prepare`]): the mirror of the SDE
+    /// a previous full build left in `sde_dir` is brought up to date with
+    /// the build-to-build deltas, and then `sde.db` either stays as it is,
+    /// only has its recorded build moved ([`Outcome::Bumped`]), or is
+    /// rebuilt from the mirror -- without downloading CCP's export.
+    ///
+    /// When deltas can't be used ([`UpdatePlan::Full`]: no mirror yet, a
+    /// schema change, sde-deltas unreachable or lagging...), the same steps
+    /// `sde-builder`'s CLI runs: [`sde_index::update_as_needed`] ->
+    /// [`extract::prepare_sde_directory`] -> [`schema::create_schema`] ->
+    /// [`Parser::build_database`], and then [`update::create_mirror`] so the
+    /// next update can use deltas. On that path a rebuild happens whenever
     /// [`sde_index::update_as_needed`] reports a new build (`changed`) or
-    /// `sde_path` doesn't exist yet (`!db_exists`). Skipping only requires
-    /// both "nothing changed" and "the database is already there".
+    /// `sde_path` doesn't exist yet (`!db_exists`).
     ///
-    /// Returns whether the database was rebuilt, was already up to date or
-    /// the user cancelled (see [`Outcome`]). Errors -- no network, a
-    /// malformed zip, a SQL failure -- are returned rather than panicking;
+    /// Returns how the update ended (see [`Outcome`]). Errors -- no network,
+    /// a malformed zip, a SQL failure -- are returned rather than panicking;
     /// the caller decides how to surface them.
     async fn run(
         sde_path: &std::path::Path,
@@ -701,10 +744,15 @@ impl DatabaseUpdater {
 
         let client = http::build_client()?;
         let build_file = data_dir.join(format!("sde-{}.build", urls.sde_variant));
-        let installed = std::fs::read_to_string(&build_file)
-            .ok()
-            .map(|build| build.trim().to_string())
-            .filter(|build| !build.is_empty());
+        // The database's own fingerprint knows its build (delta updates move
+        // it without touching the `.build` file, which describes the zip);
+        // the `.build` file stands in for a database without one.
+        let installed = installed_build(sde_path).or_else(|| {
+            std::fs::read_to_string(&build_file)
+                .ok()
+                .map(|build| build.trim().to_string())
+                .filter(|build| !build.is_empty())
+        });
         // Only for the window: `sde_index::update_as_needed` reads the index
         // again and decides on its own.
         let available = http::fetch_text(&client, &format!("{}latest.jsonl", urls.sde_url))
@@ -724,6 +772,86 @@ impl DatabaseUpdater {
         }
 
         let db_exists = is_sqlite(sde_path);
+        let parser_config = Self::parser_config(with_third_party);
+
+        let plan = update::prepare(
+            &client,
+            urls,
+            sde_path,
+            sde_dir,
+            &parser_config,
+            UpdateOptions::default(),
+            |progress| {
+                if progress.done == 0 && progress.total > 0 {
+                    try_send_app_message(
+                        app_msg,
+                        Message::DatabaseUpdateProgress(SdePhase::Downloading),
+                    )
+                    .ok();
+                    try_send_app_message(
+                        app_msg,
+                        Message::DatabaseUpdateInfo(SdeInfo::Deltas(progress.total)),
+                    )
+                    .ok();
+                }
+            },
+        )
+        .await;
+        match plan {
+            UpdatePlan::UpToDate { .. } => return Ok(Outcome::UpToDate),
+            UpdatePlan::Bump { to, .. } => {
+                update::set_sde_build(sde_path, &to)?;
+                send_app_message(app_msg, Message::DatabaseUpdateInfo(SdeInfo::Bumped(to)))
+                    .await
+                    .ok();
+                return Ok(Outcome::Bumped);
+            }
+            UpdatePlan::Rebuild { to, mirror_dir, .. } => {
+                if Self::cancelled(data_dir, urls) {
+                    return Ok(Outcome::Cancelled);
+                }
+                Self::rebuild(
+                    sde_path,
+                    &mirror_dir,
+                    parser_config,
+                    urls,
+                    Some(&to),
+                    app_msg,
+                )
+                .await?;
+                return Ok(Outcome::Rebuilt);
+            }
+            UpdatePlan::Full { reason } => {
+                if matches!(reason, FullReason::SchemaChanged(_)) {
+                    Self::notify(
+                        app_msg,
+                        Type::Warning,
+                        &format!("SDE schema change: {reason}"),
+                    )
+                    .await;
+                }
+                // A mirror is there but sde-deltas is out of reach: a database
+                // already at CCP's latest build needs no full download.
+                let deltas_out_of_reach = matches!(
+                    reason,
+                    FullReason::Unavailable(_) | FullReason::Lagging { .. }
+                );
+                if deltas_out_of_reach && db_exists && installed.is_some() && installed == available
+                {
+                    return Ok(Outcome::UpToDate);
+                }
+                // A first run has no mirror yet: nothing worth telling.
+                if reason != FullReason::NoMirror {
+                    send_app_message(
+                        app_msg,
+                        Message::DatabaseUpdateInfo(SdeInfo::FullBuild(reason.to_string())),
+                    )
+                    .await
+                    .ok();
+                }
+            }
+        }
+
         let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
         let expect_download = !db_exists
             || !zip_path.exists()
@@ -763,20 +891,14 @@ impl DatabaseUpdater {
         .await
         .ok();
 
-        if let Some(parent) = sde_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-
         extract::prepare_sde_directory(&zip_path, sde_dir)?;
         if Self::cancelled(data_dir, urls) {
             return Ok(Outcome::Cancelled);
         }
 
         // Read back the build number `sde_index::update_as_needed` just
-        // wrote (or confirmed unchanged) to `sde-{sde_variant}.build`,
-        // purely to record it in `sdeFingerprint` below -- mirrors
+        // wrote (or confirmed unchanged) to `sde-{sde_variant}.build`, to
+        // record it in `sdeFingerprint` and the mirror below -- mirrors
         // `sde-builder`'s own CLI. `Ok` on read failure rather than
         // propagating it: a database with no recorded build number
         // (`sdeFingerprint.sdeBuild = NULL`) is still valid, so this
@@ -786,33 +908,51 @@ impl DatabaseUpdater {
                 .ok()
                 .map(|s| s.trim().to_string());
 
-        send_app_message(
+        let sde_parser = Self::rebuild(
+            sde_path,
+            sde_dir,
+            parser_config,
+            urls,
+            build_number.as_deref(),
             app_msg,
-            Message::DatabaseUpdateProgress(SdePhase::Rebuilding),
         )
-        .await
-        .ok();
+        .await?;
 
-        // Built next to the database and moved over it only once complete:
-        // a failed download or build keeps the database there was.
-        let building = building_path(sde_path);
-        if building.exists() {
-            std::fs::remove_file(&building)?;
+        // Keep only what the parser read, so the next update can use deltas
+        // instead of this download. The database is already in place: a
+        // failure here only costs the next update a full download again.
+        if let Some(build) = &build_number {
+            match update::create_mirror(sde_dir, &sde_parser, build) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&zip_path);
+                }
+                Err(error) => {
+                    Self::notify(
+                        app_msg,
+                        Type::Warning,
+                        &format!("Couldn't keep a mirror of the SDE for delta updates: {error}"),
+                    )
+                    .await;
+                }
+            }
         }
-        let mut connection = rusqlite::Connection::open(&building)?;
-        schema::create_schema(&connection)?;
 
-        // Local projection instead of CCP's precomputed `position2D`:
-        // that value is a hand-adjusted schematic of the in-game map,
-        // not a projection of the 3D coordinates, and covers k-space
-        // only. `Orthogonal(Y)` is the north-up top-down: EVE's
-        // galactic plane is the X-Z plane (x = east, z = north) with y
-        // as the vertical axis, so dropping y gives east = screen
-        // right, north = screen up -- the community-canonical
-        // orientation -- and, being a true projection, it covers every
-        // system in scope (w-space included). Same default
-        // `sde-builder`'s own CLI uses.
-        let parser_config = ParserConfig {
+        Ok(Outcome::Rebuilt)
+    }
+
+    /// The parser settings Telescope builds `sde.db` with.
+    ///
+    /// Local projection instead of CCP's precomputed `position2D`: that
+    /// value is a hand-adjusted schematic of the in-game map, not a
+    /// projection of the 3D coordinates, and covers k-space only.
+    /// `Orthogonal(Y)` is the north-up top-down: EVE's galactic plane is the
+    /// X-Z plane (x = east, z = north) with y as the vertical axis, so
+    /// dropping y gives east = screen right, north = screen up -- the
+    /// community-canonical orientation -- and, being a true projection, it
+    /// covers every system in scope (w-space included). Same default
+    /// `sde-builder`'s own CLI uses.
+    fn parser_config(with_third_party: bool) -> ParserConfig {
+        ParserConfig {
             language: "en".to_string(),
             position_2d: Position2DMode::Orthogonal(ProjectedAxis::Y),
             map_kspace: true,
@@ -823,15 +963,47 @@ impl DatabaseUpdater {
             with_moons: true,
             verbose: false,
             with_third_party,
-        };
+        }
+    }
+
+    /// Builds a new `sde.db` from the SDE files in `sde_dir` (CCP's export
+    /// or the mirror), recording `build` in its fingerprint, and returns the
+    /// parser that read them (it knows which fields it read, see
+    /// [`update::create_mirror`]).
+    ///
+    /// Built next to the database and moved over it only once complete
+    /// and verified: a failed build keeps the database there was.
+    async fn rebuild(
+        sde_path: &std::path::Path,
+        sde_dir: &std::path::Path,
+        parser_config: ParserConfig,
+        urls: &BuildUrls,
+        build: Option<&str>,
+        app_msg: &Sender<Message>,
+    ) -> Result<Parser, Error> {
+        let client = http::build_client()?;
+        send_app_message(
+            app_msg,
+            Message::DatabaseUpdateProgress(SdePhase::Rebuilding),
+        )
+        .await
+        .ok();
+
+        if let Some(parent) = sde_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let building = building_path(sde_path);
+        if building.exists() {
+            std::fs::remove_file(&building)?;
+        }
+        let mut connection = rusqlite::Connection::open(&building)?;
+        schema::create_schema(&connection)?;
+
         let sde_parser = Parser::new(sde_dir, parser_config);
         let built = sde_parser
-            .build_database(
-                &mut connection,
-                &client,
-                &urls.maps_url,
-                build_number.as_deref(),
-            )
+            .build_database(&mut connection, &client, &urls.maps_url, build)
             .await;
         let verified = match built {
             Ok(_) => {
@@ -858,7 +1030,7 @@ impl DatabaseUpdater {
         // the new one replaces it.
         std::fs::rename(&building, sde_path)?;
 
-        Ok(Outcome::Rebuilt)
+        Ok(sde_parser)
     }
 
     /// SQLite's own quick integrity check of the database just built.
@@ -950,6 +1122,16 @@ fn close_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
         );
     }
     response
+}
+
+/// The SDE build recorded in `sde.db`'s fingerprint, when it has an intact
+/// one.
+fn installed_build(sde_path: &std::path::Path) -> Option<String> {
+    let manager = SdeManager::new(sde_path, 1.0).ok()?;
+    match manager.get_fingerprint() {
+        Ok(Some((fingerprint, true))) => fingerprint.sde_build,
+        _ => None,
+    }
 }
 
 /// Whether `path` is a file starting with the SQLite header (a missing,
@@ -1232,6 +1414,7 @@ mod updater_run_tests {
             sde_variant: String::from("jsonl"),
             sde_url: base.to_string(),
             maps_url: base.to_string(),
+            deltas_url: format!("{base}deltas/"),
         }
     }
 
@@ -1266,6 +1449,9 @@ mod updater_run_tests {
                 format!("downloaded:{bytes}")
             }
             Message::DatabaseUpdateInfo(SdeInfo::Verified) => String::from("verified"),
+            Message::DatabaseUpdateInfo(SdeInfo::Deltas(count)) => format!("deltas:{count}"),
+            Message::DatabaseUpdateInfo(SdeInfo::Bumped(build)) => format!("bumped:{build}"),
+            Message::DatabaseUpdateInfo(SdeInfo::FullBuild(reason)) => format!("full:{reason}"),
             Message::DatabaseUpdated(rebuilt) => format!("updated:{rebuilt}"),
             Message::GenericNotification((_, _, _, text)) => format!("note:{text}"),
             _ => String::from("other"),
@@ -1467,6 +1653,189 @@ mod updater_run_tests {
                 .iter()
                 .any(|message| message.starts_with("versions"))
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // ---- run, with sde-deltas ----
+
+    /// CCP's index at build 101, released long after any test runs (so
+    /// sde-deltas never counts as lagging).
+    const INDEX_101: &str =
+        "{\"_key\": \"sde\", \"buildNumber\": 101, \"releaseDate\": \"2999-01-01T00:00:00Z\"}\n";
+
+    /// A `sde.db` fingerprinted at build 100 with Telescope's settings, and
+    /// in `dir/sde` a mirror at build 100 of a single `types` table whose
+    /// `name` the parser reads.
+    fn delta_ready(dir: &Path) -> PathBuf {
+        let config = DatabaseUpdater::parser_config(false);
+        let sde_dir = dir.join("sde");
+        std::fs::create_dir_all(&sde_dir).unwrap();
+        std::fs::write(
+            sde_dir.join("types.jsonl"),
+            "{\"_key\":1,\"name\":{\"en\":\"A\"}}\n",
+        )
+        .unwrap();
+        let mut usage = sde::builder::usage::FieldUsage::default();
+        usage.insert("types", "name");
+        sde::builder::mirror::Mirror::create(&sde_dir, &usage, "100", &config).unwrap();
+
+        let path = dir.join("sde.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        schema::create_schema(&connection).unwrap();
+        let fingerprint = sde::objects::SdeFingerprint {
+            sde_build: Some(String::from("100")),
+            language: config.language.clone(),
+            position_2d: config.position_2d,
+            map_kspace: config.map_kspace,
+            map_wspace: config.map_wspace,
+            map_abyssal: config.map_abyssal,
+            map_void: config.map_void,
+            with_gates: config.with_gates,
+            with_moons: config.with_moons,
+            with_third_party: config.with_third_party,
+            with_icebelts: None,
+            with_triglavian_status: None,
+            with_jove_observatories: None,
+            with_special_ore: None,
+        };
+        let (force, axis) = fingerprint.position_2d.fingerprint_columns();
+        connection
+            .execute(
+                "INSERT INTO sdeFingerprint (id, sdeBuild, language, forceIsometricPosition2d, \
+                 isometricProjectedAxis, mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, \
+                 withMoons, withThirdParty, hash) \
+                 VALUES (1, '100', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    fingerprint.language,
+                    force,
+                    axis,
+                    fingerprint.map_kspace,
+                    fingerprint.map_wspace,
+                    fingerprint.map_abyssal,
+                    fingerprint.map_void,
+                    fingerprint.with_gates,
+                    fingerprint.with_moons,
+                    fingerprint.with_third_party,
+                    fingerprint.hash(),
+                ],
+            )
+            .unwrap();
+        path
+    }
+
+    /// sde-deltas publishing build 101 (from 100), whose manifest lists
+    /// `tables` and whose delta is `delta`, next to CCP's index at 101.
+    fn delta_routes(tables: &str, delta: &str) -> Vec<(&'static str, Vec<u8>)> {
+        use sha2::Digest;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(delta.as_bytes()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let sha256: String = sha2::Sha256::digest(&compressed)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        vec![
+            ("/latest.jsonl", INDEX_101.as_bytes().to_vec()),
+            (
+                "/deltas/index.json",
+                br#"{"formatVersion":1,"firstBuild":101,"latestBuild":101,"builds":[
+                    {"build":101,"lastBuild":100,"releaseDate":"2999-01-01T00:00:00Z","verification":"ok"}]}"#
+                    .to_vec(),
+            ),
+            (
+                "/deltas/101/manifest.json",
+                format!(
+                    r#"{{"formatVersion":1,"build":101,"lastBuild":100,"tables":{tables},
+                        "files":{{"delta.jsonl.gz":{{"bytes":1,"sha256":"{sha256}"}}}}}}"#
+                )
+                .into_bytes(),
+            ),
+            ("/deltas/101/delta.jsonl.gz", compressed),
+        ]
+    }
+
+    #[test]
+    fn a_build_changing_nothing_the_maps_use_only_moves_the_recorded_build() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("bump");
+        let database = delta_ready(&dir);
+        let base = serve(delta_routes(r#"{"skins":{"added":1}}"#, ""));
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert_eq!(result.unwrap(), Outcome::Bumped);
+        assert_eq!(
+            messages,
+            [
+                "progress:Checking",
+                "versions:Some(\"100\")->101",
+                "progress:Downloading",
+                "deltas:1",
+                "bumped:101",
+            ]
+        );
+        assert_eq!(installed_build(&database).as_deref(), Some("101"));
+        // Nothing was downloaded from CCP.
+        assert!(!zip_file(&dir).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_database_at_the_latest_delta_is_up_to_date() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("delta-current");
+        let database = delta_ready(&dir);
+        let base = serve(vec![
+            ("/latest.jsonl", INDEX.as_bytes().to_vec()),
+            (
+                "/deltas/index.json",
+                br#"{"formatVersion":1,"firstBuild":100,"latestBuild":100,"builds":[
+                    {"build":100,"lastBuild":99,"releaseDate":"x","verification":"ok"}]}"#
+                    .to_vec(),
+            ),
+        ]);
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert_eq!(result.unwrap(), Outcome::UpToDate);
+        assert_eq!(
+            messages,
+            ["progress:Checking", "versions:Some(\"100\")->100"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_schema_change_warns_and_falls_back_to_the_full_download() {
+        let _guard = serial();
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+        let dir = temp_dir("schema");
+        let database = delta_ready(&dir);
+        let before = std::fs::read(&database).unwrap();
+        let delta = r#"{"table":"types","op":"schema","kind":"drop_path","path":"name.en"}"#;
+        // CCP's zip isn't there: the full download fails after the warning.
+        let base = serve(delta_routes(r#"{"types":{"changed":0}}"#, delta));
+
+        let (result, messages) = run_update(&database, &dir, &urls(&base));
+
+        assert!(result.is_err());
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("note:SDE schema change")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("full:schema change")),
+            "{messages:?}"
+        );
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        let mirror = sde::builder::mirror::Mirror::open(&dir.join("sde")).unwrap();
+        assert_eq!(mirror.build(), "100");
         let _ = std::fs::remove_dir_all(dir);
     }
 
