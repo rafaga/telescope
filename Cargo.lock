@@ -5592,9 +5592,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sde"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cacc392a1f44ec19f0cb5e9c5c68275f56d6e3ea07421e323aa5b0028ab47bc"
+checksum = "4120ac459793a20a7ad4caaafcac7b8d4ad56f9a9a66437177f46b4513363096"
 dependencies = [
  "anyhow",
  "clap",
