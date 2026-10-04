@@ -55,10 +55,34 @@ impl TelescopeApp {
         Section::new(&t!("settings.application.data_title")).show(ui, |ui| {
             egui_panels::form(ui, |form| {
                 let browse = t!("settings.browse");
-                let mut sde = self.settings.get_sde().to_string_lossy().into_owned();
+                // Typed by hand like the private database below: the file
+                // doesn't have to exist yet, the updater builds it there
+                // when the change is applied. What is typed is kept while
+                // it isn't a valid path, and applied once it is.
+                let current_sde = self.settings.get_sde().to_string_lossy().into_owned();
+                let mut sde = self
+                    .settings_ui
+                    .sde_text
+                    .clone()
+                    .unwrap_or_else(|| current_sde.clone());
                 let picker = form.row(t!("settings.application.sde"), |ui| {
-                    PathPicker::new(&mut sde, &browse).editable(false).show(ui)
+                    PathPicker::new(&mut sde, &browse).show(ui)
                 });
+                if picker.edited {
+                    let valid = self.settings.set_sde(Path::new(sde.trim())).is_ok();
+                    self.settings_ui.sde_text = (!valid).then_some(sde);
+                } else if self.settings_ui.sde_text.as_deref() == Some(current_sde.as_str()) {
+                    self.settings_ui.sde_text = None;
+                }
+                if self.settings_ui.sde_text.is_some() {
+                    form.note(|ui| {
+                        egui_panels::status(
+                            ui,
+                            StatusKind::Error,
+                            &t!("settings.application.sde_invalid"),
+                        )
+                    });
+                }
                 if picker.browse {
                     self.pick_path(
                         super::database_dialog(&t!("settings.dialogs.sde")),
@@ -66,6 +90,9 @@ impl TelescopeApp {
                         Message::SdePathPicked,
                     );
                 }
+                form.note(|ui| {
+                    ui.weak(t!("settings.application.sde_hint"));
+                });
                 form.note(|ui| {
                     let (kind, text) = self.sde_status();
                     egui_panels::status(ui, kind, &text);

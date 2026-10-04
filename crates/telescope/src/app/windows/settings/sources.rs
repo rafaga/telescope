@@ -52,10 +52,14 @@ impl TelescopeApp {
     }
 
     /// Whether the folder exists and holds chat logs, and the latest line.
+    ///
+    /// A folder that can't be found is a warning (yellow, with an
+    /// exclamation mark) rather than an error: Telescope looks for EVE's
+    /// folder on its own, and not finding it only asks the user to pick one.
     fn folder_status(&self) -> (StatusKind, String) {
         if !self.settings.get_intel().is_dir() {
             return (
-                StatusKind::Error,
+                StatusKind::Warning,
                 t!("settings.sources.folder_missing").into_owned(),
             );
         }
@@ -111,5 +115,57 @@ impl TelescopeApp {
                 egui_panels::status(ui, StatusKind::Info, &t!("settings.sources.channel_rule"));
             });
         self.settings.set_available_channels(available);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh folder per test (tests run in parallel).
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "telescope-sources-{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_log_folder_that_cannot_be_found_is_a_warning_not_an_error() {
+        let dir = temp_dir("missing");
+        let mut app = TelescopeApp::for_test(&dir);
+        // `set_intel` only takes folders that exist: take one, then lose it.
+        let logs = dir.join("Chatlogs");
+        std::fs::create_dir_all(&logs).unwrap();
+        app.settings.set_intel(&logs).unwrap();
+        std::fs::remove_dir_all(&logs).unwrap();
+
+        let (kind, text) = app.folder_status();
+
+        // Yellow with an exclamation mark (the warning icon), and the
+        // message that asks for a manual pick.
+        assert_eq!(kind, StatusKind::Warning);
+        assert_eq!(text, t!("settings.sources.folder_missing"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_missing_folder_message_asks_for_a_manual_pick_in_both_languages() {
+        for (language, expected) in [
+            ("en", "couldn't be located, please select one manually"),
+            (
+                "es",
+                "no ha podido ser localizada, favor de seleccionar una manualmente",
+            ),
+        ] {
+            let text = t!("settings.sources.folder_missing", locale = language);
+            assert!(text.contains(expected), "{language}: {text}");
+        }
     }
 }

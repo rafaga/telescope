@@ -46,6 +46,8 @@ pub(crate) struct SettingsUi {
     /// The private database path being typed while it isn't a valid one
     /// (Application); `None` when the field shows the path in the settings.
     db_text: Option<String>,
+    /// The same for the SDE database path (Application).
+    sde_text: Option<String>,
     /// The window file dialogs belong to (see `Dialog::set_owner`).
     window_owner: Option<isize>,
     /// A step of the intel flow was clicked this frame (it changes the page
@@ -57,6 +59,7 @@ impl SettingsUi {
     /// Forgets what was typed and not applied (Cancel).
     pub(crate) fn discard_drafts(&mut self) {
         self.db_text = None;
+        self.sde_text = None;
     }
 
     /// Records the app window's native id, for the file dialogs.
