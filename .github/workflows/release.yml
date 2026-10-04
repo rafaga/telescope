@@ -175,13 +175,18 @@ jobs:
       # Checks the signed bundle cargo-packager leaves next to the dmg (the
       # dmg is built from it) instead of mounting the dmg: `hdiutil attach`
       # failed silently on the runner and broke the release.
+
       - name: Verify the macOS signature
         if: runner.os == 'macOS'
         run: |
           APP=target/release/Telescope.app
           test -d "$APP" || { echo "::error::$APP not found"; exit 1; }
-          codesign -dv --verbose=2 "$APP" 2>&1 || true
-          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "--- bundle layout"; find "$APP" -maxdepth 3 | sort
+          echo "--- xattrs"; xattr -lr "$APP" | head -30 || true
+          echo "--- main binary"; file "$APP/Contents/MacOS/telescope"
+          echo "--- signature"; codesign -dvvv "$APP" 2>&1 || true
+          echo "--- verify (no strict)"; codesign --verify --deep --verbose=4 "$APP" 2>&1 || true
+          echo "--- verify (strict)"; codesign --verify --deep --strict --verbose=4 "$APP"
 
       # Fails when nothing was produced (the upload alone would not), and
       # records a SHA-256 of each installer next to it.
