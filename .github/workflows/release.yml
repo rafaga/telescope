@@ -179,15 +179,15 @@ jobs:
       - name: Verify the macOS signature
         if: runner.os == 'macOS'
         run: |
-          APP=target/release/Telescope.app
-          test -d "$APP" || { echo "::error::$APP not found"; exit 1; }
-          echo "--- bundle layout"; find "$APP" -maxdepth 3 | sort
-          echo "--- xattrs"; xattr -lr "$APP" | head -30 || true
-          echo "--- main binary"; file "$APP/Contents/MacOS/telescope"
-          echo "--- signature"; codesign -dvvv "$APP" 2>&1 || true
-          echo "--- verify (no strict)"; codesign --verify --deep --verbose=4 "$APP" 2>&1 || true
-          echo "--- verify (strict)"; codesign --verify --deep --strict --verbose=4 "$APP"
-
+          DMG=$(ls target/release/*.dmg | head -n 1)
+          test -f "$DMG" || { echo "::error::no .dmg in target/release"; exit 1; }
+          MNT=$(mktemp -d)
+          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly
+          trap 'hdiutil detach "$MNT" -force || true' EXIT
+          ls -la "$MNT"
+          codesign -dvvv "$MNT/Telescope.app" 2>&1
+          codesign --verify --deep --strict --verbose=4 "$MNT/Telescope.app"
+          
       # Fails when nothing was produced (the upload alone would not), and
       # records a SHA-256 of each installer next to it.
       - name: Checksums
