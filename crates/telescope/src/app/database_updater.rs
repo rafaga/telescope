@@ -3,15 +3,18 @@
 //!
 //! `Self::run` first asks [`update::prepare`] whether sde-deltas'
 //! build-to-build deltas can bring `sde.db` up to date: they're applied to
-//! the mirror of the SDE the previous full build left behind, and `sde.db`
-//! then only has its recorded build moved or is rebuilt from that mirror,
-//! without downloading CCP's export. When they can't, it runs the same
-//! pieces `sde-builder`'s own CLI (`sde`'s `src/bin/cli.rs`) calls in
-//! sequence: [`sde_index::update_as_needed`] (check CCP's SDE index) ->
+//! the mirror of the SDE the previous full build left behind (one zip),
+//! and `sde.db` then only has its recorded build moved or is rebuilt from
+//! that mirror, unpacked for the occasion, without downloading CCP's
+//! export. When they can't, it runs the same pieces `sde-builder`'s own
+//! CLI (`sde::builder::pipeline`) calls in sequence:
+//! [`sde_index::update_as_needed`] (check CCP's SDE index) ->
 //! [`extract::prepare_sde_directory`] (decompress the zip) ->
 //! [`schema::create_schema`] (create the tables) ->
 //! [`Parser::build_database`] (parse the SDE into them) ->
-//! [`update::create_mirror`] (keep what the next delta update needs). It
+//! [`update::create_mirror`] (keep what the next delta update needs) ->
+//! [`pipeline::clean_downloads`] (remove what was downloaded), so what
+//! stays on disk is the database, the mirror's zip and dotlan's maps. It
 //! intentionally goes no further than that -- no SDE parsing, downloading,
 //! or database logic is reimplemented here, only this crate's usual
 //! background-thread-plus-message-channel wiring around calls into
@@ -38,6 +41,7 @@
 
 use eframe::egui::{self, Align2, Margin, RichText, Stroke, Vec2};
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
+use sde::builder::pipeline::{self, Workspace};
 use sde::builder::update::{self, FullReason, UpdateOptions, UpdatePlan};
 use sde::builder::{BuildUrls, extract, http, schema, sde_index};
 use sde::{Error, SdeManager};
@@ -773,12 +777,19 @@ impl DatabaseUpdater {
 
         let db_exists = is_sqlite(sde_path);
         let parser_config = Self::parser_config(with_third_party);
+        let workspace = Workspace::new(
+            sde_path.to_path_buf(),
+            data_dir.to_path_buf(),
+            sde_dir.to_path_buf(),
+        );
+        let archive = workspace.mirror_archive();
 
         let plan = update::prepare(
             &client,
             urls,
             sde_path,
             sde_dir,
+            &archive,
             &parser_config,
             UpdateOptions::default(),
             |progress| {
@@ -807,10 +818,14 @@ impl DatabaseUpdater {
                 return Ok(Outcome::Bumped);
             }
             UpdatePlan::Rebuild { to, mirror_dir, .. } => {
+                // `prepare` unpacked the mirror into the SDE directory for
+                // this rebuild; it goes whatever happens next, the archive
+                // keeps it.
                 if Self::cancelled(data_dir, urls) {
+                    let _ = update::release_working_copy(&mirror_dir);
                     return Ok(Outcome::Cancelled);
                 }
-                Self::rebuild(
+                let rebuilt = Self::rebuild(
                     sde_path,
                     &mirror_dir,
                     parser_config,
@@ -818,7 +833,10 @@ impl DatabaseUpdater {
                     Some(&to),
                     app_msg,
                 )
-                .await?;
+                .await;
+                let released = update::release_working_copy(&mirror_dir);
+                rebuilt?;
+                released?;
                 return Ok(Outcome::Rebuilt);
             }
             UpdatePlan::Full { reason } => {
@@ -918,15 +936,28 @@ impl DatabaseUpdater {
         )
         .await?;
 
-        // Keep only what the parser read, so the next update can use deltas
-        // instead of this download. The database is already in place: a
-        // failure here only costs the next update a full download again.
+        // Keep only what the parser read, as one zip, so the next update can
+        // use deltas instead of this download, and remove everything
+        // downloaded or decompressed from CCP: what stays on disk is the
+        // database, that zip and dotlan's maps. The database is already in
+        // place: a failure here only costs the next update a full download
+        // again.
         if let Some(build) = &build_number {
-            match update::create_mirror(sde_dir, &sde_parser, build) {
+            match update::create_mirror(sde_dir, &archive, &sde_parser, build) {
                 Ok(_) => {
-                    let _ = std::fs::remove_file(&zip_path);
+                    if let Err(error) = pipeline::clean_downloads(&workspace, &urls.sde_variant) {
+                        Self::notify(
+                            app_msg,
+                            Type::Warning,
+                            &format!("Couldn't remove the downloaded SDE export: {error}"),
+                        )
+                        .await;
+                    }
                 }
                 Err(error) => {
+                    // A half-reduced SDE directory is of no use: empty it
+                    // (the zip stays, so a retry doesn't download it again).
+                    let _ = update::release_working_copy(sde_dir);
                     Self::notify(
                         app_msg,
                         Type::Warning,
@@ -1663,9 +1694,15 @@ mod updater_run_tests {
     const INDEX_101: &str =
         "{\"_key\": \"sde\", \"buildNumber\": 101, \"releaseDate\": \"2999-01-01T00:00:00Z\"}\n";
 
+    /// Where the mirror's zip lives for the tests: `run_update` uses `dir`
+    /// as the data directory.
+    fn mirror_archive(dir: &Path) -> PathBuf {
+        Workspace::new(dir.join("sde.db"), dir.to_path_buf(), dir.join("sde")).mirror_archive()
+    }
+
     /// A `sde.db` fingerprinted at build 100 with Telescope's settings, and
-    /// in `dir/sde` a mirror at build 100 of a single `types` table whose
-    /// `name` the parser reads.
+    /// in `dir` a mirror (as one zip) at build 100 of a single `types` table
+    /// whose `name` the parser reads.
     fn delta_ready(dir: &Path) -> PathBuf {
         let config = DatabaseUpdater::parser_config(false);
         let sde_dir = dir.join("sde");
@@ -1677,7 +1714,12 @@ mod updater_run_tests {
         .unwrap();
         let mut usage = sde::builder::usage::FieldUsage::default();
         usage.insert("types", "name");
-        sde::builder::mirror::Mirror::create(&sde_dir, &usage, "100", &config).unwrap();
+        // Kept the way a build leaves it: one zip in the data directory,
+        // and nothing decompressed.
+        let mirror =
+            sde::builder::mirror::Mirror::create(&sde_dir, &usage, "100", &config).unwrap();
+        mirror.pack(&mirror_archive(dir)).unwrap();
+        update::release_working_copy(&sde_dir).unwrap();
 
         let path = dir.join("sde.db");
         let connection = rusqlite::Connection::open(&path).unwrap();
@@ -1782,6 +1824,35 @@ mod updater_run_tests {
     }
 
     #[test]
+    fn cancelling_after_the_mirror_was_unpacked_leaves_nothing_in_the_sde_directory() {
+        let _guard = serial();
+        let dir = temp_dir("delta-cancel");
+        let database = delta_ready(&dir);
+        let before = std::fs::read(&database).unwrap();
+        // A change to a field the parser reads: the database must be rebuilt
+        // from the mirror, which `prepare` unpacks into `dir/sde`.
+        let delta = r#"{"table":"types","id":1,"op":"changed","fields":[{"path":"name.en","old":"A","new":"B"}]}"#;
+        let base = serve(delta_routes(r#"{"types":{"changed":1}}"#, delta));
+        CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+
+        let (result, _) = run_update(&database, &dir, &urls(&base));
+        CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+
+        assert_eq!(result.unwrap(), Outcome::Cancelled);
+        assert!(
+            std::fs::read_dir(dir.join("sde"))
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == "maps")
+        );
+        // The deltas stay applied in the archive for the next run, and the
+        // database wasn't touched.
+        let mirror = sde::builder::mirror::Mirror::archive_meta(&mirror_archive(&dir)).unwrap();
+        assert_eq!(mirror.build, "101");
+        assert_eq!(std::fs::read(&database).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_database_at_the_latest_delta_is_up_to_date() {
         let _guard = serial();
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
@@ -1834,8 +1905,14 @@ mod updater_run_tests {
             "{messages:?}"
         );
         assert_eq!(std::fs::read(&database).unwrap(), before);
-        let mirror = sde::builder::mirror::Mirror::open(&dir.join("sde")).unwrap();
-        assert_eq!(mirror.build(), "100");
+        // The mirror didn't move, and nothing is left unpacked.
+        let mirror = sde::builder::mirror::Mirror::archive_meta(&mirror_archive(&dir)).unwrap();
+        assert_eq!(mirror.build, "100");
+        assert!(
+            std::fs::read_dir(dir.join("sde"))
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == "maps")
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
