@@ -1889,9 +1889,13 @@ fn input_body(ui: &mut Ui, input: &mut InputNode) -> bool {
 fn detection_body(ui: &mut Ui, detection: &mut DetectionNode) -> bool {
     let mut changed = false;
     changed |= detection_params_editor(ui, &mut detection.kind);
-    changed |= field_row(ui, &t!("settings.patterns.field_case_insensitive"), |ui| {
-        ui.checkbox(&mut detection.case_insensitive, "").changed()
-    });
+    // Systems are always read whatever their case, so the switch has no
+    // effect on that detection.
+    if !matches!(detection.kind, DetectionRuleKind::SystemReport) {
+        changed |= field_row(ui, &t!("settings.patterns.field_case_insensitive"), |ui| {
+            ui.checkbox(&mut detection.case_insensitive, "").changed()
+        });
+    }
     changed
 }
 

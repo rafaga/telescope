@@ -83,7 +83,7 @@ impl AlertSummary {
         match self
             .ships
             .iter_mut()
-            .find(|(known, _)| known.eq_ignore_ascii_case(name))
+            .find(|(known, _)| crate::graph::fold(known) == crate::graph::fold(name))
         {
             Some((_, times)) => *times += 1,
             None => self.ships.push((name.to_owned(), 1)),
@@ -197,7 +197,7 @@ pub struct IntelAlert {
     pub system_id: usize,
     /// When Telescope read the line.
     pub received: Instant,
-    /// How long its visual alert lasts (Settings -> Intelligence).
+    /// How long its visual alert lasts (Settings -> Alerts).
     pub duration: Duration,
     /// The line's text normalized (lowercase, single spaces): the same
     /// report read twice (from two channels, or repeated) replaces the
@@ -447,6 +447,14 @@ mod tests {
             summary.ships,
             vec![(String::from("Rifter"), 3), (String::from("Loki"), 1)]
         );
+    }
+
+    #[test]
+    fn ships_with_accents_are_grouped_ignoring_case_too() {
+        let first = ships(&[("Cápsula", 1)]);
+        let second = ships(&[("CÁPSULA", 2), ("cápsula", 1)]);
+        let summary = AlertSummary::from_messages(&[&first, &second]);
+        assert_eq!(summary.ships, vec![(String::from("Cápsula"), 4)]);
     }
 
     #[test]

@@ -54,7 +54,7 @@ impl EventHandler for IntelEventHandler {
                 // `Data(_)` covers Linux (and macOS, a strict subset) in one
                 // pattern; the bare `Any` arm is only reachable on Windows,
                 // where "Data" is never used. Before this, a real new line
-                // appended to a chatlog never triggered `IntelFileChanged`
+                // appended to a chatlog never reached the reader
                 // on Windows *or* Linux -- it fell through to the catch-all
                 // below and got logged as "Created", which is also why that
                 // label kept showing up for events that weren't creations.

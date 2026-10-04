@@ -635,6 +635,9 @@ struct CompiledDetection {
     kind: DetectionRuleKind,
     regexes: Vec<Regex>,
     automaton: Option<AhoCorasick>,
+    /// The dictionary ignores case (Unicode, not only ASCII): the automaton
+    /// holds the lowercased words and runs over the lowercased line.
+    fold: bool,
 }
 
 /// One raw match of a detection over a line.
@@ -685,11 +688,16 @@ impl CompiledDetection {
                     kind: node.kind.clone(),
                     regexes,
                     automaton: None,
+                    fold: false,
                 })
             }
             DetectionMatcher::Dictionary(words) => {
+                let words: Vec<String> = if node.case_insensitive {
+                    words.iter().map(|word| fold(word)).collect()
+                } else {
+                    words
+                };
                 let automaton = AhoCorasickBuilder::new()
-                    .ascii_case_insensitive(node.case_insensitive)
                     .match_kind(MatchKind::LeftmostLongest)
                     .build(&words)
                     .map_err(|error| PatternError::DictionaryBuildFailed {
@@ -700,21 +708,17 @@ impl CompiledDetection {
                     kind: node.kind.clone(),
                     regexes: Vec::new(),
                     automaton: Some(automaton),
+                    fold: node.case_insensitive,
                 })
             }
         }
     }
 
-    fn matches(&self, text: &str) -> Vec<MatchData> {
+    fn matches(&self, text: &str, resolver: &dyn SystemResolver) -> Vec<MatchData> {
         let mut results = Vec::new();
         let system_group = self.kind.system_group();
-        let per_regex = if system_group.is_some() {
-            MAX_SYSTEM_CANDIDATES
-        } else {
-            MAX_MATCHES_PER_CHUNK
-        };
         for regex in &self.regexes {
-            for caps in regex.captures_iter(text).take(per_regex) {
+            for caps in regex.captures_iter(text) {
                 if results.len() >= MAX_MATCHES_PER_CHUNK {
                     return results;
                 }
@@ -741,23 +745,52 @@ impl CompiledDetection {
             }
         }
         if let Some(automaton) = &self.automaton {
-            for matched in automaton.find_iter(text) {
+            // With the case ignored the line is searched lowercased, and each
+            // match is mapped back to the bytes it came from.
+            let folded;
+            let (haystack, origin) = if self.fold {
+                folded = fold_with_map(text);
+                (folded.0.as_str(), Some(folded.1.as_slice()))
+            } else {
+                (text, None)
+            };
+            for matched in automaton.find_iter(haystack) {
                 if results.len() >= MAX_MATCHES_PER_CHUNK {
                     break;
                 }
-                if !has_word_boundaries(text, matched.start(), matched.end()) {
+                let (start, end) = match origin {
+                    Some(origin) => (origin[matched.start()].0, origin[matched.end() - 1].1),
+                    None => (matched.start(), matched.end()),
+                };
+                if !has_word_boundaries(text, start, end) {
                     continue;
                 }
-                let text = sanitize_display(&text[matched.start()..matched.end()]);
+                let found = sanitize_display(&text[start..end]);
                 let mut captures = HashMap::new();
-                captures.insert("word".to_string(), text.clone());
+                captures.insert("word".to_string(), found.clone());
                 results.push(MatchData {
                     captures,
-                    matched: text.clone(),
-                    word: Some(text),
-                    span: matched.range(),
+                    matched: found.clone(),
+                    word: Some(found),
+                    span: start..end,
                 });
             }
+        }
+        if matches!(self.kind, DetectionRuleKind::SystemReport) {
+            // The code-like names came from the pattern; the names made of
+            // words are looked up (they only count if the universe knows them).
+            let taken: Vec<Range<usize>> = results
+                .iter()
+                .filter(|found| {
+                    found
+                        .captures
+                        .get("system")
+                        .is_some_and(|name| resolver.resolve(name).is_some())
+                })
+                .map(|found| found.span.clone())
+                .collect();
+            results.extend(named_systems(text, resolver, &taken));
+            results.sort_by_key(|found| found.span.start);
         }
         results
     }
@@ -800,7 +833,7 @@ impl CompiledDetection {
                     let name = found.matched.clone();
                     match ships
                         .iter_mut()
-                        .find(|(known, _)| known.eq_ignore_ascii_case(&name))
+                        .find(|(known, _)| fold(known) == fold(&name))
                     {
                         Some((_, times)) => *times += 1,
                         None => ships.push((name, 1)),
@@ -851,6 +884,11 @@ impl CompiledDetection {
         let mut names: Vec<String> = Vec::new();
         let mut spans = Vec::new();
         for found in matches {
+            // The limit counts the systems the line reports (a system named
+            // twice counts twice), not the words that were tried.
+            if spans.len() >= MAX_SYSTEM_CANDIDATES {
+                break;
+            }
             let name = group
                 .as_deref()
                 .and_then(|group| found.captures.get(group))
@@ -875,6 +913,101 @@ impl CompiledDetection {
             category: None,
         })
     }
+}
+
+/// `text` lowercased, character by character, the way the dictionaries ignore
+/// case (Unicode: `CÁPSULA` is `cápsula`, not only `RIFTER` and `rifter`).
+pub(crate) fn fold(text: &str) -> String {
+    text.chars().flat_map(char::to_lowercase).collect()
+}
+
+/// [`fold`] of `text`, and for every byte of the result the bytes of `text`
+/// its character came from, so a match in the folded line can be mapped back.
+fn fold_with_map(text: &str) -> (String, Vec<(usize, usize)>) {
+    let mut folded = String::with_capacity(text.len());
+    let mut origin = Vec::with_capacity(text.len());
+    for (start, c) in text.char_indices() {
+        let end = start + c.len_utf8();
+        for lower in c.to_lowercase() {
+            let before = folded.len();
+            folded.push(lower);
+            origin.extend(std::iter::repeat_n((start, end), folded.len() - before));
+        }
+    }
+    (folded, origin)
+}
+
+/// Most words a system name is made of (`Old Man Star`).
+const MAX_SYSTEM_WORDS: usize = 3;
+
+/// The systems named with words (`Jita`, `Old Man Star`, `Tash-Murkon Prime`),
+/// whatever their case, that the universe knows.
+///
+/// Once the case is ignored a name cannot be told from any other word by its
+/// shape, so every run of up to three words is tried against `resolver`,
+/// longest first at each position: `hostile in jita` finds `jita` instead of
+/// being taken for one three-word name, and `old man star` is found whole.
+/// What is already `taken` (code-like names) is skipped, and the words of a
+/// name found are not tried again.
+fn named_systems(
+    text: &str,
+    resolver: &dyn SystemResolver,
+    taken: &[Range<usize>],
+) -> Vec<MatchData> {
+    static WORD: OnceLock<Regex> = OnceLock::new();
+    let word = WORD.get_or_init(|| {
+        Regex::new("[A-Za-z]{2,14}(?:-[A-Za-z]{2,14}){0,2}").expect("the word pattern must compile")
+    });
+    let words: Vec<Range<usize>> = word
+        .find_iter(text)
+        .map(|found| found.range())
+        .filter(|range| {
+            !taken
+                .iter()
+                .any(|used| range.start < used.end && used.start < range.end)
+        })
+        .collect();
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        let mut matched = None;
+        for length in (1..=MAX_SYSTEM_WORDS.min(words.len() - index)).rev() {
+            let run = &words[index..index + length];
+            // The words of a name are separated by blanks, nothing else.
+            let joined = run.windows(2).all(|pair| {
+                let gap = &text[pair[0].end..pair[1].start];
+                !gap.is_empty() && gap.chars().all(char::is_whitespace)
+            });
+            if !joined {
+                continue;
+            }
+            let span = run[0].start..run[length - 1].end;
+            let name = run
+                .iter()
+                .map(|range| &text[range.clone()])
+                .collect::<Vec<_>>()
+                .join(" ");
+            if resolver.resolve(&name).is_some() {
+                matched = Some((span, name, length));
+                break;
+            }
+        }
+        match matched {
+            Some((span, name, length)) => {
+                let mut captures = HashMap::new();
+                captures.insert(String::from("system"), sanitize_display(&name));
+                found.push(MatchData {
+                    captures,
+                    matched: sanitize_display(&name),
+                    word: None,
+                    span,
+                });
+                index += length;
+            }
+            None => index += 1,
+        }
+    }
+    found
 }
 
 /// `"nave1 (x3) nave2 (x4)"` (a single mention has no count).
@@ -1020,7 +1153,7 @@ impl Executor {
                             };
                             let mut matched = Vec::new();
                             for message in messages {
-                                let found = compiled.matches(&message.text);
+                                let found = compiled.matches(&message.text, resolver);
                                 if let Some(mut result) = compiled.process(&found, resolver) {
                                     // Spans only mean something relative to
                                     // the line itself.
@@ -1312,6 +1445,237 @@ mod tests {
             activations[0].messages[0].data,
             Data::Systems(vec![30000142])
         );
+    }
+
+    #[test]
+    fn only_the_candidates_that_resolve_keep_their_span() {
+        // "Floris" is shaped like a system and is not one. Its bytes are not
+        // claimed by the detection, so they stay in the leftover text.
+        let message = only_message(DetectionRuleKind::SystemReport, "Floris at Jita");
+        assert_eq!(message.data, Data::Systems(vec![30000142]));
+        assert_eq!(message.text, "Jita");
+        assert_eq!(message.spans, vec![10..14]);
+        assert_eq!(
+            crate::map_alerts::leftover("Floris at Jita", &[&message]),
+            "Floris at"
+        );
+    }
+
+    #[test]
+    fn a_line_whose_candidates_all_fail_to_resolve_gives_no_message() {
+        let (executor, errors) = Executor::new(graph(DetectionRuleKind::SystemReport));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            executor
+                .run(&line("Floris at Dodixie"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    /// Resolves every `ADnnn` to its number.
+    struct Numbered;
+
+    impl SystemResolver for Numbered {
+        fn resolve(&self, name: &str) -> Option<usize> {
+            name.strip_prefix("AD")?.parse().ok()
+        }
+    }
+
+    #[test]
+    fn a_system_detection_reads_at_most_the_candidate_limit() {
+        let text = (1..=MAX_SYSTEM_CANDIDATES + 4)
+            .map(|n| format!("AD{n:03}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (executor, errors) = Executor::new(graph(DetectionRuleKind::SystemReport));
+        assert!(errors.is_empty(), "{errors:?}");
+        let message = executor
+            .run(&line(&text), &Numbered)
+            .remove(0)
+            .messages
+            .remove(0);
+        let expected: Vec<usize> = (1..=MAX_SYSTEM_CANDIDATES).collect();
+        assert_eq!(message.data, Data::Systems(expected));
+        assert_eq!(message.spans.len(), MAX_SYSTEM_CANDIDATES);
+        // The ones past the limit were not read: they stay in the leftover.
+        assert_eq!(
+            crate::map_alerts::leftover(&text, &[&message]),
+            "AD009 AD010 AD011 AD012"
+        );
+    }
+
+    /// Knows a few systems of every style, in any case, like the resolver of
+    /// the application.
+    struct AnyCase;
+
+    impl SystemResolver for AnyCase {
+        fn resolve(&self, name: &str) -> Option<usize> {
+            match name.to_lowercase().as_str() {
+                "jita" => Some(1),
+                "old man star" => Some(2),
+                "tash-murkon prime" => Some(3),
+                "h-5gui" => Some(4),
+                "j105443" => Some(5),
+                "ad001" => Some(6),
+                _ => None,
+            }
+        }
+    }
+
+    /// The systems a line reports, in order. The system detection does not
+    /// depend on the node's case switch (it is off here).
+    fn systems_in(text: &str) -> Vec<usize> {
+        let (executor, errors) = Executor::new(graph(DetectionRuleKind::SystemReport));
+        assert!(errors.is_empty(), "{errors:?}");
+        match executor.run(&line(text), &AnyCase).first() {
+            Some(activation) => match &activation.messages[0].data {
+                Data::Systems(ids) => ids.clone(),
+                other => panic!("{other:?}"),
+            },
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn systems_are_read_whatever_their_case() {
+        for (text, expected) in [
+            ("Jita", 1),
+            ("jita", 1),
+            ("JITA", 1),
+            ("jItA", 1),
+            ("Old Man Star", 2),
+            ("old man star", 2),
+            ("OLD MAN STAR", 2),
+            ("Old   Man   Star", 2),
+            ("Tash-Murkon Prime", 3),
+            ("tash-murkon prime", 3),
+            ("TASH-MURKON PRIME", 3),
+            ("H-5GUI", 4),
+            ("h-5gui", 4),
+            ("H-5gui", 4),
+            ("J105443", 5),
+            ("j105443", 5),
+            ("AD001", 6),
+            ("ad001", 6),
+        ] {
+            assert_eq!(systems_in(text), [expected], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_system_is_found_among_ordinary_words() {
+        // Not taken for one long name made of the words around it.
+        assert_eq!(systems_in("hostile in jita now"), [1]);
+        assert_eq!(systems_in("gate camp in old man star now"), [2]);
+        assert_eq!(systems_in("tash-murkon prime to jita"), [3, 1]);
+        assert_eq!(systems_in("jita old man star h-5gui"), [1, 2, 4]);
+    }
+
+    #[test]
+    fn words_that_are_not_systems_are_not_read() {
+        for text in [
+            "hostile in the area",
+            "Floris Saucus",
+            "man star old",
+            "old man",
+            "x-up",
+            "re-ship",
+            "+5",
+            "5gui",
+        ] {
+            assert_eq!(systems_in(text), Vec::<usize>::new(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_words_of_a_name_are_separated_by_blanks_only() {
+        // Punctuation between the words is not part of any name.
+        assert_eq!(systems_in("old, man star"), Vec::<usize>::new());
+        assert_eq!(systems_in("old - man star"), Vec::<usize>::new());
+        assert_eq!(systems_in("old\tman star"), [2]);
+    }
+
+    /// The ships a line reports with the dictionaries `names`, ignoring case.
+    fn ships_in(text: &str, names: &[&str]) -> Vec<(String, u32)> {
+        let kind = DetectionRuleKind::ShipNames {
+            dictionaries: names.iter().map(|name| name.to_string()).collect(),
+        };
+        let mut graph = graph(kind);
+        for node in &mut graph.nodes {
+            if let NodeKind::Detection(detection) = &mut node.kind {
+                detection.case_insensitive = true;
+            }
+        }
+        let (executor, errors) = Executor::new(graph);
+        assert!(errors.is_empty(), "{errors:?}");
+        match executor.run(&line(text), &FixedResolver).first() {
+            Some(activation) => match &activation.messages[0].data {
+                Data::Ships(ships) => ships.clone(),
+                other => panic!("{other:?}"),
+            },
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ships_are_read_whatever_their_case() {
+        for text in ["Rifter", "rifter", "RIFTER", "rIfTeR"] {
+            let ships = ships_in(text, &["ship_report_en"]);
+            assert_eq!(ships.len(), 1, "{text:?}");
+            assert_eq!(ships[0].1, 1, "{text:?}");
+        }
+        // The three spellings are one ship, named as it was first typed.
+        assert_eq!(
+            ships_in("rifter RIFTER Rifter", &["ship_report_en"]),
+            [(String::from("rifter"), 3)]
+        );
+    }
+
+    #[test]
+    fn ships_with_accents_are_read_whatever_their_case() {
+        // Only ASCII letters change case under `ascii_case_insensitive`: an
+        // upper case `Á` used to hide the ship.
+        for text in ["Cápsula", "cápsula", "CÁPSULA", "cÁpSuLa"] {
+            let ships = ships_in(text, &["ship_report_es"]);
+            assert_eq!(ships.len(), 1, "{text:?}");
+        }
+        assert_eq!(
+            ships_in("Cápsula cápsula CÁPSULA", &["ship_report_es"]),
+            [(String::from("Cápsula"), 3)]
+        );
+        // A word that merely contains one is not the ship.
+        assert!(ships_in("CÁPSULAS", &["ship_report_es"]).is_empty());
+    }
+
+    #[test]
+    fn a_ship_keeps_its_place_in_a_line_after_characters_that_change_length() {
+        // `İ` is two bytes and lowercases to three (`i` and a combining dot):
+        // the match in the lowercased line must map back to the right bytes.
+        let (folded, origin) = fold_with_map("İ rifter");
+        assert_eq!(folded.len(), origin.len());
+        let start = folded.find("rifter").unwrap();
+        assert_eq!(origin[start].0, 3);
+        assert_eq!(origin[folded.len() - 1].1, 9);
+
+        let kind = DetectionRuleKind::ShipNames {
+            dictionaries: vec![String::from("ship_report_en")],
+        };
+        let mut graph = graph(kind);
+        for node in &mut graph.nodes {
+            if let NodeKind::Detection(detection) = &mut node.kind {
+                detection.case_insensitive = true;
+            }
+        }
+        let (executor, _) = Executor::new(graph);
+        let activations = executor.run(&line("İ rifter"), &FixedResolver);
+        assert_eq!(activations[0].messages[0].spans, vec![3..9]);
+    }
+
+    #[test]
+    fn folding_is_unicode_lowercasing() {
+        assert_eq!(fold("RIFTER"), "rifter");
+        assert_eq!(fold("CÁPSULA Ñandú"), "cápsula ñandú");
+        assert_eq!(fold(""), "");
     }
 
     #[test]

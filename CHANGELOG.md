@@ -29,6 +29,27 @@ period it happened in.
 
 ### Changed
 
+* Systems and ships are detected whatever their case. `h-5gui`, `JITA` and
+  `old man star` now raise the same alert as `H-5GUI`, `Jita` and `Old Man
+  Star`. The code-like names (`J105443`, `1DQ1-A`, `AD001`) are matched by a
+  case-insensitive pattern; the names made of words are looked up: every run
+  of up to three words is tried against the universe, longest first, so
+  `hostile in jita` finds `Jita`. Ship dictionaries compare with Unicode case
+  folding, so `CÁPSULA` matches `Cápsula` (before, only ASCII letters changed
+  case). The limit of eight systems per line now counts the systems the line
+  reports, not the words that were tried. The case-insensitive switch of the
+  system detection node no longer applies and is hidden in the rule editor
+  (September 2026).
+* Documentation brought up to date with the code (September 2026):
+  `ARCHITECTURE.md` (module map, the intel pipeline on its own threads, the
+  channels, platform services and diagnostics, tests, how to regenerate the
+  diagrams), the six D2 diagrams and their SVGs (now rendered with the `elk`
+  layout), a `README.md` with working CI badges and the current features, a
+  rewritten `crates/webb/README.md`, a new `crates/native_tools/README.md`, an
+  *Installers* section in `BUILD.md`, the stale names of pages, functions
+  and messages in comments and in `assets/telescope.default.toml`, and new
+  screenshots of the current interface (`docs/screenshots`, English, taken on
+  Windows 11) in the `README.md`.
 * CI rebuilt around one `ci.yml`: a single job per operating system runs
   clippy, the all-features check and the tests on a shared build, `fmt` runs
   once, and there is a `ci-ok` summary check, run cancellation, least
@@ -59,6 +80,11 @@ period it happened in.
 
 ### Added
 
+* Tests of the intel pipeline with lines the way players write them (about
+  forty variants of system names), through the default rules and the real
+  resolver: what is read, what is not, what is left over as unrecognised text,
+  and the limits of eight reported systems per line and a hundred matches per
+  detection (September 2026).
 * Unit tests for the rule engine (`webb::rules`), the chat log reader, the
   rules editor, the SDE updater (against a local HTTP server), the character
   link helpers and `TelescopeApp` itself (`app_tests.rs`), and component tests
