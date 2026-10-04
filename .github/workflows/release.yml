@@ -152,24 +152,31 @@ jobs:
       # TelescopeApp::new() calls AppData::new(). Sourced from repo secrets
       # (Settings -> Secrets and variables -> Actions), never committed.
       #
-      # APPLE_SIGNING_IDENTITY: "-" is ad-hoc signing (macOS only -- ignored
-      # on Windows). No Apple Developer account/certificate involved, it's
-      # the pseudo-identity `codesign --sign -` uses to self-sign locally.
-      # Required just to let the app *launch* on Apple Silicon (macOS
-      # refuses to run an unsigned arm64 binary at all) -- it does NOT
-      # notarize or satisfy Gatekeeper for a downloaded file: users still
-      # get the "unidentified developer" prompt and have to right-click ->
-      # Open the first time. Real notarization needs a paid Developer ID
-      # certificate (see claude/release-ci-installers.md) -- this is the
-      # no-cost stand-in until/unless that's set up. `packager.json` itself
-      # is left untouched (macos.signingIdentity stays unset) so this only
-      # applies to this CI build, not manual local packaging.
+      # macOS is ad-hoc signed ("self-signed"): `macos.signingIdentity` is "-" in
+      # packager.json, the pseudo-identity `codesign --sign -` uses. No Apple
+      # Developer account or certificate involved. It lets the app launch on
+      # Apple Silicon (macOS refuses to run an unsigned arm64 binary) but does
+      # NOT notarize it or satisfy Gatekeeper for a downloaded file: users
+      # still get the "unidentified developer" prompt and open it once with
+      # right click -> Open. Real notarization needs a paid Developer ID
+      # certificate.
+      #
+      # It has to be in packager.json: cargo-packager reads the signing
+      # identity only from that config, NOT from the APPLE_SIGNING_IDENTITY
+      # environment variable (that one is Tauri's). The workflow used to set
+      # the variable and the macOS release came out unsigned. The identity is
+      # ignored on Windows.
       - name: Build installer
         env:
           ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
-          APPLE_SIGNING_IDENTITY: "-"
         run: cargo packager --release
+
+      # Fails the job when the app inside the installer is not signed, instead
+      # of publishing an unsigned release again.
+      - name: Verify the macOS signature
+        if: runner.os == 'macOS'
+        run: codesign --verify --deep --strict --verbose=2 target/release/Telescope.app
 
       # Fails when nothing was produced (the upload alone would not), and
       # records a SHA-256 of each installer next to it.

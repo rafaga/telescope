@@ -49,15 +49,15 @@
     },
     "macos": {
       "frameworks": null,
-      "entitlements": null
+      "entitlements": null,
+      "signingIdentity": "-"
     },
     "deb": null,
     "appimage": null,
     "pacman": null,
     "wix": {
       "languages": [
-        "en-US",
-        "es-ES"
+        "en-US"
       ],
       "template": null,
       "merge_modules": null,
