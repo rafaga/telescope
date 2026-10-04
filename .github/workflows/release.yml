@@ -172,6 +172,12 @@ jobs:
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
         run: cargo packager --release
 
+      - name: Debug output
+        if: runner.os == 'macOS'
+        run: |
+          cat packager.json
+          find . -path ./node_modules -prune -o \( -name "*.app" -o -name "*.dmg" \) -print 2>/dev/null
+
       # Fails the job when the app inside the installer is not signed, instead
       # of publishing an unsigned release again.
       - name: Verify the macOS signature
