@@ -40,7 +40,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        # `installer` is the one file pattern each OS produces: the upload
+        # steps below take only that one, so `fail_on_unmatched_files` still
+        # catches a missing installer. Listing both patterns in every job
+        # fails each of them on the pattern of the other OS ("Pattern
+        # 'target/release/*.msi' does not match any files" on macOS).
+        include:
+          - os: windows-latest
+            installer: target/release/*.msi
+          - os: macos-latest
+            installer: target/release/*.dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -183,8 +192,7 @@ jobs:
         with:
           fail_on_unmatched_files: true
           files: |
-            target/release/*.msi
-            target/release/*.dmg
+            ${{ matrix.installer }}
             target/release/SHA256SUMS-*.txt
 
       - name: Keep the installer as an artifact
@@ -193,7 +201,6 @@ jobs:
         with:
           name: installer-${{ runner.os }}
           path: |
-            target/release/*.msi
-            target/release/*.dmg
+            ${{ matrix.installer }}
             target/release/SHA256SUMS-*.txt
           if-no-files-found: error
