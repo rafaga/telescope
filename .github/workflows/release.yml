@@ -172,16 +172,16 @@ jobs:
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
         run: cargo packager --release
 
+      # Checks the signed bundle cargo-packager leaves next to the dmg (the
+      # dmg is built from it) instead of mounting the dmg: `hdiutil attach`
+      # failed silently on the runner and broke the release.
       - name: Verify the macOS signature
         if: runner.os == 'macOS'
         run: |
-          DMG=$(ls target/release/*.dmg | head -n 1)
-          test -n "$DMG" || { echo "No se encontró el .dmg"; exit 1; }
-          MNT=$(mktemp -d)
-          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -quiet
-          trap 'hdiutil detach "$MNT" -quiet' EXIT
-          codesign -dv --verbose=2 "$MNT/Telescope.app" 2>&1 || true
-          codesign --verify --deep --strict --verbose=2 "$MNT/Telescope.app"
+          APP=target/release/Telescope.app
+          test -d "$APP" || { echo "::error::$APP not found"; exit 1; }
+          codesign -dv --verbose=2 "$APP" 2>&1 || true
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       # Fails when nothing was produced (the upload alone would not), and
       # records a SHA-256 of each installer next to it.
