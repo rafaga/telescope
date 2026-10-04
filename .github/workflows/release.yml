@@ -172,17 +172,16 @@ jobs:
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
         run: cargo packager --release
 
-      - name: Debug output
-        if: runner.os == 'macOS'
-        run: |
-          cat packager.json
-          find . -path ./node_modules -prune -o \( -name "*.app" -o -name "*.dmg" \) -print 2>/dev/null
-
-      # Fails the job when the app inside the installer is not signed, instead
-      # of publishing an unsigned release again.
       - name: Verify the macOS signature
         if: runner.os == 'macOS'
-        run: codesign --verify --deep --strict --verbose=2 target/release/Telescope.app
+        run: |
+          DMG=$(ls target/release/*.dmg | head -n 1)
+          test -n "$DMG" || { echo "No se encontró el .dmg"; exit 1; }
+          MNT=$(mktemp -d)
+          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -quiet
+          trap 'hdiutil detach "$MNT" -quiet' EXIT
+          codesign -dv --verbose=2 "$MNT/Telescope.app" 2>&1 || true
+          codesign --verify --deep --strict --verbose=2 "$MNT/Telescope.app"
 
       # Fails when nothing was produced (the upload alone would not), and
       # records a SHA-256 of each installer next to it.
