@@ -3506,7 +3506,7 @@ dependencies = [
 
 [[package]]
 name = "native_tools"
-version = "1.0.0-rc01"
+version = "1.0.0-rc02"
 dependencies = [
  "ashpd",
  "block2 0.6.2",
@@ -6226,7 +6226,7 @@ dependencies = [
 
 [[package]]
 name = "telescope"
-version = "1.0.0-rc01"
+version = "1.0.0-rc02"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -7230,7 +7230,7 @@ dependencies = [
 
 [[package]]
 name = "webb"
-version = "1.0.0-rc01"
+version = "1.0.0-rc02"
 dependencies = [
  "aho-corasick",
  "base64 0.23.1",
