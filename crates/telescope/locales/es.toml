@@ -31,6 +31,7 @@ close = "Cerrar"
 title = "Acerca de Telescope"
 author = "Autor: %{name}"
 license = "Licencia: %{license}"
+support = "Apoya a Telescope en Ko-fi"
 
 [settings]
 title = "Configuración"

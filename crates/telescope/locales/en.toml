@@ -30,6 +30,7 @@ close = "Close"
 title = "About Telescope"
 author = "Author: %{name}"
 license = "Licensed under %{license}"
+support = "Support Telescope on Ko-fi"
 
 [settings]
 title = "Settings"
