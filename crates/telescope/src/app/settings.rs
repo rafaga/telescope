@@ -5,6 +5,7 @@
 //! `Settings` also scans the intel directory for chat logs and remembers how much
 //! of each log has already been read.
 
+use crate::app::database_updater::is_sqlite;
 use crate::app::intel::IntelLogName;
 use sde::builder::BuildUrls;
 use serde::{Deserialize, Serialize};
@@ -537,17 +538,23 @@ impl Settings {
         Ok(())
     }*/
 
-    /// Sets the player database file. Unlike the SDE, the file doesn't have
-    /// to exist yet (`EsiManager` creates it); only its directory does.
-    /// Takes effect the next time Telescope starts.
-    pub fn set_db(&mut self, path: &Path) -> Result<()> {
+    /// Whether `path` can be a file to create or open: it isn't empty or a
+    /// folder, and its folder exists. The file itself doesn't have to.
+    fn is_file_path_in_existing_folder(path: &Path) -> bool {
         let parent_exists = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.is_dir(),
             // A bare file name lives in the working directory.
             Some(_) => true,
             None => false,
         };
-        if path.as_os_str().is_empty() || path.is_dir() || !parent_exists {
+        !path.as_os_str().is_empty() && !path.is_dir() && parent_exists
+    }
+
+    /// Sets the player database file. The file doesn't have to exist yet
+    /// (`EsiManager` creates it); only its directory does. Takes effect the
+    /// next time Telescope starts.
+    pub fn set_db(&mut self, path: &Path) -> Result<()> {
+        if !Self::is_file_path_in_existing_folder(path) {
             return Err(SettingsError::InvalidDirectory(
                 path.to_string_lossy().to_string(),
             ));
@@ -557,8 +564,18 @@ impl Settings {
         Ok(())
     }
 
+    /// Sets the SDE database file. Like the player database, the file
+    /// doesn't have to exist yet (`DatabaseUpdater` builds it there when the
+    /// change is applied); only its directory does.
+    ///
+    /// A file that does exist must be empty or a SQLite database: the
+    /// updater replaces whatever it finds at this path with the database it
+    /// builds, so it must not be some other file the user typed by mistake.
     pub fn set_sde(&mut self, path: &Path) -> Result<()> {
-        if !path.exists() {
+        let holds_something_else = path.is_file()
+            && std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+            && !is_sqlite(path);
+        if !Self::is_file_path_in_existing_folder(path) || holds_something_else {
             return Err(SettingsError::InvalidDirectory(
                 path.to_string_lossy().to_string(),
             ));
@@ -568,8 +585,8 @@ impl Settings {
         Ok(())
     }
 
-    /// Test-only escape hatch around [`Self::set_sde`]'s existence
-    /// check, for exercising callers (e.g.
+    /// Test-only escape hatch around [`Self::set_sde`]'s path
+    /// checks, for exercising callers (e.g.
     /// `TelescopeApp::sde_build_cache_dir`) against paths -- like an
     /// empty one -- that can legitimately show up in a `Settings` loaded
     /// from an old `telescope.toml` (predating
@@ -1148,20 +1165,53 @@ mod tests {
     }
 
     #[test]
-    fn set_sde_accepts_only_existing_paths() {
+    fn set_sde_takes_a_file_that_may_not_exist_yet_in_a_folder_that_does() {
         let dir = temp_dir("set-sde");
         let mut settings = saved_settings();
-        assert_eq!(
-            settings.set_sde(&dir.join("missing.db")),
-            Err(SettingsError::InvalidDirectory(
-                dir.join("missing.db").to_string_lossy().to_string()
-            ))
-        );
+
+        // The updater builds the database there: it doesn't have to exist.
+        let new = dir.join("new-location.db");
+        assert_eq!(settings.set_sde(&new), Ok(()));
+        assert_eq!(settings.get_sde(), new.as_path());
+        assert!(!settings.its_saved());
+
+        // Not a folder, not a file in a folder that isn't there, not nothing.
+        for invalid in [
+            dir.clone(),
+            dir.join("no-folder").join("sde.db"),
+            PathBuf::new(),
+        ] {
+            let mut settings = saved_settings();
+            assert_eq!(
+                settings.set_sde(&invalid),
+                Err(SettingsError::InvalidDirectory(
+                    invalid.to_string_lossy().to_string()
+                )),
+                "{invalid:?}"
+            );
+            assert!(settings.its_saved());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_sde_refuses_an_existing_file_that_is_not_a_database() {
+        // The updater replaces what it finds at this path.
+        let dir = temp_dir("set-sde-other");
+        let other = dir.join("notes.txt");
+        fs::write(&other, "my notes").unwrap();
+        let mut settings = saved_settings();
+        assert!(settings.set_sde(&other).is_err());
         assert!(settings.its_saved());
 
-        assert_eq!(settings.set_sde(&dir), Ok(()));
-        assert_eq!(settings.get_sde(), dir.as_path());
-        assert!(!settings.its_saved());
+        // An empty file, and a SQLite database, are fine.
+        let empty = dir.join("empty.db");
+        fs::write(&empty, b"").unwrap();
+        assert_eq!(settings.set_sde(&empty), Ok(()));
+        let database = dir.join("sde.db");
+        fs::write(&database, b"SQLite format 3\0and the rest of the page").unwrap();
+        assert_eq!(settings.set_sde(&database), Ok(()));
+        assert_eq!(settings.get_sde(), database.as_path());
         let _ = fs::remove_dir_all(&dir);
     }
 

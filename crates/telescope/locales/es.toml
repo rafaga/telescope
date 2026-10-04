@@ -133,6 +133,8 @@ check_updates = "Buscar actualizaciones"
 player_db = "Base privada"
 player_db_hint = "Personajes, tokens y reglas. Escribe una ruta nueva o elige un archivo; si no existe, se crea."
 player_db_invalid = "No es una ruta de archivo válida: su carpeta debe existir."
+sde_hint = "Escribe una ruta nueva o elige un archivo; si el archivo no existe, Telescope construye la base de datos ahí."
+sde_invalid = "No es una ruta de base de datos válida: su carpeta debe existir y no puede ser una carpeta ni un archivo que no sea una base de datos."
 restart = "Una nueva ruta de la base de datos privada se aplica al reiniciar Telescope."
 
 [settings.patterns]

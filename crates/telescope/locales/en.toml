@@ -132,6 +132,8 @@ check_updates = "Check for updates"
 player_db = "Private database"
 player_db_hint = "Characters, tokens and rules. Type a new path or pick a file; a file that doesn't exist is created."
 player_db_invalid = "Not a valid file path: its folder must exist."
+sde_hint = "Type a new path or pick a file; if the file doesn't exist, Telescope builds the database there."
+sde_invalid = "Not a valid database path: its folder must exist, and it can't be a folder or a file that isn't a database."
 restart = "A new private database path takes effect when Telescope restarts."
 
 [settings.patterns]
