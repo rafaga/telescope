@@ -1167,7 +1167,7 @@ fn installed_build(sde_path: &std::path::Path) -> Option<String> {
 
 /// Whether `path` is a file starting with the SQLite header (a missing,
 /// unreadable or too short file isn't).
-fn is_sqlite(path: &std::path::Path) -> bool {
+pub(crate) fn is_sqlite(path: &std::path::Path) -> bool {
     let mut header = [0u8; 16];
     File::open(path)
         .and_then(|mut file| file.read_exact(&mut header))

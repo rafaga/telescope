@@ -146,7 +146,12 @@ fn picked_sde_and_db_paths_are_validated() {
     assert_eq!(app.settings.get_sde(), sde);
     assert_eq!(app.settings.get_db(), dir.join("other-players.db"));
 
-    send(&app, Message::SdePathPicked(dir.join("nope.db")));
+    // A folder that isn't there is refused; a file that isn't there yet in a
+    // folder that is, is taken (the updater builds it).
+    send(
+        &app,
+        Message::SdePathPicked(dir.join("no-folder").join("nope.db")),
+    );
     send(
         &app,
         Message::DbPathPicked(dir.join("no-folder").join("p.db")),
@@ -155,6 +160,10 @@ fn picked_sde_and_db_paths_are_validated() {
     assert_eq!(app.settings.get_sde(), sde);
     assert!(logged(&app, "SdePathPicked"));
     assert!(logged(&app, "DbPathPicked"));
+
+    send(&app, Message::SdePathPicked(dir.join("new-sde.db")));
+    pump(&mut app);
+    assert_eq!(app.settings.get_sde(), dir.join("new-sde.db"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
