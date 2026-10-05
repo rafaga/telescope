@@ -8,10 +8,10 @@
 //! [`IntelCategory`]). A `clear` report is listed with a check mark.
 //!
 //! Every map pane keeps an [`AlertLog`]. Each entry lives as long as its own
-//! visual alert would (received + the alert duration from Settings), no
+//! visual alert would last (received + the alert duration from Settings), no
 //! matter what newer alerts on the same system do: a newer alert restarts
-//! the node's animation, so the node keeps pulsing while any of its entries
-//! is still listed.
+//! the node's animation, so a region map's node keeps pulsing while any of
+//! its entries is still listed. The universe map only pulses once per alert.
 
 use crate::graph::{Data, Mensaje};
 use crate::intel::{IntelCategory, sanitize_display};
