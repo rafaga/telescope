@@ -172,29 +172,22 @@ jobs:
           ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
         run: cargo packager --release
 
-      # cargo-packager deletes Telescope.app once the dmg is built, so the
-      # signature is checked on the dmg itself, and then on the app inside it
-      # when the dmg can be mounted. `hdiutil attach -quiet` used to fail
-      # without a word on the runner; its error is now printed, and a mount
-      # failure is only a warning (the dmg signature check is the hard one).
+      # Checks the signed bundle cargo-packager leaves next to the dmg (the
+      # dmg is built from it) instead of mounting the dmg: `hdiutil attach`
+      # failed silently on the runner and broke the release.
+
       - name: Verify the macOS signature
         if: runner.os == 'macOS'
         run: |
           DMG=$(ls target/release/*.dmg | head -n 1)
-          test -n "$DMG" || { echo "::error::No .dmg found"; exit 1; }
-          codesign -dv --verbose=2 "$DMG" 2>&1 || true
-          codesign --verify --verbose=2 "$DMG"
+          test -f "$DMG" || { echo "::error::no .dmg in target/release"; exit 1; }
           MNT=$(mktemp -d)
-          if hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly -noverify -noautoopen; then
-            codesign -dv --verbose=2 "$MNT/Telescope.app" 2>&1 || true
-            rc=0
-            codesign --verify --deep --strict --verbose=2 "$MNT/Telescope.app" || rc=$?
-            hdiutil detach "$MNT" -force || true
-            exit "$rc"
-          else
-            echo "::warning::Could not mount $DMG; only the dmg signature was verified."
-          fi
-
+          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly
+          trap 'hdiutil detach "$MNT" -force || true' EXIT
+          ls -la "$MNT"
+          codesign -dvvv "$MNT/Telescope.app" 2>&1
+          codesign --verify --deep --strict --verbose=4 "$MNT/Telescope.app"
+          
       # Fails when nothing was produced (the upload alone would not), and
       # records a SHA-256 of each installer next to it.
       - name: Checksums
