@@ -244,8 +244,6 @@ immediate = "Vincular y desvincular se aplican al instante: pasan por EVE SSO y 
 [map]
 universe = "Universo"
 search_region = "Buscar región"
-set_beacon = "Establecer marcador"
-settings = "⚙ Configuración"
 # Number of pilots in an intel alert, in the node tooltips.
 alert_pilots_one = "1 neutral"
 alert_pilots_other = "%{count} neutrales"

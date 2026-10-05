@@ -19,8 +19,8 @@ use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
     objects::{
-        ContextMenuManager, HitContext, MapPoint, MapSegment, MapSettings, MarkerContext,
-        NodeContext, NodeOutline, NodeTemplate, RegionLabel, VisibilitySetting,
+        HitContext, MapPoint, MapSegment, MapSettings, MarkerContext, NodeContext, NodeOutline,
+        NodeTemplate, RegionLabel, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
@@ -517,7 +517,6 @@ impl RegionPane {
         // 40.0) -- otherwise it covers the neighbouring systems on the
         // tighter regional view.
         object.map.settings.animation.pulse.spread = 12.0;
-        object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
             .map
             .set_node_template(Rc::new(Template::new(node_style)));
@@ -978,28 +977,6 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
 
     fn simplification_options(&self) -> SimplificationOptions {
         self.simplification_options
-    }
-}
-
-struct ContextMenu {}
-
-impl ContextMenu {
-    #[tracing::instrument]
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ContextMenuManager for ContextMenu {
-    #[tracing::instrument(skip(self, ui))]
-    fn ui(&self, ui: &mut Ui) {
-        if ui.button(t!("map.set_beacon")).clicked() {
-            ui.close();
-        }
-        ui.separator();
-        if ui.button(t!("map.settings")).clicked() {
-            ui.close();
-        }
     }
 }
 

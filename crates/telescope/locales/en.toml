@@ -243,8 +243,6 @@ immediate = "Linking and unlinking apply at once: they go through EVE SSO and do
 [map]
 universe = "Universe"
 search_region = "Search region:"
-set_beacon = "Set beacon"
-settings = "⚙ Settings"
 # Number of pilots in an intel alert, in the node tooltips.
 alert_pilots_one = "1 neutral"
 alert_pilots_other = "%{count} neutrals"
