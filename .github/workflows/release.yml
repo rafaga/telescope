@@ -182,7 +182,9 @@ jobs:
           DMG=$(ls target/release/*.dmg | head -n 1)
           test -f "$DMG" || { echo "::error::no .dmg in target/release"; exit 1; }
           MNT=$(mktemp -d)
-          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly
+          # The dmg embeds the license: hdiutil asks "Agree Y/N" and cancels
+          # without a terminal ("attach canceled"), so answer it with `yes`.
+          yes | hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly -noverify -noautoopen
           trap 'hdiutil detach "$MNT" -force || true' EXIT
           ls -la "$MNT"
           codesign -dvvv "$MNT/Telescope.app" 2>&1
