@@ -312,7 +312,6 @@ impl UniversePane {
         object.map.settings.style.region_label_font =
             FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
-        object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
     }
 
