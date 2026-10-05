@@ -245,11 +245,21 @@ fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
     });
 }
 
-/// Starts an intel alert's visual on a pane's map: a pulse repeated for its
-/// duration, fading out over that time (egui-map's lasting notifications).
+/// Starts an intel alert's visual on the universe map: a pulse repeated for
+/// its duration, fading out over that time (egui-map's lasting
+/// notifications).
 fn pulse_alert(map: &mut Map, alert: &IntelAlert) {
     if let Some(node) = map.node(alert.system_id) {
         node.lasting(alert.duration).pulse(alert.received);
+    }
+}
+
+/// Starts an intel alert's visual on a region's map: rings that keep
+/// spreading for its duration, fading out over that time. The regional view
+/// is tighter than the universe's, where a pulse reads as one blob.
+fn ripple_alert(map: &mut Map, alert: &IntelAlert) {
+    if let Some(node) = map.node(alert.system_id) {
+        node.lasting(alert.duration).ripple(alert.received);
     }
 }
 
@@ -504,9 +514,12 @@ impl RegionPane {
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         // A region is a much smaller area than the whole universe, so the
-        // intel alert pulse spreads over a shorter radius here (default is
-        // 40.0) -- otherwise it covers the neighbouring systems on the
-        // tighter regional view.
+        // rings of the intel alert ripple spread over a shorter radius here
+        // (default is 36.0) -- otherwise they cover the neighbouring systems
+        // on the tighter regional view. The pulse (still available to the
+        // Debug window's effect preview) gets the same treatment (default
+        // 40.0).
+        object.map.settings.animation.ripple.spread = 12.0;
         object.map.settings.animation.pulse.spread = 12.0;
         object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
@@ -605,7 +618,7 @@ impl TabPane for RegionPane {
                     }
                 }
                 MapSync::SystemAlert(alert) => {
-                    pulse_alert(&mut self.map, &alert);
+                    ripple_alert(&mut self.map, &alert);
                 }
                 MapSync::SystemTooltip(alert) => {
                     push_alert(&mut self.alerts, alert);
@@ -1462,6 +1475,14 @@ mod logic_tests {
         map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
         pulse_alert(&mut map, &alert(1, "on the map"));
         pulse_alert(&mut map, &alert(99, "not on this map"));
+    }
+
+    #[test]
+    fn an_alert_ripple_tolerates_nodes_the_map_does_not_have() {
+        let mut map = Map::new();
+        map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
+        ripple_alert(&mut map, &alert(1, "on the map"));
+        ripple_alert(&mut map, &alert(99, "not on this map"));
     }
 
     #[test]
