@@ -64,6 +64,10 @@ CI builds and tests every change on Linux, Windows and macOS.
 | ![Settings, Alerts: distance, duration and sound](docs/screenshots/settings-alerts.png) | ![The window that shows the SDE database being built](docs/screenshots/sde-update.png) |
 | **Alerts.** How close, for how long and with which sound. | **SDE database.** Built automatically the first time Telescope runs. |
 
+Telescope running on macOS (Apple Silicon):
+
+![Telescope on macOS: the universe map with a tab for each region, and the status log](docs/screenshots/macos-universe.png)
+
 ## Community
 
 Questions, ideas, bug reports and rule sets to share are welcome on the
