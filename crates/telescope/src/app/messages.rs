@@ -28,7 +28,9 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub enum MapSync {
     CenterOn((usize, Target)),
-    /// An intel report on a solar system: its visual alert (a pulse).
+    /// An intel report on a solar system: its visual alert (a single pulse on
+    /// the universe map, a pulse repeated for the alert's duration on a
+    /// region's).
     SystemAlert(IntelAlert),
     /// An intel line listed in the node tooltip of a solar system, with no
     /// visual alert.

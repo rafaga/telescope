@@ -95,7 +95,7 @@ radius = "Sonar a"
 jumps = "saltos o menos"
 map_title = "Aviso en el mapa"
 duration = "Duración (min:s)"
-duration_hint = "El nodo pulsa y se desvanece durante este tiempo."
+duration_hint = "Los mapas de región siguen pulsando y se desvanecen durante este tiempo, y el tooltip lista el reporte lo mismo. El mapa del universo pulsa una sola vez."
 center = "Centrar mapas"
 center_hint = "Al sonar, mover los mapas al personaje más cercano"
 sound_title = "Sonido"
@@ -244,8 +244,6 @@ immediate = "Vincular y desvincular se aplican al instante: pasan por EVE SSO y 
 [map]
 universe = "Universo"
 search_region = "Buscar región"
-set_beacon = "Establecer marcador"
-settings = "⚙ Configuración"
 # Number of pilots in an intel alert, in the node tooltips.
 alert_pilots_one = "1 neutral"
 alert_pilots_other = "%{count} neutrales"

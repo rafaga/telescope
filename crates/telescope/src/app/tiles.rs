@@ -19,8 +19,8 @@ use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
     objects::{
-        ContextMenuManager, HitContext, MapPoint, MapSegment, MapSettings, MarkerContext,
-        NodeContext, NodeOutline, NodeTemplate, RegionLabel, VisibilitySetting,
+        HitContext, MapPoint, MapSegment, MapSettings, MarkerContext, NodeContext, NodeOutline,
+        NodeTemplate, RegionLabel, VisibilitySetting,
     },
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
@@ -245,9 +245,19 @@ fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
     });
 }
 
-/// Starts an intel alert's visual on a pane's map: a pulse repeated for its
-/// duration, fading out over that time (egui-map's lasting notifications).
+/// Starts an intel alert's visual on the universe map: a single pulse when
+/// the report arrives. Unlike [`repeating_pulse_alert`] it does not repeat
+/// for the alert's duration (that only governs its tooltip entry).
 fn pulse_alert(map: &mut Map, alert: &IntelAlert) {
+    if let Some(node) = map.node(alert.system_id) {
+        node.pulse(alert.received);
+    }
+}
+
+/// Starts an intel alert's visual on a region's map: a pulse repeated for
+/// its duration, fading out over that time (egui-map's lasting
+/// notifications).
+fn repeating_pulse_alert(map: &mut Map, alert: &IntelAlert) {
     if let Some(node) = map.node(alert.system_id) {
         node.lasting(alert.duration).pulse(alert.received);
     }
@@ -302,7 +312,6 @@ impl UniversePane {
         object.map.settings.style.region_label_font =
             FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
-        object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
     }
 
@@ -508,7 +517,6 @@ impl RegionPane {
         // 40.0) -- otherwise it covers the neighbouring systems on the
         // tighter regional view.
         object.map.settings.animation.pulse.spread = 12.0;
-        object.map.set_context_manager(Rc::new(ContextMenu::new()));
         object
             .map
             .set_node_template(Rc::new(Template::new(node_style)));
@@ -605,7 +613,7 @@ impl TabPane for RegionPane {
                     }
                 }
                 MapSync::SystemAlert(alert) => {
-                    pulse_alert(&mut self.map, &alert);
+                    repeating_pulse_alert(&mut self.map, &alert);
                 }
                 MapSync::SystemTooltip(alert) => {
                     push_alert(&mut self.alerts, alert);
@@ -969,28 +977,6 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
 
     fn simplification_options(&self) -> SimplificationOptions {
         self.simplification_options
-    }
-}
-
-struct ContextMenu {}
-
-impl ContextMenu {
-    #[tracing::instrument]
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ContextMenuManager for ContextMenu {
-    #[tracing::instrument(skip(self, ui))]
-    fn ui(&self, ui: &mut Ui) {
-        if ui.button(t!("map.set_beacon")).clicked() {
-            ui.close();
-        }
-        ui.separator();
-        if ui.button(t!("map.settings")).clicked() {
-            ui.close();
-        }
     }
 }
 
@@ -1462,6 +1448,14 @@ mod logic_tests {
         map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
         pulse_alert(&mut map, &alert(1, "on the map"));
         pulse_alert(&mut map, &alert(99, "not on this map"));
+    }
+
+    #[test]
+    fn a_repeating_alert_pulse_tolerates_nodes_the_map_does_not_have() {
+        let mut map = Map::new();
+        map.add_points(vec![MapPoint::new(1, [0.0, 0.0])]);
+        repeating_pulse_alert(&mut map, &alert(1, "on the map"));
+        repeating_pulse_alert(&mut map, &alert(99, "not on this map"));
     }
 
     #[test]
