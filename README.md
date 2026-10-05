@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/rafaga/telescope/actions/workflows/ci.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/ci.yml)
 [![Security](https://github.com/rafaga/telescope/actions/workflows/security.yml/badge.svg)](https://github.com/rafaga/telescope/actions/workflows/security.yml)
+[![Discord](https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/v9SseaWhz4)
 
 Telescope is a desktop application that watches your EVE Online chat logs,
 evaluates them against configurable pattern rules and shows the resulting
@@ -62,6 +63,12 @@ CI builds and tests every change on Linux, Windows and macOS.
 | **Sources.** The chat log folder, its channels and when each last spoke. | **Rules.** The graph of detections, logic and outputs, with the selected node's fields. |
 | ![Settings, Alerts: distance, duration and sound](docs/screenshots/settings-alerts.png) | ![The window that shows the SDE database being built](docs/screenshots/sde-update.png) |
 | **Alerts.** How close, for how long and with which sound. | **SDE database.** Built automatically the first time Telescope runs. |
+
+## Community
+
+Questions, ideas, bug reports and rule sets to share are welcome on the
+[Discord server](https://discord.gg/v9SseaWhz4). Bugs and feature requests are
+also tracked as [GitHub issues](https://github.com/rafaga/telescope/issues).
 
 ## Building and running
 
