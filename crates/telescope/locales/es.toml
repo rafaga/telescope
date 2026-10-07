@@ -33,11 +33,13 @@ author = "Autor: %{name}"
 license = "Licencia: %{license}"
 support = "Apoya a Telescope en Ko-fi"
 
+[common]
+cancel = "Cancelar"
+accept = "Aceptar"
+
 [settings]
 title = "Configuración"
-cancel = "Cancelar"
 apply = "Aplicar"
-accept = "Aceptar"
 saved = "Todo guardado"
 pending = "Cambios sin aplicar en %{pages}"
 browse = "Examinar…"
@@ -255,11 +257,15 @@ title = "Bitácora (%{count})"
 collapse = "Colapsar la bitácora"
 expand = "Expandir la bitácora"
 
+[update_modal]
+title = "Hay una nueva versión de Telescope"
+message = "Telescope %{latest} está disponible. Estás usando la %{current}."
+download = "Ir a la versión"
+
 [sde_update]
 title = "Actualizando la base de datos SDE"
 description = "Telescope guarda una copia local de los datos estáticos de EVE Online: sistemas, portales y regiones."
 elapsed = "Tiempo desde que empezó la actualización"
-cancel = "Cancelar"
 cancelling = "Cancelando..."
 hint = "Los mapas vuelven a mostrarse cuando la base de datos esté lista."
 checking = "Verificando actualizaciones..."
@@ -272,7 +278,6 @@ step_rebuild = "Construir la base de datos"
 step_verify = "Verificar"
 extracting = "Extrayendo la exportación..."
 verifying = "Verificando la nueva base de datos..."
-accept = "Aceptar"
 none = "ninguna"
 available = "%{build} disponible"
 versions = "Static Data Export · instalada %{installed} · disponible %{available}"

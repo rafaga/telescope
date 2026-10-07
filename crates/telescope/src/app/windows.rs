@@ -8,3 +8,4 @@ pub(crate) mod licenses;
 #[cfg(debug_assertions)]
 pub(crate) mod debug;
 pub(crate) mod settings;
+mod update_modal;

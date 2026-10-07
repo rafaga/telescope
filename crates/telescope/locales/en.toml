@@ -32,11 +32,13 @@ author = "Author: %{name}"
 license = "Licensed under %{license}"
 support = "Support Telescope on Ko-fi"
 
+[common]
+cancel = "Cancel"
+accept = "Accept"
+
 [settings]
 title = "Settings"
-cancel = "Cancel"
 apply = "Apply"
-accept = "Accept"
 saved = "Everything saved"
 pending = "Unsaved changes in %{pages}"
 browse = "Browse…"
@@ -254,11 +256,15 @@ title = "Log (%{count})"
 collapse = "Collapse the log"
 expand = "Expand the log"
 
+[update_modal]
+title = "A new version of Telescope is available"
+message = "Telescope %{latest} is available. You are running %{current}."
+download = "Go to the release"
+
 [sde_update]
 title = "Updating the SDE database"
 description = "Telescope keeps a local copy of EVE Online's static data: systems, gates and regions."
 elapsed = "Time since the update started"
-cancel = "Cancel"
 cancelling = "Cancelling..."
 hint = "The maps show again once the database is ready."
 checking = "Checking for a new EVE Online SDE build..."
@@ -271,7 +277,6 @@ step_rebuild = "Build the database"
 step_verify = "Verify"
 extracting = "Extracting the export..."
 verifying = "Verifying the new database..."
-accept = "Accept"
 none = "none"
 available = "%{build} available"
 versions = "Static Data Export · installed %{installed} · available %{available}"

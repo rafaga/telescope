@@ -101,6 +101,8 @@ rodio = { version = "0.22.2", default-features = false, features = ["wav","mp3",
 rust-i18n = "4.2.2"
 # The operating system's language, for `language = "auto"` in `[ui]`.
 sys-locale = "0.3.2"
+semver = { version = "1.0"}
+reqwest = { version = "0.13.5", features=["json"] }
 
 
 # native:

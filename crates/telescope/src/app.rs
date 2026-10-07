@@ -32,6 +32,7 @@ use webb::rules::InputKind;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
+use self::update_checker::UpdateChecker;
 use self::windows::settings::patterns::PatternsEditor;
 
 mod audio;
@@ -46,6 +47,7 @@ mod notifications;
 mod persistence;
 mod settings;
 mod tiles;
+mod update_checker;
 mod watchdog;
 mod windows;
 
@@ -157,6 +159,9 @@ pub struct TelescopeApp {
     // UI state for the "updating the SDE database" progress window --
     // see `database_updater`'s module docs.
     database_updater: database_updater::DatabaseUpdater,
+    /// The newer release the "new version" dialog announces, while it is
+    /// open (see `windows::update_modal`).
+    update_prompt: Option<update_checker::UpdateInfo>,
     // Last `GenericNotification` accepted by `update_status_with_error`,
     // plus when it was accepted -- lets that function collapse an
     // immediate repeat (same type/source/context/text) arriving within
@@ -285,6 +290,9 @@ impl TelescopeApp {
                 true,
                 settings.get_data_source_urls().clone(),
             );
+            // Looks for a newer Telescope release on GitHub, also in the
+            // background; silent unless there is one (see `update_checker`).
+            UpdateChecker::spawn(Arc::clone(&arc_msg_sender));
         }
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
@@ -483,6 +491,7 @@ impl TelescopeApp {
             licenses: None,
             audio,
             database_updater: database_updater::DatabaseUpdater::default(),
+            update_prompt: None,
             last_notification: None,
         }
     }
@@ -570,6 +579,7 @@ impl eframe::App for TelescopeApp {
             licenses: _,
             audio: _,
             database_updater: _,
+            update_prompt: _,
             last_notification: _,
         } = self;
 
@@ -618,6 +628,7 @@ impl eframe::App for TelescopeApp {
         self.drain_map_messages();
         // Over the Settings screen too: its Application page starts updates.
         self.database_updater.show(ui.ctx());
+        self.show_update_prompt(ui.ctx());
 
         // The Settings screen is full-window: while it is open it replaces the
         // maps, the log panel and the menu.
@@ -791,6 +802,7 @@ impl TelescopeApp {
                     self.handle_character_authenticated(*linked)
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
+                Message::NewVersionAvailable(info) => self.update_prompt = Some(info),
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),

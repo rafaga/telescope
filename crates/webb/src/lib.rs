@@ -18,13 +18,13 @@
 //! * [`map_alerts`]: condenses a line's messages into what a map's node
 //!   tooltip shows.
 
-#[cfg(feature = "esi")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod auth_service;
-#[cfg(feature = "esi")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod esi;
 pub mod graph;
 pub mod intel;
 pub mod map_alerts;
-#[cfg(feature = "esi")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod objects;
 pub mod rules;

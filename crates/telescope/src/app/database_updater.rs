@@ -258,9 +258,9 @@ impl DatabaseUpdater {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(8.0);
                             let hover = if finished {
-                                t!("sde_update.accept")
+                                t!("common.accept")
                             } else {
-                                t!("sde_update.cancel")
+                                t!("common.cancel")
                             };
                             if close_button(ui, can_cancel || finished)
                                 .on_hover_text(hover)
@@ -410,7 +410,7 @@ impl DatabaseUpdater {
                                     let accept = ui.add_enabled_ui(finished, |ui| {
                                         egui_panels::button(
                                             ui,
-                                            t!("sde_update.accept").into_owned(),
+                                            t!("common.accept").into_owned(),
                                             if finished {
                                                 egui_panels::Variant::Primary
                                             } else {
@@ -424,7 +424,7 @@ impl DatabaseUpdater {
                                     let label = if cancelling {
                                         t!("sde_update.cancelling")
                                     } else {
-                                        t!("sde_update.cancel")
+                                        t!("common.cancel")
                                     };
                                     let cancel = ui.add_enabled_ui(can_cancel, |ui| {
                                         egui_panels::button(
