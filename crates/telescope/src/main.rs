@@ -117,5 +117,3 @@ fn main() -> eframe::Result {
         Box::new(|cc| Ok(Box::new(telescope::TelescopeApp::new(cc)))),
     )
 }
-
-
