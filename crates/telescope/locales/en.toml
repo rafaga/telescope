@@ -254,6 +254,12 @@ title = "Log (%{count})"
 collapse = "Collapse the log"
 expand = "Expand the log"
 
+[update_modal]
+title = "A new version of Telescope is available"
+message = "Telescope %{latest} is available. You are running %{current}."
+download = "Go to the release"
+cancel = "Cancel"
+
 [sde_update]
 title = "Updating the SDE database"
 description = "Telescope keeps a local copy of EVE Online's static data: systems, gates and regions."

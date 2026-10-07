@@ -255,6 +255,12 @@ title = "Bitácora (%{count})"
 collapse = "Colapsar la bitácora"
 expand = "Expandir la bitácora"
 
+[update_modal]
+title = "Hay una nueva versión de Telescope"
+message = "Telescope %{latest} está disponible. Estás usando la %{current}."
+download = "Ir a la versión"
+cancel = "Cancelar"
+
 [sde_update]
 title = "Actualizando la base de datos SDE"
 description = "Telescope guarda una copia local de los datos estáticos de EVE Online: sistemas, portales y regiones."

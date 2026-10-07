@@ -13,11 +13,11 @@ use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPu
 use crate::objects::{Corporation, TokenSet};
 use http_body_util::{BodyExt, Empty};
 use hyper_tls::HttpsConnector;
-use rfesi::prelude::*;
 use rusqlite::vtab::array;
 use rusqlite::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use esi_openapi::prelude::*;
 //use hyper::body::Bytes;
 use bytes::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
@@ -75,31 +75,32 @@ pub trait EsiApi: Send {
     async fn get_location(&mut self, character_id: i32) -> Result<i32, String>;
 }
 
-/// ESI endpoints Telescope uses, as `(operationId, path)` in the format of
-/// the old Swagger spec, which is what `rfesi` resolves operation ids
-/// against.
+/// ESI endpoints Telescope uses, as `(operationId, path)`. The ids must be
+/// the ones of the current OpenAPI spec (e.g. `GetCharactersDetail`), which
+/// are the ones the `esi-openapi` endpoint groups look up; the legacy
+/// snake_case ids are not resolved against a hand-built spec.
 ///
 /// CCP removed `/latest/swagger.json` on 11 August 2026 (it now answers
-/// 404), and `rfesi` 0.50.2 still downloads its spec from there, so every
-/// ESI call failed with "Invalid HTTP status code received: 404". Embedding
-/// the few routes we need removes that network dependency; the routes
-/// themselves still answer (versioned by the `X-Compatibility-Date` header
-/// `rfesi` sends). A new endpoint used through `rfesi` must be added here.
+/// 404), so every ESI call that downloaded the spec failed with "Invalid
+/// HTTP status code received: 404". Embedding the few routes we need removes
+/// that network dependency; the routes themselves still answer (versioned by
+/// the `X-Compatibility-Date` header). A new endpoint used through
+/// `esi-openapi` must be added here.
 const ESI_ENDPOINTS: &[(&str, &str)] = &[
-    ("get_characters_character_id", "/characters/{character_id}/"),
+    ("GetCharactersDetail", "/characters/{character_id}"),
     (
-        "get_characters_character_id_portrait",
-        "/characters/{character_id}/portrait/",
+        "GetCharactersCharacterIdPortrait",
+        "/characters/{character_id}/portrait",
     ),
     (
-        "get_characters_character_id_location",
-        "/characters/{character_id}/location/",
+        "GetCharactersCharacterIdLocation",
+        "/characters/{character_id}/location",
     ),
     (
-        "get_corporations_corporation_id",
-        "/corporations/{corporation_id}/",
+        "GetCorporationsCorporationId",
+        "/corporations/{corporation_id}",
     ),
-    ("get_alliances_alliance_id", "/alliances/{alliance_id}/"),
+    ("GetAlliancesAllianceId", "/alliances/{alliance_id}"),
 ];
 
 /// Builds the minimal Swagger-shaped spec (`{"paths": {path: {"get":
@@ -930,10 +931,10 @@ mod tests {
             manager
                 .api
                 .esi
-                .get_endpoint_for_op_id("get_characters_character_id_portrait")
+                .get_endpoint_for_op_id("GetCharactersCharacterIdLocation")
                 .unwrap()
                 .replace("{character_id}", "42"),
-            "characters/42/portrait/"
+            "characters/42/location"
         );
         cleanup(&path);
     }
