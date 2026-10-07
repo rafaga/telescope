@@ -124,11 +124,10 @@ glow_hint = "El brillo sobre el sistema de un personaje vinculado. 0 % lo desact
 [settings.application]
 description = "Idioma de la interfaz y las bases de datos locales."
 language_title = "Interfaz"
-log_debug = "Mensajes de depuración en la bitácora"
-log_debug_hint = "Desactivado solo los oculta de la bitácora; se siguen recibiendo y procesando."
 language = "Idioma de la interfaz"
 auto = "Automático (%{language})"
 language_hint = "\"Automático\" sigue a tu sistema operativo. Se ve al instante; se guarda con Aplicar."
+log_debug = "Mensajes de depuración en la bitácora"
 data_title = "Datos"
 sde = "SDE"
 sde_ok = "Base de datos cargada · %{count} sistemas"

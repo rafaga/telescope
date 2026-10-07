@@ -53,9 +53,6 @@ impl TelescopeApp {
                         self.settings.set_show_debug_log(show);
                     }
                 });
-                form.note(|ui| {
-                    ui.weak(t!("settings.application.log_debug_hint"));
-                });
             });
         });
     }
