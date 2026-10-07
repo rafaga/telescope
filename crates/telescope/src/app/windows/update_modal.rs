@@ -61,7 +61,7 @@ impl TelescopeApp {
                                     }
                                     if egui_panels::button(
                                         ui,
-                                        t!("update_modal.cancel").into_owned(),
+                                        t!("common.cancel").into_owned(),
                                         egui_panels::Variant::Ghost,
                                     )
                                     .clicked()

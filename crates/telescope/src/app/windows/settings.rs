@@ -121,9 +121,9 @@ impl TelescopeApp {
             t!("settings.pending", pages = pages.join(", ")).into_owned()
         });
         let (cancel, apply, accept, saved) = (
-            t!("settings.cancel"),
+            t!("common.cancel"),
             t!("settings.apply"),
-            t!("settings.accept"),
+            t!("common.accept"),
             t!("settings.saved"),
         );
         let bar = ActionBar::new(&cancel, &apply, &accept)
