@@ -47,6 +47,12 @@ impl TelescopeApp {
                 form.note(|ui| {
                     ui.weak(t!("settings.application.language_hint"));
                 });
+                form.row(t!("settings.application.log_debug"), |ui| {
+                    let mut show = self.settings.get_show_debug_log();
+                    if egui_panels::switch(ui, &mut show).changed() {
+                        self.settings.set_show_debug_log(show);
+                    }
+                });
             });
         });
     }

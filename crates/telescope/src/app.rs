@@ -32,6 +32,7 @@ use webb::rules::InputKind;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
+use self::update_checker::UpdateChecker;
 use self::windows::settings::patterns::PatternsEditor;
 
 mod audio;
@@ -46,6 +47,7 @@ mod notifications;
 mod persistence;
 mod settings;
 mod tiles;
+mod update_checker;
 mod watchdog;
 mod windows;
 
@@ -106,9 +108,13 @@ pub struct TelescopeApp {
     search_selected_row: Option<usize>,
     #[cfg(debug_assertions)]
     search_results: Vec<(isize, String, isize, String)>,
-    // State of the Debug window's "Advanced" section.
+    // State of the Debug window.
     #[cfg(debug_assertions)]
     debug: windows::debug::DebugState,
+    // The input of the intel detection stage: the Debug window pushes lines
+    // into it as if the reader had read them from a chat log.
+    #[cfg(debug_assertions)]
+    intel_input: Sender<intel::input::InputEvent>,
     universe: Universe,
     selected_settings_page: SettingsPage,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -157,6 +163,9 @@ pub struct TelescopeApp {
     // UI state for the "updating the SDE database" progress window --
     // see `database_updater`'s module docs.
     database_updater: database_updater::DatabaseUpdater,
+    /// The newer release the "new version" dialog announces, while it is
+    /// open (see `windows::update_modal`).
+    update_prompt: Option<update_checker::UpdateInfo>,
     // Last `GenericNotification` accepted by `update_status_with_error`,
     // plus when it was accepted -- lets that function collapse an
     // immediate repeat (same type/source/context/text) arriving within
@@ -285,6 +294,9 @@ impl TelescopeApp {
                 true,
                 settings.get_data_source_urls().clone(),
             );
+            // Looks for a newer Telescope release on GitHub, also in the
+            // background; silent unless there is one (see `update_checker`).
+            UpdateChecker::spawn(Arc::clone(&arc_msg_sender));
         }
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
@@ -399,6 +411,8 @@ impl TelescopeApp {
         let intel_watched: intel::reader::WatchedDir = Arc::new(RwLock::new(None));
         // Watcher -> reader thread -> detection.
         let (intel_files_tx, intel_files_rx) = std::sync::mpsc::channel::<String>();
+        #[cfg(debug_assertions)]
+        let debug_intel_input = intel_input.clone();
         intel::reader::spawn(
             intel::reader::ReaderShared {
                 watched: Arc::clone(&intel_watched),
@@ -463,6 +477,8 @@ impl TelescopeApp {
             search_results: Vec::new(),
             #[cfg(debug_assertions)]
             debug: windows::debug::DebugState::default(),
+            #[cfg(debug_assertions)]
+            intel_input: debug_intel_input,
             tree: None,
             universe,
             selected_settings_page: SettingsPage::Sources,
@@ -483,6 +499,7 @@ impl TelescopeApp {
             licenses: None,
             audio,
             database_updater: database_updater::DatabaseUpdater::default(),
+            update_prompt: None,
             last_notification: None,
         }
     }
@@ -549,6 +566,8 @@ impl eframe::App for TelescopeApp {
                 search_results: _,
             #[cfg(debug_assertions)]
                 debug: _,
+            #[cfg(debug_assertions)]
+                intel_input: _,
             tree: _,
             universe: _,
             selected_settings_page: _,
@@ -570,6 +589,7 @@ impl eframe::App for TelescopeApp {
             licenses: _,
             audio: _,
             database_updater: _,
+            update_prompt: _,
             last_notification: _,
         } = self;
 
@@ -618,6 +638,7 @@ impl eframe::App for TelescopeApp {
         self.drain_map_messages();
         // Over the Settings screen too: its Application page starts updates.
         self.database_updater.show(ui.ctx());
+        self.show_update_prompt(ui.ctx());
 
         // The Settings screen is full-window: while it is open it replaces the
         // maps, the log panel and the menu.
@@ -791,6 +812,7 @@ impl TelescopeApp {
                     self.handle_character_authenticated(*linked)
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
+                Message::NewVersionAvailable(info) => self.update_prompt = Some(info),
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),

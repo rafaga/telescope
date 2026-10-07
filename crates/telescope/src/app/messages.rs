@@ -225,6 +225,10 @@ pub enum Message {
     /// monitored directory or when the application initializes, to trigger
     ///  a scan of all intel files.
     ScanIntelFiles,
+    /// Sent by `update_checker::UpdateChecker` when GitHub has a newer
+    /// Telescope release; opens the "new version" dialog. It is never
+    /// written to the log.
+    NewVersionAvailable(super::update_checker::UpdateInfo),
 }
 
 impl Message {
@@ -249,6 +253,7 @@ impl Message {
             Message::DatabaseUpdateInfo(_) => "DatabaseUpdateInfo",
             Message::DatabaseUpdated(_) => "DatabaseUpdated",
             Message::ScanIntelFiles => "ScanIntelFiles",
+            Message::NewVersionAvailable(_) => "NewVersionAvailable",
         }
     }
 }
@@ -712,5 +717,15 @@ mod enum_tests {
         );
         assert_eq!(Message::DbPathPicked(PathBuf::new()).kind(), "DbPathPicked");
         assert_eq!(Message::DatabaseUpdated(true).kind(), "DatabaseUpdated");
+        assert_eq!(
+            Message::NewVersionAvailable(super::super::update_checker::UpdateInfo {
+                needs_update: true,
+                current: String::new(),
+                latest: String::new(),
+                url: String::new(),
+            })
+            .kind(),
+            "NewVersionAvailable"
+        );
     }
 }
