@@ -1,12 +1,14 @@
 //! The debug window, one tab per tool: search the SDE by name and act on a
 //! result (center the maps on it, optionally emitting a notification), run
-//! chat-log lines through the intel pipeline (typed or from a few presets),
+//! chat-log lines through the whole intel pipeline, detection and dispatch
+//! (typed or from a few presets),
 //! test alerts and log notifications, preview node animations, move a
 //! character's marker, and a read-only view of the app's internal state.
 //!
 //! It is built only from stock egui widgets (tabs are `selectable_value`s).
 
 use crate::app::TelescopeApp;
+use crate::app::intel::input::InputEvent;
 use crate::app::messages::CharacterSync;
 use crate::app::messages::MapSync;
 use crate::app::messages::Message;
@@ -88,6 +90,8 @@ pub(crate) struct DebugState {
     intel_text: String,
     /// `intel_text` is already a full chat-log line (`[ ts ] Author > text`).
     intel_raw: bool,
+    /// Only list the rules the line triggers; don't feed it to the pipeline.
+    intel_dry_run: bool,
     intel_result: Option<String>,
     effect: NodeEffect,
     move_character: Option<i32>,
@@ -101,6 +105,7 @@ impl Default for DebugState {
             intel_author: String::from("Debug"),
             intel_text: String::new(),
             intel_raw: false,
+            intel_dry_run: false,
             intel_result: None,
             effect: NodeEffect::default(),
             move_character: None,
@@ -353,6 +358,11 @@ impl TelescopeApp {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.debug.intel_raw, "Raw chat-log line")
                 .on_hover_text("The text is already `[ YYYY.MM.DD HH:MM:SS ] Author > message`");
+            ui.checkbox(&mut self.debug.intel_dry_run, "Dry run")
+                .on_hover_text(
+                    "Only list the rules the line triggers. Without it the line is also fed to \
+                 the pipeline: map pulse, sound, tooltip and log fire as for a real line.",
+                );
             let can_send = !self.debug.intel_text.trim().is_empty();
             if ui
                 .add_enabled(can_send, egui::Button::new("Send"))
@@ -368,11 +378,40 @@ impl TelescopeApp {
                         self.debug.intel_text.trim()
                     )
                 };
-                let rules = self.parse_intel_data(self.debug.intel_channel.trim(), &line);
-                self.debug.intel_result = Some(if rules.is_empty() {
-                    String::from("No rule matched (or the line isn't in chat-log format).")
+                let channel = match self.debug.intel_channel.trim() {
+                    "" => "Debug",
+                    channel => channel,
+                }
+                .to_string();
+                let rules = self.parse_intel_data(&channel, &line);
+                // Unless it is a dry run, the same input the reader feeds:
+                // detection, then dispatch (map pulse, sound, tooltip, log),
+                // so the alerts really fire.
+                let sent = if self.debug.intel_dry_run {
+                    Ok(false)
                 } else {
-                    format!("Matched: {}", rules.join(", "))
+                    match webb::rules::parse_line(&line) {
+                        Some(parsed) => self
+                            .intel_input
+                            .try_send(InputEvent {
+                                source: String::from("Debug"),
+                                channel,
+                                line: parsed,
+                            })
+                            .map(|()| true)
+                            .map_err(|error| error.to_string()),
+                        None => Err(String::from("the line isn't in chat-log format")),
+                    }
+                };
+                let matched = if rules.is_empty() {
+                    String::from("no rule matched")
+                } else {
+                    format!("matched: {}", rules.join(", "))
+                };
+                self.debug.intel_result = Some(match sent {
+                    Ok(true) => format!("Sent to the pipeline; {matched}."),
+                    Ok(false) => format!("Dry run; {matched}."),
+                    Err(error) => format!("Not sent to the pipeline ({error}); {matched}."),
                 });
             }
         });

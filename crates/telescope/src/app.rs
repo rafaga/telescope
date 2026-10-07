@@ -108,9 +108,13 @@ pub struct TelescopeApp {
     search_selected_row: Option<usize>,
     #[cfg(debug_assertions)]
     search_results: Vec<(isize, String, isize, String)>,
-    // State of the Debug window's "Advanced" section.
+    // State of the Debug window.
     #[cfg(debug_assertions)]
     debug: windows::debug::DebugState,
+    // The input of the intel detection stage: the Debug window pushes lines
+    // into it as if the reader had read them from a chat log.
+    #[cfg(debug_assertions)]
+    intel_input: Sender<intel::input::InputEvent>,
     universe: Universe,
     selected_settings_page: SettingsPage,
     tree: Option<Tree<Box<dyn TabPane>>>,
@@ -407,6 +411,8 @@ impl TelescopeApp {
         let intel_watched: intel::reader::WatchedDir = Arc::new(RwLock::new(None));
         // Watcher -> reader thread -> detection.
         let (intel_files_tx, intel_files_rx) = std::sync::mpsc::channel::<String>();
+        #[cfg(debug_assertions)]
+        let debug_intel_input = intel_input.clone();
         intel::reader::spawn(
             intel::reader::ReaderShared {
                 watched: Arc::clone(&intel_watched),
@@ -471,6 +477,8 @@ impl TelescopeApp {
             search_results: Vec::new(),
             #[cfg(debug_assertions)]
             debug: windows::debug::DebugState::default(),
+            #[cfg(debug_assertions)]
+            intel_input: debug_intel_input,
             tree: None,
             universe,
             selected_settings_page: SettingsPage::Sources,
@@ -558,6 +566,8 @@ impl eframe::App for TelescopeApp {
                 search_results: _,
             #[cfg(debug_assertions)]
                 debug: _,
+            #[cfg(debug_assertions)]
+                intel_input: _,
             tree: _,
             universe: _,
             selected_settings_page: _,
