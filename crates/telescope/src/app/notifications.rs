@@ -128,6 +128,12 @@ impl TelescopeApp {
             now,
         ));
 
+        // Only the printing is skipped: the message was received, counted
+        // for the dedup above and handled like any other.
+        if message.0 == Type::Debug && !self.settings.get_show_debug_log() {
+            return;
+        }
+
         let full_time = chrono::Local::now().time().to_string();
         let job = log_entry(full_time.split_at(12).0, message);
         push_capped(

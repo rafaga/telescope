@@ -178,6 +178,22 @@ impl Default for UiState {
     }
 }
 
+/// What the on-screen log shows, edited in Settings -> Application.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub(crate) struct LogOptions {
+    /// Whether `Type::Debug` messages are printed in the log. Hiding them
+    /// only keeps them off the screen: they are still received and handled
+    /// like any other message.
+    pub show_debug: bool,
+}
+
+impl Default for LogOptions {
+    fn default() -> Self {
+        Self { show_debug: true }
+    }
+}
+
 /// Tuning for the on-screen notification log (`app::notifications`). Not
 /// user-editable, so not persisted to `telescope.toml`.
 #[derive(Clone)]
@@ -283,6 +299,9 @@ pub(crate) struct Settings {
     // `default`: `telescope.toml` files from before this section existed.
     #[serde(default)]
     ui: UiState,
+    // `default`: `telescope.toml` files from before this section existed.
+    #[serde(default)]
+    log: LogOptions,
     #[serde(skip)]
     internal: InternalDefaults,
     #[serde(skip)]
@@ -338,6 +357,7 @@ impl Default for Settings {
             region_factor: -2.0,
             saved: false,
             ui: UiState::default(),
+            log: LogOptions::default(),
             internal: InternalDefaults::default(),
             channels: Channels {
                 available: HashMap::new(),
@@ -390,6 +410,18 @@ impl Settings {
         let text = toml::to_string(&document)
             .map_err(|t_error| SettingsError::Other(t_error.to_string()))?;
         std::fs::write(path, text).map_err(|t_error| SettingsError::Other(t_error.to_string()))
+    }
+
+    /// Whether debug messages are printed in the log.
+    pub(crate) fn get_show_debug_log(&self) -> bool {
+        self.log.show_debug
+    }
+
+    pub(crate) fn set_show_debug_log(&mut self, value: bool) {
+        if self.log.show_debug != value {
+            self.log.show_debug = value;
+            self.saved = false;
+        }
     }
 
     /// Takes the log panel layout of `state`, leaving the language as it is.
@@ -1227,6 +1259,36 @@ mod tests {
         assert_eq!(settings.get_settings(), Settings::default().get_settings());
         let card = settings.get_character_card_style();
         assert!(card.portrait_size > 0.0);
+    }
+
+    #[test]
+    fn debug_messages_are_shown_by_default_and_the_choice_is_saved() {
+        let dir = temp_dir("debug-log");
+        let path = dir.join("telescope.toml");
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        assert!(settings.get_show_debug_log());
+
+        settings.set_show_debug_log(false);
+        assert!(!settings.its_saved());
+        settings.save().unwrap();
+        let loaded = Settings::try_from(path).unwrap();
+        assert!(!loaded.get_show_debug_log());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_without_the_log_table_shows_debug_messages() {
+        let dir = temp_dir("debug-log-old");
+        let path = dir.join("telescope.toml");
+        let mut settings = Settings::default();
+        settings.paths.settings = path.clone();
+        settings.save().unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let without_log: String = text.split("[log]").next().unwrap().to_string();
+        fs::write(&path, without_log).unwrap();
+        assert!(Settings::try_from(path).unwrap().get_show_debug_log());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

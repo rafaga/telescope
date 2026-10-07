@@ -40,6 +40,46 @@ fn an_app_builds_on_a_temporary_folder_and_touches_nothing_else() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn debug_messages_can_be_kept_out_of_the_log() {
+    let (mut app, dir) = app("debug-log");
+    let debug = |text: &str| {
+        Message::GenericNotification((
+            Type::Debug,
+            String::from("test"),
+            String::from("ctx"),
+            text.to_string(),
+        ))
+    };
+
+    // Shown by default.
+    send(&app, debug("first debug"));
+    pump(&mut app);
+    assert!(logged(&app, "first debug"));
+
+    // Off: debug messages stay out of the log, the rest still prints.
+    app.settings.set_show_debug_log(false);
+    send(&app, debug("hidden debug"));
+    send(
+        &app,
+        Message::GenericNotification((
+            Type::Info,
+            String::from("test"),
+            String::from("ctx"),
+            String::from("shown info"),
+        )),
+    );
+    pump(&mut app);
+    assert!(!logged(&app, "hidden debug"));
+    assert!(logged(&app, "shown info"));
+
+    app.settings.set_show_debug_log(true);
+    send(&app, debug("second debug"));
+    pump(&mut app);
+    assert!(logged(&app, "second debug"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // ---- Helpers ----
 
 fn send(app: &TelescopeApp, message: Message) {
