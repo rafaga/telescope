@@ -52,11 +52,6 @@ impl TelescopeApp {
                     if egui_panels::switch(ui, &mut show).changed() {
                         self.settings.set_show_debug_log(show);
                     }
-                    ui.weak(if show {
-                        t!("settings.application.on")
-                    } else {
-                        t!("settings.application.off")
-                    });
                 });
                 form.note(|ui| {
                     ui.weak(t!("settings.application.log_debug_hint"));

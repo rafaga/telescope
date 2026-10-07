@@ -52,7 +52,8 @@ fn debug_messages_can_be_kept_out_of_the_log() {
         ))
     };
 
-    // Shown by default.
+    // Shown while the option is on (the default of debug builds).
+    app.settings.set_show_debug_log(true);
     send(&app, debug("first debug"));
     pump(&mut app);
     assert!(logged(&app, "first debug"));

@@ -189,8 +189,11 @@ pub(crate) struct LogOptions {
 }
 
 impl Default for LogOptions {
+    /// Debug messages are shown in debug builds and hidden in release ones.
     fn default() -> Self {
-        Self { show_debug: true }
+        Self {
+            show_debug: cfg!(debug_assertions),
+        }
     }
 }
 
@@ -1262,23 +1265,24 @@ mod tests {
     }
 
     #[test]
-    fn debug_messages_are_shown_by_default_and_the_choice_is_saved() {
+    fn debug_messages_follow_the_build_by_default_and_the_choice_is_saved() {
         let dir = temp_dir("debug-log");
         let path = dir.join("telescope.toml");
         let mut settings = Settings::default();
         settings.paths.settings = path.clone();
-        assert!(settings.get_show_debug_log());
+        assert_eq!(settings.get_show_debug_log(), cfg!(debug_assertions));
 
-        settings.set_show_debug_log(false);
+        // The opposite of the default, so it is written and read back.
+        settings.set_show_debug_log(!cfg!(debug_assertions));
         assert!(!settings.its_saved());
         settings.save().unwrap();
         let loaded = Settings::try_from(path).unwrap();
-        assert!(!loaded.get_show_debug_log());
+        assert_eq!(loaded.get_show_debug_log(), !cfg!(debug_assertions));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_file_without_the_log_table_shows_debug_messages() {
+    fn a_file_without_the_log_table_gets_the_default() {
         let dir = temp_dir("debug-log-old");
         let path = dir.join("telescope.toml");
         let mut settings = Settings::default();
@@ -1287,7 +1291,10 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         let without_log: String = text.split("[log]").next().unwrap().to_string();
         fs::write(&path, without_log).unwrap();
-        assert!(Settings::try_from(path).unwrap().get_show_debug_log());
+        assert_eq!(
+            Settings::try_from(path).unwrap().get_show_debug_log(),
+            cfg!(debug_assertions)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
