@@ -34,7 +34,7 @@ pub(crate) fn upsert_character(characters: &mut Vec<Character>, character: Chara
 }
 
 /// Removes the character with the given id, returning it if it was present.
-pub(crate) fn remove_character(characters: &mut Vec<Character>, id: i32) -> Option<Character> {
+pub(crate) fn remove_character(characters: &mut Vec<Character>, id: i64) -> Option<Character> {
     let index = characters.iter().position(|c| c.id == id)?;
     Some(characters.remove(index))
 }
@@ -111,7 +111,7 @@ impl TelescopeApp {
     /// only if that succeeds, drops it from memory and stops watching its
     /// location, so memory and disk never disagree.
     #[tracing::instrument(skip(self))]
-    pub(crate) fn unlink_character(&mut self, id: i32) {
+    pub(crate) fn unlink_character(&mut self, id: i64) {
         if let Err(t_error) = self.esi.remove_characters(Some(vec![id])) {
             self.notify_character_error("remove_characters", t_error.to_string());
             return;
@@ -121,7 +121,7 @@ impl TelescopeApp {
         if self.esi.active_character == Some(id) {
             self.esi.active_character = None;
         }
-        if deliver(self.char_msg.as_deref(), CharacterSync::Remove(id as usize)) == Delivery::Busy {
+        if deliver(self.char_msg.as_deref(), CharacterSync::Remove(id)) == Delivery::Busy {
             self.notify_character_error(
                 "unlink_character",
                 String::from("The location watchdog is busy; restart Telescope to stop tracking this character."),
@@ -147,7 +147,7 @@ impl TelescopeApp {
     /// Adds (or refreshes) a freshly authenticated character and makes sure
     /// the watchdog tracks it.
     fn register_linked_character(&mut self, player: Character) {
-        let id = player.id as usize;
+        let id = player.id;
         if !upsert_character(&mut self.esi.characters, player) {
             // Already linked: its data and tokens were refreshed. Tell the
             // watchdog anyway, so it resumes the character if it had
@@ -175,7 +175,7 @@ impl TelescopeApp {
         if !delivered {
             // The watchdog stopped (e.g. an ESI error) or can't take the
             // message: restart it with every linked character.
-            let ids = self.esi.characters.iter().map(|c| c.id as usize).collect();
+            let ids = self.esi.characters.iter().map(|c| c.id).collect();
             self.start_watchdog(ids);
         }
     }
@@ -214,7 +214,7 @@ mod tests {
     use tokio::sync::mpsc;
     use webb::objects::Character;
 
-    fn character(id: i32, name: &str) -> Character {
+    fn character(id: i64, name: &str) -> Character {
         let mut character = Character::new();
         character.id = id;
         character.name = String::from(name);

@@ -96,7 +96,7 @@ fn logged(app: &TelescopeApp, needle: &str) -> bool {
     app.app_messages.iter().any(|job| job.text.contains(needle))
 }
 
-fn character(id: i32, name: &str) -> webb::objects::Character {
+fn character(id: i64, name: &str) -> webb::objects::Character {
     let mut character = webb::objects::Character::new();
     character.id = id;
     character.name = name.to_string();

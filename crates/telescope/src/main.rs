@@ -35,7 +35,7 @@ static GLOBAL: tracing_tracy::client::ProfiledAllocator<std::alloc::System> =
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     // Bridge `log`-based diagnostics from dependencies (hyper, notify, wgpu,
-    // rfesi, ...) into `tracing`, so they reach the subscriber(s) set up
+    // esi-openapi, ...) into `tracing`, so they reach the subscriber(s) set up
     // below instead of being silently dropped now that `env_logger` --
     // which used to own the `log` sink -- is gone.
     //

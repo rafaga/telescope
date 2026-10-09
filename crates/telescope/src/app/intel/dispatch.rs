@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn character_locations_keep_only_known_systems() {
-        let located = |location: i32| Character {
+        let located = |location: i64| Character {
             location,
             ..Character::default()
         };

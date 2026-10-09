@@ -228,7 +228,7 @@ impl PlayerDatabase {
     #[tracing::instrument]
     pub(crate) fn select_characters(
         conn: &Connection,
-        ids: Vec<i32>,
+        ids: Vec<i64>,
     ) -> Result<Vec<Character>, Error> {
         let mut result = Vec::new();
         let mut query = String::from(
@@ -249,12 +249,12 @@ impl PlayerDatabase {
             char.id = row.get(0)?;
             char.name = row.get(1)?;
             char.photo = row.get(4)?;
-            char.corp = if let Ok(value) = row.get::<usize, i32>(2) {
+            char.corp = if let Ok(value) = row.get::<usize, i64>(2) {
                 Some(PlayerDatabase::select_corporation(conn, vec![value])?[0].clone())
             } else {
                 None
             };
-            char.alliance = if let Ok(value) = row.get::<usize, i32>(3) {
+            char.alliance = if let Ok(value) = row.get::<usize, i64>(3) {
                 Some(PlayerDatabase::select_alliance(conn, vec![value])?[0].clone())
             } else {
                 None
@@ -263,7 +263,7 @@ impl PlayerDatabase {
                 let utc_dt = DateTime::from_naive_utc_and_offset(time.naive_utc(), Utc);
                 char.last_logon = utc_dt;
             }
-            char.location = row.get::<usize, i32>(6)?;
+            char.location = row.get::<usize, i64>(6)?;
             result.push(char);
         }
         Ok(result)
@@ -301,7 +301,7 @@ impl PlayerDatabase {
 
     /// Token sets of every linked character, by character id.
     #[tracing::instrument]
-    pub(crate) fn select_auth(conn: &Connection) -> Result<HashMap<i32, AuthData>, Error> {
+    pub(crate) fn select_auth(conn: &Connection) -> Result<HashMap<i64, AuthData>, Error> {
         let query = "SELECT id, token, refresh_token, expiration FROM auth";
         let mut statement = conn.prepare(query)?;
         let mut rows = statement.query([])?;
@@ -324,7 +324,7 @@ impl PlayerDatabase {
     #[tracing::instrument(skip(auth_data))]
     pub(crate) fn save_auth(
         conn: &Connection,
-        character_id: i32,
+        character_id: i64,
         auth_data: &AuthData,
     ) -> Result<usize, Error> {
         let rows = PlayerDatabase::update_auth(conn, character_id, auth_data)?;
@@ -337,7 +337,7 @@ impl PlayerDatabase {
     #[tracing::instrument(skip(auth_data))]
     pub(crate) fn insert_auth(
         conn: &Connection,
-        character_id: i32,
+        character_id: i64,
         auth_data: &AuthData,
     ) -> Result<usize, Error> {
         let query =
@@ -355,7 +355,7 @@ impl PlayerDatabase {
     #[tracing::instrument(skip(auth_data))]
     pub(crate) fn update_auth(
         conn: &Connection,
-        character_id: i32,
+        character_id: i64,
         auth_data: &AuthData,
     ) -> Result<usize, Error> {
         let query = "UPDATE auth SET token = ?1, refresh_token = ?2, expiration = ?3 WHERE id = ?4";
@@ -370,7 +370,7 @@ impl PlayerDatabase {
     }
 
     #[tracing::instrument]
-    pub(crate) fn delete_auth(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
+    pub(crate) fn delete_auth(conn: &Connection, ids: Vec<i64>) -> Result<usize, Error> {
         PlayerDatabase::delete_general(conn, "auth", ids)
     }
 
@@ -453,7 +453,7 @@ impl PlayerDatabase {
     }
 
     #[tracing::instrument]
-    pub(crate) fn delete_characters(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
+    pub(crate) fn delete_characters(conn: &Connection, ids: Vec<i64>) -> Result<usize, Error> {
         PlayerDatabase::delete_general(conn, "char", ids)
     }
 
@@ -461,7 +461,7 @@ impl PlayerDatabase {
     #[tracing::instrument]
     pub(crate) fn select_corporation(
         conn: &Connection,
-        ids: Vec<i32>,
+        ids: Vec<i64>,
     ) -> Result<Vec<Corporation>, Error> {
         let mut result = Vec::new();
         let mut query = String::from("SELECT id,name FROM corp");
@@ -473,7 +473,7 @@ impl PlayerDatabase {
         let mut rows = statement.query(rusqlite::params_from_iter(ids))?;
         while let Some(row) = rows.next()? {
             let corp = Corporation {
-                id: row.get::<usize, i32>(0)?,
+                id: row.get::<usize, i64>(0)?,
                 name: row.get::<usize, String>(1)?,
             };
             result.push(corp);
@@ -498,7 +498,7 @@ impl PlayerDatabase {
     }
 
     #[tracing::instrument]
-    pub(crate) fn delete_corporation(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
+    pub(crate) fn delete_corporation(conn: &Connection, ids: Vec<i64>) -> Result<usize, Error> {
         PlayerDatabase::delete_general(conn, "corp", ids)
     }
 
@@ -506,7 +506,7 @@ impl PlayerDatabase {
     #[tracing::instrument]
     pub(crate) fn select_alliance(
         conn: &Connection,
-        ids: Vec<i32>,
+        ids: Vec<i64>,
     ) -> Result<Vec<Alliance>, Error> {
         let mut result = Vec::new();
         let mut query = String::from("SELECT id,name FROM alliance");
@@ -518,7 +518,7 @@ impl PlayerDatabase {
         let mut rows = statement.query(rusqlite::params_from_iter(ids))?;
         while let Some(row) = rows.next()? {
             let ally = Alliance {
-                id: row.get::<usize, i32>(0)?,
+                id: row.get::<usize, i64>(0)?,
                 name: row.get::<usize, String>(1)?,
             };
             result.push(ally);
@@ -536,13 +536,13 @@ impl PlayerDatabase {
         PlayerDatabase::insert_catalog(conn, "alliance", ally)
     }
     #[tracing::instrument]
-    pub(crate) fn delete_alliance(conn: &Connection, ids: Vec<i32>) -> Result<usize, Error> {
+    pub(crate) fn delete_alliance(conn: &Connection, ids: Vec<i64>) -> Result<usize, Error> {
         PlayerDatabase::delete_general(conn, "alliance", ids)
     }
 
     // function to delete values
     #[tracing::instrument]
-    fn delete_general(conn: &Connection, table: &str, ids: Vec<i32>) -> Result<usize, Error> {
+    fn delete_general(conn: &Connection, table: &str, ids: Vec<i64>) -> Result<usize, Error> {
         if !ids.is_empty() {
             let vars = PlayerDatabase::repeat_vars(ids.len());
             let query = format!("DELETE FROM {} WHERE id IN ({})", table, vars);
@@ -694,7 +694,7 @@ fn conversion_error(message: String) -> Error {
 /// Character id from the `sub` claim (`CHARACTER:EVE:<id>`) of an EVE SSO
 /// access token (a JWT), without verifying it: only used to tell which
 /// character an already stored token belongs to.
-fn jwt_character_id(token: &str) -> Option<i32> {
+fn jwt_character_id(token: &str) -> Option<i64> {
     use base64::Engine;
     let payload = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -806,7 +806,7 @@ mod tests {
 
     /// Unsigned JWT whose `sub` claim is the given character (enough for
     /// `jwt_character_id`, which doesn't verify the signature).
-    fn fake_jwt(character_id: i32) -> String {
+    fn fake_jwt(character_id: i64) -> String {
         use base64::Engine;
         let encode =
             |json: String| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes());
@@ -976,6 +976,9 @@ mod tests {
     #[test]
     fn jwt_character_id_reads_the_sub_claim() {
         assert_eq!(jwt_character_id(&fake_jwt(95279738)), Some(95279738));
+        // `int64`: an id that does not fit in 32 bits is read, not dropped.
+        let beyond = i64::from(i32::MAX) + 1_000;
+        assert_eq!(jwt_character_id(&fake_jwt(beyond)), Some(beyond));
         assert_eq!(jwt_character_id("not-a-jwt"), None);
         assert_eq!(jwt_character_id(""), None);
     }
@@ -1313,7 +1316,7 @@ mod tests {
 
     /// Creates the schema plus the characters the auth rows will point to
     /// (foreign keys are enforced).
-    fn database_with_characters(ids: &[i32]) -> Connection {
+    fn database_with_characters(ids: &[i64]) -> Connection {
         let conn = memory_connection();
         PlayerDatabase::create_database(&conn).unwrap();
         for id in ids {

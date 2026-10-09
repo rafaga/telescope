@@ -18,16 +18,16 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// A character followed by the watchdog.
 struct Tracked {
-    id: usize,
+    id: i64,
     /// Last known solar system (0 = unknown yet).
-    location: usize,
+    location: i64,
     /// Its token was rejected or couldn't be renewed: skipped until the
     /// character is linked again (`CharacterSync::Add`).
     paused: bool,
 }
 
 impl Tracked {
-    fn new(id: usize) -> Self {
+    fn new(id: i64) -> Self {
         Self {
             id,
             location: 0,
@@ -42,7 +42,7 @@ fn is_auth_rejection(error: &str) -> bool {
 }
 
 /// Character name for messages, falling back to its id.
-fn character_label(characters: &[Character], id: i32) -> String {
+fn character_label(characters: &[Character], id: i64) -> String {
     characters
         .iter()
         .find(|character| character.id == id)
@@ -50,7 +50,7 @@ fn character_label(characters: &[Character], id: i32) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-fn relink_notification(characters: &[Character], id: i32, error: &str) -> Message {
+fn relink_notification(characters: &[Character], id: i64, error: &str) -> Message {
     Message::GenericNotification((
         Type::Warning,
         String::from("Telescope App"),
@@ -105,7 +105,7 @@ fn apply_sync(tracked: &mut Vec<Tracked>, sync: Option<CharacterSync>) -> SyncOu
 
 impl TelescopeApp {
     #[tracing::instrument(skip(self))]
-    pub fn start_watchdog(&mut self, character_id: Vec<usize>) {
+    pub fn start_watchdog(&mut self, character_id: Vec<i64>) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -162,7 +162,7 @@ impl TelescopeApp {
                     // Each character is polled with its own token; a failure
                     // only affects that character, never the others.
                     for item in character_ids.iter_mut().filter(|item| !item.paused) {
-                        let id = item.id as i32;
+                        let id = item.id;
                         if !t_esi.valid_token(id).await {
                             match t_esi.refresh_token(id).await {
                                 Ok(_) => {
@@ -193,8 +193,8 @@ impl TelescopeApp {
                         }
                         match t_esi.get_location(id).await {
                             Ok(new_location) => {
-                                if item.location != (new_location as usize) {
-                                    item.location = new_location as usize;
+                                if item.location != new_location {
+                                    item.location = new_location;
                                     // The app updates the character and every
                                     // map pane's marker from this message.
                                     let _ = send_app_message(
@@ -286,14 +286,14 @@ impl TelescopeApp {
 mod tests {
     use super::*;
 
-    fn character(id: i32, name: &str) -> Character {
+    fn character(id: i64, name: &str) -> Character {
         let mut character = Character::new();
         character.id = id;
         character.name = name.to_string();
         character
     }
 
-    fn ids(tracked: &[Tracked]) -> Vec<usize> {
+    fn ids(tracked: &[Tracked]) -> Vec<i64> {
         tracked.iter().map(|item| item.id).collect()
     }
 
