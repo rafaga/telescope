@@ -29,6 +29,12 @@ period it happened in.
 
 ### Changed
 
+* The EVE SSO login uses PKCE only and Telescope no longer has a client
+  secret: `ESI_SECRET_KEY` is gone from the build (`AppData`, `BUILD.md`,
+  `release.yml`) and from the executable, the `native-auth-flow` feature of
+  `webb` is now the only flow, and `EsiManager::new` takes no secret. Builds
+  before this one still carry the old secret, so it should be rotated in the
+  developer portal once users have updated (October 2026).
 * The ESI client is `esi-openapi` 0.2.0 (the fork of `rfesi`), and the unused
   `esi-openapi` 0.1.0 dependency of the `telescope` crate is gone. ESI defines
   every id as `int64`, so characters, corporations, alliances and solar systems
