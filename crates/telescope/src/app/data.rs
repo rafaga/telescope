@@ -7,6 +7,16 @@
 //! application can do without one.
 
 #![allow(clippy::option_env_unwrap)]
+
+/// What Telescope sends as `User-Agent` to ESI: its name, its version (read
+/// from the crate, so it never goes stale) and where to find its authors.
+/// CCP asks every ESI client to say who is calling.
+const USER_AGENT: &str = concat!(
+    "telescope/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/rafaga/telescope)"
+);
+
 pub struct AppData<'a> {
     pub user_agent: String,
     pub scope: Vec<&'a str>,
@@ -39,7 +49,7 @@ impl<'a> AppData<'a> {
             ],
             client_id,
             url: String::from("http://localhost:56123/login"),
-            user_agent: String::from("telescope/dev"),
+            user_agent: String::from(USER_AGENT),
         }
     }
 }
@@ -78,6 +88,27 @@ mod tests {
         assert!(data.url.starts_with("http://localhost:"));
         assert!(data.user_agent.starts_with("telescope/"));
         assert_eq!(data.client_id, "the-id");
+    }
+
+    #[test]
+    fn the_user_agent_names_the_app_its_version_and_where_to_reach_it() {
+        let agent = AppData::for_test().user_agent;
+        assert!(agent.starts_with("telescope/"), "{agent}");
+        assert!(agent.contains(env!("CARGO_PKG_VERSION")), "{agent}");
+        assert!(
+            agent.contains("https://github.com/rafaga/telescope"),
+            "{agent}"
+        );
+        assert!(!agent.starts_with("telescope/dev"), "{agent}");
+        // It has to be a valid HTTP header value.
+        assert!(
+            http_value_is_valid(&agent),
+            "not a valid header value: {agent}"
+        );
+    }
+
+    fn http_value_is_valid(value: &str) -> bool {
+        value.bytes().all(|b| (0x20..0x7f).contains(&b))
     }
 
     /// When the build environment has the client id, `new` hands it over.

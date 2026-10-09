@@ -29,6 +29,10 @@ period it happened in.
 
 ### Changed
 
+* Telescope identifies itself to ESI with a real `User-Agent`,
+  `telescope/<version> (+https://github.com/rafaga/telescope)`, instead of
+  `telescope/dev`. The version is the crate's, so it follows each release
+  (October 2026).
 * The EVE SSO login uses PKCE only and Telescope no longer has a client
   secret: `ESI_SECRET_KEY` is gone from the build (`AppData`, `BUILD.md`,
   `release.yml`) and from the executable, the `native-auth-flow` feature of
