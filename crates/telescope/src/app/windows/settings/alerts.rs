@@ -150,7 +150,7 @@ impl TelescopeApp {
     /// pulses and gets a tooltip entry, the sound plays and, when enabled,
     /// the maps center on it.
     fn test_full_alert(&self) -> (StatusKind, String) {
-        let located = |id: Option<i32>| {
+        let located = |id: Option<i64>| {
             self.esi
                 .characters
                 .iter()

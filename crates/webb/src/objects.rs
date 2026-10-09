@@ -55,8 +55,8 @@ pub struct AuthClaims {
 /// Public information of a character as reported by ESI.
 #[derive(Clone, PartialEq, Debug)]
 pub struct CharacterPublicInfo {
-    pub corporation_id: i32,
-    pub alliance_id: Option<i32>,
+    pub corporation_id: i64,
+    pub alliance_id: Option<i64>,
 }
 
 impl AuthData {
@@ -78,13 +78,13 @@ impl Default for AuthData {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Character {
-    pub id: i32,
+    pub id: i64,
     pub name: String,
     pub last_logon: DateTime<Utc>,
     pub corp: Option<Corporation>,
     pub alliance: Option<Alliance>,
     pub photo: Option<String>,
-    pub location: i32,
+    pub location: i64,
 }
 
 impl Character {
@@ -110,7 +110,7 @@ impl Default for Character {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Corporation {
-    pub id: i32,
+    pub id: i64,
     pub name: String,
 }
 
@@ -132,7 +132,7 @@ impl Default for Corporation {
 }
 
 impl BasicCatalog for Corporation {
-    type Output = i32;
+    type Output = i64;
 
     #[tracing::instrument]
     fn id(&self) -> Self::Output {
@@ -147,7 +147,7 @@ impl BasicCatalog for Corporation {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Alliance {
-    pub id: i32,
+    pub id: i64,
     pub name: String,
 }
 
@@ -169,7 +169,7 @@ impl Default for Alliance {
 }
 
 impl BasicCatalog for Alliance {
-    type Output = i32;
+    type Output = i64;
 
     #[tracing::instrument]
     fn id(&self) -> Self::Output {

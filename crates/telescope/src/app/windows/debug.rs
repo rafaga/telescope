@@ -94,7 +94,7 @@ pub(crate) struct DebugState {
     intel_dry_run: bool,
     intel_result: Option<String>,
     effect: NodeEffect,
-    move_character: Option<i32>,
+    move_character: Option<i64>,
 }
 
 impl Default for DebugState {
@@ -533,8 +533,9 @@ impl TelescopeApp {
                 .on_disabled_hover_text("Pick a system in Search first")
                 .clicked()
                 && let Some((system_id, _)) = selected
+                && let Ok(system) = i64::try_from(*system_id)
             {
-                self.update_player_location(id, *system_id as i32);
+                self.update_player_location(id, system);
             }
             if ui
                 .button("Restore")
@@ -542,7 +543,7 @@ impl TelescopeApp {
                 .clicked()
                 && let Some(sender) = &self.char_msg
             {
-                let _ = sender.try_send(CharacterSync::Add(id as usize));
+                let _ = sender.try_send(CharacterSync::Add(id));
             }
         });
     }
