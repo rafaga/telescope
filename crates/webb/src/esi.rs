@@ -37,8 +37,8 @@ pub mod player_database;
 #[cfg_attr(test, mockall::automock)]
 #[allow(async_fn_in_trait)]
 pub trait EsiApi: Send {
-    /// Builds the SSO authorization URL (and PKCE verifier when the
-    /// `native-auth-flow` feature is enabled). Pure, no network involved.
+    /// Builds the SSO authorization URL and its PKCE verifier. Pure, no
+    /// network involved.
     fn authorize_url(&self) -> Result<AuthorizeInfo, String>;
     /// Whether the underlying client holds a complete token set.
     fn has_token_state(&self) -> bool;
@@ -60,19 +60,19 @@ pub trait EsiApi: Send {
     /// Fetches the public info of a character from ESI.
     async fn get_character_public_info(
         &mut self,
-        character_id: i32,
+        character_id: i64,
     ) -> Result<CharacterPublicInfo, String>;
     /// Fetches the public info of a corporation from ESI.
     async fn get_corporation_public_info(
         &mut self,
-        corporation_id: i32,
+        corporation_id: i64,
     ) -> Result<Corporation, String>;
     /// Fetches the info of an alliance from ESI.
-    async fn get_alliance_info(&mut self, alliance_id: i32) -> Result<Alliance, String>;
+    async fn get_alliance_info(&mut self, alliance_id: i64) -> Result<Alliance, String>;
     /// Fetches the URL of the 128x128 character portrait from ESI.
-    async fn get_character_portrait_url(&mut self, character_id: i32) -> Result<String, String>;
+    async fn get_character_portrait_url(&mut self, character_id: i64) -> Result<String, String>;
     /// Fetches the current solar system of a character from ESI.
-    async fn get_location(&mut self, character_id: i32) -> Result<i32, String>;
+    async fn get_location(&mut self, character_id: i64) -> Result<i64, String>;
 }
 
 /// ESI endpoints Telescope uses, as `(operationId, path)`. The ids must be
@@ -118,7 +118,7 @@ fn embedded_spec_json() -> serde_json::Value {
     serde_json::json!({ "paths": paths })
 }
 
-/// Production [`EsiApi`] implementation backed by `rfesi`.
+/// Production [`EsiApi`] implementation backed by `esi-openapi`.
 #[derive(Clone)]
 pub struct LiveEsiApi {
     esi: Esi,
@@ -183,7 +183,7 @@ impl EsiApi for LiveEsiApi {
     }
 
     /// No-op: the spec is embedded at construction (see [`ESI_ENDPOINTS`]),
-    /// because the Swagger URL `rfesi` would download it from is gone.
+    /// so no spec is downloaded at run time.
     #[tracing::instrument(skip(self))]
     async fn update_spec(&mut self) -> Result<(), String> {
         Ok(())
@@ -204,7 +204,7 @@ impl EsiApi for LiveEsiApi {
     #[tracing::instrument(skip(self))]
     async fn get_character_public_info(
         &mut self,
-        character_id: i32,
+        character_id: i64,
     ) -> Result<CharacterPublicInfo, String> {
         self.esi
             .group_character()
@@ -220,7 +220,7 @@ impl EsiApi for LiveEsiApi {
     #[tracing::instrument(skip(self))]
     async fn get_corporation_public_info(
         &mut self,
-        corporation_id: i32,
+        corporation_id: i64,
     ) -> Result<Corporation, String> {
         self.esi
             .group_corporation()
@@ -234,7 +234,7 @@ impl EsiApi for LiveEsiApi {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn get_alliance_info(&mut self, alliance_id: i32) -> Result<Alliance, String> {
+    async fn get_alliance_info(&mut self, alliance_id: i64) -> Result<Alliance, String> {
         self.esi
             .group_alliance()
             .get_info(alliance_id)
@@ -247,7 +247,7 @@ impl EsiApi for LiveEsiApi {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn get_character_portrait_url(&mut self, character_id: i32) -> Result<String, String> {
+    async fn get_character_portrait_url(&mut self, character_id: i64) -> Result<String, String> {
         self.esi
             .group_character()
             .get_portrait(character_id)
@@ -258,7 +258,7 @@ impl EsiApi for LiveEsiApi {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn get_location(&mut self, character_id: i32) -> Result<i32, String> {
+    async fn get_location(&mut self, character_id: i64) -> Result<i64, String> {
         self.esi
             .group_location()
             .get_location(character_id)
@@ -275,13 +275,13 @@ pub struct EsiManagerCore<T: EsiApi> {
     api: T,
     /// OAuth token set of each linked character, by character id (an EVE
     /// SSO token only works for the character that logged in).
-    pub auth: HashMap<i32, AuthData>,
+    pub auth: HashMap<i64, AuthData>,
     /// What opening the player database found (see
     /// [`PlayerDatabase::ensure_schema`]); `None` if it couldn't be opened.
     pub schema_status: Option<SchemaStatus>,
     pub characters: Vec<Character>,
     pub path: PathBuf,
-    pub active_character: Option<i32>,
+    pub active_character: Option<i64>,
 }
 
 /// The production ESI manager, backed by the live CCP servers.
@@ -345,7 +345,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     #[tracing::instrument(skip(self))]
     pub fn read_alliance(
         &mut self,
-        alliance_vec: Option<Vec<i32>>,
+        alliance_vec: Option<Vec<i64>>,
     ) -> Result<Vec<Alliance>, Error> {
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
@@ -363,7 +363,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn remove_alliance(&mut self, alliance_vec: Option<Vec<i32>>) -> Result<usize, Error> {
+    pub fn remove_alliance(&mut self, alliance_vec: Option<Vec<i64>>) -> Result<usize, Error> {
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -401,7 +401,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     #[tracing::instrument(skip(self))]
     pub fn read_corporation(
         &mut self,
-        corporation_vec: Option<Vec<i32>>,
+        corporation_vec: Option<Vec<i64>>,
     ) -> Result<Vec<Corporation>, Error> {
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
@@ -421,7 +421,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     #[tracing::instrument(skip(self))]
     pub fn remove_corporation(
         &mut self,
-        corporation_vec: Option<Vec<i32>>,
+        corporation_vec: Option<Vec<i64>>,
     ) -> Result<usize, Error> {
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
@@ -468,7 +468,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn read_characters(&mut self, char_vec: Option<Vec<i32>>) -> Result<Vec<Character>, Error> {
+    pub fn read_characters(&mut self, char_vec: Option<Vec<i64>>) -> Result<Vec<Character>, Error> {
         let conn = match self.get_standard_connection() {
             Ok(connection) => connection,
             Err(error) => {
@@ -489,7 +489,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     /// `other`, typically a clone of this manager that completed
     /// [`Self::auth_user`] for that character on a background thread. The
     /// other characters' tokens and the character list are left untouched.
-    pub fn adopt_session(&mut self, other: Self, character_id: i32) {
+    pub fn adopt_session(&mut self, other: Self, character_id: i64) {
         let Self { api, mut auth, .. } = other;
         self.api = api;
         if let Some(character_auth) = auth.remove(&character_id) {
@@ -507,7 +507,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn remove_characters(&mut self, char_vec: Option<Vec<i32>>) -> Result<usize, Error> {
+    pub fn remove_characters(&mut self, char_vec: Option<Vec<i64>>) -> Result<usize, Error> {
         let conn = self.get_standard_connection()?;
         let ids = char_vec.unwrap_or_default();
         let transaction = conn.unchecked_transaction()?;
@@ -610,7 +610,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     /// Current solar system of a character, called as that character (its
     /// own token set is loaded into the client first).
     #[tracing::instrument(skip(self))]
-    pub async fn get_location(&mut self, player_id: i32) -> Result<i32, String> {
+    pub async fn get_location(&mut self, player_id: i64) -> Result<i64, String> {
         if !self.valid_token(player_id).await {
             return Err(String::from("Invalid Token"));
         }
@@ -626,7 +626,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     /// Whether the character has a token set that is still valid for at
     /// least 20 seconds.
     #[tracing::instrument(skip(self))]
-    pub async fn valid_token(&self, character_id: i32) -> bool {
+    pub async fn valid_token(&self, character_id: i64) -> bool {
         let Some(auth) = self.auth.get(&character_id) else {
             return false;
         };
@@ -640,7 +640,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     /// Gets a new access token for the character with its refresh token,
     /// and stores it.
     #[tracing::instrument(skip(self))]
-    pub async fn refresh_token(&mut self, character_id: i32) -> Result<usize, String> {
+    pub async fn refresh_token(&mut self, character_id: i64) -> Result<usize, String> {
         let refresh_token = match self.auth.get(&character_id) {
             Some(auth) if !auth.refresh_token.is_empty() => auth.refresh_token.clone(),
             _ => return Err(String::from("No refresh token for this character")),
@@ -683,29 +683,25 @@ impl<T: EsiApi> EsiManagerCore<T> {
 
     /// Completes a login: `oauth_data` is the `(code, state)` pair of the
     /// SSO callback. A callback whose `state` is not the one sent in
-    /// `_auth_info.url` is rejected before the code is used: any web page
+    /// `auth_info.url` is rejected before the code is used: any web page
     /// can send the browser to the local callback URL, and without this
     /// check it could link a character of its choosing (login CSRF).
     #[tracing::instrument(skip_all)]
     pub async fn auth_user(
         &mut self,
-        _auth_info: AuthorizeInfo,
+        auth_info: AuthorizeInfo,
         oauth_data: (String, String),
     ) -> Result<Option<Character>, Box<dyn std::error::Error + Send + Sync>> {
-        if !same_secret(&oauth_data.1, &_auth_info.state) {
+        if !same_secret(&oauth_data.1, &auth_info.state) {
             return Err(
                 "the EVE SSO callback does not belong to this login (state mismatch)".into(),
             );
         }
-        #[cfg(not(feature = "native-auth-flow"))]
-        let verifier = None;
-
-        #[cfg(feature = "native-auth-flow")]
-        let verifier = _auth_info.pkce_verifier;
-
+        // The PKCE verifier proves this login started here: there is no
+        // client secret to send.
         let claims_option = self
             .api
-            .authenticate(oauth_data.0.as_str(), verifier)
+            .authenticate(oauth_data.0.as_str(), auth_info.pkce_verifier)
             .await?;
         if let Some(claims) = claims_option {
             let mut player = Character::new();
@@ -716,7 +712,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
                 .sub
                 .split(':')
                 .nth(2)
-                .and_then(|id| id.parse::<i32>().ok())
+                .and_then(|id| id.parse::<i64>().ok())
                 .ok_or("invalid character id in authentication claims")?;
             // The client now holds this character's tokens; keep them for
             // this character only (every character has its own).
@@ -767,33 +763,20 @@ fn same_secret(received: &str, expected: &str) -> bool {
 }
 
 impl EsiManagerCore<LiveEsiApi> {
-    #[tracing::instrument(skip(_client_secret))]
+    /// Builds the manager for a desktop application: the login uses PKCE, so
+    /// there is no client secret to hold (and none is shipped).
+    #[tracing::instrument]
     pub fn new(
         useragent: &str,
         client_id: &str,
-        _client_secret: &str,
         callback_url: &str,
         scope: Vec<&str>,
         database_path: &Path,
     ) -> Self {
-        // `rfesi`'s `Spec` type isn't exported, so it is named through
-        // inference from `EsiBuilder::spec`; the JSON is built by us, so a
-        // failure here is a programming error.
-        let spec = serde_json::from_value(embedded_spec_json())
-            .expect("embedded ESI spec must match rfesi's Spec shape");
+        // The JSON is built by us, so a failure here is a programming error.
+        let spec: Spec = serde_json::from_value(embedded_spec_json())
+            .expect("embedded ESI spec must match esi-openapi's Spec shape");
 
-        #[cfg(not(feature = "native-auth-flow"))]
-        let esi = EsiBuilder::new()
-            .user_agent(useragent)
-            .client_id(client_id)
-            .client_secret(_client_secret)
-            .callback_url(callback_url)
-            .scope(scope.join(" ").as_str())
-            .spec(Some(spec))
-            .build()
-            .unwrap();
-
-        #[cfg(feature = "native-auth-flow")]
         let esi = EsiBuilder::new()
             .user_agent(useragent)
             .client_id(client_id)
@@ -832,7 +815,6 @@ mod tests {
         let manager = EsiManager::new(
             "telescope-test (test@example.com)",
             "test-client-id",
-            "test-client-secret",
             "http://localhost:8000/login",
             vec!["publicData"],
             &path,
@@ -901,7 +883,6 @@ mod tests {
         let mut manager = EsiManager::new(
             "telescope-test (test@example.com)",
             "test-client-id",
-            "test-client-secret",
             "http://localhost:8000/login",
             vec!["publicData"],
             &path,
@@ -916,15 +897,61 @@ mod tests {
         cleanup(&path);
     }
 
-    // The Swagger spec URL rfesi downloads from answers 404 since
-    // 11 August 2026; the embedded spec must resolve every endpoint we use
-    // without any network access.
+    /// The login is PKCE only: the authorization URL carries the code
+    /// challenge and the matching verifier is handed back, and no client
+    /// secret exists to be sent.
+    #[test]
+    fn the_authorization_url_uses_pkce() {
+        let (manager, path) = test_manager("pkce_url");
+        let info = manager.get_authorize_url().unwrap();
+        assert!(info.url.contains("code_challenge="), "{}", info.url);
+        assert!(
+            info.url.contains("code_challenge_method=S256"),
+            "{}",
+            info.url
+        );
+        assert!(!info.url.contains("secret"), "{}", info.url);
+        assert!(
+            info.pkce_verifier.as_deref().is_some_and(|v| !v.is_empty()),
+            "no PKCE verifier was generated"
+        );
+        cleanup(&path);
+    }
+
+    /// The code is exchanged together with the verifier of this very login.
+    #[tokio::test]
+    async fn auth_user_hands_the_pkce_verifier_to_the_token_exchange() {
+        let mut mock = MockEsiApi::new();
+        mock.expect_authenticate()
+            .withf(|code, verifier| {
+                code == "oauth-code" && verifier.as_deref() == Some("the-verifier")
+            })
+            .times(1)
+            .returning(|_, _| Ok(None));
+        let (mut manager, path) = mock_manager("pkce_exchange", mock);
+        let mut info = sample_authorize_info();
+        info.pkce_verifier = Some(String::from("the-verifier"));
+
+        let result = manager
+            .auth_user(
+                info,
+                (String::from("oauth-code"), String::from("oauth-state")),
+            )
+            .await;
+        assert!(result.unwrap().is_none());
+
+        cleanup(&path);
+    }
+
+    // The embedded spec must resolve every endpoint we use without any
+    // network access.
     #[test]
     fn embedded_spec_resolves_every_endpoint_offline() {
         let (manager, path) = test_manager("embedded_spec");
         for (op_id, expected) in ESI_ENDPOINTS {
             let resolved = manager.api.esi.get_endpoint_for_op_id(op_id).unwrap();
-            // rfesi strips the leading slash before appending to the base URL.
+            // esi-openapi strips the leading slash before appending to the
+            // base URL.
             assert_eq!(format!("/{resolved}"), *expected);
         }
         assert_eq!(
@@ -1098,7 +1125,7 @@ mod tests {
     }
 
     /// Character the mocked sessions belong to (see `sample_claims`).
-    const PILOT: i32 = 90000001;
+    const PILOT: i64 = 90000001;
 
     /// Simulates a fully authenticated session for [`PILOT`].
     fn authenticate_session(manager: &mut EsiManagerCore<MockEsiApi>, seconds_valid: i64) {
@@ -1331,6 +1358,98 @@ mod tests {
             PlayerDatabase::select_auth(&conn).unwrap()[&PILOT].token,
             "new-access-token"
         );
+
+        cleanup(&path);
+    }
+
+    /// ESI ids are `int64`: linking a character, its corporation and its
+    /// alliance whose ids do not fit in 32 bits must work end to end (login
+    /// claim, ESI calls, database round trip, removal).
+    #[tokio::test]
+    async fn ids_beyond_32_bits_survive_a_login_and_the_database() {
+        const BEYOND: i64 = i32::MAX as i64;
+        let (character, corporation, alliance, system) = (
+            BEYOND + 1_000,
+            BEYOND + 2_000,
+            BEYOND + 3_000,
+            BEYOND + 4_000,
+        );
+        let mut mock = MockEsiApi::new();
+        mock.expect_authenticate().times(1).returning(move |_, _| {
+            Ok(Some(AuthClaims {
+                name: String::from("Late Pilot"),
+                sub: format!("CHARACTER:EVE:{character}"),
+            }))
+        });
+        mock.expect_current_tokens()
+            .times(1)
+            .returning(|| Some(sample_tokens()));
+        mock.expect_update_spec().times(1).returning(|| Ok(()));
+        mock.expect_get_character_public_info()
+            .with(mockall::predicate::eq(character))
+            .times(1)
+            .returning(move |_| {
+                Ok(CharacterPublicInfo {
+                    corporation_id: corporation,
+                    alliance_id: Some(alliance),
+                })
+            });
+        mock.expect_get_corporation_public_info()
+            .with(mockall::predicate::eq(corporation))
+            .times(1)
+            .returning(move |_| {
+                Ok(Corporation {
+                    id: corporation,
+                    name: String::from("Late Corp"),
+                })
+            });
+        mock.expect_get_alliance_info()
+            .with(mockall::predicate::eq(alliance))
+            .times(1)
+            .returning(move |_| {
+                Ok(Alliance {
+                    id: alliance,
+                    name: String::from("Late Alliance"),
+                })
+            });
+        mock.expect_get_character_portrait_url()
+            .times(1)
+            .returning(|_| Ok(String::from("https://images/late.png")));
+        mock.expect_get_location()
+            .with(mockall::predicate::eq(character))
+            .times(1)
+            .returning(move |_| Ok(system));
+        let (mut manager, path) = mock_manager("ids_beyond_32_bits", mock);
+
+        let player = manager
+            .auth_user(
+                sample_authorize_info(),
+                (String::from("oauth-code"), String::from("oauth-state")),
+            )
+            .await
+            .unwrap()
+            .expect("a character must be returned");
+        assert_eq!(player.id, character);
+        assert_eq!(player.location, system);
+
+        // What the database gives back is what was written.
+        let stored = manager.read_characters(None).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].id, character);
+        assert_eq!(stored[0].location, system);
+        assert_eq!(stored[0].corp.as_ref().unwrap().id, corporation);
+        assert_eq!(stored[0].alliance.as_ref().unwrap().id, alliance);
+        assert!(manager.auth.contains_key(&character));
+        let conn = manager.get_standard_connection().unwrap();
+        assert!(
+            PlayerDatabase::select_auth(&conn)
+                .unwrap()
+                .contains_key(&character)
+        );
+        drop(conn);
+
+        assert_eq!(manager.remove_characters(Some(vec![character])).unwrap(), 1);
+        assert!(manager.read_characters(None).unwrap().is_empty());
 
         cleanup(&path);
     }

@@ -29,6 +29,24 @@ period it happened in.
 
 ### Changed
 
+* Telescope identifies itself to ESI with a real `User-Agent`,
+  `telescope/<version> (+https://github.com/rafaga/telescope)`, instead of
+  `telescope/dev`. The version is the crate's, so it follows each release
+  (October 2026).
+* The EVE SSO login uses PKCE only and Telescope no longer has a client
+  secret: `ESI_SECRET_KEY` is gone from the build (`AppData`, `BUILD.md`,
+  `release.yml`) and from the executable, the `native-auth-flow` feature of
+  `webb` is now the only flow, and `EsiManager::new` takes no secret. Builds
+  before this one still carry the old secret, so it should be rotated in the
+  developer portal once users have updated (October 2026).
+* The ESI client is `esi-openapi` 0.2.0 (the fork of `rfesi`), and the unused
+  `esi-openapi` 0.1.0 dependency of the `telescope` crate is gone. ESI defines
+  every id as `int64`, so characters, corporations, alliances and solar systems
+  are `i64` throughout (`Character`, `EsiApi`, the player database, the
+  watchdog, the maps' markers) instead of `i32`. A character whose id does not
+  fit in 32 bits can now be linked. The database columns were already 64-bit
+  integers, so the schema version stays at 2 and nothing is migrated
+  (October 2026).
 * Systems and ships are detected whatever their case. `h-5gui`, `JITA` and
   `old man star` now raise the same alert as `H-5GUI`, `Jita` and `Old Man
   Star`. The code-like names (`J105443`, `1DQ1-A`, `AD001`) are matched by a

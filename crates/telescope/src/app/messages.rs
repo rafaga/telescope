@@ -192,7 +192,7 @@ pub enum Message {
     NewRegionalPane(usize),
     MapHidden(usize),
     MapShown(usize),
-    PlayerNewLocation((i32, i32)),
+    PlayerNewLocation((i64, i64)),
     /// Sent by the intel reader thread after it read new lines of a
     /// channel's log: the channel and when, for Settings -> Sources.
     ChannelActivity(String, std::time::SystemTime),
@@ -259,8 +259,8 @@ impl Message {
 }
 
 pub enum CharacterSync {
-    Add(usize),
-    Remove(usize),
+    Add(i64),
+    Remove(i64),
 }
 
 pub struct MessageSpawner {
@@ -550,7 +550,6 @@ mod auth_spawner_tests {
         let esi = EsiManager::new(
             "telescope-test",
             "test-client-id",
-            "test-client-secret",
             "http://localhost:56123/login",
             vec!["publicData"],
             &db,

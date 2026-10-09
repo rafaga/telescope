@@ -221,7 +221,6 @@ impl TelescopeApp {
         let esi = webb::esi::EsiManager::new(
             app_data.user_agent.as_str(),
             app_data.client_id,
-            app_data.secret_key,
             app_data.url.as_str(),
             app_data.scope,
             settings.get_db(),
@@ -614,7 +613,7 @@ impl eframe::App for TelescopeApp {
             if !self.esi.characters.is_empty() {
                 let mut ids = vec![];
                 for char in &self.esi.characters {
-                    ids.push(char.id as usize);
+                    ids.push(char.id);
                 }
                 self.start_watchdog(ids);
             }
@@ -928,11 +927,16 @@ impl TelescopeApp {
     }
 
     /// Removes an unlinked character's marker from every pane.
-    pub(crate) fn remove_player_marker(&mut self, player_id: i32) {
+    pub(crate) fn remove_player_marker(&mut self, player_id: i64) {
+        // The maps key their markers by `usize`; an id that doesn't fit has
+        // no marker to remove.
+        let Ok(marker) = usize::try_from(player_id) else {
+            return;
+        };
         if let Some(tree) = self.tree.as_mut() {
             for tile in tree.tiles.tiles_mut() {
                 if let Tile::Pane(pane) = tile {
-                    pane.remove_marker(player_id as usize);
+                    pane.remove_marker(marker);
                 }
             }
         }
@@ -942,12 +946,13 @@ impl TelescopeApp {
     /// it doesn't wait for the character to move to show its marker.
     fn seed_player_markers(&self, pane: &mut dyn TabPane) {
         for character in &self.esi.characters {
-            if character.location > 0 {
-                pane.update_marker(
-                    character.id as usize,
-                    character.location as usize,
-                    &character.name,
-                );
+            if character.location > 0
+                && let (Ok(marker), Ok(system)) = (
+                    usize::try_from(character.id),
+                    usize::try_from(character.location),
+                )
+            {
+                pane.update_marker(marker, system, &character.name);
             }
         }
     }
@@ -1107,7 +1112,7 @@ impl TelescopeApp {
     }
 
     #[tracing::instrument(skip(self))]
-    fn update_player_location(&mut self, player_id: i32, solar_system_id: i32) {
+    fn update_player_location(&mut self, player_id: i64, solar_system_id: i64) {
         let name = self
             .esi
             .characters
@@ -1120,10 +1125,16 @@ impl TelescopeApp {
         // drawn, so a hidden tab fell behind, lost the one-off location
         // message once the channel lagged, and the marker only showed up
         // after a restart.
-        if let Some(tree) = self.tree.as_mut() {
+        // The maps key markers and nodes by `usize`; ids that don't fit
+        // can't be drawn, but the character's stored location still updates.
+        if let (Ok(marker), Ok(system), Some(tree)) = (
+            usize::try_from(player_id),
+            usize::try_from(solar_system_id),
+            self.tree.as_mut(),
+        ) {
             for tile in tree.tiles.tiles_mut() {
                 if let Tile::Pane(pane) = tile {
-                    pane.update_marker(player_id as usize, solar_system_id as usize, &name);
+                    pane.update_marker(marker, system, &name);
                 }
             }
         }

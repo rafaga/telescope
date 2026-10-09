@@ -27,7 +27,7 @@ all-features = true
 [advisories]
 version = 2
 ignore = [
-  # `rsa` comes through `jsonwebtoken` (rfesi and esi-openapi), which Telescope
+  # `rsa` comes through `jsonwebtoken` (esi-openapi), which Telescope
   # uses to validate EVE SSO tokens. The Marvin attack is a timing side channel
   # in RSA private-key operations (decryption/signing); Telescope never holds an
   # RSA private key. No fixed release exists (`patched = []`). Revisit when
