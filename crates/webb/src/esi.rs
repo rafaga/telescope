@@ -118,7 +118,14 @@ fn embedded_spec_json() -> serde_json::Value {
     serde_json::json!({ "paths": paths })
 }
 
-/// Production [`EsiApi`] implementation backed by `rfesi`.
+/// ESI ids are `int64`, which is what `esi-openapi` uses; Telescope keeps
+/// them as `i32` everywhere else (database, characters, auth). The value is
+/// checked, never truncated: one that does not fit is an error for that call.
+fn narrow_id(value: i64, what: &str) -> Result<i32, String> {
+    i32::try_from(value).map_err(|_| format!("{what} {value} does not fit in 32 bits"))
+}
+
+/// Production [`EsiApi`] implementation backed by `esi-openapi`.
 #[derive(Clone)]
 pub struct LiveEsiApi {
     esi: Esi,
@@ -183,7 +190,7 @@ impl EsiApi for LiveEsiApi {
     }
 
     /// No-op: the spec is embedded at construction (see [`ESI_ENDPOINTS`]),
-    /// because the Swagger URL `rfesi` would download it from is gone.
+    /// so no spec is downloaded at run time.
     #[tracing::instrument(skip(self))]
     async fn update_spec(&mut self) -> Result<(), String> {
         Ok(())
@@ -206,15 +213,19 @@ impl EsiApi for LiveEsiApi {
         &mut self,
         character_id: i32,
     ) -> Result<CharacterPublicInfo, String> {
-        self.esi
+        let info = self
+            .esi
             .group_character()
-            .get_public_info(character_id)
+            .get_public_info(i64::from(character_id))
             .await
-            .map(|info| CharacterPublicInfo {
-                corporation_id: info.corporation_id,
-                alliance_id: info.alliance_id,
-            })
-            .map_err(|t_error| t_error.to_string())
+            .map_err(|t_error| t_error.to_string())?;
+        Ok(CharacterPublicInfo {
+            corporation_id: narrow_id(info.corporation_id, "corporation id")?,
+            alliance_id: info
+                .alliance_id
+                .map(|id| narrow_id(id, "alliance id"))
+                .transpose()?,
+        })
     }
 
     #[tracing::instrument(skip(self))]
@@ -224,7 +235,7 @@ impl EsiApi for LiveEsiApi {
     ) -> Result<Corporation, String> {
         self.esi
             .group_corporation()
-            .get_public_info(corporation_id)
+            .get_public_info(i64::from(corporation_id))
             .await
             .map(|info| Corporation {
                 id: corporation_id,
@@ -237,7 +248,7 @@ impl EsiApi for LiveEsiApi {
     async fn get_alliance_info(&mut self, alliance_id: i32) -> Result<Alliance, String> {
         self.esi
             .group_alliance()
-            .get_info(alliance_id)
+            .get_info(i64::from(alliance_id))
             .await
             .map(|info| Alliance {
                 id: alliance_id,
@@ -250,7 +261,7 @@ impl EsiApi for LiveEsiApi {
     async fn get_character_portrait_url(&mut self, character_id: i32) -> Result<String, String> {
         self.esi
             .group_character()
-            .get_portrait(character_id)
+            .get_portrait(i64::from(character_id))
             .await
             .map_err(|t_error| t_error.to_string())?
             .px128x128
@@ -259,12 +270,13 @@ impl EsiApi for LiveEsiApi {
 
     #[tracing::instrument(skip(self))]
     async fn get_location(&mut self, character_id: i32) -> Result<i32, String> {
-        self.esi
+        let location = self
+            .esi
             .group_location()
-            .get_location(character_id)
+            .get_location(i64::from(character_id))
             .await
-            .map(|location| location.solar_system_id)
-            .map_err(|t_error| t_error.to_string())
+            .map_err(|t_error| t_error.to_string())?;
+        narrow_id(location.solar_system_id, "solar system id")
     }
 }
 
@@ -776,11 +788,9 @@ impl EsiManagerCore<LiveEsiApi> {
         scope: Vec<&str>,
         database_path: &Path,
     ) -> Self {
-        // `rfesi`'s `Spec` type isn't exported, so it is named through
-        // inference from `EsiBuilder::spec`; the JSON is built by us, so a
-        // failure here is a programming error.
-        let spec = serde_json::from_value(embedded_spec_json())
-            .expect("embedded ESI spec must match rfesi's Spec shape");
+        // The JSON is built by us, so a failure here is a programming error.
+        let spec: Spec = serde_json::from_value(embedded_spec_json())
+            .expect("embedded ESI spec must match esi-openapi's Spec shape");
 
         #[cfg(not(feature = "native-auth-flow"))]
         let esi = EsiBuilder::new()
@@ -916,15 +926,27 @@ mod tests {
         cleanup(&path);
     }
 
-    // The Swagger spec URL rfesi downloads from answers 404 since
-    // 11 August 2026; the embedded spec must resolve every endpoint we use
-    // without any network access.
+    #[test]
+    fn an_esi_id_that_does_not_fit_in_32_bits_is_an_error_not_a_truncation() {
+        assert_eq!(narrow_id(30_000_142, "solar system id"), Ok(30_000_142));
+        assert_eq!(narrow_id(i64::from(i32::MAX), "id"), Ok(i32::MAX));
+        let error = narrow_id(i64::from(i32::MAX) + 1, "character id").unwrap_err();
+        assert!(
+            error.contains("character id") && error.contains("2147483648"),
+            "{error}"
+        );
+        assert!(narrow_id(i64::MIN, "id").is_err());
+    }
+
+    // The embedded spec must resolve every endpoint we use without any
+    // network access.
     #[test]
     fn embedded_spec_resolves_every_endpoint_offline() {
         let (manager, path) = test_manager("embedded_spec");
         for (op_id, expected) in ESI_ENDPOINTS {
             let resolved = manager.api.esi.get_endpoint_for_op_id(op_id).unwrap();
-            // rfesi strips the leading slash before appending to the base URL.
+            // esi-openapi strips the leading slash before appending to the
+            // base URL.
             assert_eq!(format!("/{resolved}"), *expected);
         }
         assert_eq!(

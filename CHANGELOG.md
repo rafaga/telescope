@@ -29,6 +29,12 @@ period it happened in.
 
 ### Changed
 
+* The ESI client is `esi-openapi` 0.2.0 (the fork of `rfesi`) instead of
+  `rfesi` 0.50, and the unused `esi-openapi` 0.1.0 dependency of the
+  `telescope` crate is gone. Its ids are `int64`: `webb` converts them at the
+  edge of `LiveEsiApi` and reports an id that does not fit in 32 bits as an
+  error instead of truncating it; everything else still uses `i32`
+  (October 2026).
 * Systems and ships are detected whatever their case. `h-5gui`, `JITA` and
   `old man star` now raise the same alert as `H-5GUI`, `Jita` and `Old Man
   Star`. The code-like names (`J105443`, `1DQ1-A`, `AD001`) are matched by a
