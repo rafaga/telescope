@@ -37,7 +37,6 @@ On by default. It needs threads, sockets and SQLite, so it does not build for
 | `esi` (default) | The EVE back end above. |
 | `crypted-db` (default) | Encrypts the player database with SQLCipher, keyed from the machine identifier that `native_tools` reads. Telescope enables it explicitly. |
 | `esi-api-test` | Implies `esi`. No code is gated on it at the moment. |
-| `native-auth-flow` | `esi`, with the application authentication flow of `esi-openapi`. |
 
 The modules and how they fit with the rest of the workspace are described in
 [ARCHITECTURE.md](../../ARCHITECTURE.md). Run its tests with

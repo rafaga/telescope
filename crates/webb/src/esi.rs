@@ -37,8 +37,8 @@ pub mod player_database;
 #[cfg_attr(test, mockall::automock)]
 #[allow(async_fn_in_trait)]
 pub trait EsiApi: Send {
-    /// Builds the SSO authorization URL (and PKCE verifier when the
-    /// `native-auth-flow` feature is enabled). Pure, no network involved.
+    /// Builds the SSO authorization URL and its PKCE verifier. Pure, no
+    /// network involved.
     fn authorize_url(&self) -> Result<AuthorizeInfo, String>;
     /// Whether the underlying client holds a complete token set.
     fn has_token_state(&self) -> bool;
@@ -683,29 +683,25 @@ impl<T: EsiApi> EsiManagerCore<T> {
 
     /// Completes a login: `oauth_data` is the `(code, state)` pair of the
     /// SSO callback. A callback whose `state` is not the one sent in
-    /// `_auth_info.url` is rejected before the code is used: any web page
+    /// `auth_info.url` is rejected before the code is used: any web page
     /// can send the browser to the local callback URL, and without this
     /// check it could link a character of its choosing (login CSRF).
     #[tracing::instrument(skip_all)]
     pub async fn auth_user(
         &mut self,
-        _auth_info: AuthorizeInfo,
+        auth_info: AuthorizeInfo,
         oauth_data: (String, String),
     ) -> Result<Option<Character>, Box<dyn std::error::Error + Send + Sync>> {
-        if !same_secret(&oauth_data.1, &_auth_info.state) {
+        if !same_secret(&oauth_data.1, &auth_info.state) {
             return Err(
                 "the EVE SSO callback does not belong to this login (state mismatch)".into(),
             );
         }
-        #[cfg(not(feature = "native-auth-flow"))]
-        let verifier = None;
-
-        #[cfg(feature = "native-auth-flow")]
-        let verifier = _auth_info.pkce_verifier;
-
+        // The PKCE verifier proves this login started here: there is no
+        // client secret to send.
         let claims_option = self
             .api
-            .authenticate(oauth_data.0.as_str(), verifier)
+            .authenticate(oauth_data.0.as_str(), auth_info.pkce_verifier)
             .await?;
         if let Some(claims) = claims_option {
             let mut player = Character::new();
@@ -767,11 +763,12 @@ fn same_secret(received: &str, expected: &str) -> bool {
 }
 
 impl EsiManagerCore<LiveEsiApi> {
-    #[tracing::instrument(skip(_client_secret))]
+    /// Builds the manager for a desktop application: the login uses PKCE, so
+    /// there is no client secret to hold (and none is shipped).
+    #[tracing::instrument]
     pub fn new(
         useragent: &str,
         client_id: &str,
-        _client_secret: &str,
         callback_url: &str,
         scope: Vec<&str>,
         database_path: &Path,
@@ -780,18 +777,6 @@ impl EsiManagerCore<LiveEsiApi> {
         let spec: Spec = serde_json::from_value(embedded_spec_json())
             .expect("embedded ESI spec must match esi-openapi's Spec shape");
 
-        #[cfg(not(feature = "native-auth-flow"))]
-        let esi = EsiBuilder::new()
-            .user_agent(useragent)
-            .client_id(client_id)
-            .client_secret(_client_secret)
-            .callback_url(callback_url)
-            .scope(scope.join(" ").as_str())
-            .spec(Some(spec))
-            .build()
-            .unwrap();
-
-        #[cfg(feature = "native-auth-flow")]
         let esi = EsiBuilder::new()
             .user_agent(useragent)
             .client_id(client_id)
@@ -830,7 +815,6 @@ mod tests {
         let manager = EsiManager::new(
             "telescope-test (test@example.com)",
             "test-client-id",
-            "test-client-secret",
             "http://localhost:8000/login",
             vec!["publicData"],
             &path,
@@ -899,7 +883,6 @@ mod tests {
         let mut manager = EsiManager::new(
             "telescope-test (test@example.com)",
             "test-client-id",
-            "test-client-secret",
             "http://localhost:8000/login",
             vec!["publicData"],
             &path,
@@ -911,6 +894,52 @@ mod tests {
         assert_eq!(manager.write_character(&character).unwrap(), 1);
         let conn = manager.get_standard_connection().unwrap();
         assert!(PlayerDatabase::save_auth(&conn, 7, &AuthData::new()).is_ok());
+        cleanup(&path);
+    }
+
+    /// The login is PKCE only: the authorization URL carries the code
+    /// challenge and the matching verifier is handed back, and no client
+    /// secret exists to be sent.
+    #[test]
+    fn the_authorization_url_uses_pkce() {
+        let (manager, path) = test_manager("pkce_url");
+        let info = manager.get_authorize_url().unwrap();
+        assert!(info.url.contains("code_challenge="), "{}", info.url);
+        assert!(
+            info.url.contains("code_challenge_method=S256"),
+            "{}",
+            info.url
+        );
+        assert!(!info.url.contains("secret"), "{}", info.url);
+        assert!(
+            info.pkce_verifier.as_deref().is_some_and(|v| !v.is_empty()),
+            "no PKCE verifier was generated"
+        );
+        cleanup(&path);
+    }
+
+    /// The code is exchanged together with the verifier of this very login.
+    #[tokio::test]
+    async fn auth_user_hands_the_pkce_verifier_to_the_token_exchange() {
+        let mut mock = MockEsiApi::new();
+        mock.expect_authenticate()
+            .withf(|code, verifier| {
+                code == "oauth-code" && verifier.as_deref() == Some("the-verifier")
+            })
+            .times(1)
+            .returning(|_, _| Ok(None));
+        let (mut manager, path) = mock_manager("pkce_exchange", mock);
+        let mut info = sample_authorize_info();
+        info.pkce_verifier = Some(String::from("the-verifier"));
+
+        let result = manager
+            .auth_user(
+                info,
+                (String::from("oauth-code"), String::from("oauth-state")),
+            )
+            .await;
+        assert!(result.unwrap().is_none());
+
         cleanup(&path);
     }
 

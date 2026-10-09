@@ -10,8 +10,6 @@ default = ["crypted-db"]
 # SQLCipher encryption of the player database, keyed from the machine
 # identifier `native_tools` reads (see `esi/cipher.rs`).
 crypted-db = ["rusqlite/bundled-sqlcipher"]
-#this feature it is used by the telescope app to control the flow of the auth process
-native-auth-flow = []
 
 [dependencies]
 aho-corasick = "1.1"

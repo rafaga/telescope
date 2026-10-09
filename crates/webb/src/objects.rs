@@ -38,8 +38,7 @@ pub struct AuthorizeInfo {
     /// it back unchanged: a callback with any other value did not come from
     /// this login (see `EsiManagerCore::auth_user`).
     pub state: String,
-    /// PKCE verifier needed to authenticate the received code, when the
-    /// `native-auth-flow` feature is enabled.
+    /// PKCE verifier needed to authenticate the received code.
     pub pkce_verifier: Option<String>,
 }
 

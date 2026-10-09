@@ -11,7 +11,7 @@
   the `PATH`. The player database builds OpenSSL from source, and the `perl`
   that ships with Git for Windows is too limited for that (the build fails in
   `openssl-sys`).
-* An ESI application from CCP (client id and secret key), registered at the
+* An ESI application from CCP (a client id; no secret key), registered at the
   [EVE Online developers portal](https://developers.eveonline.com/) with:
   * Callback URL: `http://localhost:56123/login`
   * Scopes: `publicData`, `esi-location.read_location.v1`,
@@ -25,34 +25,36 @@
 
 ## ESI credentials
 
-The client id and the secret key are read **at compile time** from the
-`ESI_CLIENT_ID` and `ESI_SECRET_KEY` environment variables. Without them
-`telescope` does not build (`AppData::new` names the missing one), and with
-placeholder values it builds but logging in with a character will not work.
+The client id is read **at compile time** from the `ESI_CLIENT_ID`
+environment variable. Without it `telescope` does not build (`AppData::new`
+says so), and with a placeholder value it builds but logging in with a
+character will not work.
 
-The repository does not carry them: `.cargo/config.toml` is not tracked and
-neither is a `.env` file (both are ignored by git). Set the variables in your
+There is no secret key: the EVE SSO login uses PKCE, the flow meant for
+desktop applications, so nothing secret is built into the executable. Register
+your application in CCP's developer portal with the callback URL
+`http://localhost:56123/login` and the scopes listed in
+`crates/telescope/src/app/data.rs`, and use its client id.
+
+The repository does not carry it: `.cargo/config.toml` is not tracked and
+neither is a `.env` file (both are ignored by git). Set the variable in your
 shell before building:
 
 ```sh
 # Linux / macOS
 export ESI_CLIENT_ID="your client id"
-export ESI_SECRET_KEY="your secret key"
 
 # Windows (PowerShell)
 $env:ESI_CLIENT_ID = "your client id"
-$env:ESI_SECRET_KEY = "your secret key"
 ```
 
-Cargo does not read `.env` files by itself: if you keep the values in one,
+Cargo does not read `.env` files by itself: if you keep the value in one,
 load it into the shell (or your IDE's run configuration) first. Another option
-is the `[env]` section of a local `.cargo/config.toml`. Either way, **never
-commit the values**; if they ever reach a commit, rotate them in the developer
-portal, since deleting the file does not remove them from the history.
+is the `[env]` section of a local `.cargo/config.toml`.
 
-CI reads them from the `ESI_CLIENT_ID` and `ESI_SECRET_KEY` repository secrets
-(see `.github/workflows/release.yml`). The unit tests do not need them: they
-build the app with placeholder credentials (see *Tests* below).
+CI reads it from the `ESI_CLIENT_ID` repository secret (see
+`.github/workflows/release.yml`). The unit tests do not need it: they build
+the app with a placeholder client id (see *Tests* below).
 
 If you change the values, rebuild the `telescope` crate (for example
 `cargo clean -p telescope`), since they are baked into the binary.
@@ -142,7 +144,7 @@ CI (GitHub Actions, `.github/workflows/`):
   (`cargo install cargo-deny --locked`) before touching them.
 * `release.yml`, when a release is published (or by hand, with a tag, to try
   the packaging: the installers are then kept as artifacts). It stops early if
-  the `ESI_CLIENT_ID` or `ESI_SECRET_KEY` repository secrets are missing, and
+  the `ESI_CLIENT_ID` repository secret is missing, and
   attaches a `SHA256SUMS-<system>.txt` next to the installers.
 
 `check.sh` runs the same checks locally with all features, and the wasm check

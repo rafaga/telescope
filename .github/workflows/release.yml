@@ -66,23 +66,18 @@ jobs:
         run: cargo metadata --locked --format-version 1 > /dev/null
         shell: bash
 
-      # Without the ESI credentials the build still succeeds (`option_env!`
+      # Without the ESI client id the build still succeeds (`option_env!`
       # yields None) and the installer panics for every user at start-up, so
       # stop before spending the build.
-      - name: Check the ESI secrets
+      - name: Check the ESI client id
         shell: bash
         env:
           ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
-          ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
         run: |
-          missing=0
-          for name in ESI_CLIENT_ID ESI_SECRET_KEY; do
-            if [ -z "${!name}" ]; then
-              echo "::error::The repository secret $name is empty or missing; the installer would panic at start-up."
-              missing=1
-            fi
-          done
-          exit "$missing"
+          if [ -z "$ESI_CLIENT_ID" ]; then
+            echo "::error::The repository secret ESI_CLIENT_ID is empty or missing; the installer would panic at start-up."
+            exit 1
+          fi
 
       # packager.json's "version" is a hand-maintained literal (currently
       # "0.0.1", already out of sync with the workspace Cargo.toml's 0.1.0)
@@ -145,11 +140,12 @@ jobs:
       # cargo's) makes cargo-packager point at target/release to match --
       # see the doc comment on this workflow.
       #
-      # ESI_CLIENT_ID/ESI_SECRET_KEY are baked into the binary at compile
-      # time (see crates/telescope/src/app/data.rs and BUILD.md) -- without
-      # them the build still succeeds (option_env! just yields None), but
-      # the resulting installer panics for every user the moment
-      # TelescopeApp::new() calls AppData::new(). Sourced from repo secrets
+      # ESI_CLIENT_ID is baked into the binary at compile time (see
+      # crates/telescope/src/app/data.rs and BUILD.md) -- without it the
+      # build still succeeds (option_env! just yields None), but the
+      # resulting installer panics for every user the moment
+      # TelescopeApp::new() calls AppData::new(). The login uses PKCE, so no
+      # client secret is built in or needed. Sourced from a repo secret
       # (Settings -> Secrets and variables -> Actions), never committed.
       #
       # macOS is ad-hoc signed ("self-signed"): `macos.signingIdentity` is "-" in
@@ -169,7 +165,6 @@ jobs:
       - name: Build installer
         env:
           ESI_CLIENT_ID: ${{ secrets.ESI_CLIENT_ID }}
-          ESI_SECRET_KEY: ${{ secrets.ESI_SECRET_KEY }}
         run: cargo packager --release
 
       # Checks the signed bundle cargo-packager leaves next to the dmg (the

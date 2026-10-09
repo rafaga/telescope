@@ -550,7 +550,6 @@ mod auth_spawner_tests {
         let esi = EsiManager::new(
             "telescope-test",
             "test-client-id",
-            "test-client-secret",
             "http://localhost:56123/login",
             vec!["publicData"],
             &db,

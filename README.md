@@ -81,10 +81,11 @@ cargo run --release
 ```
 
 You do not need to provide the SDE database yourself, Telescope builds it on
-first run. You do need your own ESI application (client id and secret key)
-from CCP, given to the build as the `ESI_CLIENT_ID` and `ESI_SECRET_KEY`
-environment variables — see [BUILD.md](BUILD.md) for the full requirements,
-ESI credential setup, tests, logging and profiling instructions.
+first run. You do need your own ESI application
+from CCP, whose client id is given to the build as the `ESI_CLIENT_ID`
+environment variable (no secret key is needed: the login uses PKCE) — see
+[BUILD.md](BUILD.md) for the full requirements, ESI setup, tests, logging and
+profiling instructions.
 
 ## Documentation
 
