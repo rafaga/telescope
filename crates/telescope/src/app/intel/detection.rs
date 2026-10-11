@@ -186,6 +186,7 @@ mod tests {
                     offsets: Arc::new(Mutex::new(IntelOffsets::default())),
                     input: input_tx,
                     app_msg: app_tx,
+                    channels: Arc::new(RwLock::new(Vec::new())),
                 },
                 files_rx,
             );

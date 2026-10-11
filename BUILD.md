@@ -74,7 +74,11 @@ cargo run --release    # optimized build
 
 * Optional features of the `telescope` crate (see
   [Profiling with Tracy](#profiling-with-tracy)):
-  `profile` and `profile-memory`.
+  `profile` and `profile-memory`. `intel-polling` makes the intel reader also
+  look at the monitored chat logs every second, for systems where the file
+  watcher reports changes late or never. Windows builds always include it (the
+  build script turns the feature on for them), so the feature only matters on
+  other systems.
 * Web build (Trunk reads `index.html`; there is no `Trunk.toml`):
 
 > **Warning:** the `wasm32-unknown-unknown` target is still under development.
