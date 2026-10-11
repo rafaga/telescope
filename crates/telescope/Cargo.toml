@@ -21,6 +21,16 @@ profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/
 # most of all -- so `profile` alone stays usable for measuring frame time. See
 # the `ProfiledAllocator` comment in `src/main.rs`.
 profile-memory = ["profile"]
+# Polling fallback for the intel (chat log) reader: besides the `notify` events,
+# the reader thread looks at the recent logs of the monitored channels every
+# second. For systems where the file watcher reports changes late or never --
+# on Windows, `ReadDirectoryChangesW` can defer (or never send) the
+# notifications of a file another process (EVE) keeps open and appends to.
+# Cargo can't enable a feature per target, so `build.rs` turns this feature's
+# cfg on for Windows targets: Windows builds always have the polling. On other
+# systems it is off by default (the watcher alone is enough there) and
+# `--features intel-polling` turns it on.
+intel-polling = []
 
 # Embeds assets/icon.ico in the Windows executable (see build.rs).
 [build-dependencies]
@@ -44,7 +54,7 @@ sde = { version = "0.7.1", features = ["builder"] }
 rusqlite = { version = "0.40" }
 kdtree = { version = "0.8.0" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.13.0" }
+egui-map = { version = "0.14.0" }
 open = "5.3.2"
 # `crypted-db` explicitly: with `default-features = false` alone the player
 # database was encrypted or not depending on whether the build also selected

@@ -24,6 +24,12 @@ fn main() {
     println!("cargo::rerun-if-changed=Cargo.toml");
     println!("cargo::rerun-if-changed=licenses");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // Cargo can't turn a feature on per target, so the Windows builds get
+        // the `intel-polling` feature's cfg from here: the intel reader's
+        // polling fallback is always on there (see the feature in
+        // `Cargo.toml`). Other systems only get it with `--features
+        // intel-polling`.
+        println!("cargo::rustc-cfg=feature=\"intel-polling\"");
         let mut resource = winresource::WindowsResource::new();
         resource.set_icon("../../assets/icon.ico");
         if let Err(error) = resource.compile() {

@@ -408,6 +408,12 @@ impl TelescopeApp {
         );
         let intel_offsets: intel::reader::SharedOffsets = Arc::new(Mutex::new(offsets));
         let intel_watched: intel::reader::WatchedDir = Arc::new(RwLock::new(None));
+        // Sorted: the watcher's event handler binary-searches it, and a
+        // hand-edited `telescope.toml` may list the channels in any order.
+        // The reader's sweep reads it too.
+        let mut monitored = (*settings.get_cloned_monitored_channels()).clone();
+        monitored.sort_unstable();
+        let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(monitored));
         // Watcher -> reader thread -> detection.
         let (intel_files_tx, intel_files_rx) = std::sync::mpsc::channel::<String>();
         #[cfg(debug_assertions)]
@@ -418,15 +424,11 @@ impl TelescopeApp {
                 offsets: Arc::clone(&intel_offsets),
                 input: intel_input,
                 app_msg: Arc::clone(&arc_msg_sender),
+                channels: Arc::clone(&intel_channels),
             },
             intel_files_rx,
         );
 
-        // Sorted: the watcher's event handler binary-searches it, and a
-        // hand-edited `telescope.toml` may list the channels in any order.
-        let mut monitored = (*settings.get_cloned_monitored_channels()).clone();
-        monitored.sort_unstable();
-        let intel_channels: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(monitored));
         let intel_event_handler = IntelEventHandler::new(
             Arc::clone(&intel_channels),
             Arc::clone(&arc_msg_sender),

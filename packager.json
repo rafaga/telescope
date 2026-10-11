@@ -5,7 +5,7 @@
     "outDir": "target/release/",
     "enabled": true,
     "productName": "Telescope",
-    "version": "0.0.1",
+    "version": "1.0.3",
     "binaries": [
       {
         "path": "telescope",

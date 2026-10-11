@@ -12,7 +12,11 @@ use super::input::{ChatLogSource, InputEvent, IntelLogName, IntelOffsets};
 use crate::app::messages::{Message, try_send_app_message};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+#[cfg(feature = "intel-polling")]
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(feature = "intel-polling")]
+use std::time::Duration;
 use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;
 
@@ -30,6 +34,129 @@ pub(crate) struct ReaderShared {
     pub input: mpsc::Sender<InputEvent>,
     /// Back to the UI, for the channel activity shown in Settings -> Sources.
     pub app_msg: Arc<mpsc::Sender<Message>>,
+    /// Names of the monitored channels, sorted (shared with the watcher's
+    /// event handler). The sweep (`intel-polling` feature) only looks at the
+    /// logs of these channels.
+    #[cfg_attr(not(feature = "intel-polling"), allow(dead_code))]
+    pub channels: Arc<RwLock<Vec<String>>>,
+}
+
+#[cfg(not(feature = "intel-polling"))]
+impl ReaderShared {
+    /// Runs the reader loop: reads the files the watcher names. Returns when
+    /// every sender of `files` is dropped.
+    fn run(self, files: Receiver<String>) {
+        while let Ok(file_name) = files.recv() {
+            read_file(&self, &file_name);
+        }
+        tracing::debug!("intel reader stopped");
+    }
+}
+
+/// Polling fallback, behind the `intel-polling` feature (which the build
+/// script turns on for Windows builds).
+#[cfg(feature = "intel-polling")]
+impl ReaderShared {
+    /// How often the reader looks at the monitored logs by itself, whether
+    /// or not the watcher reported anything.
+    ///
+    /// The OS watcher is not enough on its own: on Windows
+    /// (`ReadDirectoryChangesW`) the size/last-write notifications of a file
+    /// another process keeps open and appends to are deferred by NTFS, and
+    /// can arrive seconds late, batched, or only when the writer closes the
+    /// file. Without this sweep a log written by EVE could look unchanged.
+    const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// How many days back a log can have started (by the date in its file
+    /// name) or been written to (by its last-write time in the folder) and
+    /// still be swept. A channel can have years of old logs; only the ones
+    /// of recent sessions can still be written to. The last-write time
+    /// covers logs whose name carries an old date but that are being written
+    /// now, e.g. a replayed corpus of old logs.
+    const SWEEP_DAYS: u64 = 2;
+
+    /// Runs the reader loop: reads the files the watcher names, and sweeps
+    /// the monitored logs every [`Self::SWEEP_INTERVAL`] so a change the
+    /// watcher missed or delayed is still read. Returns when every sender
+    /// of `files` is dropped.
+    fn run(self, files: Receiver<String>) {
+        let mut last_sweep = Instant::now();
+        loop {
+            let wait = Self::SWEEP_INTERVAL.saturating_sub(last_sweep.elapsed());
+            match files.recv_timeout(wait) {
+                Ok(file_name) => read_file(&self, &file_name),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            // Also checked after an event: a steady stream of events for one
+            // log must not starve the sweep of the others.
+            if last_sweep.elapsed() >= Self::SWEEP_INTERVAL {
+                self.sweep();
+                last_sweep = Instant::now();
+            }
+        }
+        tracing::debug!("intel reader stopped");
+    }
+
+    /// Reads whatever was appended to the recent logs of the monitored
+    /// channels, with no watcher event. The reads are the ones an event
+    /// triggers (so a log with nothing new costs one `stat`), and they run
+    /// on the reader thread: a sweep never reads a file at the same time as
+    /// an event, and can't duplicate a line.
+    fn sweep(&self) {
+        let dir = self
+            .watched
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(dir) = dir else {
+            return;
+        };
+        let channels = self
+            .channels
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if channels.is_empty() {
+            return;
+        }
+        let Ok(entries) = dir.read_dir() else {
+            return;
+        };
+        let oldest = chrono::Utc::now()
+            .checked_sub_days(chrono::Days::new(Self::SWEEP_DAYS))
+            .map(|day| day.format("%Y%m%d").to_string())
+            .unwrap_or_default();
+        let oldest_write =
+            SystemTime::now().checked_sub(Duration::from_secs(Self::SWEEP_DAYS * 24 * 3600));
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(log) = IntelLogName::parse(&name) else {
+                continue;
+            };
+            // `suffix` starts with the `YYYYMMDD` the session started on.
+            let started = log.suffix.get(..8).unwrap_or_default();
+            let recent_name = started >= oldest.as_str();
+            // The folder's last-write time can lag behind the real one while
+            // another process holds the log open, but it is never older than
+            // the file's creation, which is enough to tell a live log apart
+            // from the years of old ones.
+            let recent_write = || {
+                entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .zip(oldest_write)
+                    .is_some_and(|(modified, oldest)| modified >= oldest)
+            };
+            if channels.binary_search(&log.channel.to_string()).is_err()
+                || !(recent_name || recent_write())
+            {
+                continue;
+            }
+            read_file(self, &name);
+        }
+    }
 }
 
 /// Spawns the reader thread and returns immediately. It ends when every
@@ -37,12 +164,7 @@ pub(crate) struct ReaderShared {
 pub(crate) fn spawn(shared: ReaderShared, files: Receiver<String>) {
     let spawned = std::thread::Builder::new()
         .name(String::from("telescope-intel-reader"))
-        .spawn(move || {
-            while let Ok(file_name) = files.recv() {
-                read_file(&shared, &file_name);
-            }
-            tracing::debug!("intel reader stopped");
-        });
+        .spawn(move || shared.run(files));
     if let Err(error) = spawned {
         tracing::error!("could not start the intel reader thread: {error}");
     }
@@ -129,6 +251,7 @@ mod tests {
             offsets: Arc::new(Mutex::new(IntelOffsets::default())),
             input,
             app_msg: Arc::new(app_msg),
+            channels: Arc::new(RwLock::new(Vec::new())),
         };
 
         read_file(&shared, name);
@@ -189,6 +312,7 @@ mod tests {
                 offsets: Arc::new(Mutex::new(IntelOffsets::default())),
                 input,
                 app_msg: Arc::new(app_msg),
+                channels: Arc::new(RwLock::new(Vec::new())),
             },
             lines,
             app_rx,
@@ -330,6 +454,7 @@ mod tests {
                 offsets: h.shared.offsets.clone(),
                 input: h.shared.input.clone(),
                 app_msg: h.shared.app_msg.clone(),
+                channels: h.shared.channels.clone(),
             },
             queue,
         );
@@ -338,5 +463,140 @@ mod tests {
         assert_eq!(event.line.text, "threaded");
         drop(files);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Name of a monitored log that started today, so the sweep considers it.
+    #[cfg(feature = "intel-polling")]
+    fn recent_name(channel: &str) -> String {
+        format!(
+            "{channel}_{}_120000_1.txt",
+            chrono::Utc::now().format("%Y%m%d")
+        )
+    }
+
+    #[cfg(feature = "intel-polling")]
+    fn monitor(h: &Harness, channels: &[&str]) {
+        *h.shared.channels.write().unwrap() =
+            channels.iter().map(|name| name.to_string()).collect();
+    }
+
+    #[cfg(feature = "intel-polling")]
+    #[test]
+    fn a_sweep_reads_what_was_appended_without_any_watcher_event() {
+        let dir = temp_dir("sweep-reads");
+        let name = recent_name("Local");
+        append(&dir, &name, &line("first"));
+        let mut h = harness(Some(dir.clone()), 8);
+        monitor(&h, &["Local"]);
+
+        h.shared.sweep();
+
+        let event = h.lines.try_recv().expect("the sweep read the line");
+        assert_eq!(event.line.text, "first");
+        assert_eq!(event.channel, "Local");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "intel-polling")]
+    #[test]
+    fn a_sweep_with_nothing_new_queues_nothing() {
+        let dir = temp_dir("sweep-idle");
+        let name = recent_name("Local");
+        append(&dir, &name, &line("only"));
+        let mut h = harness(Some(dir.clone()), 8);
+        monitor(&h, &["Local"]);
+
+        h.shared.sweep();
+        assert!(h.lines.try_recv().is_ok());
+        h.shared.sweep();
+        assert!(h.lines.try_recv().is_err(), "the line was read twice");
+
+        append(&dir, &name, &line("second"));
+        h.shared.sweep();
+        assert_eq!(h.lines.try_recv().unwrap().line.text, "second");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "intel-polling")]
+    #[test]
+    fn a_sweep_skips_unmonitored_channels_and_logs_that_are_old_by_name_and_write_time() {
+        let dir = temp_dir("sweep-skips");
+        append(&dir, &recent_name("Other"), &line("not monitored"));
+        let old = "Local_20200101_120000_1.txt";
+        append(&dir, old, &line("too old"));
+        let file = std::fs::File::options()
+            .write(true)
+            .open(dir.join(old))
+            .unwrap();
+        file.set_modified(SystemTime::now() - std::time::Duration::from_secs(10 * 24 * 3600))
+            .unwrap();
+        drop(file);
+        let mut h = harness(Some(dir.clone()), 8);
+        monitor(&h, &["Local"]);
+
+        h.shared.sweep();
+
+        assert!(h.lines.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A log with an old date in its name that is being written now (a replayed
+    // corpus of old logs) is still read.
+    #[cfg(feature = "intel-polling")]
+    #[test]
+    fn a_sweep_reads_a_log_with_an_old_name_that_was_written_recently() {
+        let dir = temp_dir("sweep-replayed");
+        let name = "Local_20230327_021615_95103254.txt";
+        append(&dir, name, &line("replayed"));
+        let mut h = harness(Some(dir.clone()), 8);
+        monitor(&h, &["Local"]);
+
+        h.shared.sweep();
+
+        assert_eq!(h.lines.try_recv().unwrap().line.text, "replayed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "intel-polling")]
+    #[test]
+    fn a_sweep_without_a_watched_folder_or_channels_does_nothing() {
+        let dir = temp_dir("sweep-nothing");
+        append(&dir, &recent_name("Local"), &line("ignored"));
+        let mut h = harness(None, 8);
+        monitor(&h, &["Local"]);
+        h.shared.sweep();
+        assert!(h.lines.try_recv().is_err());
+
+        let mut h = harness(Some(dir.clone()), 8);
+        h.shared.sweep();
+        assert!(h.lines.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "intel-polling")]
+    #[test]
+    fn the_thread_sweeps_a_change_the_watcher_never_reported() {
+        let dir = temp_dir("sweep-thread");
+        let name = recent_name("Local");
+        append(&dir, &name, &line("silent"));
+        let mut h = harness(Some(dir.clone()), 8);
+        monitor(&h, &["Local"]);
+        let (files, files_rx) = std::sync::mpsc::channel::<String>();
+        spawn(
+            ReaderShared {
+                watched: h.shared.watched.clone(),
+                offsets: h.shared.offsets.clone(),
+                input: h.shared.input.clone(),
+                app_msg: h.shared.app_msg.clone(),
+                channels: h.shared.channels.clone(),
+            },
+            files_rx,
+        );
+
+        // No name is ever sent through `files`.
+        let event = h.lines.blocking_recv().expect("the sweep queued the line");
+        assert_eq!(event.line.text, "silent");
+        drop(files);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

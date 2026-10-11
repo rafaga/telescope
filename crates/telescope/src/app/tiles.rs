@@ -18,10 +18,12 @@ use egui::containers::menu::{MenuButton, MenuConfig};
 use egui_extras::{Column, TableBuilder};
 use egui_map::map::{
     Map,
+    minimap::MinimapSettings,
     objects::{
         HitContext, MapPoint, MapSegment, MapSettings, MarkerContext, NodeContext, NodeOutline,
         NodeTemplate, RegionLabel, VisibilitySetting,
     },
+    overlay::Corner,
 };
 use egui_tiles::{Behavior, SimplificationOptions, TabState, TileId, Tiles, UiResponse};
 use webb::map_alerts::{
@@ -312,6 +314,12 @@ impl UniversePane {
         object.map.settings.style.region_label_font =
             FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        object.map.settings.minimap = MinimapSettings::default();
+        object.map.settings.minimap.anchor = Corner::BottomRight;
+        object.map.settings.minimap.scale = 0.35;
+        object.map.settings.minimap.enabled = true;
+        object.map.settings.slider.anchor = Corner::TopRight;
+        object.map.settings.line_visible_zoom = 0.10;
         object
     }
 
@@ -520,6 +528,7 @@ impl RegionPane {
         object
             .map
             .set_node_template(Rc::new(Template::new(node_style)));
+        object.map.settings.line_visible_zoom = 0.10;
         object
     }
 
