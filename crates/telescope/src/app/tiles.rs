@@ -762,6 +762,41 @@ impl TreeBehavior {
 }
 
 impl TreeBehavior {
+    /// Corner radius of the folder-style tabs.
+    const TAB_RADIUS: f32 = 6.0;
+    /// Side of the close button's hit area.
+    const TAB_CLOSE_SIZE: f32 = 16.0;
+    /// Space between the title and the close button.
+    const TAB_CLOSE_GAP: f32 = 4.0;
+    /// How much lower the inactive tabs sit, as the tabs of a folder do.
+    const TAB_INACTIVE_DROP: f32 = 2.0;
+
+    /// The outline of a tab: up the left side, over the top with rounded
+    /// corners and down the right side. It is open at the bottom, where an
+    /// active tab joins the content.
+    fn tab_outline(rect: egui::Rect, radius: f32) -> Vec<egui::Pos2> {
+        const STEPS: usize = 6;
+        let mut points = vec![egui::pos2(rect.left(), rect.bottom())];
+        let corners = [
+            (egui::pos2(rect.left() + radius, rect.top() + radius), std::f32::consts::PI),
+            (
+                egui::pos2(rect.right() - radius, rect.top() + radius),
+                1.5 * std::f32::consts::PI,
+            ),
+        ];
+        for (center, start) in corners {
+            for step in 0..=STEPS {
+                let angle = start + std::f32::consts::FRAC_PI_2 * step as f32 / STEPS as f32;
+                points.push(egui::pos2(
+                    center.x + radius * angle.cos(),
+                    center.y + radius * angle.sin(),
+                ));
+            }
+        }
+        points.push(egui::pos2(rect.right(), rect.bottom()));
+        points
+    }
+
     #[tracing::instrument(skip_all)]
     fn on_close_tab(&self, tile_id: TileId, button_response: Response) {
         if button_response.clicked() {
@@ -800,86 +835,119 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         tab_state: &TabState,
     ) -> eframe::egui::Response {
         let text = self.tab_title_for_tile(tiles, tile_id);
-        let str_text = text.text().to_string().clone();
+        let str_text = text.text().to_string();
         let font_id = TextStyle::Button.resolve(ui.style());
         let galley = text.into_galley(ui, Some(TextWrapMode::Truncate), f32::INFINITY, font_id);
 
-        // this is for close button
-        let nid = egui::Id::new(str_text.clone());
-
+        // The Universe tab is permanent, and a tab being dragged has no button.
+        let closable = str_text != t!("map.universe") && !tab_state.is_being_dragged;
         let x_margin = self.tab_title_spacing(ui.visuals());
-        let mut rect_close = None;
+        let close_size = Self::TAB_CLOSE_SIZE;
+        let width = if closable {
+            x_margin + galley.size().x + Self::TAB_CLOSE_GAP + close_size + 0.5 * x_margin
+        } else {
+            galley.size().x + 2.0 * x_margin
+        };
+        // One rectangle for the whole tab, title and button: no division.
         let rect = ui
-            .allocate_space(vec2(
-                galley.size().x + 2.0 * x_margin,
-                ui.available_height(),
-            ))
+            .allocate_space(vec2(width, ui.available_height()))
             .1;
-        if str_text != t!("map.universe") && !tab_state.is_being_dragged {
-            rect_close = Some(
-                ui.allocate_space(vec2(2.0 * x_margin, ui.available_height()))
-                    .1,
-            );
-        }
         let response = ui.interact(rect, id, Sense::click_and_drag());
-        let mut close_response = None;
-        if let Some(rect2) = rect_close {
-            close_response = Some(ui.interact(rect2, nid, Sense::click()));
-        }
+        let close_rect = egui::Rect::from_center_size(
+            egui::pos2(
+                rect.right() - 0.5 * x_margin - 0.5 * close_size,
+                rect.center().y + 0.5 * Self::TAB_INACTIVE_DROP * f32::from(!tab_state.active),
+            ),
+            vec2(close_size, close_size),
+        );
+        let close_response = closable.then(|| ui.interact(close_rect, id.with("close"), Sense::click()));
 
+        // An inactive tab sits a little lower than the active one.
+        let shape_rect = if tab_state.active {
+            rect
+        } else {
+            egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.min.y + Self::TAB_INACTIVE_DROP),
+                rect.max,
+            )
+        };
         let text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, tab_state);
         // Show a gap when dragged
         if ui.is_rect_visible(rect) && !tab_state.is_being_dragged {
-            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
-            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
-            ui.painter().rect(
-                rect.shrink(0.5),
-                0.0,
+            let mut bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
+            if !tab_state.active && response.hovered() {
+                bg_color = bg_color.lerp_to_gamma(ui.visuals().panel_fill, 0.5);
+            }
+            let mut stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
+            if stroke.width == 0.0 || stroke.color == egui::Color32::TRANSPARENT {
+                // inactive tabs have an outline too, a softer one
+                stroke = Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.noninteractive.bg_stroke.color.gamma_multiply(0.7),
+                );
+            }
+            let radius = Self::TAB_RADIUS;
+            ui.painter().rect_filled(
+                shape_rect,
+                egui::CornerRadius {
+                    nw: radius as u8,
+                    ne: radius as u8,
+                    sw: 0,
+                    se: 0,
+                },
                 bg_color,
-                stroke,
-                egui::StrokeKind::Middle,
             );
-
+            ui.painter()
+                .add(egui::epaint::PathShape::line(
+                    Self::tab_outline(shape_rect, radius),
+                    stroke,
+                ));
             if tab_state.active {
-                // Make the tab name area connect with the tab ui area:
+                // Make the tab join the content below it: cover the line
+                // between them.
                 ui.painter().hline(
-                    rect.x_range(),
+                    rect.left() + 1.0..=rect.right() - 1.0,
                     rect.bottom(),
                     Stroke::new(stroke.width + 1.0, bg_color),
                 );
             }
-            ui.painter().galley(
-                egui::Align2::CENTER_CENTER
-                    .align_size_within_rect(galley.size(), rect)
-                    .min,
-                galley,
-                text_color,
-            );
         }
+        // the title (also on the tab that is being dragged)
+        let title_pos = egui::pos2(
+            rect.left() + x_margin,
+            shape_rect.center().y - 0.5 * galley.size().y,
+        );
+        ui.painter().galley(title_pos, galley, text_color);
 
-        if let Some(tr_close) = rect_close {
-            let bg_color = self.tab_bg_color(ui.visuals(), tiles, tile_id, tab_state);
-            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, tab_state);
-            ui.painter().rect(
-                tr_close.shrink(0.5),
-                0.0,
-                bg_color,
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            if ui.is_rect_visible(tr_close) {
-                let a = WidgetText::from(String::from("×")).into_galley(
-                    ui,
-                    Some(TextWrapMode::Truncate),
-                    f32::INFINITY,
-                    TextStyle::Button.resolve(ui.style()),
+        if let Some(close_response) = close_response {
+            if ui.is_rect_visible(close_rect) {
+                let center = close_rect.center();
+                if close_response.hovered() {
+                    ui.painter().circle_filled(
+                        center,
+                        0.5 * close_size,
+                        ui.visuals().widgets.hovered.weak_bg_fill,
+                    );
+                }
+                let strength = if close_response.hovered() {
+                    1.0
+                } else if tab_state.active {
+                    0.7
+                } else {
+                    0.5
+                };
+                let cross = Stroke::new(1.3, text_color.gamma_multiply(strength));
+                let half = 3.5;
+                ui.painter().line_segment(
+                    [center + vec2(-half, -half), center + vec2(half, half)],
+                    cross,
                 );
-                let pos = egui::Align2::CENTER_CENTER
-                    .align_size_within_rect(a.size(), tr_close)
-                    .min;
-                ui.painter().galley(pos, a, text_color);
-                self.on_close_tab(tile_id, close_response.unwrap());
+                ui.painter().line_segment(
+                    [center + vec2(half, -half), center + vec2(-half, half)],
+                    cross,
+                );
             }
+            self.on_close_tab(tile_id, close_response);
         }
 
         self.on_tab_button(tiles, tile_id, response)

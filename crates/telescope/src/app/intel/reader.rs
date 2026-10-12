@@ -12,10 +12,10 @@ use super::input::{ChatLogSource, InputEvent, IntelLogName, IntelOffsets};
 use crate::app::messages::{Message, try_send_app_message};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-#[cfg(feature = "intel-polling")]
+#[cfg(target_os = "windows")]
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, RwLock};
-#[cfg(feature = "intel-polling")]
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;
@@ -35,13 +35,13 @@ pub(crate) struct ReaderShared {
     /// Back to the UI, for the channel activity shown in Settings -> Sources.
     pub app_msg: Arc<mpsc::Sender<Message>>,
     /// Names of the monitored channels, sorted (shared with the watcher's
-    /// event handler). The sweep (`intel-polling` feature) only looks at the
-    /// logs of these channels.
-    #[cfg_attr(not(feature = "intel-polling"), allow(dead_code))]
+    /// event handler). The sweep (Windows only) only looks at the logs of these
+    /// channels.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub channels: Arc<RwLock<Vec<String>>>,
 }
 
-#[cfg(not(feature = "intel-polling"))]
+#[cfg(not(target_os = "windows"))]
 impl ReaderShared {
     /// Runs the reader loop: reads the files the watcher names. Returns when
     /// every sender of `files` is dropped.
@@ -53,9 +53,9 @@ impl ReaderShared {
     }
 }
 
-/// Polling fallback, behind the `intel-polling` feature (which the build
-/// script turns on for Windows builds).
-#[cfg(feature = "intel-polling")]
+/// Polling fallback, on Windows only: the watcher alone is enough on the other
+/// systems.
+#[cfg(target_os = "windows")]
 impl ReaderShared {
     /// How often the reader looks at the monitored logs by itself, whether
     /// or not the watcher reported anything.
@@ -466,7 +466,7 @@ mod tests {
     }
 
     /// Name of a monitored log that started today, so the sweep considers it.
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     fn recent_name(channel: &str) -> String {
         format!(
             "{channel}_{}_120000_1.txt",
@@ -474,13 +474,13 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     fn monitor(h: &Harness, channels: &[&str]) {
         *h.shared.channels.write().unwrap() =
             channels.iter().map(|name| name.to_string()).collect();
     }
 
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     #[test]
     fn a_sweep_reads_what_was_appended_without_any_watcher_event() {
         let dir = temp_dir("sweep-reads");
@@ -497,7 +497,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     #[test]
     fn a_sweep_with_nothing_new_queues_nothing() {
         let dir = temp_dir("sweep-idle");
@@ -517,7 +517,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     #[test]
     fn a_sweep_skips_unmonitored_channels_and_logs_that_are_old_by_name_and_write_time() {
         let dir = temp_dir("sweep-skips");
@@ -542,7 +542,7 @@ mod tests {
 
     // A log with an old date in its name that is being written now (a replayed
     // corpus of old logs) is still read.
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     #[test]
     fn a_sweep_reads_a_log_with_an_old_name_that_was_written_recently() {
         let dir = temp_dir("sweep-replayed");
@@ -557,7 +557,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     #[test]
     fn a_sweep_without_a_watched_folder_or_channels_does_nothing() {
         let dir = temp_dir("sweep-nothing");
@@ -573,7 +573,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(feature = "intel-polling")]
+    #[cfg(target_os = "windows")]
     #[test]
     fn the_thread_sweeps_a_change_the_watcher_never_reported() {
         let dir = temp_dir("sweep-thread");

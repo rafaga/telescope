@@ -136,6 +136,29 @@ impl TelescopeApp {
                     None => String::from("Target system: none (pick one in Search)"),
                 };
                 ui.label(RichText::new(target_text).weak());
+                // The experimental overlay (cargo feature `overlay`): on/off
+                // here as well as in the File menu.
+                #[cfg(feature = "overlay")]
+                {
+                    let mut overlay_on = self.overlay.is_open();
+                    if ui
+                        .checkbox(&mut overlay_on, "Test overlay")
+                        .on_hover_text("The placeholder window that follows the EVE client")
+                        .changed()
+                    {
+                        self.overlay.toggle();
+                    }
+                    if self.overlay.is_open() {
+                        let mut locked = self.overlay.is_locked();
+                        if ui
+                            .checkbox(&mut locked, "Overlay position locked")
+                            .on_hover_text("Hides the title bar; the mouse goes to the game")
+                            .changed()
+                        {
+                            self.overlay.set_locked(locked);
+                        }
+                    }
+                }
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| match self.debug.tab {
                     DebugTab::Search => self.debug_search_ui(ui),

@@ -44,6 +44,8 @@ mod file;
 mod intel;
 mod messages;
 mod notifications;
+#[cfg(feature = "overlay")]
+mod overlay;
 mod persistence;
 mod settings;
 mod tiles;
@@ -176,6 +178,9 @@ pub struct TelescopeApp {
     // against the same line. Both funnel through this one field, so a
     // single check here covers both cases without touching either source.
     last_notification: Option<(Type, String, String, String, std::time::Instant)>,
+    /// The experimental overlay window above the game.
+    #[cfg(feature = "overlay")]
+    overlay: overlay::OverlayState,
 }
 
 impl Default for TelescopeApp {
@@ -502,6 +507,8 @@ impl TelescopeApp {
             database_updater: database_updater::DatabaseUpdater::default(),
             update_prompt: None,
             last_notification: None,
+            #[cfg(feature = "overlay")]
+            overlay: overlay::OverlayState::new(),
         }
     }
 
@@ -513,6 +520,14 @@ impl TelescopeApp {
 }
 
 impl eframe::App for TelescopeApp {
+    /// The color every window is cleared with before egui paints. By default
+    /// it is the opaque window color, which makes the overlay's transparent
+    /// window look solid; the main window is covered by its panels anyway.
+    #[cfg(feature = "overlay")]
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     /// Called by the frame work to save state before shutdown.
     /*fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
@@ -592,6 +607,8 @@ impl eframe::App for TelescopeApp {
             database_updater: _,
             update_prompt: _,
             last_notification: _,
+            #[cfg(feature = "overlay")]
+                overlay: _,
         } = self;
 
         if !self.initialized {
@@ -640,6 +657,17 @@ impl eframe::App for TelescopeApp {
         // Over the Settings screen too: its Application page starts updates.
         self.database_updater.show(ui.ctx());
         self.show_update_prompt(ui.ctx());
+        #[cfg(feature = "overlay")]
+        self.overlay.show(ui.ctx());
+        #[cfg(feature = "overlay")]
+        if let Some(text) = self.overlay.take_warning() {
+            self.update_status_with_error((
+                Type::Warning,
+                String::from("Telescope"),
+                String::from("Overlay"),
+                text,
+            ));
+        }
 
         // The Settings screen is full-window: while it is open it replaces the
         // maps, the log panel and the menu.
