@@ -8,7 +8,7 @@ use super::{GameWindow, GameWindowTracker, OverlayError, ScreenRect};
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
-    Atom, AtomEnum, ClipOrdering, ClientMessageEvent, ConnectionExt as _, EventMask, MapState,
+    Atom, AtomEnum, ClientMessageEvent, ClipOrdering, ConnectionExt as _, EventMask, MapState,
     Window,
 };
 use x11rb::rust_connection::RustConnection;
@@ -88,14 +88,7 @@ impl X11Session {
         }
         let reply = self
             .conn
-            .get_property(
-                false,
-                window,
-                AtomEnum::WM_NAME,
-                AtomEnum::STRING,
-                0,
-                1024,
-            )
+            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 1024)
             .ok()?
             .reply()
             .ok()?;
@@ -203,7 +196,12 @@ impl X11Session {
     }
 
     /// Sends a `_NET_WM_STATE` request to the window manager for `window`.
-    fn add_state(&self, window: Window, first: &[u8], second: Option<&[u8]>) -> Result<(), OverlayError> {
+    fn add_state(
+        &self,
+        window: Window,
+        first: &[u8],
+        second: Option<&[u8]>,
+    ) -> Result<(), OverlayError> {
         let message_type = self.atom(b"_NET_WM_STATE")?;
         let first = self.atom(first)?;
         let second = match second {
@@ -214,13 +212,7 @@ impl X11Session {
             32,
             window,
             message_type,
-            [
-                Self::STATE_ADD,
-                first,
-                second,
-                Self::SOURCE_APPLICATION,
-                0,
-            ],
+            [Self::STATE_ADD, first, second, Self::SOURCE_APPLICATION, 0],
         );
         self.conn
             .send_event(
@@ -260,14 +252,7 @@ impl X11Session {
         } else {
             // no mask: back to the default input region (the whole window)
             self.conn
-                .shape_mask(
-                    shape::SO::SET,
-                    shape::SK::INPUT,
-                    window,
-                    0,
-                    0,
-                    x11rb::NONE,
-                )
+                .shape_mask(shape::SO::SET, shape::SK::INPUT, window, 0, 0, x11rb::NONE)
                 .map_err(Self::os_error)?
                 .check()
                 .map_err(Self::os_error)?;

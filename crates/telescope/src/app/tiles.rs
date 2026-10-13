@@ -778,7 +778,10 @@ impl TreeBehavior {
         const STEPS: usize = 6;
         let mut points = vec![egui::pos2(rect.left(), rect.bottom())];
         let corners = [
-            (egui::pos2(rect.left() + radius, rect.top() + radius), std::f32::consts::PI),
+            (
+                egui::pos2(rect.left() + radius, rect.top() + radius),
+                std::f32::consts::PI,
+            ),
             (
                 egui::pos2(rect.right() - radius, rect.top() + radius),
                 1.5 * std::f32::consts::PI,
@@ -849,9 +852,7 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             galley.size().x + 2.0 * x_margin
         };
         // One rectangle for the whole tab, title and button: no division.
-        let rect = ui
-            .allocate_space(vec2(width, ui.available_height()))
-            .1;
+        let rect = ui.allocate_space(vec2(width, ui.available_height())).1;
         let response = ui.interact(rect, id, Sense::click_and_drag());
         let close_rect = egui::Rect::from_center_size(
             egui::pos2(
@@ -860,7 +861,8 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
             ),
             vec2(close_size, close_size),
         );
-        let close_response = closable.then(|| ui.interact(close_rect, id.with("close"), Sense::click()));
+        let close_response =
+            closable.then(|| ui.interact(close_rect, id.with("close"), Sense::click()));
 
         // An inactive tab sits a little lower than the active one.
         let shape_rect = if tab_state.active {
@@ -883,7 +885,12 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 // inactive tabs have an outline too, a softer one
                 stroke = Stroke::new(
                     1.0,
-                    ui.visuals().widgets.noninteractive.bg_stroke.color.gamma_multiply(0.7),
+                    ui.visuals()
+                        .widgets
+                        .noninteractive
+                        .bg_stroke
+                        .color
+                        .gamma_multiply(0.7),
                 );
             }
             let radius = Self::TAB_RADIUS;
@@ -897,11 +904,10 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
                 },
                 bg_color,
             );
-            ui.painter()
-                .add(egui::epaint::PathShape::line(
-                    Self::tab_outline(shape_rect, radius),
-                    stroke,
-                ));
+            ui.painter().add(egui::epaint::PathShape::line(
+                Self::tab_outline(shape_rect, radius),
+                stroke,
+            ));
             if tab_state.active {
                 // Make the tab join the content below it: cover the line
                 // between them.

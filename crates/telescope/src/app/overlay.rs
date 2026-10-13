@@ -7,8 +7,8 @@
 
 use eframe::egui;
 use native_tools::overlay::{
-    Anchor, FullScreenState, GameWindow, GameWindowTracker, OverlayError, OverlayPlacement, OverlayWindow,
-    ScreenRect,
+    Anchor, FullScreenState, GameWindow, GameWindowTracker, OverlayError, OverlayPlacement,
+    OverlayWindow, ScreenRect,
 };
 use std::time::{Duration, Instant};
 
@@ -326,10 +326,8 @@ impl OverlayState {
         }
 
         let rect = ui.max_rect();
-        let bar = egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width(), Self::TITLE_BAR_HEIGHT),
-        );
+        let bar =
+            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), Self::TITLE_BAR_HEIGHT));
         let close = egui::Rect::from_min_size(
             egui::pos2(bar.right() - Self::TITLE_BAR_HEIGHT, bar.top()),
             egui::vec2(Self::TITLE_BAR_HEIGHT, Self::TITLE_BAR_HEIGHT),
@@ -368,8 +366,7 @@ impl OverlayState {
         }
         let close_response =
             ui.interact(close, egui::Id::new("overlay_close"), egui::Sense::click());
-        let lock_response =
-            ui.interact(lock, egui::Id::new("overlay_lock"), egui::Sense::click());
+        let lock_response = ui.interact(lock, egui::Id::new("overlay_lock"), egui::Sense::click());
         if close_response.clicked() {
             self.close();
             return;
@@ -441,7 +438,10 @@ impl OverlayState {
         if self.region.as_ref() == Some(&region) {
             return;
         }
-        match self.native.set_visible_region_by_title(Self::TITLE, &region) {
+        match self
+            .native
+            .set_visible_region_by_title(Self::TITLE, &region)
+        {
             Ok(()) | Err(OverlayError::Unsupported) => self.region = Some(region),
             // the window is not ready yet: the next frame tries again
             Err(_) => {}
@@ -451,10 +451,8 @@ impl OverlayState {
     /// A closed padlock drawn with shapes (no icon font needed), centered on
     /// `center`.
     fn paint_padlock(painter: &egui::Painter, center: egui::Pos2, color: egui::Color32) {
-        let body = egui::Rect::from_center_size(
-            center + egui::vec2(0.0, 2.5),
-            egui::vec2(11.0, 8.0),
-        );
+        let body =
+            egui::Rect::from_center_size(center + egui::vec2(0.0, 2.5), egui::vec2(11.0, 8.0));
         painter.rect_filled(body, 1.5, color);
         // the shackle: a half circle over the body
         let radius = 3.5;

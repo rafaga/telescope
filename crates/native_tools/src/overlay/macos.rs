@@ -51,7 +51,9 @@ impl MacWindowList {
     pub(super) fn overlay_level() -> isize {
         // SAFETY: a plain query with no arguments.
         let shielding = unsafe { CGShieldingWindowLevel() };
-        isize::try_from(shielding).unwrap_or(isize::MAX).saturating_add(1)
+        isize::try_from(shielding)
+            .unwrap_or(isize::MAX)
+            .saturating_add(1)
     }
 
     /// The on-screen windows, front to back.

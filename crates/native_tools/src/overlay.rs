@@ -34,10 +34,10 @@ use windows::{
         },
         UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState},
         UI::WindowsAndMessaging::{
-            EnumWindows, FindWindowW, GWL_EXSTYLE, GetClientRect, GetForegroundWindow, GetWindowLongPtrW,
-            GetWindowTextW, HWND_TOPMOST, IsWindowVisible, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-            WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+            EnumWindows, FindWindowW, GWL_EXSTYLE, GetClientRect, GetForegroundWindow,
+            GetWindowLongPtrW, GetWindowTextW, HWND_TOPMOST, IsWindowVisible, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, WS_EX_LAYERED,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
         },
     },
     core::{BOOL, HSTRING, PCWSTR},
@@ -184,11 +184,7 @@ impl GameWindowTracker {
     /// call: ask a few times a second, not every frame.
     #[cfg(target_os = "linux")]
     pub fn locate(&self) -> Option<GameWindow> {
-        x11::X11Session::connect()
-            .ok()?
-            .locate(self)
-            .ok()
-            .flatten()
+        x11::X11Session::connect().ok()?.locate(self).ok().flatten()
     }
 
     /// The game's frontmost window and whether the game is the frontmost
@@ -933,7 +929,10 @@ mod tests {
         assert_eq!(placement.rect_in(&game), ScreenRect::new(100, 50, 200, 100));
         // 4K: twice as big
         let game = ScreenRect::new(0, 0, 3840, 2160);
-        assert_eq!(placement.rect_in(&game), ScreenRect::new(200, 100, 400, 200));
+        assert_eq!(
+            placement.rect_in(&game),
+            ScreenRect::new(200, 100, 400, 200)
+        );
         // half the height: half as big
         let game = ScreenRect::new(0, 0, 960, 540);
         assert_eq!(placement.rect_in(&game), ScreenRect::new(50, 25, 100, 50));
@@ -957,7 +956,10 @@ mod tests {
         assert_eq!(placement.rect_in(&game), ScreenRect::new(100, 50, 200, 100));
         // the same placement on a bigger screen
         let game = ScreenRect::new(0, 0, 2560, 1440);
-        assert_eq!(placement.rect_in(&game), ScreenRect::new(200, 100, 400, 200));
+        assert_eq!(
+            placement.rect_in(&game),
+            ScreenRect::new(200, 100, 400, 200)
+        );
     }
 
     #[test]
