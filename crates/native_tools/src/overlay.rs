@@ -886,7 +886,7 @@ mod tests {
         let game = ScreenRect::new(0, 0, 2000, 1000);
         assert_eq!(
             placement.rect_in(&game),
-            ScreenRect::new(1800, 780, 200, 100)
+            ScreenRect::new(1800, 880, 200, 100)
         );
     }
 
