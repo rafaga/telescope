@@ -4,14 +4,11 @@
 //! "granted" and a request does nothing, so callers need no `cfg`.
 
 #[cfg(target_os = "macos")]
-use objc2_foundation::{NSDictionary, NSNumber, NSString};
-
+use objc2_application_services::{
+    AXIsProcessTrusted, AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt,
+};
 #[cfg(target_os = "macos")]
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
-}
+use objc2_core_foundation::{CFBoolean, CFDictionary};
 
 /// The macOS *Accessibility* permission (System Settings -> Privacy &
 /// Security -> Accessibility).
@@ -54,13 +51,14 @@ impl AccessibilityPermission {
     #[cfg(target_os = "macos")]
     #[allow(unsafe_code)]
     pub fn request(&self) -> bool {
-        // `kAXTrustedCheckOptionPrompt` is this string.
-        let key = NSString::from_str("AXTrustedCheckOptionPrompt");
-        let value = NSNumber::new_bool(true);
-        let options = NSDictionary::from_slices(&[&*key], &[&*value]);
-        // SAFETY: an `NSDictionary` is toll-free bridged to the `CFDictionary`
-        // the call expects, and it outlives the call.
-        unsafe { AXIsProcessTrustedWithOptions(objc2::rc::Retained::as_ptr(&options).cast()) }
+        // SAFETY: reads the framework's constant string, valid for the whole
+        // process.
+        let key = unsafe { kAXTrustedCheckOptionPrompt };
+        let options = CFDictionary::from_slices(&[key], &[CFBoolean::new(true)]);
+        let options: &CFDictionary = (*options).as_ref();
+        // SAFETY: the options map a `CFString` key to a `CFBoolean`, as the
+        // call requires, and they outlive the call.
+        unsafe { AXIsProcessTrustedWithOptions(Some(options)) }
     }
 
     /// Asks for the permission (nothing to ask here).
@@ -72,6 +70,7 @@ impl AccessibilityPermission {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "macos"))]
     use super::*;
 
     #[cfg(not(target_os = "macos"))]
