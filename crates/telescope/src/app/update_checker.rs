@@ -2,21 +2,17 @@
 //! reports it to the UI.
 //!
 //! [`UpdateChecker::check_for_update`] is the network call and the version
-//! comparison. [`UpdateChecker::spawn`] runs it on its own thread, with its
-//! own single-threaded tokio runtime (as
-//! `database_updater::DatabaseUpdater::spawn` and `messages::AuthSpawner`
-//! do), so the egui UI thread never waits on the network. The result reaches
-//! the UI as a [`Message::NewVersionAvailable`], which opens a dialog and is
-//! not logged; nothing is sent when the app is up to date, and a failed check
-//! is a warning in the log.
+//! comparison. [`UpdateChecker::announce`] turns it into the message for the
+//! UI: a [`Message::NewVersionAvailable`] (which opens a dialog and is not
+//! logged) only when a release newer than the running one, and not yet
+//! announced, exists. The `housekeeping` thread runs it periodically, so the
+//! egui UI thread never waits on the network.
 
-use super::messages::{Message, Type, send_app_message};
+use super::messages::Message;
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::Sender;
 
 /// The GitHub repository whose releases are checked (`owner/name`).
 const REPO: &str = "rafaga/telescope";
@@ -95,57 +91,69 @@ impl UpdateChecker {
         Ok(remote > current)
     }
 
-    /// Checks GitHub in the background and, if a newer release exists, tells
-    /// the UI through `app_msg`. A failed check (offline, rate limited) is
-    /// reported as a warning in the log; being up to date is silent.
-    pub fn spawn(app_msg: Arc<Sender<Message>>) {
-        let spawned = std::thread::Builder::new()
-            .name(String::from("update-checker"))
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        tracing::error!(%error, "failed to build the update-checker runtime");
-                        return;
-                    }
-                };
-                runtime.block_on(async move {
-                    let _span = tracing::info_span!("update checker").entered();
-                    let outcome = match Self::new(REPO) {
-                        Ok(checker) => checker
-                            .check_for_update(env!("CARGO_PKG_VERSION"))
-                            .await
-                            .map_err(|error| error.to_string()),
-                        Err(error) => Err(error.to_string()),
-                    };
-                    let message = match outcome {
-                        Ok(info) if info.needs_update => Message::NewVersionAvailable(info),
-                        Ok(_) => {
-                            tracing::debug!("Telescope is up to date");
-                            return;
-                        }
-                        Err(error) => Message::GenericNotification((
-                            Type::Warning,
-                            String::from("UpdateChecker"),
-                            String::from("spawn"),
-                            format!("Could not check for a new Telescope release: {error}"),
-                        )),
-                    };
-                    let _ = send_app_message(&app_msg, message).await;
-                });
-            });
-        if let Err(error) = spawned {
-            tracing::error!(%error, "failed to start the update-checker thread");
+    /// Checks GitHub and decides what the UI should hear about it. Returns
+    /// the message that opens the update dialog only when a release newer
+    /// than the running one exists and `announced` (the last tag already
+    /// shown) isn't it, so a periodic check never re-opens the dialog for a
+    /// release the user has seen. Being up to date, or a release already
+    /// announced, yields `None`.
+    pub async fn announce(
+        &self,
+        current_version: &str,
+        announced: &mut Option<String>,
+    ) -> Result<Option<Message>, Box<dyn std::error::Error>> {
+        let info = self.check_for_update(current_version).await?;
+        Ok(Self::announcement(info, announced))
+    }
+
+    /// The dialog message for `info`, unless it is up to date or its release
+    /// is the one in `announced`; records the release as announced.
+    fn announcement(info: UpdateInfo, announced: &mut Option<String>) -> Option<Message> {
+        if !info.needs_update || announced.as_deref() == Some(info.latest.as_str()) {
+            return None;
         }
+        *announced = Some(info.latest.clone());
+        Some(Message::NewVersionAvailable(info))
+    }
+
+    /// The `repo` the running Telescope's releases are published in.
+    pub fn for_telescope() -> Result<Self, reqwest::Error> {
+        Self::new(REPO)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::UpdateChecker;
+    use super::{UpdateChecker, UpdateInfo};
+    use crate::app::messages::Message;
+
+    fn info(needs_update: bool, latest: &str) -> UpdateInfo {
+        UpdateInfo {
+            needs_update,
+            current: String::from("1.0.0"),
+            latest: latest.to_string(),
+            url: String::new(),
+        }
+    }
+
+    #[test]
+    fn being_up_to_date_announces_nothing() {
+        let mut announced = None;
+        assert!(UpdateChecker::announcement(info(false, "1.0.0"), &mut announced).is_none());
+        assert_eq!(announced, None);
+    }
+
+    #[test]
+    fn a_new_release_is_announced_once() {
+        let mut announced = None;
+        let first = UpdateChecker::announcement(info(true, "1.1.0"), &mut announced);
+        assert!(matches!(first, Some(Message::NewVersionAvailable(_))));
+        assert_eq!(announced.as_deref(), Some("1.1.0"));
+        // The next periodic check must not re-open the dialog.
+        assert!(UpdateChecker::announcement(info(true, "1.1.0"), &mut announced).is_none());
+        // A newer release after that is announced again.
+        assert!(UpdateChecker::announcement(info(true, "1.2.0"), &mut announced).is_some());
+    }
 
     #[test]
     fn a_higher_release_is_an_update() {

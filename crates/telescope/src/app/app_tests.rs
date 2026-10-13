@@ -233,6 +233,40 @@ fn a_new_player_location_updates_and_persists_the_character() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn a_new_last_logon_updates_and_persists_the_character() {
+    let (mut app, dir) = app("last-logon");
+    let mut kara = character(5, "Kara Voss");
+    // A stored character always belongs to a corporation.
+    kara.corp = Some(webb::objects::Corporation::new());
+    app.esi.write_character(&kara).unwrap();
+    app.esi.characters.push(kara);
+    let moment = chrono::DateTime::from_timestamp(1_750_000_000, 0).unwrap();
+    send(&app, Message::PlayerLastLogon((5, moment)));
+    // An unknown character is ignored.
+    send(&app, Message::PlayerLastLogon((99, moment)));
+    pump(&mut app);
+    assert_eq!(app.esi.characters[0].last_logon, moment);
+    let stored = app.esi.read_characters(None).unwrap();
+    assert_eq!(stored[0].last_logon, moment);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn housekeeping_hears_about_linked_and_unlinked_characters() {
+    let (mut app, dir) = app("housekeeping-sync");
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    app.housekeeping_msg = Some(Arc::new(sender));
+    app.handle_character_authenticated(crate::app::messages::LinkedCharacter {
+        esi: app.esi.clone(),
+        character: character(7, "Seven"),
+    });
+    assert!(matches!(receiver.try_recv(), Ok(CharacterSync::Add(7))));
+    app.unlink_character(7);
+    assert!(matches!(receiver.try_recv(), Ok(CharacterSync::Remove(7))));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // ---- Settings screen ----
 
 #[test]

@@ -32,7 +32,6 @@ use webb::rules::InputKind;
 
 use self::messages::{AuthSpawner, MessageSpawner};
 use self::tiles::RegionPane;
-use self::update_checker::UpdateChecker;
 use self::windows::settings::patterns::PatternsEditor;
 
 mod audio;
@@ -41,6 +40,7 @@ mod data;
 mod database;
 mod database_updater;
 mod file;
+mod housekeeping;
 mod intel;
 mod messages;
 mod notifications;
@@ -90,6 +90,8 @@ pub struct TelescopeApp {
     // map synchronization Messages
     map_msg: (Arc<BCSender<MapSync>>, BCReceiver<MapSync>),
     char_msg: Option<Arc<Sender<CharacterSync>>>,
+    // link/unlink requests for the housekeeping thread (last logon, updates)
+    housekeeping_msg: Option<Arc<Sender<CharacterSync>>>,
 
     // these are the flags to open the windows
     // 0 - About Window
@@ -298,9 +300,6 @@ impl TelescopeApp {
                 true,
                 settings.get_data_source_urls().clone(),
             );
-            // Looks for a newer Telescope release on GitHub, also in the
-            // background; silent unless there is one (see `update_checker`).
-            UpdateChecker::spawn(Arc::clone(&arc_msg_sender));
         }
         let arc_map_sender = Arc::new(mtx);
         let msgmon = Arc::new(MessageSpawner::new(Arc::clone(&arc_msg_sender)));
@@ -465,6 +464,7 @@ impl TelescopeApp {
             app_msg: (arc_msg_sender, grx),
             map_msg: (arc_map_sender, mrx),
             char_msg: None,
+            housekeeping_msg: None,
             open: [false; 3],
             esi,
             app_messages: Vec::new(),
@@ -569,6 +569,7 @@ impl eframe::App for TelescopeApp {
             app_msg: _,
             map_msg: _,
             char_msg: _,
+            housekeeping_msg: _,
             open: _,
             esi: _,
             app_messages: _,
@@ -636,6 +637,10 @@ impl eframe::App for TelescopeApp {
                 }
                 self.start_watchdog(ids);
             }
+            // Last logins and update checks, also when no character is
+            // linked yet (the update check doesn't need one).
+            let ids = self.esi.characters.iter().map(|char| char.id).collect();
+            self.start_housekeeping(ids);
 
             self.initialized = true;
             let app_msg_sender = Arc::clone(&self.app_msg.0);
@@ -847,6 +852,9 @@ impl TelescopeApp {
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),
                 Message::PlayerNewLocation((player_id, solar_system_id)) => {
                     self.update_player_location(player_id, solar_system_id)
+                }
+                Message::PlayerLastLogon((player_id, last_logon)) => {
+                    self.update_player_last_logon(player_id, last_logon)
                 }
                 Message::ChannelActivity(channel, when) => {
                     // Last activity of the channel, for Settings -> Sources.

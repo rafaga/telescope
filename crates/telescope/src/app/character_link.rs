@@ -121,6 +121,7 @@ impl TelescopeApp {
         if self.esi.active_character == Some(id) {
             self.esi.active_character = None;
         }
+        self.notify_housekeeping(CharacterSync::Remove(id));
         if deliver(self.char_msg.as_deref(), CharacterSync::Remove(id)) == Delivery::Busy {
             self.notify_character_error(
                 "unlink_character",
@@ -148,6 +149,8 @@ impl TelescopeApp {
     /// the watchdog tracks it.
     fn register_linked_character(&mut self, player: Character) {
         let id = player.id;
+        // Its last login is read right away (and every hour after that).
+        self.notify_housekeeping(CharacterSync::Add(id));
         if !upsert_character(&mut self.esi.characters, player) {
             // Already linked: its data and tokens were refreshed. Tell the
             // watchdog anyway, so it resumes the character if it had
