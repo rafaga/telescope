@@ -28,7 +28,10 @@ tokio = { version = "1.47.1", features = ["rt", "macros"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-io-kit = { version = "0.3.2", features = ["libc"], default-features = false}
-objc2-core-foundation = { version = "0.3.2", features = ["CFString"] }
+objc2-core-foundation = { version = "0.3.2", features = ["CFString", "objc2"] }
+# Safe bindings of the window list and the shielding window level, so the
+# crate needs no `extern` block nor `unsafe` of its own for them.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGWindow", "CGWindowLevel", "CGDirectDisplay"] }
 objc2-foundation = {version = "0.3.2", features = ["NSString", "NSURL", "NSArray", "NSDictionary", "NSValue"] }
 objc2-app-kit = { version = "0.3.2", features = [
     "NSOpenPanel",

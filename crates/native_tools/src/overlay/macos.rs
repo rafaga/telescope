@@ -7,30 +7,22 @@
 //! the name of its process instead.
 
 use super::{GameWindow, GameWindowTracker, ScreenRect};
+use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSWorkspace;
+use objc2_core_foundation::{CFRetained, CFType};
+use objc2_core_graphics::{CGShieldingWindowLevel, CGWindowListCopyWindowInfo, CGWindowListOption};
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
-use std::ffi::c_void;
 
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const c_void;
-    fn CGShieldingWindowLevel() -> i32;
-}
-
-type WindowInfo = NSDictionary<NSString, AnyObject>;
+/// One entry of the window list (an untyped dictionary, read by key).
+type WindowInfo = NSDictionary;
 
 /// Reads the on-screen windows. The keys are the values of the CoreGraphics
 /// `kCGWindow*` constants.
 pub(super) struct MacWindowList;
 
 impl MacWindowList {
-    /// `kCGWindowListOptionOnScreenOnly`.
-    const ON_SCREEN_ONLY: u32 = 1;
-    /// `kCGWindowListExcludeDesktopElements`.
-    const EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
-
     fn text(entry: &WindowInfo, key: &str) -> Option<String> {
         let value = entry.objectForKey(&NSString::from_str(key))?;
         let text = value.downcast::<NSString>().ok()?;
@@ -47,28 +39,23 @@ impl MacWindowList {
     /// uses for a game that captured the display, so the overlay is also
     /// visible there (a normal full screen app is a Space of its own, which
     /// the window's collection behaviour already covers).
-    #[allow(unsafe_code)]
     pub(super) fn overlay_level() -> isize {
-        // SAFETY: a plain query with no arguments.
-        let shielding = unsafe { CGShieldingWindowLevel() };
-        isize::try_from(shielding)
+        isize::try_from(CGShieldingWindowLevel())
             .unwrap_or(isize::MAX)
             .saturating_add(1)
     }
 
     /// The on-screen windows, front to back.
-    #[allow(unsafe_code)]
-    fn windows() -> Option<Retained<NSArray<WindowInfo>>> {
-        // SAFETY: the "Copy" function returns a +1 `CFArray`, which is
-        // toll-free bridged to `NSArray`; `from_raw` takes that ownership and
-        // returns `None` for null.
-        unsafe {
-            let list = CGWindowListCopyWindowInfo(
-                Self::ON_SCREEN_ONLY | Self::EXCLUDE_DESKTOP_ELEMENTS,
-                0,
-            );
-            Retained::from_raw(list.cast_mut().cast::<NSArray<WindowInfo>>())
-        }
+    fn windows() -> Option<Retained<NSArray>> {
+        let list = CGWindowListCopyWindowInfo(
+            CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements,
+            0,
+        )?;
+        // A `CFArray` is toll-free bridged to `NSArray`: view it as an
+        // Objective-C object and let the runtime check its class.
+        let list: CFRetained<CFType> = list.into();
+        let object: &AnyObject = (*list).as_ref();
+        object.downcast_ref::<NSArray>().map(|array| array.retain())
     }
 
     /// The process id of the frontmost application.
@@ -85,7 +72,9 @@ impl MacWindowList {
         let windows = Self::windows()?;
         let frontmost = Self::frontmost_pid();
         for entry in windows.iter() {
-            let entry: &WindowInfo = &entry;
+            let Some(entry) = entry.downcast_ref::<WindowInfo>() else {
+                continue;
+            };
             let Some(owner) = Self::text(entry, "kCGWindowOwnerName") else {
                 continue;
             };
