@@ -31,7 +31,7 @@ objc2-io-kit = { version = "0.3.2", features = ["libc"], default-features = fals
 objc2-core-foundation = { version = "0.3.2", features = ["CFString", "CFDictionary", "CFNumber", "objc2"] }
 # Safe-to-link bindings of the accessibility trust check (AXIsProcessTrusted...),
 # used by `permissions` instead of a hand-written `extern` block.
-objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "AXUIElement"] }
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
 # Safe bindings of the window list and the shielding window level, so the
 # crate needs no `extern` block nor `unsafe` of its own for them.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGWindow", "CGWindowLevel", "CGDirectDisplay"] }
