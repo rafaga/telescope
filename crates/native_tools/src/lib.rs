@@ -1,6 +1,9 @@
 //! Platform-specific helpers for Telescope.
 //!
 //! * [`dialog`]: native open file / folder dialogs behind one API.
+//! * [`overlay`]: native settings of the overlay window drawn over the game,
+//!   and the lookup of the game window's position (Windows, macOS and Linux/X11).
+//! * [`permissions`]: the macOS Accessibility permission (a no-op elsewhere).
 //! * `zbus` (Linux only): stable machine identification via DMI, D-Bus and
 //!   machine-id fallbacks.
 //! * `get_*_unique_id`: a per-machine identifier for each OS, with a fixed
@@ -10,6 +13,8 @@
 //!   serial number; Linux: the machine id (see `zbus::get_stable_machine_id`).
 
 pub mod dialog;
+pub mod overlay;
+pub mod permissions;
 #[cfg(target_os = "linux")]
 pub mod zbus;
 

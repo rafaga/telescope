@@ -193,6 +193,9 @@ pub enum Message {
     MapHidden(usize),
     MapShown(usize),
     PlayerNewLocation((i64, i64)),
+    /// Sent by the housekeeping thread when ESI reports a different last EVE
+    /// login for a character.
+    PlayerLastLogon((i64, chrono::DateTime<chrono::Utc>)),
     /// Sent by the intel reader thread after it read new lines of a
     /// channel's log: the channel and when, for Settings -> Sources.
     ChannelActivity(String, std::time::SystemTime),
@@ -244,6 +247,7 @@ impl Message {
             Message::MapHidden(_) => "MapHidden",
             Message::MapShown(_) => "MapShown",
             Message::PlayerNewLocation(_) => "PlayerNewLocation",
+            Message::PlayerLastLogon(_) => "PlayerLastLogon",
             Message::ChannelActivity(..) => "ChannelActivity",
             Message::UpdateIntelDirectory(_) => "UpdateIntelDirectory",
             Message::DefaultIntelDirectory => "DefaultIntelDirectory",
@@ -682,7 +686,7 @@ mod enum_tests {
 
     #[test]
     fn messages_are_tagged_with_their_variant_name() {
-        let cases: [(Message, &str); 8] = [
+        let cases: [(Message, &str); 9] = [
             (
                 Message::GenericNotification((
                     Type::Info,
@@ -696,6 +700,10 @@ mod enum_tests {
             (Message::MapHidden(1), "MapHidden"),
             (Message::MapShown(1), "MapShown"),
             (Message::PlayerNewLocation((1, 2)), "PlayerNewLocation"),
+            (
+                Message::PlayerLastLogon((1, chrono::DateTime::default())),
+                "PlayerLastLogon",
+            ),
             (
                 Message::ChannelActivity(String::new(), std::time::SystemTime::UNIX_EPOCH),
                 "ChannelActivity",

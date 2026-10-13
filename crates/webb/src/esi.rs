@@ -73,6 +73,12 @@ pub trait EsiApi: Send {
     async fn get_character_portrait_url(&mut self, character_id: i64) -> Result<String, String>;
     /// Fetches the current solar system of a character from ESI.
     async fn get_location(&mut self, character_id: i64) -> Result<i64, String>;
+    /// Fetches the moment a character last logged into EVE, from ESI. `None`
+    /// when ESI doesn't report one (the character never logged in).
+    async fn get_last_login(
+        &mut self,
+        character_id: i64,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String>;
 }
 
 /// ESI endpoints Telescope uses, as `(operationId, path)`. The ids must be
@@ -95,6 +101,10 @@ const ESI_ENDPOINTS: &[(&str, &str)] = &[
     (
         "GetCharactersCharacterIdLocation",
         "/characters/{character_id}/location",
+    ),
+    (
+        "GetCharactersCharacterIdOnline",
+        "/characters/{character_id}/online",
     ),
     (
         "GetCorporationsCorporationId",
@@ -264,6 +274,23 @@ impl EsiApi for LiveEsiApi {
             .get_location(character_id)
             .await
             .map(|location| location.solar_system_id)
+            .map_err(|t_error| t_error.to_string())
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn get_last_login(
+        &mut self,
+        character_id: i64,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+        self.esi
+            .group_location()
+            .get_online(character_id)
+            .await
+            .map(|status| {
+                status
+                    .last_login
+                    .and_then(|value| value.parse::<chrono::DateTime<chrono::Utc>>().ok())
+            })
             .map_err(|t_error| t_error.to_string())
     }
 }
@@ -621,6 +648,26 @@ impl<T: EsiApi> EsiManagerCore<T> {
             expiration: auth.expiration,
         });
         self.api.get_location(player_id).await
+    }
+
+    /// Moment a character last logged into EVE, called as that character
+    /// (needs the `esi-location.read_online.v1` scope). `None` when ESI
+    /// doesn't report one.
+    #[tracing::instrument(skip(self))]
+    pub async fn get_last_login(
+        &mut self,
+        player_id: i64,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+        if !self.valid_token(player_id).await {
+            return Err(String::from("Invalid Token"));
+        }
+        let auth = &self.auth[&player_id];
+        self.api.set_tokens(&TokenSet {
+            token: auth.token.clone(),
+            refresh_token: auth.refresh_token.clone(),
+            expiration: auth.expiration,
+        });
+        self.api.get_last_login(player_id).await
     }
 
     /// Whether the character has a token set that is still valid for at
@@ -1205,6 +1252,53 @@ mod tests {
         authenticate_session(&mut manager, 3600);
 
         let result = manager.get_location(90000001).await;
+        assert_eq!(result, Err(String::from("ESI unavailable")));
+
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn get_last_login_requires_valid_token() {
+        let mut mock = MockEsiApi::new();
+        mock.expect_has_token_state().returning(|| false);
+        // The ESI endpoint must never be reached without a valid token.
+        mock.expect_get_last_login().never();
+        let (mut manager, path) = mock_manager("login_no_token", mock);
+
+        let result = manager.get_last_login(90000001).await;
+        assert_eq!(result, Err(String::from("Invalid Token")));
+
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn get_last_login_returns_the_reported_moment() {
+        let moment = chrono::DateTime::from_timestamp(1_750_000_000, 0).unwrap();
+        let mut mock = MockEsiApi::new();
+        mock.expect_has_token_state().returning(|| true);
+        mock.expect_get_last_login()
+            .with(mockall::predicate::eq(90000001))
+            .times(1)
+            .returning(move |_| Ok(Some(moment)));
+        let (mut manager, path) = mock_manager("login_ok", mock);
+        authenticate_session(&mut manager, 3600);
+
+        let result = manager.get_last_login(90000001).await;
+        assert_eq!(result, Ok(Some(moment)));
+
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn get_last_login_propagates_api_error() {
+        let mut mock = MockEsiApi::new();
+        mock.expect_has_token_state().returning(|| true);
+        mock.expect_get_last_login()
+            .returning(|_| Err(String::from("ESI unavailable")));
+        let (mut manager, path) = mock_manager("login_err", mock);
+        authenticate_session(&mut manager, 3600);
+
+        let result = manager.get_last_login(90000001).await;
         assert_eq!(result, Err(String::from("ESI unavailable")));
 
         cleanup(&path);
