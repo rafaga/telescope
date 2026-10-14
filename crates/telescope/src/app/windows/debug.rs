@@ -419,6 +419,7 @@ impl TelescopeApp {
                             .try_send(InputEvent {
                                 source: String::from("Debug"),
                                 channel,
+                                kind: webb::rules::InputKind::ChatLog,
                                 line: parsed,
                             })
                             .map(|()| true)

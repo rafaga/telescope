@@ -98,6 +98,22 @@ period it happened in.
 
 ### Added
 
+* zKillboard input: an Input node of kind *zKillboard* (the source selector of
+  *Settings -> Rules*) feeds the graph with the live killmails of zKillboard's
+  R2Z2 feed, the successor of RedisQ. Each killmail becomes a line such as
+  `Jita: Rifter destroyed by 3 pilots (Sabre, Sabre, Merlin), 12.3M ISK`, so
+  the *System report*, *Ship names* and *Pilot count* detections work on it as
+  on a chat line. The feed's files already carry the whole ESI killmail, so
+  the only lookups are the system and ship names, from the local SDE. The
+  source runs on its own thread (`intel/zkillboard.rs`) only while an enabled
+  zKillboard input exists, starts at the end of the feed (history is not
+  replayed), announces a killmail once, follows zKillboard's polling rules
+  (a 6 second wait at the end of the feed, a `User-Agent`, a long pause after
+  a 403/429) and reports an outage once to the status log. The rule engine
+  delivers each line only to the Input nodes of its own kind (`LineContext::kind`,
+  `InputEvent::kind`), so a killmail never reaches a chat-log input. The
+  feed is unfiltered: wire detections after the node to pick what matters
+  (October 2026).
 * Tests of the intel pipeline with lines the way players write them (about
   forty variants of system names), through the default rules and the real
   resolver: what is read, what is not, what is left over as unrecognised text,

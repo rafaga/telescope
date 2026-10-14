@@ -30,6 +30,22 @@ pub enum InputKind {
     /// An EVE Online chat-log file or directory of them (UTF-16LE).
     #[default]
     ChatLog,
+    /// The live killmail feed of zKillboard (its R2Z2 stream). It has no path
+    /// or channels: every killmail enters the graph as one line.
+    #[serde(rename = "zkillboard")]
+    ZKillboard,
+}
+
+impl InputKind {
+    /// The channel name the lines of a source that has no chat channel
+    /// carry, or `None` for a kind whose lines name their own channel.
+    /// Shown in logs and in the debug tools.
+    pub fn fixed_channel(self) -> Option<&'static str> {
+        match self {
+            Self::ChatLog => None,
+            Self::ZKillboard => Some("zkillboard"),
+        }
+    }
 }
 
 /// Behaviour shared by every input type. Implement it for a new type to add
@@ -44,6 +60,7 @@ impl InputType for InputKind {
     fn type_name(&self) -> &'static str {
         match self {
             Self::ChatLog => "chat_log",
+            Self::ZKillboard => "zkillboard",
         }
     }
 }
@@ -551,6 +568,7 @@ mod tests {
     #[test]
     fn input_and_output_type_names() {
         assert_eq!(InputKind::default().type_name(), "chat_log");
+        assert_eq!(InputKind::ZKillboard.type_name(), "zkillboard");
         let outputs = [
             (OutputKind::Visual, "visual"),
             (OutputKind::Sound, "sound"),
@@ -561,6 +579,26 @@ mod tests {
         for (kind, name) in outputs {
             assert_eq!(kind.type_name(), name);
         }
+    }
+
+    #[test]
+    fn input_kind_is_stored_under_its_type_name() {
+        #[derive(Debug, PartialEq, Deserialize, Serialize)]
+        struct Holder {
+            kind: InputKind,
+        }
+        for kind in [InputKind::ChatLog, InputKind::ZKillboard] {
+            let text = toml::to_string(&Holder { kind }).unwrap();
+            assert_eq!(text.trim(), format!("kind = \"{}\"", kind.type_name()));
+            let back: Holder = toml::from_str(&text).unwrap();
+            assert_eq!(back, Holder { kind });
+        }
+    }
+
+    #[test]
+    fn only_a_source_without_chat_channels_has_a_fixed_channel() {
+        assert_eq!(InputKind::ChatLog.fixed_channel(), None);
+        assert_eq!(InputKind::ZKillboard.fixed_channel(), Some("zkillboard"));
     }
 
     #[test]

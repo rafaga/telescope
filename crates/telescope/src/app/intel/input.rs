@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::OnceLock;
-use webb::rules::{IntelLine, parse_line};
+use webb::rules::{InputKind, IntelLine, parse_line};
 
 /// A chatlog file name split into its channel and the rest.
 ///
@@ -47,10 +47,15 @@ impl<'a> IntelLogName<'a> {
 /// One parsed chat-log line, ready for the detection stage.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InputEvent {
-    /// Name of the log file the line came from.
+    /// Where the line came from: the log file name for a chat log, the feed
+    /// position for a killmail.
     pub source: String,
-    /// Channel parsed from the file name.
+    /// Channel parsed from the file name, or the fixed channel of a source
+    /// without chat channels (see [`InputKind::fixed_channel`]).
     pub channel: String,
+    /// The kind of source that produced the line: it decides which Input
+    /// nodes of the graph receive it.
+    pub kind: InputKind,
     /// The parsed line (timestamp, author, text).
     pub line: IntelLine,
 }
@@ -104,6 +109,7 @@ impl ChatLogSource {
             .map(|line| InputEvent {
                 source: source.clone(),
                 channel: channel.clone(),
+                kind: InputKind::ChatLog,
                 line,
             })
             .collect();

@@ -148,6 +148,9 @@ pub struct TelescopeApp {
     intel_resolver: intel::detection::ResolverHandle,
     /// The graph the executor was built from (source of truth for the editor).
     intel_graph: RuleGraph,
+    /// The zKillboard killmail source: on while the graph has an enabled
+    /// zKillboard input (see `intel::zkillboard`).
+    intel_zkillboard: intel::zkillboard::ZKillboardHandle,
     /// Where the reading of each monitored chat log stopped; shared with the
     /// reader thread (`intel::reader`).
     intel_offsets: intel::reader::SharedOffsets,
@@ -422,6 +425,16 @@ impl TelescopeApp {
         let (intel_files_tx, intel_files_rx) = std::sync::mpsc::channel::<String>();
         #[cfg(debug_assertions)]
         let debug_intel_input = intel_input.clone();
+        // The killmails of the zKillboard input nodes enter the same queue as
+        // the chat lines. The source idles (it makes no request) until the
+        // graph has an enabled zKillboard input.
+        let intel_zkillboard = intel::zkillboard::ZKillboardHandle::new(settings.get_sde());
+        intel_zkillboard.spawn(
+            intel_input.clone(),
+            Arc::clone(&intel_resolver),
+            Arc::clone(&arc_msg_sender),
+        );
+        intel_zkillboard.follow(&intel_graph);
         intel::reader::spawn(
             intel::reader::ReaderShared {
                 watched: Arc::clone(&intel_watched),
@@ -498,6 +511,7 @@ impl TelescopeApp {
             intel_executor,
             intel_resolver,
             intel_graph,
+            intel_zkillboard,
             intel_offsets,
             alarm_shared,
             patterns_editor: PatternsEditor::default(),
@@ -599,6 +613,7 @@ impl eframe::App for TelescopeApp {
             intel_executor: _,
             intel_resolver: _,
             intel_graph: _,
+            intel_zkillboard: _,
             intel_offsets: _,
             alarm_shared: _,
             patterns_editor: _,
@@ -920,6 +935,7 @@ impl TelescopeApp {
         // What the dispatch thread reads (it acts on detected lines on its
         // own, without this loop).
         self.sync_alarm_shared();
+        self.sync_zkillboard();
     }
 
     /// End of a frame: a message queued on the UI thread during it gets the
