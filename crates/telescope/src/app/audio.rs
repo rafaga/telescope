@@ -256,12 +256,7 @@ fn is_device_loss(error: &CpalError) -> bool {
 /// default only logs the error and leaves the (now silent) sink in place, so
 /// this is what lets [`AlarmPlayer`] notice the loss: it raises `lost` and
 /// tells the user, once per stream however many errors follow.
-fn on_stream_error(
-    error: &CpalError,
-    device: &str,
-    lost: &AtomicBool,
-    task_msg: &MessageSpawner,
-) {
+fn on_stream_error(error: &CpalError, device: &str, lost: &AtomicBool, task_msg: &MessageSpawner) {
     if !is_device_loss(error) {
         tracing::debug!("audio stream glitch on '{device}': {error}");
         return;
@@ -598,7 +593,9 @@ mod tests {
             CpalErrorKind::StreamInvalidated
         )));
         assert!(!is_device_loss(&CpalError::new(CpalErrorKind::Xrun)));
-        assert!(!is_device_loss(&CpalError::new(CpalErrorKind::DeviceChanged)));
+        assert!(!is_device_loss(&CpalError::new(
+            CpalErrorKind::DeviceChanged
+        )));
     }
 
     #[test]
