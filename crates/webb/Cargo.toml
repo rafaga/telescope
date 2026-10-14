@@ -13,37 +13,37 @@ crypted-db = ["rusqlite/bundled-sqlcipher"]
 
 [dependencies]
 aho-corasick = "1.1"
-chrono = "0.4.45"
-regex = "1.12.1"
-toml = "1.1.2"
+chrono = "0.4"
+regex = "1.13"
+toml = "1.1"
 tracing = "0.1"
-serde = { version = "1.0.228", features = ["serde_derive"] }
+serde = { version = "1.0", features = ["serde_derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-hyper = { version = "1.10.1", features = ["server", "client", "http1"]}
-hyper-tls = { version = "0.6.0"}
-open = { version = "5.3.5"}
-esi-openapi = { version = "0.2.0", default-features = false, features = ["random_state", "validate_jwt"]}
+hyper = { version = "1.12", features = ["server", "client", "http1"]}
+hyper-tls = { version = "0.6"}
+open = { version = "5.4"}
+esi-openapi = { version = "0.2", default-features = false, features = ["random_state", "validate_jwt"]}
 serde_json = { version = "1.0"}
-base64 = { version = "0.23.1"}
-tokio = { version = "1.52.3", features = ["tokio-macros", "rt", "rt-multi-thread", "macros", "time"]}
-bytes = { version = "1.11.1"}
-http-body-util = { version = "0.1.3"}
-hyper-util = { version = "0.1.20", features = ["full"]}
-rusqlite = { version = "0.40.1", features = ["backup", "blob", "array"]}
+base64 = { version = "0.23"}
+tokio = { version = "1.52", features = ["tokio-macros", "rt", "rt-multi-thread", "macros", "time"]}
+bytes = { version = "1.12"}
+http-body-util = { version = "0.1"}
+hyper-util = { version = "0.1", features = ["full"]}
+rusqlite = { version = "0.40", features = ["backup", "blob", "array"]}
 native_tools = { path = "../native_tools/"}
 sha2 = { version = "0.11"}
 
 # `std::time::Instant` panics on `wasm32-unknown-unknown`; `web-time` is the same type and uses the browser clock there. Every other target keeps `std::time::Instant`.
 # WASM specific dependencies:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-time = "1"
+web-time = "1.1"
 
 # Windows:
 [target.'cfg(target_os = "windows")'.dependencies]
-rusqlite = { version = "0.40.1", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"], optional = true }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"], optional = true }
 
 [dev-dependencies]
-mockall = "0.15.0"
+mockall = "0.15"
 # `graph` tests serialize a rule graph; the `esi` feature also pulls this in.
 serde_json = "1.0"

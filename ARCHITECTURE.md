@@ -81,10 +81,12 @@ crates/telescope
         ├── file.rs          notify event handler for the chat log directory
         ├── intel/           the intel pipeline (see "Chat log -> alert")
         │   ├── mod.rs       TelescopeApp methods: apply_intel_settings(), scan_intel_files(),
-        │   │                apply_graph(), sync_alarm_shared() / sync_alarm_jumps()
+        │   │                apply_graph(), sync_alarm_shared() / sync_alarm_jumps(),
+        │   │                sync_zkillboard()
         │   ├── input.rs     IntelLogName, UTF-16LE decoding, ChatLogSource -> InputEvent,
         │   │                IntelOffsets (where each monitored log was last read)
         │   ├── reader.rs    the reader thread: changed log -> appended lines
+        │   ├── zkillboard.rs the zKillboard source thread: R2Z2 feed -> killmail lines
         │   ├── detection.rs the detection thread (graph Executor behind an RwLock)
         │   ├── dispatch.rs  the dispatch thread: map messages, sound, status log
         │   └── resolve.rs   UniverseResolver / SharedResolver (system ids) and jump distance
@@ -174,12 +176,13 @@ its own thread with a small Tokio runtime, and reports back with messages:
 | `MapSync` | `broadcast` | the dispatch thread (and the UI's test alerts) -> every map pane (center on, system alert, tooltip entry) |
 | `CharacterSync` | `mpsc` | the app -> the watchdog (add / remove a linked character) |
 | changed log names | `std::sync::mpsc` | the file watcher -> the reader thread |
-| `InputEvent` | bounded `mpsc` | the reader -> the detection thread |
+| `InputEvent` | bounded `mpsc` | the reader and the zKillboard source -> the detection thread |
 | `DetectedLine` | bounded `mpsc` | the detection thread -> the dispatch thread |
 
 State shared instead of sent: the rule `Executor` (`RwLock`, swapped by the UI),
 the `AlarmShared` snapshot the dispatch thread reads, the `IntelOffsets` and the
-watched folder the reader uses, and the channel filter the watcher reads.
+watched folder the reader uses, the channel filter the watcher reads, and the
+`ZKillboardHandle` (on/off flag and SDE path) the zKillboard source reads.
 
 From the UI thread use `MessageSpawner::spawn`; from async code use
 `send_app_message`. `Message::kind()` gives a short name for tracing without
@@ -212,6 +215,20 @@ an alarm: *watcher -> reader -> detection -> dispatch*.
    `InputEvent` per parsed line to the detection thread. The channel's last
    activity goes back to the UI as `Message::ChannelActivity` (the *Sources*
    page shows it).
+   A second source feeds the same queue: an Input node of kind `zkillboard`
+   turns on the zKillboard source thread (`intel/zkillboard.rs`,
+   `ZKillboardHandle::follow`, called at startup and from `apply_graph`; with no
+   such node enabled it makes no request). It walks zKillboard's R2Z2 feed
+   (`sequence.json`, then `<n>.json`; a 404 is "nothing yet", wait 6 s), whose
+   files already hold the whole ESI killmail, starting at the end of the feed so
+   history is never replayed. Each new killmail (announced once, by id) becomes
+   an `IntelLine` of the shape `Jita: Rifter destroyed by 3 pilots (Sabre, Sabre,
+   Merlin), 12.3M ISK` (the names come from the SDE, `SdeNames`) in an
+   `InputEvent` of kind `zkillboard`, channel `zkillboard`. `InputEvent::kind` and
+   `LineContext::kind` make the `Executor` hand a line only to the Input nodes of
+   its own kind. A 403/429 pauses the source for ten minutes, other failures back
+   off from 6 to 60 s, a long outage restarts the walk at the end of the feed, and
+   each outage is reported once as a `GenericNotification`.
 3. The detection thread (`intel/detection.rs`) runs the graph `Executor` over the
    line and sends the resulting `DetectedLine` (the `Activation`s) on. The
    executor sits behind an `RwLock`: the UI swaps it in place when the rules

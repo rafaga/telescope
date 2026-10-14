@@ -19,6 +19,7 @@ pub(crate) mod dispatch;
 pub(crate) mod input;
 pub(crate) mod reader;
 pub(crate) mod resolve;
+pub(crate) mod zkillboard;
 
 pub(crate) use self::input::IntelLogName;
 
@@ -126,6 +127,7 @@ impl TelescopeApp {
             let context = webb::graph::LineContext {
                 line,
                 channel: channel.to_string(),
+                kind: webb::rules::InputKind::ChatLog,
             };
             for activation in executor.run(&context, self.intel_resolver.as_ref()) {
                 for message in activation.messages {
@@ -163,6 +165,9 @@ impl TelescopeApp {
             .intel_executor
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = executor;
+        // The killmail feed is read only while the rules have a zKillboard
+        // input to feed.
+        self.intel_zkillboard.follow(&graph);
         self.intel_graph = graph;
     }
 }
@@ -177,6 +182,13 @@ impl TelescopeApp {
             AlarmConfig::from_settings(&self.settings),
             dispatch::character_locations(&self.esi.characters),
         );
+    }
+
+    /// Points the zKillboard source at the SDE the settings name (it looks up
+    /// system and ship names there). Cheap and idempotent, like
+    /// [`Self::sync_alarm_shared`], which it runs next to.
+    pub(crate) fn sync_zkillboard(&self) {
+        self.intel_zkillboard.set_sde_path(self.settings.get_sde());
     }
 
     /// Rebuilds the stargate graph the alarm measures distances on from the

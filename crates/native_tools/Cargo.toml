@@ -15,28 +15,28 @@ workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 # `System_Profile` and `Storage_Streams`: the machine identifier
 # (`get_windows_unique_id`).
-windows = { version = "0.62.2", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation","System_Profile","Storage_Streams","Win32_UI_WindowsAndMessaging","Win32_Graphics_Gdi"] }
+windows = { version = "0.62", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation","System_Profile","Storage_Streams","Win32_UI_WindowsAndMessaging","Win32_Graphics_Gdi"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13.12", default-features = false, features = ["file_chooser", "tokio"] }
-zbus = { version = "5.18.0", default-features = false, features = ["tokio"] }
-rustix = { version = "1.1.4", features = ["process"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "tokio"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+rustix = { version = "1.1", features = ["process"] }
 # Overlay (src/overlay): X11 protocol in pure Rust, with the Shape extension
 # (click-through).
 x11rb = { version = "0.14", features = ["shape"] }
-tokio = { version = "1.47.1", features = ["rt", "macros"] }
+tokio = { version = "1.53", features = ["rt", "macros"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-io-kit = { version = "0.3.2", features = ["libc"], default-features = false}
-objc2-core-foundation = { version = "0.3.2", features = ["CFString", "CFDictionary", "CFNumber", "objc2"] }
+objc2-io-kit = { version = "0.3", features = ["libc"], default-features = false}
+objc2-core-foundation = { version = "0.3", features = ["CFString", "CFDictionary", "CFNumber", "objc2"] }
 # Safe-to-link bindings of the accessibility trust check (AXIsProcessTrusted...),
 # used by `permissions` instead of a hand-written `extern` block.
-objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
 # Safe bindings of the window list and the shielding window level, so the
 # crate needs no `extern` block nor `unsafe` of its own for them.
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGWindow", "CGWindowLevel", "CGDirectDisplay"] }
-objc2-foundation = {version = "0.3.2", features = ["NSString", "NSURL", "NSArray", "NSDictionary", "NSValue"] }
-objc2-app-kit = { version = "0.3.2", features = [
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGWindow", "CGWindowLevel", "CGDirectDisplay"] }
+objc2-foundation = {version = "0.3", features = ["NSString", "NSURL", "NSArray", "NSDictionary", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = [
     "NSOpenPanel",
     "NSSavePanel",
     "NSPanel",
@@ -47,5 +47,5 @@ objc2-app-kit = { version = "0.3.2", features = [
     "NSWorkspace",
     "NSRunningApplication",
 ] }
-block2 = "0.6.2"
-objc2 = { version = "0.6.4", features = ["objc2-proc-macros"] }
+block2 = "0.6"
+objc2 = { version = "0.6", features = ["objc2-proc-macros"] }

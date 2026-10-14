@@ -608,7 +608,7 @@ impl PatternsEditor {
         for node in &self.graph.nodes {
             if node.id == input_id {
                 if let NodeKind::Input(input) = &node.kind {
-                    summary.channels.clone_from(&input.channels);
+                    summary.source = InputSource::of(input);
                 }
                 continue;
             }
@@ -638,8 +638,8 @@ impl PatternsEditor {
 /// What a rule (the component of an input) is made of.
 #[derive(Default)]
 struct ComponentSummary {
-    /// The channels the input reads; empty means every watched channel.
-    channels: Vec<String>,
+    /// What the input reads.
+    source: InputSource,
     detections: usize,
     /// Aggregators, gates and formatters.
     logic: usize,
@@ -1192,6 +1192,62 @@ const INSPECTOR_WIDTH: f32 = 260.0;
 const INSPECTOR_MIN_VIEWPORT: f32 = 640.0;
 
 /// The mark and the label of a node kind, in the node headers and the panel.
+/// The kinds of source an Input node can read, in the order they are offered.
+const INPUT_KINDS: [InputKind; 2] = [InputKind::ChatLog, InputKind::ZKillboard];
+
+/// How the UI names a kind of input.
+trait InputKindLabel {
+    /// The name the source selector shows.
+    fn label(&self) -> String;
+}
+
+impl InputKindLabel for InputKind {
+    fn label(&self) -> String {
+        match self {
+            Self::ChatLog => t!("settings.patterns.input_chat_log").into_owned(),
+            Self::ZKillboard => t!("settings.patterns.input_zkillboard").into_owned(),
+        }
+    }
+}
+
+/// What an Input node reads, for the one line that sums it up (its card and
+/// its body on the canvas): the channels of a chat log, or the name of a feed
+/// that has none.
+#[derive(Debug, PartialEq, Eq)]
+enum InputSource {
+    /// Chat logs; empty means every watched channel.
+    Channels(Vec<String>),
+    /// A feed of the given kind.
+    Feed(InputKind),
+}
+
+impl Default for InputSource {
+    fn default() -> Self {
+        Self::Channels(Vec::new())
+    }
+}
+
+impl InputSource {
+    fn of(input: &InputNode) -> Self {
+        match input.kind {
+            InputKind::ChatLog => Self::Channels(input.channels.clone()),
+            kind => Self::Feed(kind),
+        }
+    }
+}
+
+impl std::fmt::Display for InputSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Channels(channels) if channels.is_empty() => {
+                f.write_str(&t!("settings.patterns.all_channels"))
+            }
+            Self::Channels(channels) => f.write_str(&channels.join(", ")),
+            Self::Feed(kind) => f.write_str(&kind.label()),
+        }
+    }
+}
+
 fn node_kind_color(kind: &NodeKind) -> Color32 {
     match kind {
         NodeKind::Input(_) => Color32::from_rgb(90, 160, 220),
@@ -1217,13 +1273,7 @@ fn node_kind_label(kind: &NodeKind) -> String {
 /// One line saying what a node does, for its body on the canvas.
 fn node_summary(kind: &NodeKind) -> String {
     match kind {
-        NodeKind::Input(input) => {
-            if input.channels.is_empty() {
-                t!("settings.patterns.all_channels").into_owned()
-            } else {
-                input.channels.join(", ")
-            }
-        }
+        NodeKind::Input(input) => InputSource::of(input).to_string(),
         NodeKind::Detection(detection) => match &detection.kind {
             DetectionRuleKind::ClearReport { keywords }
             | DetectionRuleKind::Query { keywords }
@@ -1410,15 +1460,10 @@ fn input_card(
                                         .color(palette.muted_text),
                                 );
                             });
-                            let channels = if summary.channels.is_empty() {
-                                t!("settings.patterns.all_channels").into_owned()
-                            } else {
-                                summary.channels.join(", ")
-                            };
                             ui.label(
                                 RichText::new(t!(
                                     "settings.patterns.summary",
-                                    channels = channels,
+                                    channels = summary.source.to_string(),
                                     detections = summary.detections,
                                     logic = summary.logic,
                                     outputs = summary.outputs.len()
@@ -1874,15 +1919,41 @@ fn input_body(ui: &mut Ui, input: &mut InputNode) -> bool {
     changed |= field_row(ui, &t!("settings.patterns.field_description"), |ui| {
         ui.text_edit_singleline(&mut input.description).changed()
     });
-    changed |= field_row(ui, &t!("settings.patterns.field_path"), |ui| {
-        ui.text_edit_singleline(&mut input.path).changed()
+    changed |= field_row(ui, &t!("settings.patterns.field_source"), |ui| {
+        let mut changed = false;
+        egui::ComboBox::from_id_salt("input_kind")
+            .selected_text(input.kind.label())
+            .show_ui(ui, |ui| {
+                for kind in INPUT_KINDS {
+                    if ui
+                        .selectable_label(input.kind == kind, kind.label())
+                        .clicked()
+                        && input.kind != kind
+                    {
+                        input.kind = kind;
+                        changed = true;
+                    }
+                }
+            });
+        changed
     });
-    changed |= field_row(ui, &t!("settings.patterns.field_channels"), |ui| {
-        string_list_editor(ui, &mut input.channels)
-    });
-    changed |= field_row(ui, &t!("settings.patterns.field_exclude_motd"), |ui| {
-        ui.checkbox(&mut input.exclude_motd, "").changed()
-    });
+    match input.kind {
+        InputKind::ChatLog => {
+            changed |= field_row(ui, &t!("settings.patterns.field_path"), |ui| {
+                ui.text_edit_singleline(&mut input.path).changed()
+            });
+            changed |= field_row(ui, &t!("settings.patterns.field_channels"), |ui| {
+                string_list_editor(ui, &mut input.channels)
+            });
+            changed |= field_row(ui, &t!("settings.patterns.field_exclude_motd"), |ui| {
+                ui.checkbox(&mut input.exclude_motd, "").changed()
+            });
+        }
+        // A feed has no path, channels or MOTD to set: say what it brings.
+        InputKind::ZKillboard => {
+            ui.label(t!("settings.patterns.zkillboard_hint"));
+        }
+    }
     changed
 }
 
@@ -2607,6 +2678,46 @@ mod tests {
     }
 
     #[test]
+    fn a_feed_input_is_summed_up_by_its_name_not_by_channels() {
+        let mut editor = editor();
+        let set_kind = |editor: &mut PatternsEditor, kind: InputKind| {
+            for node in &mut editor.graph.nodes {
+                if node.id == "in1"
+                    && let NodeKind::Input(input) = &mut node.kind
+                {
+                    input.kind = kind;
+                }
+            }
+        };
+        // Channels that were set before the source changed mean nothing now.
+        set_kind(&mut editor, InputKind::ZKillboard);
+
+        let summary = editor.component_summary("in1");
+        assert_eq!(summary.source, InputSource::Feed(InputKind::ZKillboard));
+        assert_eq!(summary.source.to_string(), InputKind::ZKillboard.label());
+        let node = editor.graph.nodes.iter().find(|node| node.id == "in1");
+        assert_eq!(
+            node_summary(&node.unwrap().kind),
+            InputKind::ZKillboard.label()
+        );
+
+        // Back to chat logs: the channels are still there.
+        set_kind(&mut editor, InputKind::ChatLog);
+        assert_eq!(
+            editor.component_summary("in1").source,
+            InputSource::Channels(vec![String::from("Intel")])
+        );
+    }
+
+    #[test]
+    fn every_input_kind_is_offered_once() {
+        assert!(INPUT_KINDS.contains(&InputKind::ChatLog));
+        assert!(INPUT_KINDS.contains(&InputKind::ZKillboard));
+        let labels: HashSet<String> = INPUT_KINDS.iter().map(InputKindLabel::label).collect();
+        assert_eq!(labels.len(), INPUT_KINDS.len());
+    }
+
+    #[test]
     fn component_summary_counts_parts_and_orders_outputs() {
         let mut editor = editor();
         editor.graph.nodes.push(node(
@@ -2620,7 +2731,10 @@ mod tests {
 
         let summary = editor.component_summary("in1");
 
-        assert_eq!(summary.channels, ["Intel"]);
+        assert_eq!(
+            summary.source,
+            InputSource::Channels(vec![String::from("Intel")])
+        );
         assert_eq!(summary.detections, 1);
         assert_eq!(summary.logic, 1);
         // Offered order: visual before log, whatever the graph's order.

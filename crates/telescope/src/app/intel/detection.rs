@@ -59,6 +59,7 @@ pub(crate) fn spawn(
                     let context = LineContext {
                         line: event.line,
                         channel: event.channel.clone(),
+                        kind: event.kind,
                     };
                     let started = std::time::Instant::now();
                     let activations = {

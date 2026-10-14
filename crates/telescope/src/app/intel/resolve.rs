@@ -305,6 +305,7 @@ mod real_line_tests {
                 text: text.to_string(),
             },
             channel: String::from("Intel"),
+            kind: webb::rules::InputKind::ChatLog,
         };
         let activations = executor.run(&context, &resolver);
 

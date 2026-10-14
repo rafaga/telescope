@@ -27,8 +27,8 @@ overlay = []
 
 # Embeds assets/icon.ico in the Windows executable (see build.rs).
 [build-dependencies]
-winresource = "0.1.31"
-serde_json = "1"
+winresource = "0.1"
+serde_json = "1.0"
 
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
@@ -36,7 +36,7 @@ eframe = { version = "0.36", default-features = false, features = ["accesskit", 
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
 # `crates/telescope/src/app/database_updater.rs`.
-sde = { version = "0.7.2", features = ["builder"] }
+sde = { version = "0.7", features = ["builder"] }
 # Only needed here to name the `rusqlite::Connection` handed to
 # `sde::builder::schema::create_schema`/`Parser::build_database` --
 # `database_updater.rs` owns opening/creating the `sde.db` file itself
@@ -45,29 +45,29 @@ sde = { version = "0.7.2", features = ["builder"] }
 # `rusqlite` version `sde`/`webb` already pull in, so this doesn't
 # duplicate the SQLite build.
 rusqlite = { version = "0.40" }
-kdtree = { version = "0.8.0" }
+kdtree = { version = "0.8" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.14.0" }
-open = "5.3.2"
+egui-map = { version = "0.14" }
+open = "5.4"
 # `crypted-db` explicitly: with `default-features = false` alone the player
 # database was encrypted or not depending on whether the build also selected
 # `webb` itself (its default features), e.g. `cargo build` at the workspace
 # root vs `cargo build -p telescope`.
 webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
-chrono = "0.4.42"
-tokio = { version = "1.47.1", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
+chrono = "0.4"
+tokio = { version = "1.53", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.36", features = ["all_loaders"] }
-image = { version = "0.25.8", features = ["jpeg","png"] }
+image = { version = "0.25", features = ["jpeg","png"] }
 # The window handle eframe exposes (same version as eframe/winit), to own the
 # native file dialogs.
 raw-window-handle = "0.6"
-egui_tiles = { version = "0.17.0" }
-egui-snarl = "0.12.0"
-toml = "1.1.2"
-hyper = { version = "1.7.0", features = ["server", "http1", "client"] }
-serde = { version = "1.0.228", features = ["derive"] }
-hyper-util = { version = "0.1.17", features = ["full"] }
+egui_tiles = { version = "0.17" }
+egui-snarl = "0.12"
+toml = "1.1"
+hyper = { version = "1.12", features = ["server", "http1", "client"] }
+serde = { version = "1.0", features = ["derive"] }
+hyper-util = { version = "0.1", features = ["full"] }
 # Use `notify`'s own default backend selection per platform (ReadDirectoryChangesW
 # on Windows, inotify on Linux, FSEvents on macOS) instead of overriding it. This
 # used to force the `macos_kqueue` backend on macOS via `default-features = false,
@@ -80,9 +80,9 @@ hyper-util = { version = "0.1.17", features = ["full"] }
 # built directly on macOS (not cross-compiled from a machine without the macOS
 # SDK, which is the usual reason projects avoid `fsevent-sys`'s
 # CoreServices/CoreFoundation link requirement).
-notify = "8.2.0"
-directories = "6.0.0"
-regex = "1.12.1"
+notify = "8.2"
+directories = "6.0"
+regex = "1.13"
 # Multi-literal ("dictionary") matching for pattern rules whose alternatives
 # are plain words rather than a hand-written regex (e.g. ship names in
 # several languages) -- already pulled transitively by `regex`, declared
@@ -97,37 +97,40 @@ tracing = "0.1"
 # lost now that neither `env_logger` (native) nor `eframe::WebLogger` (web)
 # own the `log` sink anymore.
 tracing-log = "0.2"
-rodio = { version = "0.22.2", default-features = false, features = ["wav","mp3","playback","tracing"] }
+rodio = { version = "0.23", default-features = false, features = ["wav","mp3","playback","tracing"] }
 # Interface translations: `t!("key")` looks the text up in `locales/<code>.toml`,
 # embedded at compile time (see `src/i18n.rs`).
-rust-i18n = "4.2.2"
+rust-i18n = "4.2"
 # The operating system's language, for `language = "auto"` in `[ui]`.
-sys-locale = "0.3.2"
+sys-locale = "0.3"
 semver = { version = "1.0"}
-reqwest = { version = "0.13.5", features=["json"] }
+reqwest = { version = "0.13", features=["json"] }
 
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-tracy = { version = "0.12", optional = true }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen-futures = "0.4.54"
+wasm-bindgen-futures = "0.4"
 tracing-wasm = "0.2"
 # The browser's language for `language = "auto"` (see sys-locale above).
-sys-locale = { version = "0.3.2", features = ["js"] }
+sys-locale = { version = "0.3", features = ["js"] }
 
 [target.'cfg(not(target_os  = "windows"))'.dependencies]
-wgpu = { version="30.0.0" }
+wgpu = { version="30.0" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wgpu = { version="30.0.0", features = ["dx12"], default-features = false }
-windows = { version = "0.62.2", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation",] }
+wgpu = { version="30.0", features = ["dx12"], default-features = false }
+windows = { version = "0.62", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation",] }
 
 [dev-dependencies]
 # To publish fake sde-deltas deltas (gzipped, with their SHA-256) in
 # `database_updater`'s tests. Both already come with `sde`'s `builder`.
 flate2 = "1.1"
 sha2 = "0.11"
+# To read a sample R2Z2 killmail file in `zkillboard`'s tests (the feed's
+# files themselves are read through `reqwest`).
+serde_json = "1.0"

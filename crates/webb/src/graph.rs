@@ -60,6 +60,9 @@ pub struct LineContext {
     pub line: IntelLine,
     /// Channel the line came from.
     pub channel: String,
+    /// The kind of source that produced the line: only the Input nodes of
+    /// this kind receive it.
+    pub kind: InputKind,
 }
 
 /// Structured payload a detection attaches to its [`Mensaje`], typed per
@@ -1117,16 +1120,19 @@ impl Executor {
                 .collect();
             match &node.kind {
                 NodeKind::Input(input) => {
-                    if !node.enabled {
+                    if !node.enabled || input.kind != context.kind {
                         continue;
                     }
-                    if !input.channels.is_empty()
-                        && !input.channels.iter().any(|name| name == &context.channel)
-                    {
-                        continue;
-                    }
-                    if input.exclude_motd && motd_regex().is_match(&context.line.text) {
-                        continue;
+                    // Channels and the channel MOTD only exist in chat logs.
+                    if input.kind == InputKind::ChatLog {
+                        if !input.channels.is_empty()
+                            && !input.channels.iter().any(|name| name == &context.channel)
+                        {
+                            continue;
+                        }
+                        if input.exclude_motd && motd_regex().is_match(&context.line.text) {
+                            continue;
+                        }
                     }
                     let message = Mensaje {
                         tag: String::from(LINE_TAG),
@@ -1334,6 +1340,7 @@ mod tests {
                 text: text.to_string(),
             },
             channel: String::from("intel"),
+            kind: InputKind::ChatLog,
         }
     }
 
@@ -1747,6 +1754,98 @@ mod tests {
             to: to.to_string(),
             to_pin,
         }
+    }
+
+    fn zkillboard_input_node(id: &str) -> Node {
+        Node {
+            kind: NodeKind::Input(InputNode {
+                description: String::from("kills"),
+                kind: InputKind::ZKillboard,
+                path: String::new(),
+                // Chat-log options that mean nothing here: they must not
+                // filter a killmail out.
+                channels: vec![String::from("Local")],
+                exclude_motd: true,
+            }),
+            ..input_node(id)
+        }
+    }
+
+    /// `input -> system report -> log` over the given Input node.
+    fn system_graph(input: Node) -> RuleGraph {
+        let id = input.id.clone();
+        RuleGraph {
+            nodes: vec![
+                input,
+                detection_node("sys", DetectionRuleKind::SystemReport),
+                output_node("out"),
+            ],
+            edges: vec![edge(&id, Pin::Out, "sys", 0), edge("sys", Pin::T, "out", 0)],
+        }
+    }
+
+    fn killmail_line(text: &str) -> LineContext {
+        LineContext {
+            channel: String::from("zkillboard"),
+            kind: InputKind::ZKillboard,
+            ..line(text)
+        }
+    }
+
+    #[test]
+    fn a_zkillboard_input_receives_killmail_lines() {
+        let graph = system_graph(zkillboard_input_node("kills"));
+        assert!(graph.validate().is_empty(), "{:?}", graph.validate());
+        let (executor, errors) = Executor::new(graph);
+        assert!(errors.is_empty(), "{errors:?}");
+        let activations = executor.run(&killmail_line("Jita Rifter destroyed"), &FixedResolver);
+        assert_eq!(activations.len(), 1);
+        assert_eq!(
+            activations[0].messages[0].data,
+            Data::Systems(vec![30000142])
+        );
+    }
+
+    #[test]
+    fn a_zkillboard_input_ignores_chat_lines() {
+        let (executor, _) = Executor::new(system_graph(zkillboard_input_node("kills")));
+        assert!(
+            executor
+                .run(&line("hostile in Jita"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_chat_log_input_ignores_killmail_lines() {
+        // Not even with "every channel" selected (no channels listed).
+        let (executor, _) = Executor::new(system_graph(input_node("chat")));
+        assert!(
+            executor
+                .run(&killmail_line("Jita Rifter destroyed"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_disabled_zkillboard_input_receives_nothing() {
+        let mut input = zkillboard_input_node("kills");
+        input.enabled = false;
+        let (executor, _) = Executor::new(system_graph(input));
+        assert!(
+            executor
+                .run(&killmail_line("Jita Rifter destroyed"), &FixedResolver)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_zkillboard_input_round_trips_through_json() {
+        let graph = system_graph(zkillboard_input_node("kills"));
+        let json = serde_json::to_string(&graph).unwrap();
+        assert!(json.contains("\"kind\":\"zkillboard\""), "{json}");
+        let back: RuleGraph = serde_json::from_str(&json).unwrap();
+        assert_eq!(graph, back);
     }
 
     #[test]

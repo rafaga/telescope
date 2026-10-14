@@ -61,9 +61,10 @@
 //! and `notify_intel_error` already use elsewhere in this app.
 
 use super::messages::{Message, MessageSpawner, Type};
+use rodio::CpalError;
+use rodio::CpalErrorKind;
 use rodio::Decoder;
 use rodio::MixerDeviceSink;
-use rodio::cpal::StreamError;
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::BufReader;
@@ -241,9 +242,14 @@ fn notify(task_msg: &MessageSpawner, kind: Type, text: String) {
 }
 
 /// Whether a stream error means the output can no longer be heard and has to
-/// be reopened, as opposed to a glitch the stream survives (an underrun).
-fn is_device_loss(error: &StreamError) -> bool {
-    !matches!(error, StreamError::BufferUnderrun)
+/// be reopened, as opposed to something the stream survives: a buffer
+/// underrun/overrun (an audible glitch at worst) or a reroute of the default
+/// device, which cpal follows by itself without rebuilding the stream.
+fn is_device_loss(error: &CpalError) -> bool {
+    !matches!(
+        error.kind(),
+        CpalErrorKind::Xrun | CpalErrorKind::DeviceChanged
+    )
 }
 
 /// The stream's error callback, running on the audio thread. rodio's own
@@ -251,7 +257,7 @@ fn is_device_loss(error: &StreamError) -> bool {
 /// this is what lets [`AlarmPlayer`] notice the loss: it raises `lost` and
 /// tells the user, once per stream however many errors follow.
 fn on_stream_error(
-    error: &StreamError,
+    error: &CpalError,
     device: &str,
     lost: &AtomicBool,
     task_msg: &MessageSpawner,
@@ -585,9 +591,14 @@ mod tests {
 
     #[test]
     fn only_glitches_are_not_treated_as_a_lost_device() {
-        assert!(is_device_loss(&StreamError::DeviceNotAvailable));
-        assert!(is_device_loss(&StreamError::StreamInvalidated));
-        assert!(!is_device_loss(&StreamError::BufferUnderrun));
+        assert!(is_device_loss(&CpalError::new(
+            CpalErrorKind::DeviceNotAvailable
+        )));
+        assert!(is_device_loss(&CpalError::new(
+            CpalErrorKind::StreamInvalidated
+        )));
+        assert!(!is_device_loss(&CpalError::new(CpalErrorKind::Xrun)));
+        assert!(!is_device_loss(&CpalError::new(CpalErrorKind::DeviceChanged)));
     }
 
     #[test]
@@ -595,14 +606,19 @@ mod tests {
         let (task_msg, mut rx) = task_msg_with_receiver();
         let lost = AtomicBool::new(false);
 
-        on_stream_error(&StreamError::BufferUnderrun, "Speakers", &lost, &task_msg);
+        on_stream_error(
+            &CpalError::new(CpalErrorKind::Xrun),
+            "Speakers",
+            &lost,
+            &task_msg,
+        );
         assert!(!lost.load(Ordering::SeqCst));
         assert_eq!(drain(&mut rx), 0);
 
         // The callback keeps firing while the device stays gone.
         for _ in 0..3 {
             on_stream_error(
-                &StreamError::DeviceNotAvailable,
+                &CpalError::new(CpalErrorKind::DeviceNotAvailable),
                 "Speakers",
                 &lost,
                 &task_msg,
