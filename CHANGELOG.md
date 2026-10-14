@@ -8,9 +8,7 @@ The entries up to *1.0.0-rc01* were reconstructed from the git history, grouped
 by topic and dated by the period they happened in. The entries of the later
 versions were written for the tag that shipped them.
 
-## [Unreleased]
-
-Everything that will go out as 1.0.4 (the version in `Cargo.toml`).
+## [1.0.4] - 2026-10-14
 
 ### Added
 
@@ -79,6 +77,16 @@ Everything that will go out as 1.0.4 (the version in `Cargo.toml`).
 ### Removed
 
 * `index.html`, the leftover eframe/trunk template (October 2026).
+
+### Security
+
+* `rustls` 0.23.46 (`Cargo.lock`), which fixes RUSTSEC-2026-0346, -0347,
+  -0348 and -0349 reported by `cargo deny check`: client session values
+  exposing TLS secrets through `Debug`, application data sent to the outer
+  server after an ECH rejection, the Brotli certificate decompressor
+  allocating up to 1 GiB, and a ServerHello that could downgrade later
+  connections to classical key exchange. It is reached through `reqwest`
+  and `ureq` (October 2026).
 
 ## [1.0.3] - 2026-10-11
 
