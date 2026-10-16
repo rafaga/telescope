@@ -57,10 +57,8 @@ impl AlertSummary {
         for message in messages {
             match &message.data {
                 Data::Ships(ships) => {
-                    for (name, times) in ships {
-                        for _ in 0..*times {
-                            summary.add_ship(name);
-                        }
+                    for ship in ships {
+                        summary.add_ship(&ship.name, ship.times as usize);
                     }
                 }
                 Data::Count(count) => {
@@ -79,14 +77,14 @@ impl AlertSummary {
         summary
     }
 
-    fn add_ship(&mut self, name: &str) {
+    fn add_ship(&mut self, name: &str, count: usize) {
         match self
             .ships
             .iter_mut()
             .find(|(known, _)| crate::graph::fold(known) == crate::graph::fold(name))
         {
-            Some((_, times)) => *times += 1,
-            None => self.ships.push((name.to_owned(), 1)),
+            Some((_, times)) => *times += count,
+            None => self.ships.push((name.to_owned(), count)),
         }
     }
 
@@ -289,6 +287,7 @@ impl AlertLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::ShipCount;
 
     /// A message standing for the bytes `start..end` of the line.
     fn message(start: usize, end: usize) -> Mensaje {
@@ -417,7 +416,7 @@ mod tests {
         with_data(
             Data::Ships(
                 list.iter()
-                    .map(|(name, times)| (name.to_string(), *times))
+                    .map(|(name, times)| ShipCount::new(*name, *times))
                     .collect(),
             ),
             Some(IntelCategory::Ship),

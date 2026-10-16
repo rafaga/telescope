@@ -2,7 +2,7 @@
 //! corporations, alliances and the authorization tokens of the linked characters.
 
 use crate::esi::Error;
-use crate::graph::{Edge, Node, Pin, RuleGraph};
+use crate::graph::{Edge, Node, RuleGraph};
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
 use chrono::{DateTime, Utc};
 use rusqlite::types::Type;
@@ -21,8 +21,12 @@ pub(crate) struct PlayerDatabase {}
 /// - 0: one token set for every character, in `metadata`.
 /// - 1: one token set per character, in the `auth` table.
 /// - 2: the intel rule graph tables (`node`, `edge`), seeded with the
-///   built-in default graph (the embedded `rules.toml`).
-pub const SCHEMA_VERSION: i32 = 2;
+///   built-in default graph.
+/// - 3: the intel graph model changed (no gates, one output per node): the
+///   graph of version 2 is kept in `node_v2_backup` and `edge_v2_backup`, the
+///   tables are rebuilt without the edges' source pin and the default graph is
+///   seeded again.
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
@@ -31,6 +35,7 @@ type Migration = fn(&Connection) -> Result<(), Error>;
 const MIGRATIONS: &[Migration] = &[
     PlayerDatabase::migrate_0_to_1,
     PlayerDatabase::migrate_1_to_2,
+    PlayerDatabase::migrate_2_to_3,
 ];
 
 // One migration per version step, always.
@@ -41,10 +46,9 @@ const CREATE_AUTH_TABLE: &str = "CREATE TABLE auth (id INTEGER PRIMARY KEY \
     REFERENCES char(id) ON DELETE CASCADE ON UPDATE CASCADE, \
     token TEXT NOT NULL, refresh_token TEXT NOT NULL, expiration TEXT NOT NULL)";
 
-/// Creation script of the intel graph tables (1 -> 2 migration). Every node
-/// (input/detection/output, and later the special ones) is a row whose payload
-/// is stored as JSON; the edges are a separate table keyed by the two pins.
-const CREATE_RULE_TABLES: &str = "
+/// Creation script of the intel graph tables as version 2 had them (1 -> 2
+/// migration, frozen): the edges name the pin they leave from.
+const CREATE_RULE_TABLES_V2: &str = "
     CREATE TABLE node (
         id TEXT PRIMARY KEY,
         data TEXT NOT NULL
@@ -55,6 +59,22 @@ const CREATE_RULE_TABLES: &str = "
         to_node TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
         to_pin TEXT NOT NULL,
         PRIMARY KEY (from_node, from_pin, to_node, to_pin)
+    );
+";
+
+/// Creation script of the intel graph tables (2 -> 3 migration). Every node
+/// is a row whose payload is stored as JSON; an edge goes from a node (which
+/// has a single output) to an input pin of another.
+const CREATE_RULE_TABLES: &str = "
+    CREATE TABLE node (
+        id TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+    );
+    CREATE TABLE edge (
+        from_node TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+        to_node TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+        to_pin TEXT NOT NULL,
+        PRIMARY KEY (from_node, to_node, to_pin)
     );
 ";
 
@@ -162,13 +182,30 @@ impl PlayerDatabase {
         Ok(())
     }
 
-    /// 1 -> 2: creates the intel graph tables and seeds them with the built-in
-    /// default graph ([`RuleGraph::default_graph`]).
+    /// 1 -> 2: creates the intel graph tables, as version 2 had them. They are
+    /// left empty: the graph is seeded by the step that rebuilds them (2 -> 3).
     #[tracing::instrument]
     fn migrate_1_to_2(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(CREATE_RULE_TABLES_V2)?;
+        Ok(())
+    }
+
+    /// 2 -> 3: the graph model changed (see [`SCHEMA_VERSION`]), so the rules
+    /// of version 2 cannot be read any more. They are kept as they were in
+    /// `node_v2_backup` and `edge_v2_backup` (when there were any), the tables
+    /// are rebuilt and the built-in default graph is seeded.
+    #[tracing::instrument]
+    fn migrate_2_to_3(conn: &Connection) -> Result<(), Error> {
+        let nodes: i64 = conn.query_row("SELECT count(*) FROM node", [], |row| row.get(0))?;
+        if nodes > 0 {
+            conn.execute_batch(
+                "CREATE TABLE node_v2_backup AS SELECT * FROM node;
+                 CREATE TABLE edge_v2_backup AS SELECT * FROM edge;",
+            )?;
+        }
+        conn.execute_batch("DROP TABLE edge; DROP TABLE node;")?;
         conn.execute_batch(CREATE_RULE_TABLES)?;
-        let graph = RuleGraph::default_graph();
-        PlayerDatabase::save_graph(conn, &graph)?;
+        PlayerDatabase::save_graph(conn, &RuleGraph::default_graph())?;
         Ok(())
     }
 
@@ -610,21 +647,19 @@ impl PlayerDatabase {
         }
 
         let mut statement =
-            conn.prepare("SELECT from_node, from_pin, to_node, to_pin FROM edge ORDER BY rowid")?;
+            conn.prepare("SELECT from_node, to_node, to_pin FROM edge ORDER BY rowid")?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<usize, String>(0)?,
                 row.get::<usize, String>(1)?,
                 row.get::<usize, String>(2)?,
-                row.get::<usize, String>(3)?,
             ))
         })?;
         let mut edges = Vec::new();
         for row in rows {
-            let (from, from_pin, to, to_pin) = row?;
+            let (from, to, to_pin) = row?;
             edges.push(Edge {
                 from,
-                from_pin: pin_from_str(&from_pin)?,
                 to,
                 to_pin: to_pin
                     .parse()
@@ -650,33 +685,11 @@ impl PlayerDatabase {
         }
         for edge in &graph.edges {
             conn.execute(
-                "INSERT INTO edge (from_node, from_pin, to_node, to_pin) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    edge.from,
-                    pin_str(edge.from_pin),
-                    edge.to,
-                    edge.to_pin.to_string()
-                ],
+                "INSERT INTO edge (from_node, to_node, to_pin) VALUES (?1, ?2, ?3)",
+                params![edge.from, edge.to, edge.to_pin.to_string()],
             )?;
         }
         Ok(())
-    }
-}
-
-fn pin_str(pin: Pin) -> &'static str {
-    match pin {
-        Pin::Out => "out",
-        Pin::T => "t",
-        Pin::F => "f",
-    }
-}
-
-fn pin_from_str(value: &str) -> Result<Pin, Error> {
-    match value {
-        "out" => Ok(Pin::Out),
-        "t" => Ok(Pin::T),
-        "f" => Ok(Pin::F),
-        other => Err(conversion_error(format!("unknown pin '{other}'"))),
     }
 }
 
@@ -1028,6 +1041,44 @@ mod tests {
     }
 
     #[test]
+    fn migrating_to_3_backs_up_the_old_graph_and_seeds_the_default() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        // A fresh database has nothing to back up.
+        assert!(!table_names(&conn).contains(&String::from("node_v2_backup")));
+
+        // Back to version 2 with a graph of its own.
+        conn.execute_batch("DROP TABLE edge; DROP TABLE node;")
+            .unwrap();
+        conn.execute_batch(CREATE_RULE_TABLES_V2).unwrap();
+        conn.execute("INSERT INTO node VALUES ('old', '{}')", [])
+            .unwrap();
+        conn.execute("INSERT INTO node VALUES ('old2', '{}')", [])
+            .unwrap();
+        conn.execute("INSERT INTO edge VALUES ('old', 'T', 'old2', '0')", [])
+            .unwrap();
+        conn.execute("UPDATE metadata SET value = '2' WHERE id = 'db'", [])
+            .unwrap();
+
+        PlayerDatabase::ensure_schema(&conn).unwrap();
+
+        assert_eq!(
+            PlayerDatabase::schema_version(&conn).unwrap(),
+            Some(SCHEMA_VERSION)
+        );
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(count("node_v2_backup"), 2);
+        assert_eq!(count("edge_v2_backup"), 1);
+        let graph = PlayerDatabase::load_graph(&conn).unwrap();
+        assert_eq!(graph, RuleGraph::default_graph());
+    }
+
+    #[test]
     fn a_graph_round_trips_through_the_database() {
         let conn = memory_connection();
         PlayerDatabase::create_database(&conn).unwrap();
@@ -1053,8 +1104,12 @@ mod tests {
                     x: 3.0,
                     y: 4.0,
                     kind: NodeKind::Detection(DetectionNode {
-                        kind: DetectionRuleKind::SystemReport,
+                        kind: DetectionRuleKind::SystemReport {
+                            ignore_words: Vec::new(),
+                        },
                         case_insensitive: true,
+                        source: crate::graph::DetectionSource::Auto,
+                        mode: crate::graph::DetectionMode::Require,
                     }),
                 },
                 Node {
@@ -1072,13 +1127,11 @@ mod tests {
             edges: vec![
                 Edge {
                     from: "chat".to_string(),
-                    from_pin: Pin::Out,
                     to: "sys".to_string(),
                     to_pin: 0,
                 },
                 Edge {
                     from: "sys".to_string(),
-                    from_pin: Pin::T,
                     to: "visual".to_string(),
                     to_pin: 0,
                 },

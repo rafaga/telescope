@@ -935,7 +935,7 @@ impl TelescopeApp {
         // What the dispatch thread reads (it acts on detected lines on its
         // own, without this loop).
         self.sync_alarm_shared();
-        self.sync_zkillboard();
+        self.sync_sde_path();
     }
 
     /// End of a frame: a message queued on the UI thread during it gets the

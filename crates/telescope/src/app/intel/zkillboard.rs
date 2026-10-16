@@ -55,6 +55,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc};
+use webb::event::{EventSource, Facts, IntelEvent, ShipCount, SystemFact, TimeOrigin};
 use webb::graph::{NodeKind, RuleGraph, SystemResolver};
 use webb::rules::{InputKind, IntelLine};
 
@@ -203,17 +204,17 @@ impl Killmail {
         }
         text.push_str(&format!(", {} ISK", Self::isk(self.zkb.total_value)));
         Some(IntelLine {
-            timestamp: self.time(),
+            timestamp: self.time().unwrap_or_else(Utc::now),
             author: String::from(AUTHOR),
             text,
         })
     }
 
-    /// When the ship died; the moment it was read if the feed's time can't
-    /// be parsed.
-    fn time(&self) -> DateTime<Utc> {
+    /// When the ship died, if the feed's time can be parsed.
+    fn time(&self) -> Option<DateTime<Utc>> {
         DateTime::parse_from_rfc3339(&self.esi.killmail_time)
-            .map_or_else(|_| Utc::now(), |time| time.with_timezone(&Utc))
+            .ok()
+            .map(|time| time.with_timezone(&Utc))
     }
 
     /// `value` as a short amount: `950`, `12K`, `12.3M`, `1.5B`.
@@ -224,6 +225,84 @@ impl Killmail {
             value if value >= 1e3 => format!("{:.0}K", value / 1e3),
             value => format!("{value:.0}"),
         }
+    }
+}
+
+/// Turns the killmails of the feed into events: the format of the feed is
+/// read here and nowhere else.
+///
+/// The event's text is the sentence [`Killmail::to_line`] writes, for the log,
+/// the tooltips and the patterns of the user. Its facts come from the killmail
+/// itself, not from that sentence: the system with its id, every ship that
+/// took part with how many times, and the number of pilots.
+pub(crate) struct ZKillboardDecoder<'a> {
+    names: &'a dyn NameSource,
+    resolver: &'a dyn SystemResolver,
+}
+
+impl<'a> ZKillboardDecoder<'a> {
+    /// A decoder that names ids with `names`; `resolver` keeps a ship named
+    /// like a system out of the text (see [`Killmail::to_line`]).
+    pub(crate) fn new(names: &'a dyn NameSource, resolver: &'a dyn SystemResolver) -> Self {
+        Self { names, resolver }
+    }
+
+    /// What `killmail` says by itself. `system` is the name of its system,
+    /// which its text starts with.
+    fn facts(&self, killmail: &Killmail, system: String) -> Facts {
+        let pilots: Vec<&Attacker> = killmail
+            .esi
+            .attackers
+            .iter()
+            .filter(|attacker| attacker.character_id.is_some())
+            .collect();
+        // The victim's ship first, then the ones the pilots flew (an NPC's
+        // ship is not part of a fight between pilots).
+        let mut ships: Vec<ShipCount> = Vec::new();
+        let flown = std::iter::once(killmail.esi.victim.ship_type_id)
+            .chain(pilots.iter().map(|attacker| attacker.ship_type_id));
+        for type_id in flown.flatten() {
+            let Some(name) = self.names.type_name(type_id) else {
+                continue;
+            };
+            ShipCount::tally(&mut ships, ShipCount::new(name, 1).with_type_id(type_id));
+        }
+        Facts {
+            systems: Some(vec![SystemFact {
+                id: killmail.esi.solar_system_id as usize,
+                // The text begins with the name of the system.
+                span: Some(0..system.len()),
+                name: system,
+            }]),
+            ships: Some(ships),
+            pilots: Some(u32::try_from(pilots.len()).unwrap_or(u32::MAX)),
+        }
+    }
+}
+
+impl EventSource for ZKillboardDecoder<'_> {
+    type Raw = Killmail;
+
+    fn kind(&self) -> InputKind {
+        InputKind::ZKillboard
+    }
+
+    fn decode(&self, killmail: &Killmail) -> Option<IntelEvent> {
+        let line = killmail.to_line(self.names, self.resolver)?;
+        let system = self.names.system_name(killmail.esi.solar_system_id)?;
+        let channel = self.kind().fixed_channel().unwrap_or_default();
+        // A killmail whose time can't be read is still a killmail: it is taken
+        // to have happened when it was read.
+        let origin = if killmail.time().is_some() {
+            TimeOrigin::Reported
+        } else {
+            TimeOrigin::Assumed
+        };
+        Some(
+            IntelEvent::text(line, channel, self.kind())
+                .with_facts(self.facts(killmail, system))
+                .with_time_origin(origin),
+        )
     }
 }
 
@@ -729,19 +808,25 @@ impl Session {
     /// Sends one killmail to the detection stage. `false` when it has no
     /// receiver any more.
     fn emit(&self, killmail: Killmail) -> bool {
-        let Some(line) = killmail.to_line(&self.names, self.resolver.as_ref()) else {
+        let decoder = ZKillboardDecoder::new(&self.names, self.resolver.as_ref());
+        let Some(event) = decoder.decode(&killmail) else {
             tracing::trace!(
                 killmail = killmail.killmail_id,
                 "killmail without a system name"
             );
             return true;
         };
-        let event = InputEvent {
-            source: format!("r2z2:{}", killmail.sequence_id),
-            channel: String::from(InputKind::ZKillboard.fixed_channel().unwrap_or_default()),
-            kind: InputKind::ZKillboard,
-            line,
-        };
+        if event.time_origin == TimeOrigin::Assumed {
+            tracing::warn!(killmail = killmail.killmail_id, "killmail without a time");
+            self.report(
+                Type::Warning,
+                &format!(
+                    "Killmail {} has no readable time: it is taken to happen when it was read.",
+                    killmail.killmail_id
+                ),
+            );
+        }
+        let event = InputEvent::from_event(format!("r2z2:{}", killmail.sequence_id), event);
         match self.input.try_send(event) {
             Ok(()) => true,
             // Same policy as the chat-log reader: a lost line is better than
@@ -1053,6 +1138,111 @@ mod tests {
     }
 
     #[test]
+    fn a_killmail_event_has_the_sentence_and_the_facts_of_the_killmail() {
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&Fixture::sample())
+            .unwrap();
+        assert_eq!(event.kind, InputKind::ZKillboard);
+        assert_eq!(event.channel, "zkillboard");
+        assert_eq!(
+            event.line.text,
+            "Jita: Rifter destroyed by 3 pilots (Sabre, Sabre, Merlin), 12.3M ISK"
+        );
+
+        let systems = event.facts.systems.unwrap();
+        assert_eq!(systems.len(), 1);
+        assert_eq!(
+            (systems[0].id, systems[0].name.as_str()),
+            (30000142, "Jita")
+        );
+        // The span is where the name stands in the text.
+        let span = systems[0].span.clone().unwrap();
+        assert_eq!(&event.line.text[span], "Jita");
+
+        assert_eq!(
+            event.facts.ships.unwrap(),
+            vec![
+                ShipCount::new("Rifter", 1).with_type_id(587),
+                ShipCount::new("Sabre", 2).with_type_id(22456),
+                ShipCount::new("Merlin", 1).with_type_id(584)
+            ]
+        );
+        assert_eq!(event.facts.pilots, Some(3));
+    }
+
+    #[test]
+    fn the_facts_know_what_the_text_leaves_out() {
+        // Ship type 1 is called "Jita": the text leaves it out so that it is
+        // not read as the system, but it is a ship all the same.
+        let mut killmail = Fixture::sample();
+        killmail.esi.attackers = vec![Attacker {
+            character_id: Some(1),
+            ship_type_id: Some(1),
+        }];
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&killmail)
+            .unwrap();
+        assert_eq!(
+            event.line.text,
+            "Jita: Rifter destroyed by 1 pilot, 12.3M ISK"
+        );
+        assert_eq!(
+            event.facts.ships.unwrap(),
+            vec![
+                ShipCount::new("Rifter", 1).with_type_id(587),
+                ShipCount::new("Jita", 1).with_type_id(1)
+            ]
+        );
+
+        // The text lists the first eight pilots' ships; the facts count all.
+        killmail.esi.attackers = (0..30)
+            .map(|index| Attacker {
+                character_id: Some(index),
+                ship_type_id: Some(584),
+            })
+            .collect();
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&killmail)
+            .unwrap();
+        assert_eq!(
+            event.facts.ships.unwrap(),
+            vec![
+                ShipCount::new("Rifter", 1).with_type_id(587),
+                ShipCount::new("Merlin", 30).with_type_id(584)
+            ]
+        );
+        assert_eq!(event.facts.pilots, Some(30));
+    }
+
+    #[test]
+    fn npcs_are_no_pilots_in_the_facts_either() {
+        let mut killmail = Fixture::sample();
+        killmail.esi.attackers = vec![Attacker {
+            character_id: None,
+            ship_type_id: Some(584),
+        }];
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&killmail)
+            .unwrap();
+        assert_eq!(event.facts.pilots, Some(0));
+        assert_eq!(
+            event.facts.ships.unwrap(),
+            vec![ShipCount::new("Rifter", 1).with_type_id(587)]
+        );
+    }
+
+    #[test]
+    fn a_killmail_that_cannot_be_placed_is_no_event() {
+        let mut killmail = Fixture::sample();
+        killmail.esi.solar_system_id = 1;
+        assert!(
+            ZKillboardDecoder::new(&Names, &Systems)
+                .decode(&killmail)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn only_the_first_attackers_are_listed() {
         let mut killmail = Fixture::sample();
         killmail.esi.attackers = (0..30)
@@ -1064,6 +1254,28 @@ mod tests {
         let text = killmail.to_line(&Names, &Systems).unwrap().text;
         assert!(text.contains("by 30 pilots"), "{text}");
         assert_eq!(text.matches("Merlin").count(), MAX_LISTED_ATTACKERS);
+    }
+
+    #[test]
+    fn the_event_carries_the_time_of_the_killmail() {
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&Fixture::sample())
+            .unwrap();
+        assert_eq!(event.time_origin, TimeOrigin::Reported);
+        assert_eq!(event.at(), event.line.timestamp);
+        assert_eq!(event.at().to_rfc3339(), "2026-10-14T05:01:05+00:00");
+    }
+
+    #[test]
+    fn an_event_with_an_unreadable_time_is_still_decoded_and_says_so() {
+        let mut killmail = Fixture::sample();
+        killmail.esi.killmail_time = String::from("yesterday");
+        let before = Utc::now();
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&killmail)
+            .unwrap();
+        assert_eq!(event.time_origin, TimeOrigin::Assumed);
+        assert!(event.at() >= before);
     }
 
     #[test]
@@ -1107,11 +1319,7 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
 
         let line = Fixture::sample().to_line(&Names, &Systems).unwrap();
-        let context = webb::graph::LineContext {
-            line,
-            channel: String::from("zkillboard"),
-            kind: InputKind::ZKillboard,
-        };
+        let context = webb::event::IntelEvent::text(line, "zkillboard", InputKind::ZKillboard);
         let activations = executor.run(&context, &Systems);
         let messages: Vec<_> = activations
             .iter()
@@ -1137,16 +1345,93 @@ mod tests {
             _ => None,
         });
         let ships = ships.expect("ship names");
-        assert!(ships.contains(&(String::from("Sabre"), 2)), "{ships:?}");
-        assert!(ships.contains(&(String::from("Merlin"), 1)), "{ships:?}");
+        assert!(ships.contains(&ShipCount::new("Sabre", 2)), "{ships:?}");
+        assert!(ships.contains(&ShipCount::new("Merlin", 1)), "{ships:?}");
 
         // The same graph on a chat line of the same text finds nothing: the
         // input only takes killmails.
-        let chat = webb::graph::LineContext {
+        let chat = webb::event::IntelEvent {
             kind: InputKind::ChatLog,
             ..context
         };
         assert!(executor.run(&chat, &Systems).is_empty());
+    }
+
+    #[test]
+    fn the_detections_read_the_facts_of_a_killmail_event() {
+        use webb::graph::Data;
+
+        // The default rules, taking killmails.
+        let mut graph = RuleGraph::default_graph();
+        for node in &mut graph.nodes {
+            if let NodeKind::Input(input) = &mut node.kind {
+                input.kind = InputKind::ZKillboard;
+            }
+        }
+        let (executor, errors) = Executor::new(graph);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // A big fight: a count the pilot patterns cannot read from the text
+        // and more ships than the text lists.
+        let mut killmail = Fixture::sample();
+        killmail.esi.solar_system_id = 30002050;
+        killmail.esi.attackers = (0..1500)
+            .map(|index| Attacker {
+                character_id: Some(index),
+                ship_type_id: Some(584),
+            })
+            .collect();
+        let event = ZKillboardDecoder::new(&Names, &Systems)
+            .decode(&killmail)
+            .unwrap();
+
+        let data = |event: &webb::event::IntelEvent| -> Vec<Data> {
+            executor
+                .run(event, &Systems)
+                .iter()
+                .flat_map(|activation| activation.messages.iter())
+                .map(|message| message.data.clone())
+                .collect()
+        };
+        let with_facts = data(&event);
+        assert!(
+            with_facts.contains(&Data::Systems(vec![30002050])),
+            "{with_facts:?}"
+        );
+        assert!(with_facts.contains(&Data::Count(1500)), "{with_facts:?}");
+        let ships = with_facts.iter().find_map(|data| match data {
+            Data::Ships(ships) => Some(ships.clone()),
+            _ => None,
+        });
+        let ships = ships.expect("ship names");
+        assert!(
+            ships.contains(&ShipCount::new("Rifter", 1).with_type_id(587)),
+            "{ships:?}"
+        );
+        assert!(
+            ships.contains(&ShipCount::new("Merlin", 1500).with_type_id(584)),
+            "{ships:?}"
+        );
+
+        // Reading only the sentence loses both.
+        let text_only =
+            webb::event::IntelEvent::text(event.line.clone(), "zkillboard", InputKind::ZKillboard);
+        let from_text = data(&text_only);
+        assert!(
+            from_text.contains(&Data::Systems(vec![30002050])),
+            "{from_text:?}"
+        );
+        assert!(!from_text.contains(&Data::Count(1500)), "{from_text:?}");
+        let ships = from_text.iter().find_map(|data| match data {
+            Data::Ships(ships) => Some(ships.clone()),
+            _ => None,
+        });
+        let merlins = MAX_LISTED_ATTACKERS as u32;
+        assert!(
+            ships
+                .expect("ship names")
+                .contains(&ShipCount::new("Merlin", merlins))
+        );
     }
 
     #[test]

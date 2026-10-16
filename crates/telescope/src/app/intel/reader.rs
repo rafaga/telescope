@@ -9,7 +9,7 @@
 //! stalled or the window is hidden.
 
 use super::input::{ChatLogSource, InputEvent, IntelLogName, IntelOffsets};
-use crate::app::messages::{Message, try_send_app_message};
+use crate::app::messages::{Message, Type, try_send_app_message};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 #[cfg(target_os = "windows")]
@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;
+use webb::event::TimeOrigin;
 
 /// The folder the watcher watches, if any (see `TelescopeApp::intel_watched`).
 pub(crate) type WatchedDir = Arc<RwLock<Option<PathBuf>>>;
@@ -193,6 +194,24 @@ fn read_file(shared: &ReaderShared, file_name: &str) {
         return;
     };
     let lines = read.events.len();
+    let undated = read
+        .events
+        .iter()
+        .any(|event| event.time_origin == TimeOrigin::Assumed);
+    if undated && lock(&shared.offsets).first_undated(file_name) {
+        tracing::warn!(file = file_name, "chat log lines without a date");
+        let _ = try_send_app_message(
+            &shared.app_msg,
+            Message::GenericNotification((
+                Type::Warning,
+                String::from("Intel"),
+                String::from("undated_lines"),
+                format!(
+                    "The lines of {file_name} have no date (EVE's chat settings can leave it out): they are taken to happen when they are read."
+                ),
+            )),
+        );
+    }
     let mut dropped = 0usize;
     for event in read.events {
         // `try_send`: a full queue (detection can't keep up) must drop lines
@@ -317,6 +336,60 @@ mod tests {
             lines,
             app_rx,
         }
+    }
+
+    #[test]
+    fn lines_without_a_date_are_read_at_once_and_warned_about_once_per_log() {
+        let dir = temp_dir("undated");
+        append(&dir, NAME, "Pilot > no date here\r\n");
+        let mut h = harness(Some(dir.clone()), 8);
+
+        read_file(&h.shared, NAME);
+        let event = h.lines.try_recv().expect("the line is not lost");
+        assert_eq!(event.time_origin, TimeOrigin::Assumed);
+        assert_eq!(event.line.text, "no date here");
+        assert!(matches!(
+            h.app_rx.try_recv(),
+            Ok(Message::GenericNotification((Type::Warning, ..)))
+        ));
+        assert!(matches!(
+            h.app_rx.try_recv(),
+            Ok(Message::ChannelActivity(..))
+        ));
+
+        // Another undated line of the same log: read, but no second warning.
+        append(&dir, NAME, "Pilot > still none\r\n");
+        read_file(&h.shared, NAME);
+        assert!(h.lines.try_recv().is_ok());
+        assert!(matches!(
+            h.app_rx.try_recv(),
+            Ok(Message::ChannelActivity(..))
+        ));
+        assert!(h.app_rx.try_recv().is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dated_lines_keep_their_date_and_raise_no_warning() {
+        let dir = temp_dir("dated");
+        append(&dir, NAME, &line("hello"));
+        let mut h = harness(Some(dir.clone()), 8);
+
+        read_file(&h.shared, NAME);
+        let event = h.lines.try_recv().unwrap();
+        assert_eq!(event.time_origin, TimeOrigin::Reported);
+        assert_eq!(
+            event.line.timestamp.to_rfc3339(),
+            "2024-01-01T12:00:01+00:00"
+        );
+        assert!(matches!(
+            h.app_rx.try_recv(),
+            Ok(Message::ChannelActivity(..))
+        ));
+        assert!(h.app_rx.try_recv().is_err());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

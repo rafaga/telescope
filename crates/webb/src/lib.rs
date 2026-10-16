@@ -8,6 +8,10 @@
 //!   callback.
 //! * [`esi`]: the ESI client and the local player database.
 //! * [`objects`]: the domain types (characters, corporations, alliances, tokens).
+//! * [`channel_memory`]: the last system each intel channel reported, so
+//!   follow-up lines (`nv`, `+4`, `clr`) can be attributed to it.
+//! * [`event`]: what the engine evaluates, whatever its source: the text of
+//!   an event and the facts its source already knows.
 //! * [`graph`]: the intel rules as a node graph (a DAG of Input / Detection /
 //!   Output / logic nodes) and the executor that runs it over each chat-log
 //!   line.
@@ -20,8 +24,10 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod auth_service;
+pub mod channel_memory;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod esi;
+pub mod event;
 pub mod graph;
 pub mod intel;
 pub mod map_alerts;

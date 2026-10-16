@@ -413,14 +413,16 @@ impl TelescopeApp {
                 let sent = if self.debug.intel_dry_run {
                     Ok(false)
                 } else {
-                    match webb::rules::parse_line(&line) {
+                    match webb::rules::IntelLine::parse_or_assume(&line, chrono::Utc::now()) {
                         Some(parsed) => self
                             .intel_input
                             .try_send(InputEvent {
                                 source: String::from("Debug"),
                                 channel,
                                 kind: webb::rules::InputKind::ChatLog,
-                                line: parsed,
+                                line: parsed.0,
+                                facts: webb::event::Facts::default(),
+                                time_origin: parsed.1,
                             })
                             .map(|()| true)
                             .map_err(|error| error.to_string()),

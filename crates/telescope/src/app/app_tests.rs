@@ -337,7 +337,6 @@ fn an_invalid_rule_graph_is_not_applied_and_keeps_the_screen_open() {
     let mut graph = app.intel_graph.clone();
     graph.edges.push(webb::graph::Edge {
         from: String::from("ghost"),
-        from_pin: webb::graph::Pin::Out,
         to: String::from("nobody"),
         to_pin: 0,
     });
@@ -382,6 +381,8 @@ fn a_rule_that_does_not_compile_is_reported_when_the_graph_is_applied() {
                 system_group: None,
             },
             case_insensitive: false,
+            source: webb::graph::DetectionSource::Auto,
+            mode: webb::graph::DetectionMode::Require,
         }),
     });
     app.apply_graph(graph);

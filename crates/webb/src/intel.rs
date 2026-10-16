@@ -45,6 +45,12 @@ pub(crate) const MAX_DICTIONARY_WORD_LEN: usize = 128;
 pub(crate) const LINE_PATTERN: &str =
     r"^\[\s(?P<ts>\d{4}\.\d{2}\.\d{2}\s\d{2}:\d{2}:\d{2})\s\]\s(?P<author>.+?)\s>\s(?P<text>.+)$";
 
+/// Regex of a chat log line without a readable date, which EVE's default
+/// settings can leave out: `Character Name > message`, optionally after a
+/// bracketed prefix that is not a date (`[ 22:56:47 ]`).
+pub(crate) const UNDATED_LINE_PATTERN: &str =
+    r"^(?:\[[^\]]*\]\s)?(?P<author>[^\[>]+?)\s>\s(?P<text>.+)$";
+
 /// Timestamp format used by EVE Online chat logs (UTC).
 pub(crate) const LINE_TIMESTAMP_FORMAT: &str = "%Y.%m.%d %H:%M:%S";
 
@@ -174,6 +180,8 @@ pub enum PatternError {
         /// Description of the problem.
         reason: String,
     },
+    /// A detection is set to read facts, but its type has none to read.
+    NoFactsToRead(String),
     /// A detection references a source that is not a valid input id.
     InvalidSource {
         /// Id of the offending detection rule.
@@ -208,6 +216,8 @@ pub enum PatternError {
     GraphCycle(Vec<String>),
     /// An aggregator has more incoming cables than it has input pins.
     TooManyInputs(String),
+    /// More than one cable ends on the same input pin of a node.
+    MultipleCables(String),
 }
 
 impl Display for PatternError {
@@ -269,6 +279,10 @@ impl Display for PatternError {
             Self::InvalidInput { id, reason } => {
                 write!(f, "input rule '{id}' is invalid: {reason}")
             }
+            Self::NoFactsToRead(id) => write!(
+                f,
+                "detection rule '{id}' is set to read facts, but its type has none"
+            ),
             Self::InvalidSource { id, source } => write!(
                 f,
                 "detection rule '{id}' references an invalid source '{source}'"
@@ -300,6 +314,9 @@ impl Display for PatternError {
             }
             Self::TooManyInputs(id) => {
                 write!(f, "aggregator '{id}' has more inputs than pins")
+            }
+            Self::MultipleCables(id) => {
+                write!(f, "node '{id}' has more than one cable on the same input")
             }
         }
     }

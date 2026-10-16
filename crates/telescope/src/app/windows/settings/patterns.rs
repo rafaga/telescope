@@ -18,8 +18,9 @@ use egui_snarl::{
 };
 use std::collections::{HashMap, HashSet};
 use webb::graph::{
-    AggregatorNode, DetectionNode, Edge, FormatterNode, GateKind, GateNode, InputNode, LogConfig,
-    Node, NodeKind, OutputNode, Pin, RuleGraph, TooltipConfig, input_pin_count, output_pin_count,
+    AggregatorNode, DetectionMode, DetectionNode, DetectionSource, Edge, FormatterNode, InputNode,
+    LogConfig, Node, NodeKind, OutputNode, RuleGraph, TooltipConfig, has_output_pin,
+    input_pin_count,
 };
 use webb::rules::{
     DetectionRuleKind, DetectionType, Dictionaries, InputKind, OutputKind, OutputType,
@@ -29,11 +30,10 @@ use webb::rules::{
 const RULES_FILE: &str = "rules.toml";
 
 /// The detection types, by `type_name()`.
-const DETECTION_TYPES: [&str; 8] = [
+const DETECTION_TYPES: [&str; 7] = [
     "system_report",
     "clear_report",
     "ship_names",
-    "ship_names_zh",
     "pilot_count",
     "keyword",
     "query",
@@ -244,6 +244,8 @@ impl PatternsEditor {
             kind: NodeKind::Detection(DetectionNode {
                 kind: default_detection_kind(type_name),
                 case_insensitive: false,
+                source: DetectionSource::Auto,
+                mode: DetectionMode::Require,
             }),
         };
         let node_id = self.snarl.insert_node(Pos2::new(node.x, node.y), node);
@@ -323,19 +325,6 @@ impl PatternsEditor {
             .count()
     }
 
-    fn add_gate(&mut self, kind: GateKind) {
-        let id = unique_id(&self.rule_ids(), kind.type_name());
-        let node = Node {
-            id,
-            enabled: true,
-            x: 540.0,
-            y: self.special_count() as f32 * 260.0,
-            kind: NodeKind::Gate(GateNode { kind, inputs: 2 }),
-        };
-        self.snarl.insert_node(Pos2::new(node.x, node.y), node);
-        self.state.dirty = true;
-    }
-
     fn add_formatter(&mut self) {
         let id = unique_id(&self.rule_ids(), "formatter");
         let node = Node {
@@ -355,12 +344,7 @@ impl PatternsEditor {
     fn special_count(&self) -> usize {
         self.snarl
             .nodes()
-            .filter(|node| {
-                matches!(
-                    &node.kind,
-                    NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_)
-                )
-            })
+            .filter(|node| matches!(&node.kind, NodeKind::Aggregator(_) | NodeKind::Formatter(_)))
             .count()
     }
 
@@ -414,10 +398,15 @@ impl PatternsEditor {
             }
             if matches!(&node.kind, NodeKind::Detection(_)) {
                 for edge in &self.graph.edges {
-                    if edge.to == id
-                        && edge.from_pin == Pin::Out
-                        && component.insert(edge.from.clone())
-                    {
+                    // The other sources of a detection (not the detections
+                    // that lead to it, which the walk forward already took).
+                    let from_other_source = self
+                        .graph
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == edge.from)
+                        .is_some_and(|node| !matches!(node.kind, NodeKind::Detection(_)));
+                    if edge.to == id && from_other_source && component.insert(edge.from.clone()) {
                         queue.push(edge.from.clone());
                     }
                 }
@@ -444,7 +433,7 @@ impl PatternsEditor {
             let column = match node.kind {
                 NodeKind::Input(_) => 0u8,
                 NodeKind::Detection(_) => 1,
-                NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => 2,
+                NodeKind::Aggregator(_) | NodeKind::Formatter(_) => 2,
                 NodeKind::Output(_) => 3,
             };
             let pos = if node.x != 0.0 || node.y != 0.0 {
@@ -468,13 +457,11 @@ impl PatternsEditor {
             let (Some(&from), Some(&to)) = (node_of.get(&edge.from), node_of.get(&edge.to)) else {
                 continue;
             };
-            let output = match edge.from_pin {
-                Pin::Out => 0,
-                Pin::T => 0,
-                Pin::F => 1,
-            };
             self.snarl.connect(
-                OutPinId { node: from, output },
+                OutPinId {
+                    node: from,
+                    output: 0,
+                },
                 InPinId {
                     node: to,
                     input: edge.to_pin as usize,
@@ -520,21 +507,11 @@ impl PatternsEditor {
         let mut edges = Vec::new();
         for (from, to) in self.snarl.wires() {
             let from_node = &self.snarl[from.node];
-            let from_pin = match &from_node.kind {
-                NodeKind::Input(_) => Pin::Out,
-                NodeKind::Detection(_) => {
-                    if from.output == 0 {
-                        Pin::T
-                    } else {
-                        Pin::F
-                    }
-                }
-                NodeKind::Output(_) => continue,
-                NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => Pin::Out,
-            };
+            if !has_output_pin(&from_node.kind) {
+                continue;
+            }
             edges.push(Edge {
                 from: from_node.id.clone(),
-                from_pin,
                 to: self.snarl[to.node].id.clone(),
                 to_pin: to.input as u8,
             });
@@ -561,9 +538,9 @@ impl PatternsEditor {
             }
         }
         self.graph.edges.extend(edges);
-        self.graph.edges.sort_by(|a, b| {
-            (&a.from, a.from_pin as u8, &a.to).cmp(&(&b.from, b.from_pin as u8, &b.to))
-        });
+        self.graph
+            .edges
+            .sort_by(|a, b| (&a.from, &a.to, a.to_pin).cmp(&(&b.from, &b.to, b.to_pin)));
         self.graph.edges.dedup();
 
         self.state.dirty = true;
@@ -618,7 +595,7 @@ impl PatternsEditor {
             match &node.kind {
                 NodeKind::Input(_) => {}
                 NodeKind::Detection(_) => summary.detections += 1,
-                NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {
+                NodeKind::Aggregator(_) | NodeKind::Formatter(_) => {
                     summary.logic += 1;
                 }
                 NodeKind::Output(output) => {
@@ -933,14 +910,6 @@ impl TelescopeApp {
                                 ui.close();
                             }
                             ui.separator();
-                            for kind in [GateKind::And, GateKind::Or, GateKind::Xor, GateKind::Not]
-                            {
-                                if ui.button(gate_kind_label(kind)).clicked() {
-                                    self.patterns_editor.add_gate(kind);
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
                             if ui.button(t!("settings.patterns.kind_formatter")).clicked() {
                                 self.patterns_editor.add_formatter();
                                 ui.close();
@@ -1069,7 +1038,7 @@ impl TelescopeApp {
         let mut connections = Vec::new();
         {
             let snarl = &self.patterns_editor.snarl;
-            for output in 0..output_pin_count(&snarl[node_id].kind) {
+            for output in 0..usize::from(has_output_pin(&snarl[node_id].kind)) {
                 let pin = snarl.out_pin(OutPinId {
                     node: node_id,
                     output,
@@ -1121,27 +1090,14 @@ impl TelescopeApp {
                 NodeKind::Detection(detection) => detection_body(ui, detection),
                 NodeKind::Output(output) => output_body(ui, output),
                 NodeKind::Aggregator(aggregator) => aggregator_body(ui, aggregator),
-                NodeKind::Gate(gate) => gate_body(ui, gate),
                 NodeKind::Formatter(formatter) => formatter_body(ui, formatter),
             };
         }
         if !connections.is_empty() {
             egui_panels::divider(ui);
             ui.label(RichText::new(t!("settings.patterns.connections")).color(palette.strong_text));
-            let is_detection = matches!(
-                self.patterns_editor.snarl[node_id].kind,
-                NodeKind::Detection(_)
-            );
-            for (output, targets) in &connections {
-                let (name, color) = if is_detection {
-                    if *output == 1 {
-                        ("F ➡", FALSE_WIRE_COLOR)
-                    } else {
-                        ("T ➡", palette.ok)
-                    }
-                } else {
-                    ("➡", palette.muted_text)
-                };
+            for (_, targets) in &connections {
+                let (name, color) = ("➡", palette.muted_text);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     ui.label(RichText::new(name).size(theme.small_size).color(color));
@@ -1252,9 +1208,7 @@ fn node_kind_color(kind: &NodeKind) -> Color32 {
     match kind {
         NodeKind::Input(_) => Color32::from_rgb(90, 160, 220),
         NodeKind::Detection(_) => Color32::from_rgb(110, 190, 120),
-        NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {
-            Color32::from_rgb(225, 170, 80)
-        }
+        NodeKind::Aggregator(_) | NodeKind::Formatter(_) => Color32::from_rgb(225, 170, 80),
         NodeKind::Output(_) => Color32::from_rgb(200, 125, 200),
     }
 }
@@ -1265,7 +1219,6 @@ fn node_kind_label(kind: &NodeKind) -> String {
         NodeKind::Detection(detection) => detection_type_label(detection.kind.type_name()),
         NodeKind::Output(output) => output_kind_label(output.kind),
         NodeKind::Aggregator(_) => t!("settings.patterns.kind_aggregator").into_owned(),
-        NodeKind::Gate(gate) => gate_kind_label(gate.kind),
         NodeKind::Formatter(_) => t!("settings.patterns.kind_formatter").into_owned(),
     }
 }
@@ -1274,26 +1227,34 @@ fn node_kind_label(kind: &NodeKind) -> String {
 fn node_summary(kind: &NodeKind) -> String {
     match kind {
         NodeKind::Input(input) => InputSource::of(input).to_string(),
-        NodeKind::Detection(detection) => match &detection.kind {
-            DetectionRuleKind::ClearReport { keywords }
-            | DetectionRuleKind::Query { keywords }
-            | DetectionRuleKind::Keyword { keywords } => keywords.join(" · "),
-            DetectionRuleKind::ShipNames { dictionaries } => dictionaries.join(" · "),
-            DetectionRuleKind::Custom { pattern, words, .. } => {
-                pattern.clone().unwrap_or_else(|| words.join(" · "))
+        NodeKind::Detection(detection) => {
+            let summary = detection_summary(&detection.kind);
+            match detection.mode {
+                DetectionMode::Require => summary,
+                DetectionMode::Exclude => {
+                    format!("{}: {summary}", t!("settings.patterns.mode_exclude"))
+                }
             }
-            DetectionRuleKind::SystemReport
-            | DetectionRuleKind::ShipNamesZh
-            | DetectionRuleKind::PilotCount => String::new(),
-        },
+        }
         NodeKind::Output(_) => String::new(),
         NodeKind::Aggregator(aggregator) => {
             t!("settings.patterns.field_inputs").into_owned() + &format!(": {}", aggregator.inputs)
         }
-        NodeKind::Gate(gate) => {
-            t!("settings.patterns.field_inputs").into_owned() + &format!(": {}", gate.inputs)
-        }
         NodeKind::Formatter(formatter) => formatter.template.clone(),
+    }
+}
+
+fn detection_summary(kind: &DetectionRuleKind) -> String {
+    match kind {
+        DetectionRuleKind::ClearReport { keywords }
+        | DetectionRuleKind::Query { keywords }
+        | DetectionRuleKind::Keyword { keywords } => keywords.join(" · "),
+        DetectionRuleKind::ShipNames { dictionaries } => dictionaries.join(" · "),
+        DetectionRuleKind::Custom { pattern, words, .. } => {
+            pattern.clone().unwrap_or_else(|| words.join(" · "))
+        }
+        DetectionRuleKind::PilotCount => String::new(),
+        DetectionRuleKind::SystemReport { ignore_words } => ignore_words.join(" · "),
     }
 }
 
@@ -1585,7 +1546,6 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
             NodeKind::Detection(detection) => detection_type_label(detection.kind.type_name()),
             NodeKind::Output(output) => output_kind_label(output.kind),
             NodeKind::Aggregator(_) => t!("settings.patterns.kind_aggregator").into_owned(),
-            NodeKind::Gate(gate) => gate_kind_label(gate.kind),
             NodeKind::Formatter(_) => t!("settings.patterns.kind_formatter").into_owned(),
         }
     }
@@ -1595,7 +1555,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
     }
 
     fn outputs(&mut self, node: &Node) -> usize {
-        output_pin_count(&node.kind)
+        usize::from(has_output_pin(&node.kind))
     }
 
     fn show_input(
@@ -1615,17 +1575,9 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
             NodeKind::Output(output) => {
                 ui.label(format!("{PIN_ARROW} {}", output_kind_label(output.kind)));
             }
-            NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {}
+            NodeKind::Aggregator(_) | NodeKind::Formatter(_) => {}
         }
-        let from_false = pin.remotes.iter().any(|remote| {
-            remote.output == 1 && matches!(&snarl[remote.node].kind, NodeKind::Detection(_))
-        });
-        let info = PinInfo::circle().with_fill(Color32::LIGHT_GREEN);
-        if from_false {
-            info.with_wire_color(FALSE_WIRE_COLOR)
-        } else {
-            info
-        }
+        PinInfo::circle().with_fill(Color32::LIGHT_GREEN)
     }
 
     fn show_output(
@@ -1634,35 +1586,22 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         ui: &mut Ui,
         snarl: &mut Snarl<Node>,
     ) -> impl SnarlPin + 'static {
-        let false_pin = match &snarl[pin.id.node].kind {
+        match &snarl[pin.id.node].kind {
             NodeKind::Input(_) => {
                 ui.label(format!(
                     "{} {PIN_ARROW}",
                     t!("settings.patterns.node_input")
                 ));
-                false
             }
-            NodeKind::Detection(_) => {
-                let false_pin = pin.id.output == 1;
-                ui.label(format!("{} {PIN_ARROW}", if false_pin { "F" } else { "T" }));
-                false_pin
-            }
-            NodeKind::Output(_) => false,
-            NodeKind::Aggregator(_) | NodeKind::Gate(_) | NodeKind::Formatter(_) => {
+            NodeKind::Output(_) => {}
+            NodeKind::Detection(_) | NodeKind::Aggregator(_) | NodeKind::Formatter(_) => {
                 ui.label(format!(
                     "{} {PIN_ARROW}",
                     t!("settings.patterns.node_output")
                 ));
-                false
             }
-        };
-        if false_pin {
-            PinInfo::circle()
-                .with_fill(FALSE_WIRE_COLOR)
-                .with_wire_color(FALSE_WIRE_COLOR)
-        } else {
-            PinInfo::circle().with_fill(Color32::LIGHT_BLUE)
         }
+        PinInfo::circle().with_fill(Color32::LIGHT_BLUE)
     }
 
     fn node_frame(
@@ -1702,7 +1641,9 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
     }
 
     fn has_body(&mut self, node: &Node) -> bool {
-        !node_summary(&node.kind).is_empty() || !node.enabled
+        !node_summary(&node.kind).is_empty()
+            || !node.enabled
+            || matches!(&node.kind, NodeKind::Detection(detection) if detection_reads(detection).is_some())
     }
 
     fn show_body(
@@ -1721,6 +1662,11 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
                 ui.add(
                     egui::Label::new(RichText::new(summary).monospace().small().weak()).truncate(),
                 );
+            }
+            if let NodeKind::Detection(detection) = &node.kind
+                && let Some(reads) = detection_reads(detection)
+            {
+                ui.add(egui::Label::new(RichText::new(reads).small().weak()).truncate());
             }
             if !node.enabled {
                 ui.weak(t!("settings.patterns.state_off"));
@@ -1748,6 +1694,8 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
                             kind: NodeKind::Detection(DetectionNode {
                                 kind: default_detection_kind(type_name),
                                 case_insensitive: false,
+                                source: DetectionSource::Auto,
+                                mode: DetectionMode::Require,
                             }),
                         },
                     );
@@ -1805,24 +1753,6 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
                 ui.close();
             }
             ui.separator();
-            for kind in [GateKind::And, GateKind::Or, GateKind::Xor, GateKind::Not] {
-                if ui.button(gate_kind_label(kind)).clicked() {
-                    let id = unique_id(&collect_node_ids(snarl), kind.type_name());
-                    snarl.insert_node(
-                        pos,
-                        Node {
-                            id,
-                            enabled: true,
-                            x: pos.x,
-                            y: pos.y,
-                            kind: NodeKind::Gate(GateNode { kind, inputs: 2 }),
-                        },
-                    );
-                    self.state.dirty = true;
-                    ui.close();
-                }
-            }
-            ui.separator();
             if ui.button(t!("settings.patterns.kind_formatter")).clicked() {
                 let id = unique_id(&collect_node_ids(snarl), "formatter");
                 snarl.insert_node(
@@ -1849,6 +1779,8 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
     }
 
     fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<Node>) {
+        // An input pin takes a single cable: a new one replaces the old.
+        snarl.drop_inputs(to.id);
         snarl.connect(from.id, to.id);
         self.state.dirty = true;
     }
@@ -1886,9 +1818,6 @@ fn valid_id(id: &str) -> bool {
 /// Width of the parameter-name column of a node body, so the rows line up like
 /// a table (`name | value`).
 const FIELD_NAME_WIDTH: f32 = 110.0;
-
-/// Color of a detection's `F` (false) pin and of the cables leaving it.
-const FALSE_WIRE_COLOR: Color32 = Color32::from_rgb(230, 60, 60);
 
 /// One parameter row: a fixed-width name on the left and its value/options on
 /// the right. The value is laid out vertically so multi-line values (lists)
@@ -1957,12 +1886,77 @@ fn input_body(ui: &mut Ui, input: &mut InputNode) -> bool {
     changed
 }
 
+fn detection_mode_label(mode: DetectionMode) -> String {
+    match mode {
+        DetectionMode::Require => t!("settings.patterns.mode_require").into_owned(),
+        DetectionMode::Exclude => t!("settings.patterns.mode_exclude").into_owned(),
+    }
+}
+
+fn detection_source_label(source: DetectionSource) -> String {
+    match source {
+        DetectionSource::Auto => t!("settings.patterns.source_auto").into_owned(),
+        DetectionSource::Facts => t!("settings.patterns.source_facts").into_owned(),
+        DetectionSource::Text => t!("settings.patterns.source_text").into_owned(),
+    }
+}
+
+/// What a detection reads, for the node, if its type can read facts at all
+/// (the others only ever read text, so there is nothing to tell).
+fn detection_reads(detection: &DetectionNode) -> Option<String> {
+    detection.kind.fact()?;
+    Some(format!(
+        "{}: {}",
+        t!("settings.patterns.field_reads"),
+        detection_source_label(detection.source)
+    ))
+}
+
 fn detection_body(ui: &mut Ui, detection: &mut DetectionNode) -> bool {
     let mut changed = false;
     changed |= detection_params_editor(ui, &mut detection.kind);
+    if detection.kind.fact().is_some() {
+        changed |= field_row(ui, &t!("settings.patterns.field_reads"), |ui| {
+            let mut changed = false;
+            egui::ComboBox::from_id_salt("detection_source")
+                .selected_text(detection_source_label(detection.source))
+                .show_ui(ui, |ui| {
+                    for source in DetectionSource::ALL {
+                        if ui
+                            .selectable_label(
+                                detection.source == source,
+                                detection_source_label(source),
+                            )
+                            .clicked()
+                        {
+                            detection.source = source;
+                            changed = true;
+                        }
+                    }
+                });
+            changed
+        });
+    }
+    changed |= field_row(ui, &t!("settings.patterns.field_mode"), |ui| {
+        let mut changed = false;
+        egui::ComboBox::from_id_salt("detection_mode")
+            .selected_text(detection_mode_label(detection.mode))
+            .show_ui(ui, |ui| {
+                for mode in DetectionMode::ALL {
+                    if ui
+                        .selectable_label(detection.mode == mode, detection_mode_label(mode))
+                        .clicked()
+                    {
+                        detection.mode = mode;
+                        changed = true;
+                    }
+                }
+            });
+        changed
+    });
     // Systems are always read whatever their case, so the switch has no
     // effect on that detection.
-    if !matches!(detection.kind, DetectionRuleKind::SystemReport) {
+    if !matches!(detection.kind, DetectionRuleKind::SystemReport { .. }) {
         changed |= field_row(ui, &t!("settings.patterns.field_case_insensitive"), |ui| {
             ui.checkbox(&mut detection.case_insensitive, "").changed()
         });
@@ -2000,51 +1994,6 @@ fn aggregator_body(ui: &mut Ui, aggregator: &mut AggregatorNode) -> bool {
     })
 }
 
-fn gate_kind_label(kind: GateKind) -> String {
-    match kind {
-        GateKind::And => t!("settings.patterns.gate_and").into_owned(),
-        GateKind::Or => t!("settings.patterns.gate_or").into_owned(),
-        GateKind::Xor => t!("settings.patterns.gate_xor").into_owned(),
-        GateKind::Not => t!("settings.patterns.gate_not").into_owned(),
-    }
-}
-
-fn gate_body(ui: &mut Ui, gate: &mut GateNode) -> bool {
-    let mut changed = false;
-    changed |= field_row(ui, &t!("settings.patterns.field_gate"), |ui| {
-        let mut changed = false;
-        egui::ComboBox::from_id_salt("gate_kind")
-            .selected_text(gate_kind_label(gate.kind))
-            .show_ui(ui, |ui| {
-                for kind in [GateKind::And, GateKind::Or, GateKind::Xor, GateKind::Not] {
-                    if ui
-                        .selectable_label(gate.kind == kind, gate_kind_label(kind))
-                        .clicked()
-                    {
-                        gate.kind = kind;
-                        changed = true;
-                    }
-                }
-            });
-        changed
-    });
-    if gate.kind != GateKind::Not {
-        changed |= field_row(ui, &t!("settings.patterns.field_inputs"), |ui| {
-            let mut inputs = gate.inputs as usize;
-            if ui
-                .add(egui::DragValue::new(&mut inputs).range(1..=16))
-                .changed()
-            {
-                gate.inputs = inputs as u8;
-                true
-            } else {
-                false
-            }
-        });
-    }
-    changed
-}
-
 fn formatter_body(ui: &mut Ui, formatter: &mut FormatterNode) -> bool {
     let mut changed = false;
     changed |= field_row(ui, &t!("settings.patterns.field_template"), |ui| {
@@ -2068,9 +2017,12 @@ fn formatter_body(ui: &mut Ui, formatter: &mut FormatterNode) -> bool {
 fn detection_params_editor(ui: &mut Ui, kind: &mut DetectionRuleKind) -> bool {
     let mut changed = false;
     match kind {
-        DetectionRuleKind::SystemReport
-        | DetectionRuleKind::PilotCount
-        | DetectionRuleKind::ShipNamesZh => {}
+        DetectionRuleKind::PilotCount => {}
+        DetectionRuleKind::SystemReport { ignore_words } => {
+            changed |= field_row(ui, &t!("settings.patterns.field_ignore_words"), |ui| {
+                string_list_editor(ui, ignore_words)
+            });
+        }
         DetectionRuleKind::ClearReport { keywords } | DetectionRuleKind::Query { keywords } => {
             // Telescope defines these words: shown read-only.
             changed |= field_row(ui, &t!("settings.patterns.field_keywords"), |ui| {
@@ -2203,14 +2155,15 @@ fn string_list_editor(ui: &mut Ui, values: &mut Vec<String>) -> bool {
 
 fn default_detection_kind(name: &str) -> DetectionRuleKind {
     match name {
-        "system_report" => DetectionRuleKind::SystemReport,
+        "system_report" => DetectionRuleKind::SystemReport {
+            ignore_words: Vec::new(),
+        },
         "clear_report" => DetectionRuleKind::ClearReport {
             keywords: vec![String::from("clear"), String::from("clr")],
         },
         "ship_names" => DetectionRuleKind::ShipNames {
             dictionaries: Dictionaries::defaults().names(),
         },
-        "ship_names_zh" => DetectionRuleKind::ShipNamesZh,
         "pilot_count" => DetectionRuleKind::PilotCount,
         "keyword" => DetectionRuleKind::Keyword {
             keywords: Vec::new(),
@@ -2232,7 +2185,6 @@ fn detection_type_label(name: &str) -> String {
         "system_report" => t!("settings.patterns.type_system_report").into_owned(),
         "clear_report" => t!("settings.patterns.type_clear_report").into_owned(),
         "ship_names" => t!("settings.patterns.type_ship_names").into_owned(),
-        "ship_names_zh" => t!("settings.patterns.type_ship_names_zh").into_owned(),
         "pilot_count" => t!("settings.patterns.type_pilot_count").into_owned(),
         "keyword" => t!("settings.patterns.type_keyword").into_owned(),
         "query" => t!("settings.patterns.type_query").into_owned(),
@@ -2283,8 +2235,12 @@ mod tests {
         node(
             id,
             NodeKind::Detection(DetectionNode {
-                kind: DetectionRuleKind::SystemReport,
+                kind: DetectionRuleKind::SystemReport {
+                    ignore_words: Vec::new(),
+                },
                 case_insensitive: false,
+                source: DetectionSource::Auto,
+                mode: DetectionMode::Require,
             }),
         )
     }
@@ -2300,16 +2256,15 @@ mod tests {
         )
     }
 
-    fn edge(from: &str, from_pin: Pin, to: &str, to_pin: u8) -> Edge {
+    fn edge(from: &str, to: &str, to_pin: u8) -> Edge {
         Edge {
             from: from.to_string(),
-            from_pin,
             to: to.to_string(),
             to_pin,
         }
     }
 
-    /// `in1 -> d1 -T-> visual`, `d1 -F-> log`; `in2 -> d2 -T-> visual` (the
+    /// `in1 -> d1 -> visual`, `d1 -> log`; `in2 -> d2 -T-> visual` (the
     /// output is shared); `in3` alone.
     fn graph() -> RuleGraph {
         RuleGraph {
@@ -2323,11 +2278,11 @@ mod tests {
                 output(OutputKind::Log),
             ],
             edges: vec![
-                edge("in1", Pin::Out, "d1", 0),
-                edge("d1", Pin::T, "visual", 0),
-                edge("d1", Pin::F, "log", 0),
-                edge("in2", Pin::Out, "d2", 0),
-                edge("d2", Pin::T, "visual", 0),
+                edge("in1", "d1", 0),
+                edge("d1", "visual", 0),
+                edge("d1", "log", 0),
+                edge("in2", "d2", 0),
+                edge("d2", "visual", 0),
             ],
         }
     }
@@ -2387,7 +2342,6 @@ mod tests {
             "system_report",
             "clear_report",
             "ship_names",
-            "ship_names_zh",
             "pilot_count",
             "query",
         ] {
@@ -2427,23 +2381,63 @@ mod tests {
     }
 
     #[test]
+    fn an_excluding_detection_says_so_in_its_summary() {
+        let summary = |mode| {
+            node_summary(&NodeKind::Detection(DetectionNode {
+                kind: DetectionRuleKind::Query {
+                    keywords: vec![String::from("status")],
+                },
+                case_insensitive: false,
+                source: DetectionSource::Auto,
+                mode,
+            }))
+        };
+        assert_eq!(summary(DetectionMode::Require), "status");
+        assert!(summary(DetectionMode::Exclude).ends_with(": status"));
+        assert_ne!(summary(DetectionMode::Exclude), "status");
+    }
+
+    #[test]
     fn node_colors_group_the_special_nodes() {
-        let gate = node(
-            "g",
-            NodeKind::Gate(GateNode {
-                kind: GateKind::And,
+        let formatter = node(
+            "f",
+            NodeKind::Formatter(FormatterNode {
+                template: String::from("{all}"),
                 inputs: 2,
             }),
         );
         let aggregator = node("a", NodeKind::Aggregator(AggregatorNode { inputs: 2 }));
         assert_eq!(
-            node_kind_color(&gate.kind),
+            node_kind_color(&formatter.kind),
             node_kind_color(&aggregator.kind)
         );
         assert_ne!(
             node_kind_color(&input("i", &[]).kind),
             node_kind_color(&detection("d").kind)
         );
+    }
+
+    #[test]
+    fn a_detection_that_can_read_facts_says_what_it_reads() {
+        let detection = |kind, source| DetectionNode {
+            kind,
+            case_insensitive: false,
+            source,
+            mode: DetectionMode::Require,
+        };
+        let reads = |kind, source| detection_reads(&detection(kind, source));
+        let system = || DetectionRuleKind::SystemReport {
+            ignore_words: Vec::new(),
+        };
+        let auto = reads(system(), DetectionSource::Auto).unwrap();
+        let facts = reads(system(), DetectionSource::Facts).unwrap();
+        let text = reads(system(), DetectionSource::Text).unwrap();
+        assert!(auto != facts && facts != text && auto != text);
+        // The rest only ever read text: nothing to tell.
+        let keyword = DetectionRuleKind::Keyword {
+            keywords: vec![String::from("hostile")],
+        };
+        assert_eq!(reads(keyword, DetectionSource::Auto), None);
     }
 
     #[test]
@@ -2455,10 +2449,17 @@ mod tests {
             node_summary(&NodeKind::Detection(DetectionNode {
                 kind,
                 case_insensitive: false,
+                source: DetectionSource::Auto,
+                mode: DetectionMode::Require,
             }))
         };
         assert_eq!(summary(keywords(&["a", "b"])), "a \u{b7} b");
-        assert_eq!(summary(DetectionRuleKind::SystemReport), "");
+        assert_eq!(
+            summary(DetectionRuleKind::SystemReport {
+                ignore_words: Vec::new()
+            }),
+            ""
+        );
         assert_eq!(
             summary(DetectionRuleKind::Custom {
                 pattern: Some(String::from("x+")),
@@ -2596,12 +2597,7 @@ mod tests {
 
         assert!(ids(&editor).contains(&String::from("front_door")));
         assert!(!ids(&editor).contains(&String::from("in1")));
-        assert!(
-            editor
-                .graph
-                .edges
-                .contains(&edge("front_door", Pin::Out, "d1", 0))
-        );
+        assert!(editor.graph.edges.contains(&edge("front_door", "d1", 0)));
         assert_eq!(editor.selected_input.as_deref(), Some("front_door"));
         assert!(editor.state.dirty);
     }
@@ -2664,7 +2660,7 @@ mod tests {
     #[test]
     fn component_pulls_in_the_other_sources_of_a_shared_detection() {
         let mut editor = editor();
-        editor.graph.edges.push(edge("in3", Pin::Out, "d1", 1));
+        editor.graph.edges.push(edge("in3", "d1", 1));
         assert_eq!(
             editor.component_ids("in1"),
             set(&["in1", "in3", "d1", "visual", "log"])
@@ -2721,13 +2717,10 @@ mod tests {
     fn component_summary_counts_parts_and_orders_outputs() {
         let mut editor = editor();
         editor.graph.nodes.push(node(
-            "gate_1",
-            NodeKind::Gate(GateNode {
-                kind: GateKind::And,
-                inputs: 2,
-            }),
+            "union_1",
+            NodeKind::Aggregator(AggregatorNode { inputs: 2 }),
         ));
-        editor.graph.edges.push(edge("d1", Pin::T, "gate_1", 0));
+        editor.graph.edges.push(edge("d1", "union_1", 0));
 
         let summary = editor.component_summary("in1");
 
@@ -2758,7 +2751,7 @@ mod tests {
         assert_eq!(x_of("visual"), 900.0);
         assert_eq!(x_of("log"), 900.0);
 
-        // T is the detection's first output pin, F the second.
+        // Every node has a single output pin.
         let mut wires: Vec<(String, usize, String)> = editor
             .snarl
             .wires()
@@ -2774,8 +2767,8 @@ mod tests {
         assert_eq!(
             wires,
             [
+                (String::from("d1"), 0, String::from("log")),
                 (String::from("d1"), 0, String::from("visual")),
-                (String::from("d1"), 1, String::from("log")),
                 (String::from("in1"), 0, String::from("d1")),
             ]
         );
@@ -2809,7 +2802,7 @@ mod tests {
         assert_eq!(ids(&editor).len(), graph().nodes.len());
         let mut edges = editor.graph.edges.clone();
         let mut expected = graph().edges;
-        let key = |e: &Edge| (e.from.clone(), e.from_pin as u8, e.to.clone());
+        let key = |e: &Edge| (e.from.clone(), e.to.clone(), e.to_pin);
         edges.sort_by_key(key);
         expected.sort_by_key(key);
         assert_eq!(edges, expected);
@@ -2841,13 +2834,8 @@ mod tests {
                 .all(|e| e.from != "d1" && e.to != "d1")
         );
         // The other component is untouched.
-        assert!(
-            editor
-                .graph
-                .edges
-                .contains(&edge("d2", Pin::T, "visual", 0))
-        );
-        assert!(editor.graph.edges.contains(&edge("in2", Pin::Out, "d2", 0)));
+        assert!(editor.graph.edges.contains(&edge("d2", "visual", 0)));
+        assert!(editor.graph.edges.contains(&edge("in2", "d2", 0)));
         assert!(editor.state.dirty);
     }
 
@@ -2865,12 +2853,7 @@ mod tests {
             .find(|n| n.id == "detection_1")
             .expect("the new detection was merged");
         assert!(matches!(detection.kind, NodeKind::Detection(_)));
-        assert!(
-            editor
-                .graph
-                .edges
-                .contains(&edge("in1", Pin::Out, "detection_1", 0))
-        );
+        assert!(editor.graph.edges.contains(&edge("in1", "detection_1", 0)));
     }
 
     #[test]
@@ -2926,12 +2909,7 @@ mod tests {
         editor.open_editor("in1");
         editor.close_editor();
         // in2's edge into the shared output was not part of in1's component.
-        assert!(
-            editor
-                .graph
-                .edges
-                .contains(&edge("d2", Pin::T, "visual", 0))
-        );
+        assert!(editor.graph.edges.contains(&edge("d2", "visual", 0)));
     }
 
     #[test]
@@ -2999,14 +2977,13 @@ mod tests {
         let mut editor = editor();
         editor.add_aggregator();
         editor.add_aggregator();
-        editor.add_gate(GateKind::Xor);
         editor.add_formatter();
 
-        for id in ["aggregator_1", "aggregator_2", "xor_1", "formatter_1"] {
+        for id in ["aggregator_1", "aggregator_2", "formatter_1"] {
             assert!(editor.find_node(id).is_some(), "{id}");
         }
         assert_eq!(editor.aggregator_count(), 2);
-        assert_eq!(editor.special_count(), 4);
+        assert_eq!(editor.special_count(), 3);
         assert_eq!(editor.detection_count(), 0);
         // Each new one is placed below the previous ones.
         let y_of = |id: &str| {
@@ -3015,8 +2992,7 @@ mod tests {
         };
         assert_eq!(y_of("aggregator_1"), 0.0);
         assert_eq!(y_of("aggregator_2"), 260.0);
-        assert_eq!(y_of("xor_1"), 520.0);
-        assert_eq!(y_of("formatter_1"), 780.0);
+        assert_eq!(y_of("formatter_1"), 520.0);
     }
 
     #[test]
@@ -3046,11 +3022,9 @@ mod tests {
     fn new_special_nodes_start_with_two_or_four_inputs() {
         let mut editor = editor();
         editor.add_aggregator();
-        editor.add_gate(GateKind::And);
         editor.add_formatter();
         let kind = |id: &str| editor.snarl[editor.find_node(id).unwrap()].kind.clone();
         assert!(matches!(kind("aggregator_1"), NodeKind::Aggregator(a) if a.inputs == 4));
-        assert!(matches!(kind("and_1"), NodeKind::Gate(g) if g.inputs == 2));
         assert!(
             matches!(kind("formatter_1"), NodeKind::Formatter(f) if f.template == "{all}" && f.inputs == 2)
         );
