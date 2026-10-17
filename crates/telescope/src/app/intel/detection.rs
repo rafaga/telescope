@@ -3,14 +3,18 @@
 //! A dedicated thread (with its own current-thread tokio runtime, the same
 //! pattern the rest of the app's background work uses) receives [`InputEvent`]s
 //! on a bounded channel, evaluates them through the executor and sends the
-//! resulting [`Activation`]s on to the dispatch thread (`super::dispatch`). The executor sits behind an
+//! resulting [`Activation`]s on to the dispatch thread (`super::dispatch`). The thread
+//! also keeps the last system each channel reported ([`ChannelMemory`]), so the
+//! follow-ups to a report are evaluated with its system. The executor sits behind an
 //! [`RwLock`] so the UI can swap it in place when the rules change, without
 //! restarting the thread.
 
 use super::input::InputEvent;
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
-use webb::graph::{Activation, Executor, LineContext};
+use webb::channel_memory::ChannelMemory;
+use webb::event::IntelEvent;
+use webb::graph::{Activation, Executor};
 use webb::rules::IntelLine;
 
 /// Capacity of the reader -> detection channel. Bounded on purpose: if the
@@ -55,18 +59,23 @@ pub(crate) fn spawn(
                 .build()
                 .expect("detection thread runtime");
             runtime.block_on(async move {
+                // What each channel reported last, to attribute the lines
+                // that follow a report (`nv`, `+4`, `clr`) to its system.
+                let mut memory = ChannelMemory::default();
                 while let Some(event) = input.recv().await {
-                    let context = LineContext {
+                    let context = IntelEvent {
                         line: event.line,
                         channel: event.channel.clone(),
                         kind: event.kind,
+                        facts: event.facts,
+                        time_origin: event.time_origin,
                     };
                     let started = std::time::Instant::now();
                     let activations = {
                         let executor = executor
                             .read()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        executor.run(&context, resolver.as_ref())
+                        executor.run_remembering(&context, resolver.as_ref(), &mut memory)
                     };
                     tracing::trace!(
                         channel = %event.channel,

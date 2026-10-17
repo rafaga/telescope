@@ -41,8 +41,9 @@ with Telescope.
 | `esi/cipher` | Encryption of the player database (`crypted-db`, enabled by Telescope): a raw SQLCipher key, SHA-256 of the machine identifier from `native_tools`; before the first open it encrypts a plain file or re-keys one under the older passphrase key. |
 | `esi/data` | ESI client configuration. |
 | `objects` | Domain types: tokens and the `Character`, `Corporation` and `Alliance` entities. |
-| `graph` | The intel node graph: typed `Node`s (Input/Detection/Output/Aggregator/Gate/Formatter) and `Edge`s, `RuleGraph` validation, the per-line `Executor` (which propagates a true / false / absent signal per pin: a Detection's T is true when it matched, F when it did not; absent means "not evaluated", and a `not` of it stays absent), the embedded default graph (`default_graph`, from `rules.toml`) and the `SystemResolver`. This is the model persisted in the player database and edited by *Settings -> Rules*. |
-| `rules` | The typed building blocks the graph shares: `DetectionRuleKind`/`DetectionType`, `OutputKind`/`OutputType`, `InputKind`, the built-in `Dictionaries`, `IntelLine` and `parse_line`. |
+| `event` | What the engine evaluates, whatever its source: `IntelEvent` (the text of the event, its channel and kind, and its `Facts`: the solar systems, ships and pilot count a source knows by itself) and the `EventSource` trait each source implements to decode its own format into events. |
+| `graph` | The intel node graph: typed `Node`s (Input/Detection/Output/Aggregator/Formatter) and `Edge`s, `RuleGraph` validation, the per-event `Executor` (a wire carries "the event goes on" plus the findings gathered on the way; a Detection reads the event itself and either requires its finding (`DetectionMode::Require`) or lets the event through only when it finds nothing (`Exclude`); an Aggregator is a union), the embedded default graph (`default_graph`, from `rules.toml`) and the `SystemResolver`. Every node but the Outputs has a single output pin. This is the model persisted in the player database and edited by *Settings -> Rules*. |
+| `rules` | The typed building blocks the graph shares: `DetectionRuleKind`/`DetectionType`, `OutputKind`/`OutputType`, `InputKind`, `FactKind` (the fact a detection type reads instead of the text), the built-in `Dictionaries`, `IntelLine` and `parse_line`. |
 | `intel` | What the intel modules share: `IntelLine`, `IntelCategory`, `PatternError` (rule validation errors), the size limits and text helpers. The old `patterns.toml` engine (and the file) were removed; the graph replaced them. |
 | `map_alerts` | `AlertSummary::from_messages` condenses a line's `Mensaje`s into what a map node's tooltip shows; `AlertLog` keeps each system's active alerts, deduplicated and expiring on their own. |
 
@@ -83,10 +84,10 @@ crates/telescope
         │   ├── mod.rs       TelescopeApp methods: apply_intel_settings(), scan_intel_files(),
         │   │                apply_graph(), sync_alarm_shared() / sync_alarm_jumps(),
         │   │                sync_zkillboard()
-        │   ├── input.rs     IntelLogName, UTF-16LE decoding, ChatLogSource -> InputEvent,
+        │   ├── input.rs     IntelLogName, UTF-16LE decoding, ChatLogSource / ChatLogDecoder -> InputEvent,
         │   │                IntelOffsets (where each monitored log was last read)
         │   ├── reader.rs    the reader thread: changed log -> appended lines
-        │   ├── zkillboard.rs the zKillboard source thread: R2Z2 feed -> killmail lines
+        │   ├── zkillboard.rs the zKillboard source thread: R2Z2 feed -> killmails (ZKillboardDecoder)
         │   ├── detection.rs the detection thread (graph Executor behind an RwLock)
         │   ├── dispatch.rs  the dispatch thread: map messages, sound, status log
         │   └── resolve.rs   UniverseResolver / SharedResolver (system ids) and jump distance
@@ -211,7 +212,8 @@ an alarm: *watcher -> reader -> detection -> dispatch*.
 2. The reader thread (`intel/reader.rs`) reads only the complete lines added since
    the last read (`IntelOffsets`: a monitored log starts at its end when first
    seen, so history is never replayed; a rescan never moves a known offset),
-   decodes them from UTF-16LE (`intel/input.rs`, `ChatLogSource`) and emits one
+   decodes them from UTF-16LE (`intel/input.rs`, `ChatLogSource`; the
+   `ChatLogDecoder` turns each line into an `IntelEvent`) and emits one
    `InputEvent` per parsed line to the detection thread. The channel's last
    activity goes back to the UI as `Message::ChannelActivity` (the *Sources*
    page shows it).
@@ -222,19 +224,56 @@ an alarm: *watcher -> reader -> detection -> dispatch*.
    (`sequence.json`, then `<n>.json`; a 404 is "nothing yet", wait 6 s), whose
    files already hold the whole ESI killmail, starting at the end of the feed so
    history is never replayed. Each new killmail (announced once, by id) becomes
-   an `IntelLine` of the shape `Jita: Rifter destroyed by 3 pilots (Sabre, Sabre,
-   Merlin), 12.3M ISK` (the names come from the SDE, `SdeNames`) in an
-   `InputEvent` of kind `zkillboard`, channel `zkillboard`. `InputEvent::kind` and
-   `LineContext::kind` make the `Executor` hand a line only to the Input nodes of
+   an `IntelEvent` (the `ZKillboardDecoder`) of kind `zkillboard`, channel
+   `zkillboard`, in an `InputEvent`. Its text is a sentence of the shape `Jita:
+   Rifter destroyed by 3 pilots (Sabre, Sabre, Merlin), 12.3M ISK` (the names
+   come from the SDE, `SdeNames`), for the log, the tooltips and the user's own
+   patterns; its `Facts` are read from the killmail itself: the system and its id,
+   every ship with how many times, and the pilots. `InputEvent::kind` and
+   `IntelEvent::kind` make the `Executor` hand an event only to the Input nodes of
    its own kind. A 403/429 pauses the source for ten minutes, other failures back
    off from 6 to 60 s, a long outage restarts the walk at the end of the feed, and
    each outage is reported once as a `GenericNotification`.
 3. The detection thread (`intel/detection.rs`) runs the graph `Executor` over the
-   line and sends the resulting `DetectedLine` (the `Activation`s) on. The
+   event and sends the resulting `DetectedLine` (the `Activation`s) on. The
    executor sits behind an `RwLock`: the UI swaps it in place when the rules
    change (`apply_graph`), without restarting the thread. The systems a Detection
    reports are resolved through the injected `SystemResolver` (`intel/resolve.rs`,
    backed by the SDE).
+   The engine does not care about the format of a source: each one decodes its own
+   (`EventSource`) into an `IntelEvent`, which has the text detections read and the
+   `Facts` the source knows. A Detection that reports something a source can know
+   (`system_report`, `ship_names`, `pilot_count`; `DetectionType::fact`) reads the
+   fact when the source gave it and searches the text only when it did not; a fact
+   given is final, even when empty. A chat line has no facts, so it is read as
+   text exactly as before. A new source implements `EventSource`
+   and, if it has structured data, fills the facts it can; the detections and the
+   rest of the graph are reused as they are.
+   Ships are identified by their SDE type id (`ShipCount`: id, name, times). A
+   killmail carries the id; a chat line only has the name a player typed, so the
+   detection resolves it through the `ShipResolver` that `SystemResolver::ship_resolver`
+   may offer (`SdeShips` in `intel/resolve.rs`: the published ships of the SDE by
+   name, reloaded when the database file changes). A name that does not resolve
+   keeps `type_id: None`; ships merge by id when both have one and by name
+   otherwise.
+   What a Detection reads is a choice of the node (`DetectionNode::source`, the
+   *Reads* field of its panel): *facts or text* (the default, as described above),
+   *facts only* (an event without that fact has nothing for it) or *text only*
+   (the text of the event, even when the source gave the fact). A Detection always
+   reads the event itself, never what an earlier node found, so chained
+   detections are an AND over the same event.
+   How the graph is wired (engine v2): there is no true/false per pin. A wire
+   carries the event on and the findings (`Mensaje`s) of the nodes it passed.
+   Chaining nodes is AND; an Aggregator (*Union*) lets the event through when it
+   reaches any of its inputs, merging the findings without repeats; a Detection in
+   *Exclude* mode is the NOT (the event goes on unchanged when nothing is found).
+   An Output fires when reached, with the findings gathered. Only the types that have a fact offer the choice, and the validator
+   rejects *facts only* on any other.
+   An event also records when it happened (`IntelEvent::at()`, which is the
+   timestamp of its line) and whether the source reported it or it is assumed
+   (`TimeOrigin`). A chat line without a date (EVE's default settings can leave
+   it out) is still decoded, with the moment it was read; the reader warns once per
+   log, and the same goes for a killmail whose time can't be read.
 4. The dispatch thread (`intel/dispatch.rs`) acts on the Output nodes that fired:
    *visual* pulses the map node (`MapSync::SystemAlert`), *sound* plays the alarm
    (through the `AudioHandle` of `audio.rs`, which owns the output device on its
@@ -384,9 +423,9 @@ Edit the `.d2`, regenerate, and commit both.
 * **A rule:** edit it in *Settings -> Rules*: the rule cards (description
   and id editable in the card, an enable switch, what the rule is made of and
   the outputs it reaches) open the graph editor, whose toolbar creates detections, outputs and logic nodes
-  (aggregator / gates / formatter). Import/export `rules.toml`; the model is
+  (union / formatter). Import/export `rules.toml`; the model is
   `RuleGraph` in `crates/webb/src/graph.rs`, the tables (`node`/`edge`) are
-  created by the player database's `migrate_1_to_2`, and the built-in default
+  created by the player database's `migrate_2_to_3` (which backs up a graph of the previous model into `node_v2_backup` / `edge_v2_backup`), and the built-in default
   graph is the embedded `rules.toml` (`RuleGraph::default_graph`).
 * **A message:** add a variant to `Message` and to `Message::kind()`
   (`messages.rs`), and handle it in `event_manager` (`app.rs`).

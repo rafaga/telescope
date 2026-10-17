@@ -14,8 +14,8 @@
 pub use crate::intel::IntelLine;
 use crate::intel::{
     IntelCategory, LINE_PATTERN, LINE_TIMESTAMP_FORMAT, MAX_DICTIONARY_WORD_LEN,
-    MAX_DICTIONARY_WORDS, MAX_LINE_LEN, MAX_PATTERN_LEN, PatternError, is_valid_group_name,
-    truncate_str,
+    MAX_DICTIONARY_WORDS, MAX_LINE_LEN, MAX_PATTERN_LEN, PatternError, UNDATED_LINE_PATTERN,
+    is_valid_group_name, truncate_str,
 };
 use chrono::NaiveDateTime;
 use regex::Regex;
@@ -126,19 +126,31 @@ pub enum DetectionRuleKind {
     /// pattern, the names made of words (`Jita`, `Old Man Star`) by trying the
     /// words of the line against the universe. The node's case-insensitive
     /// switch does not apply to it.
-    SystemReport,
+    SystemReport {
+        /// Words that are never taken for a system, although the universe has
+        /// a system of that name (`Van`, `Jan`, `Pain`: pilot names and
+        /// everyday words). The case does not matter. Such a word still
+        /// counts when it is marked as a report (`Van*`, `VAN`) or when it is
+        /// the only candidate of a line that says `nv`, `clr` or a count.
+        /// Code-like names (`H-5GUI`, `J123456`) are never ignored.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ignore_words: Vec<String>,
+    },
     /// Reports the system clear.
     ClearReport {
         /// Words that mean "clear".
         keywords: Vec<String>,
     },
-    /// Reports ship names, using the built-in dictionaries by name.
+    /// Reports ship names: the words of the dictionaries it names, and the
+    /// Chinese class names (the built-in shape regex), which need no
+    /// dictionary. Graphs saved with the former `ship_names_zh` type load as
+    /// this one with no dictionaries.
+    #[serde(alias = "ship_names_zh")]
     ShipNames {
         /// Names of the dictionaries (in `dictionaries.toml`) to match.
+        #[serde(default)]
         dictionaries: Vec<String>,
     },
-    /// Reports Chinese ship names; uses the built-in shape regex.
-    ShipNamesZh,
     /// Reports how many pilots a line is about. Uses the built-in count
     /// patterns.
     PilotCount,
@@ -179,13 +191,18 @@ pub(crate) const DEFAULT_SYSTEM_PATTERN: &str =
     r"(?i)\b(?P<system>J\d{6}|[A-Z0-9]{1,5}-[A-Z0-9]{1,4}|[A-Z]{2}\d{3})\b";
 
 /// Built-in patterns used by [`DetectionRuleKind::PilotCount`]; each has a
-/// `count` capture group.
-const DEFAULT_COUNT_PATTERNS: [&str; 2] = [
+/// `count` capture group. The counts are written `+5`, `x5`, `5 neuts` and
+/// `5+` (the way most intel channels write them: the number, a plus, then
+/// anything: `15+`, `30+kkmora`). A number needs a blank before it and no
+/// digit after the plus, so `1+1` and the `5+` glued to a word (`ESS12+`) are
+/// not counts.
+const DEFAULT_COUNT_PATTERNS: [&str; 3] = [
     r"(?:^|\s)[+xX](?P<count>\d{1,3})\b",
     r"\b(?P<count>\d{1,3})\s?(?:x|neuts?|neutrals?|reds?|hostiles?|pilots?)\b",
+    r"(?:^|\s)(?P<count>\d{1,3})\+(?:\D|$)",
 ];
 
-/// Built-in shape used by [`DetectionRuleKind::ShipNamesZh`]: a run of Han
+/// Built-in shape used by [`DetectionRuleKind::ShipNames`]: a run of Han
 /// characters ending in the `级` ("-class") suffix, the Chinese client's ship
 /// name marker.
 pub(crate) const DEFAULT_SHIP_ZH_PATTERN: &str = r"[一-鿿]{2,14}级";
@@ -196,6 +213,25 @@ pub enum DetectionMatcher {
     Regex(Vec<String>),
     /// A flat list of whole-word literals.
     Dictionary(Vec<String>),
+    /// Both at once: a match of any of the regexes or of any of the words.
+    Mixed {
+        /// The regular expressions.
+        patterns: Vec<String>,
+        /// The whole-word literals.
+        words: Vec<String>,
+    },
+}
+
+/// A fact of an [`IntelEvent`](crate::event::IntelEvent) a detection can read
+/// instead of searching the text for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactKind {
+    /// The solar systems the event is about.
+    Systems,
+    /// The ships it involves.
+    Ships,
+    /// How many pilots it is about.
+    Pilots,
 }
 
 /// Behaviour shared by every detection type. Implement it for a new type to
@@ -210,6 +246,11 @@ pub trait DetectionType {
     fn system_group(&self) -> Option<String> {
         None
     }
+    /// The fact this type reads from an event when its source gives it,
+    /// instead of matching the text. `None` for a type that only reads text.
+    fn fact(&self) -> Option<FactKind> {
+        None
+    }
     /// A short name for the type, for logs and the GUI.
     fn type_name(&self) -> &'static str;
     /// Validates the type-specific parameters.
@@ -219,7 +260,7 @@ pub trait DetectionType {
 impl DetectionType for DetectionRuleKind {
     fn matcher(&self, dictionaries: &Dictionaries) -> DetectionMatcher {
         match self {
-            Self::SystemReport => {
+            Self::SystemReport { .. } => {
                 DetectionMatcher::Regex(vec![String::from(DEFAULT_SYSTEM_PATTERN)])
             }
             Self::PilotCount => DetectionMatcher::Regex(
@@ -240,10 +281,10 @@ impl DetectionType for DetectionRuleKind {
                         words.extend(dictionary.iter().cloned());
                     }
                 }
-                DetectionMatcher::Dictionary(words)
-            }
-            Self::ShipNamesZh => {
-                DetectionMatcher::Regex(vec![String::from(DEFAULT_SHIP_ZH_PATTERN)])
+                DetectionMatcher::Mixed {
+                    patterns: vec![String::from(DEFAULT_SHIP_ZH_PATTERN)],
+                    words,
+                }
             }
             Self::Custom { pattern, words, .. } => match pattern {
                 Some(pattern) => DetectionMatcher::Regex(vec![pattern.clone()]),
@@ -255,7 +296,7 @@ impl DetectionType for DetectionRuleKind {
     fn category(&self) -> Option<IntelCategory> {
         match self {
             Self::ClearReport { .. } => Some(IntelCategory::Clear),
-            Self::ShipNames { .. } | Self::ShipNamesZh => Some(IntelCategory::Ship),
+            Self::ShipNames { .. } => Some(IntelCategory::Ship),
             Self::PilotCount => Some(IntelCategory::Count),
             Self::Keyword { .. } => Some(IntelCategory::Keyword),
             Self::Query { .. } => Some(IntelCategory::Query),
@@ -266,18 +307,26 @@ impl DetectionType for DetectionRuleKind {
 
     fn system_group(&self) -> Option<String> {
         match self {
-            Self::SystemReport => Some(String::from("system")),
+            Self::SystemReport { .. } => Some(String::from("system")),
             Self::Custom { system_group, .. } => system_group.clone(),
+            _ => None,
+        }
+    }
+
+    fn fact(&self) -> Option<FactKind> {
+        match self {
+            Self::SystemReport { .. } => Some(FactKind::Systems),
+            Self::ShipNames { .. } => Some(FactKind::Ships),
+            Self::PilotCount => Some(FactKind::Pilots),
             _ => None,
         }
     }
 
     fn type_name(&self) -> &'static str {
         match self {
-            Self::SystemReport => "system_report",
+            Self::SystemReport { .. } => "system_report",
             Self::ClearReport { .. } => "clear_report",
             Self::ShipNames { .. } => "ship_names",
-            Self::ShipNamesZh => "ship_names_zh",
             Self::PilotCount => "pilot_count",
             Self::Keyword { .. } => "keyword",
             Self::Query { .. } => "query",
@@ -287,16 +336,15 @@ impl DetectionType for DetectionRuleKind {
 
     fn validate(&self, id: &str, dictionaries: &Dictionaries) -> Result<(), PatternError> {
         match self {
-            Self::SystemReport | Self::PilotCount | Self::ShipNamesZh => {}
+            Self::PilotCount => {}
+            Self::SystemReport { ignore_words } => validate_ignore_words(id, ignore_words)?,
             Self::ClearReport { keywords }
             | Self::Keyword { keywords }
             | Self::Query { keywords } => validate_words(id, keywords)?,
             Self::ShipNames {
                 dictionaries: names,
             } => {
-                if names.is_empty() {
-                    return Err(PatternError::InvalidDictionarySize(id.to_string()));
-                }
+                // No dictionary is fine: the Chinese class names need none.
                 for name in names {
                     if dictionaries.words(name).is_none() {
                         return Err(PatternError::UnknownDictionary {
@@ -366,6 +414,14 @@ fn validate_words(id: &str, words: &[String]) -> Result<(), PatternError> {
     Ok(())
 }
 
+/// An ignore list may be empty; its words are checked like any dictionary's.
+fn validate_ignore_words(id: &str, words: &[String]) -> Result<(), PatternError> {
+    if words.is_empty() {
+        return Ok(());
+    }
+    validate_words(id, words)
+}
+
 /// Which queue an Output node feeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -428,6 +484,34 @@ pub fn parse_line(raw: &str) -> Option<IntelLine> {
         author: caps.name("author")?.as_str().to_string(),
         text: caps.name("text")?.as_str().to_string(),
     })
+}
+
+impl IntelLine {
+    /// Like [`parse_line`], but a line without a readable date is not lost:
+    /// EVE's default settings can leave the timestamp out of the logs. It
+    /// takes `now` as the moment of such a line, and says so with
+    /// [`TimeOrigin::Assumed`]; a line with a date is [`TimeOrigin::Reported`].
+    /// `None` when the line has no `author > text` either.
+    pub fn parse_or_assume(
+        raw: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(Self, crate::event::TimeOrigin)> {
+        use crate::event::TimeOrigin;
+        if let Some(line) = parse_line(raw) {
+            return Some((line, TimeOrigin::Reported));
+        }
+        static UNDATED_RE: OnceLock<Regex> = OnceLock::new();
+        let re = UNDATED_RE.get_or_init(|| {
+            Regex::new(UNDATED_LINE_PATTERN).expect("hardcoded line regex must compile")
+        });
+        let caps = re.captures(truncate_str(raw, MAX_LINE_LEN))?;
+        let line = Self {
+            timestamp: now,
+            author: caps.name("author")?.as_str().to_string(),
+            text: caps.name("text")?.as_str().to_string(),
+        };
+        Some((line, TimeOrigin::Assumed))
+    }
 }
 
 #[cfg(test)]
@@ -504,6 +588,43 @@ mod tests {
         assert!(line.text.starts_with("aaa"));
     }
 
+    #[test]
+    fn a_dated_line_keeps_its_date_and_is_reported() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let (line, origin) =
+            IntelLine::parse_or_assume("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear", now)
+                .unwrap();
+        assert_eq!(origin, crate::event::TimeOrigin::Reported);
+        assert_eq!(
+            line.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2021-09-08 22:56:47"
+        );
+    }
+
+    #[test]
+    fn a_line_without_a_date_is_read_at_the_moment_given_and_assumed() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        for raw in [
+            "Some Pilot > 1DQ1-A clear",
+            "[ 22:56:47 ] Some Pilot > 1DQ1-A clear",
+            "[ 2021.13.40 25:61:61 ] Some Pilot > 1DQ1-A clear",
+        ] {
+            let (line, origin) = IntelLine::parse_or_assume(raw, now).expect(raw);
+            assert_eq!(origin, crate::event::TimeOrigin::Assumed, "{raw}");
+            assert_eq!(line.timestamp, now, "{raw}");
+            assert_eq!(line.author, "Some Pilot", "{raw}");
+            assert_eq!(line.text, "1DQ1-A clear", "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_line_without_author_and_text_is_not_a_line_either_way() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        for raw in ["", "not a log line", "[ 2021.09.08 22:56:47 ] no separator"] {
+            assert!(IntelLine::parse_or_assume(raw, now).is_none(), "{raw:?}");
+        }
+    }
+
     // Dictionaries
 
     #[test]
@@ -539,14 +660,15 @@ mod tests {
     #[test]
     fn type_names_match_the_serialized_tag() {
         let kinds = [
-            DetectionRuleKind::SystemReport,
+            DetectionRuleKind::SystemReport {
+                ignore_words: Vec::new(),
+            },
             DetectionRuleKind::ClearReport {
                 keywords: words(&["clr"]),
             },
             DetectionRuleKind::ShipNames {
                 dictionaries: words(&["ship_report_en"]),
             },
-            DetectionRuleKind::ShipNamesZh,
             DetectionRuleKind::PilotCount,
             DetectionRuleKind::Keyword {
                 keywords: words(&["k"]),
@@ -604,7 +726,13 @@ mod tests {
     #[test]
     fn built_in_types_imply_their_category() {
         let keywords = words(&["x"]);
-        assert_eq!(DetectionRuleKind::SystemReport.category(), None);
+        assert_eq!(
+            DetectionRuleKind::SystemReport {
+                ignore_words: Vec::new()
+            }
+            .category(),
+            None
+        );
         assert_eq!(
             DetectionRuleKind::ClearReport {
                 keywords: keywords.clone()
@@ -613,7 +741,10 @@ mod tests {
             Some(IntelCategory::Clear)
         );
         assert_eq!(
-            DetectionRuleKind::ShipNamesZh.category(),
+            DetectionRuleKind::ShipNames {
+                dictionaries: Vec::new()
+            }
+            .category(),
             Some(IntelCategory::Ship)
         );
         assert_eq!(
@@ -645,7 +776,11 @@ mod tests {
         assert_eq!(kind.system_group().as_deref(), Some("sys"));
         assert_eq!(custom(None, &["w"]).system_group(), None);
         assert_eq!(
-            DetectionRuleKind::SystemReport.system_group().as_deref(),
+            DetectionRuleKind::SystemReport {
+                ignore_words: Vec::new()
+            }
+            .system_group()
+            .as_deref(),
             Some("system")
         );
         assert_eq!(DetectionRuleKind::PilotCount.system_group(), None);
@@ -656,14 +791,14 @@ mod tests {
     fn regexes(matcher: DetectionMatcher) -> Vec<String> {
         match matcher {
             DetectionMatcher::Regex(patterns) => patterns,
-            DetectionMatcher::Dictionary(_) => panic!("expected a regex matcher"),
+            _ => panic!("expected a regex matcher"),
         }
     }
 
     fn dictionary(matcher: DetectionMatcher) -> Vec<String> {
         match matcher {
             DetectionMatcher::Dictionary(list) => list,
-            DetectionMatcher::Regex(_) => panic!("expected a dictionary matcher"),
+            _ => panic!("expected a dictionary matcher"),
         }
     }
 
@@ -671,9 +806,10 @@ mod tests {
     fn built_in_patterns_compile() {
         let dictionaries = Dictionaries::defaults();
         for kind in [
-            DetectionRuleKind::SystemReport,
+            DetectionRuleKind::SystemReport {
+                ignore_words: Vec::new(),
+            },
             DetectionRuleKind::PilotCount,
-            DetectionRuleKind::ShipNamesZh,
         ] {
             for pattern in regexes(kind.matcher(&dictionaries)) {
                 Regex::new(&pattern).unwrap();
@@ -725,10 +861,70 @@ mod tests {
     }
 
     #[test]
+    fn a_number_followed_by_a_plus_is_a_pilot_count() {
+        let dictionaries = Dictionaries::defaults();
+        let patterns: Vec<Regex> = regexes(DetectionRuleKind::PilotCount.matcher(&dictionaries))
+            .iter()
+            .map(|pattern| Regex::new(pattern).unwrap())
+            .collect();
+        let count = |text: &str| -> Option<String> {
+            patterns
+                .iter()
+                .find_map(|re| re.captures(text))
+                .map(|caps| caps["count"].to_string())
+        };
+        for (text, expected) in [
+            ("8+", "8"),
+            ("H-5GUI* 15+ Captain Ginjuic", "15"),
+            ("2CG-5V* 7+ Leafless Zan", "7"),
+            ("Cryptic Sharvas  0-R5TS* 29+ nv", "29"),
+            ("U54-1L*  Almjaime 4+", "4"),
+            ("P3EN-E* 40+https://dscan.info/v/36e0e2f324d9", "40"),
+            ("0MV-4W* 200+kiki", "200"),
+            ("V0DF-2*  Devil Seven 8+kiki", "8"),
+            ("M-OEE8* 6+\u{9b54}\u{50cf}", "6"),
+        ] {
+            assert_eq!(count(text).as_deref(), Some(expected), "{text:?}");
+        }
+        // Not counts: a sum, a number glued to a word, a number too long.
+        for text in ["1+1", "ESS12+", "v15+", "4HYV30+", "2000+ m3", "Jita clear"] {
+            assert_eq!(count(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
     fn ship_zh_pattern_matches_han_class_names() {
         let re = Regex::new(DEFAULT_SHIP_ZH_PATTERN).unwrap();
         assert!(re.is_match("\u{53d1}\u{73b0}\u{6cf0}\u{5766}\u{7ea7}"));
         assert!(!re.is_match("Titan class"));
+    }
+
+    #[test]
+    fn ship_names_match_dictionaries_and_the_chinese_shape() {
+        let kind = DetectionRuleKind::ShipNames {
+            dictionaries: words(&["ship_report_en"]),
+        };
+        match kind.matcher(&Dictionaries::defaults()) {
+            DetectionMatcher::Mixed { patterns, words } => {
+                assert_eq!(patterns, vec![String::from(DEFAULT_SHIP_ZH_PATTERN)]);
+                assert!(!words.is_empty());
+            }
+            _ => panic!("expected a mixed matcher"),
+        }
+    }
+
+    #[test]
+    fn the_former_chinese_type_loads_as_ship_names() {
+        let kind: DetectionRuleKind = toml::from_str("type = \"ship_names_zh\"").unwrap();
+        assert_eq!(
+            kind,
+            DetectionRuleKind::ShipNames {
+                dictionaries: Vec::new()
+            }
+        );
+        let text = toml::to_string(&kind).unwrap();
+        assert!(text.contains("ship_names"), "{text}");
+        assert!(!text.contains("_zh"), "{text}");
     }
 
     #[test]
@@ -758,7 +954,10 @@ mod tests {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: words(&["ship_report_en", "missing", "ship_report_es"]),
         };
-        assert_eq!(dictionary(kind.matcher(&dictionaries)).len(), en + es);
+        match kind.matcher(&dictionaries) {
+            DetectionMatcher::Mixed { words, .. } => assert_eq!(words.len(), en + es),
+            _ => panic!("expected a mixed matcher"),
+        }
     }
 
     #[test]
@@ -783,9 +982,10 @@ mod tests {
     #[test]
     fn built_in_types_without_parameters_are_always_valid() {
         for kind in [
-            DetectionRuleKind::SystemReport,
+            DetectionRuleKind::SystemReport {
+                ignore_words: Vec::new(),
+            },
             DetectionRuleKind::PilotCount,
-            DetectionRuleKind::ShipNamesZh,
         ] {
             assert_eq!(validate(&kind), Ok(()));
         }
@@ -837,13 +1037,11 @@ mod tests {
 
     #[test]
     fn ship_names_need_known_dictionaries() {
+        // The Chinese class names need no dictionary.
         let none = DetectionRuleKind::ShipNames {
             dictionaries: Vec::new(),
         };
-        assert_eq!(
-            validate(&none),
-            Err(PatternError::InvalidDictionarySize(String::from("rule")))
-        );
+        assert_eq!(validate(&none), Ok(()));
         let unknown = DetectionRuleKind::ShipNames {
             dictionaries: words(&["ship_report_en", "nope"]),
         };

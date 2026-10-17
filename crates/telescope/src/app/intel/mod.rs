@@ -121,14 +121,14 @@ impl TelescopeApp {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut tags = Vec::new();
         for raw in data.lines() {
-            let Some(line) = webb::rules::parse_line(raw) else {
+            let Some((line, origin)) =
+                webb::rules::IntelLine::parse_or_assume(raw, chrono::Utc::now())
+            else {
                 continue;
             };
-            let context = webb::graph::LineContext {
-                line,
-                channel: channel.to_string(),
-                kind: webb::rules::InputKind::ChatLog,
-            };
+            let context =
+                webb::event::IntelEvent::text(line, channel, webb::rules::InputKind::ChatLog)
+                    .with_time_origin(origin);
             for activation in executor.run(&context, self.intel_resolver.as_ref()) {
                 for message in activation.messages {
                     if !tags.contains(&message.tag) {
@@ -184,11 +184,16 @@ impl TelescopeApp {
         );
     }
 
-    /// Points the zKillboard source at the SDE the settings name (it looks up
-    /// system and ship names there). Cheap and idempotent, like
-    /// [`Self::sync_alarm_shared`], which it runs next to.
-    pub(crate) fn sync_zkillboard(&self) {
-        self.intel_zkillboard.set_sde_path(self.settings.get_sde());
+    /// Points what reads the SDE database at the one the settings name: the
+    /// zKillboard source (it looks up system and ship names there) and the
+    /// ship index that gives the ships of chat lines their type id. Cheap and
+    /// idempotent, like [`Self::sync_alarm_shared`], which it runs next to.
+    pub(crate) fn sync_sde_path(&self) {
+        let path = self.settings.get_sde();
+        self.intel_zkillboard.set_sde_path(path);
+        self.intel_resolver.set_sde_path(path);
+        self.intel_resolver
+            .set_aliases_path(&path.with_file_name(resolve::SystemAliases::FILE));
     }
 
     /// Rebuilds the stargate graph the alarm measures distances on from the

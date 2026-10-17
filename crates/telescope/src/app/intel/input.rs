@@ -7,12 +7,13 @@
 //! [`InputEvent`] carries.
 
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::OnceLock;
-use webb::rules::{InputKind, IntelLine, parse_line};
+use webb::event::{EventSource, Facts, IntelEvent, TimeOrigin};
+use webb::rules::{InputKind, IntelLine};
 
 /// A chatlog file name split into its channel and the rest.
 ///
@@ -58,6 +59,55 @@ pub(crate) struct InputEvent {
     pub kind: InputKind,
     /// The parsed line (timestamp, author, text).
     pub line: IntelLine,
+    /// What the source knows about the event beyond its text (nothing for a
+    /// chat line).
+    pub facts: Facts,
+    /// Whether the line's moment was reported by the source or assumed (see
+    /// [`TimeOrigin`]).
+    pub time_origin: TimeOrigin,
+}
+
+impl InputEvent {
+    /// Packages `event`, read from `source`, for the detection stage.
+    pub(crate) fn from_event(source: impl Into<String>, event: IntelEvent) -> Self {
+        Self {
+            source: source.into(),
+            channel: event.channel,
+            kind: event.kind,
+            line: event.line,
+            facts: event.facts,
+            time_origin: event.time_origin,
+        }
+    }
+}
+
+/// Decodes the lines of one chat log: the text EVE wrote, in the log's line
+/// format. A chat line has no facts, only text.
+pub(crate) struct ChatLogDecoder {
+    /// The channel of the log the lines come from.
+    channel: String,
+}
+
+impl ChatLogDecoder {
+    /// A decoder for the lines of `channel`'s log.
+    pub(crate) fn new(channel: impl Into<String>) -> Self {
+        Self {
+            channel: channel.into(),
+        }
+    }
+}
+
+impl EventSource for ChatLogDecoder {
+    type Raw = str;
+
+    fn kind(&self) -> InputKind {
+        InputKind::ChatLog
+    }
+
+    fn decode(&self, raw: &str) -> Option<IntelEvent> {
+        let (line, origin) = IntelLine::parse_or_assume(raw, chrono::Utc::now())?;
+        Some(IntelEvent::text(line, self.channel.as_str(), self.kind()).with_time_origin(origin))
+    }
 }
 
 /// What a read of a chat log produced: the new lines (as [`InputEvent`]s) and
@@ -102,16 +152,11 @@ impl ChatLogSource {
         let channel = IntelLogName::parse(file_name)
             .map(|log| log.channel.to_string())
             .unwrap_or_default();
-        let source = file_name.to_string();
+        let decoder = ChatLogDecoder::new(channel);
         let events = text
             .lines()
-            .filter_map(parse_line)
-            .map(|line| InputEvent {
-                source: source.clone(),
-                channel: channel.clone(),
-                kind: InputKind::ChatLog,
-                line,
-            })
+            .filter_map(|raw| decoder.decode(raw))
+            .map(|event| InputEvent::from_event(file_name, event))
             .collect();
         Some(InputRead {
             events,
@@ -131,20 +176,31 @@ impl ChatLogSource {
 /// before any sync has seen it (its creation event was missed) is read from
 /// the start: it is a new, live log.
 #[derive(Debug, Default)]
-pub(crate) struct IntelOffsets(HashMap<String, u64>);
+pub(crate) struct IntelOffsets {
+    offsets: HashMap<String, u64>,
+    /// The files already reported as having lines without a date, so the
+    /// warning is given once per log and not once per line.
+    undated: HashSet<String>,
+}
 
 impl IntelOffsets {
     /// Where to resume reading `file_name` (0 for an unknown file).
     pub(crate) fn get(&self, file_name: &str) -> u64 {
-        self.0.get(file_name).copied().unwrap_or(0)
+        self.offsets.get(file_name).copied().unwrap_or(0)
+    }
+
+    /// Notes that `file_name` has lines without a date. True the first time,
+    /// when the user has to be told; false after that.
+    pub(crate) fn first_undated(&mut self, file_name: &str) -> bool {
+        self.undated.insert(file_name.to_string())
     }
 
     /// Records where the last read of `file_name` stopped.
     pub(crate) fn set(&mut self, file_name: &str, offset: u64) {
-        match self.0.get_mut(file_name) {
+        match self.offsets.get_mut(file_name) {
             Some(known) => *known = offset,
             None => {
-                self.0.insert(file_name.to_string(), offset);
+                self.offsets.insert(file_name.to_string(), offset);
             }
         }
     }
@@ -172,16 +228,17 @@ impl IntelOffsets {
                 present.insert(name, meta.len());
             }
         }
-        self.0.retain(|name, _| present.contains_key(name));
+        self.offsets.retain(|name, _| present.contains_key(name));
+        self.undated.retain(|name| present.contains_key(name));
         for (name, length) in present {
-            self.0.entry(name).or_insert(length);
+            self.offsets.entry(name).or_insert(length);
         }
     }
 
     /// Number of tracked files.
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.0.len()
+        self.offsets.len()
     }
 }
 
@@ -346,6 +403,41 @@ mod log_name_tests {
     use super::*;
 
     #[test]
+    fn a_chat_line_is_an_event_of_text_only() {
+        let decoder = ChatLogDecoder::new("Local");
+        let event = decoder
+            .decode("[ 2024.01.01 12:00:00 ] Pilot > Jita  +3")
+            .unwrap();
+        assert_eq!(event.kind, InputKind::ChatLog);
+        assert_eq!(event.channel, "Local");
+        assert_eq!(event.line.author, "Pilot");
+        assert_eq!(event.line.text, "Jita  +3");
+        assert!(event.facts.is_empty());
+    }
+
+    #[test]
+    fn a_text_that_is_not_a_chat_line_is_no_event() {
+        assert!(
+            ChatLogDecoder::new("Local")
+                .decode("not a log line")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_event_keeps_everything_when_it_becomes_an_input_event() {
+        let event = ChatLogDecoder::new("Local")
+            .decode("[ 2024.01.01 12:00:00 ] Pilot > hi")
+            .unwrap();
+        let input = InputEvent::from_event("Local_20240101_120000.txt", event.clone());
+        assert_eq!(input.source, "Local_20240101_120000.txt");
+        assert_eq!(input.channel, event.channel);
+        assert_eq!(input.kind, event.kind);
+        assert_eq!(input.line, event.line);
+        assert_eq!(input.facts, event.facts);
+    }
+
+    #[test]
     fn splits_channel_and_suffix() {
         let log = IntelLogName::parse("Local_20230101_000000_12345.txt").unwrap();
         assert_eq!(log.channel, "Local");
@@ -413,6 +505,54 @@ mod monitored_channel_names_tests {
         let available = HashMap::from([(String::from("Local"), false)]);
         assert!(monitored_channel_names(&available).is_empty());
         assert!(monitored_channel_names(&HashMap::new()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod event_time_tests {
+    use super::ChatLogDecoder;
+    use webb::event::{EventSource, TimeOrigin};
+
+    #[test]
+    fn a_chat_line_carries_the_date_of_the_log() {
+        let event = ChatLogDecoder::new("Intel")
+            .decode("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear")
+            .unwrap();
+        assert_eq!(event.time_origin, TimeOrigin::Reported);
+        assert_eq!(event.at().to_rfc3339(), "2021-09-08T22:56:47+00:00");
+    }
+
+    #[test]
+    fn a_chat_line_without_a_date_is_decoded_at_the_moment_it_is_read() {
+        let before = chrono::Utc::now();
+        let event = ChatLogDecoder::new("Intel")
+            .decode("Some Pilot > 1DQ1-A clear")
+            .unwrap();
+        assert_eq!(event.time_origin, TimeOrigin::Assumed);
+        assert!(event.at() >= before);
+        assert_eq!(event.line.text, "1DQ1-A clear");
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_chat_line_is_dropped() {
+        assert!(
+            ChatLogDecoder::new("Intel")
+                .decode("not a log line")
+                .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod undated_warning_tests {
+    use super::IntelOffsets;
+
+    #[test]
+    fn a_log_is_reported_as_undated_once() {
+        let mut offsets = IntelOffsets::default();
+        assert!(offsets.first_undated("Intel_1.txt"));
+        assert!(!offsets.first_undated("Intel_1.txt"));
+        assert!(offsets.first_undated("Local_1.txt"));
     }
 }
 

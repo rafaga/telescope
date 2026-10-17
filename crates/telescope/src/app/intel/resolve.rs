@@ -3,8 +3,10 @@
 
 use sde::objects::Universe;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::RwLock;
-use webb::graph::SystemResolver;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, RwLock};
+use std::time::SystemTime;
+use webb::graph::{ShipResolver, SystemResolver};
 
 /// A [`SystemResolver`] backed by the loaded SDE universe: exact names (any
 /// case) first, and -- only for code-like text (see [`allows_partial_match`])
@@ -14,6 +16,9 @@ pub(crate) struct UniverseResolver {
     exact: HashMap<String, usize>,
     /// Lowercase names sorted, for prefix lookups by binary search.
     sorted: Vec<(String, usize)>,
+    /// Systems by the letters before the first dash of their name
+    /// (`ymjg` -> `YMJG-4`), for the abbreviations players write.
+    heads: HashMap<String, Vec<usize>>,
 }
 
 impl UniverseResolver {
@@ -33,7 +38,29 @@ impl UniverseResolver {
             .collect();
         sorted.sort();
         let exact = sorted.iter().cloned().collect();
-        Self { exact, sorted }
+        let mut heads: HashMap<String, Vec<usize>> = HashMap::new();
+        for (name, id) in &sorted {
+            if let Some((head, _)) = name.split_once('-')
+                && Self::is_abbreviation(head)
+            {
+                heads.entry(head.to_string()).or_default().push(*id);
+            }
+        }
+        Self {
+            exact,
+            sorted,
+            heads,
+        }
+    }
+
+    /// The fewest letters an abbreviation has: with fewer, the words players
+    /// write (`fyi`, `ion`, `lul`) are mistaken for systems.
+    const MIN_ABBREVIATION_LETTERS: usize = 4;
+
+    /// Whether `text` can be an abbreviation: only letters, enough of them.
+    fn is_abbreviation(text: &str) -> bool {
+        text.len() >= Self::MIN_ABBREVIATION_LETTERS
+            && text.chars().all(|c| c.is_ascii_alphabetic())
     }
 }
 
@@ -44,7 +71,12 @@ impl SystemResolver for UniverseResolver {
             return Some(*id);
         }
         if !allows_partial_match(name) {
-            return None;
+            // The letters before the dash, when only one system has them:
+            // `ymjg` is `YMJG-4`, `msh` is nothing.
+            return match self.heads.get(&lower).map(Vec::as_slice) {
+                Some([only]) => Some(*only),
+                _ => None,
+            };
         }
         // The first name >= `lower` is the smallest one that could start with
         // it.
@@ -62,18 +94,37 @@ impl SystemResolver for UniverseResolver {
 /// be (re)built while Telescope runs (first run, an update from *Settings ->
 /// Application*), and the systems it adds must become resolvable without a
 /// restart.
-pub(crate) struct SharedResolver(RwLock<UniverseResolver>);
+pub(crate) struct SharedResolver {
+    systems: RwLock<UniverseResolver>,
+    ships: SdeShips,
+    aliases: SystemAliases,
+}
 
 impl SharedResolver {
     pub(crate) fn new(universe: &Universe) -> Self {
-        Self(RwLock::new(UniverseResolver::new(universe)))
+        Self {
+            systems: RwLock::new(UniverseResolver::new(universe)),
+            ships: SdeShips::default(),
+            aliases: SystemAliases::default(),
+        }
+    }
+
+    /// Points the aliases at the file at `path`; see [`SystemAliases::set_path`].
+    pub(crate) fn set_aliases_path(&self, path: &Path) {
+        self.aliases.set_path(path);
+    }
+
+    /// Points the ship index at the SDE database at `path`; see
+    /// [`SdeShips::set_path`].
+    pub(crate) fn set_sde_path(&self, path: &Path) {
+        self.ships.set_path(path);
     }
 
     /// Rebuilds the lookup tables from `universe`.
     pub(crate) fn replace(&self, universe: &Universe) {
         let resolver = UniverseResolver::new(universe);
         *self
-            .0
+            .systems
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = resolver;
     }
@@ -81,10 +132,231 @@ impl SharedResolver {
 
 impl SystemResolver for SharedResolver {
     fn resolve(&self, name: &str) -> Option<usize> {
-        self.0
+        let systems = self
+            .systems
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The user's own names come first: they say what a word means in
+        // their channels, whatever else it could be.
+        match self.aliases.target(name) {
+            Some(target) => systems.resolve(&target),
+            None => systems.resolve(name),
+        }
+    }
+
+    fn ship_resolver(&self) -> Option<&dyn ShipResolver> {
+        Some(&self.ships)
+    }
+}
+
+/// The user's own names for systems, from a file next to the SDE database
+/// ([`SystemAliases::FILE`]):
+///
+/// ```toml
+/// [aliases]
+/// ipay = "IPAY-2"
+/// umi = "UMI-KK"
+/// ```
+///
+/// Each key is a word as players write it (any case) and each value the full
+/// name of a system of the universe. They cover what the automatic
+/// abbreviations do not: the ones shorter than four letters, and the ones
+/// that could be more than one system. The file is read when it is first
+/// pointed at and again whenever it changes, never while resolving.
+#[derive(Default)]
+pub(crate) struct SystemAliases {
+    index: RwLock<AliasIndex>,
+}
+
+/// The aliases read from one version of one file.
+#[derive(Default)]
+struct AliasIndex {
+    path: PathBuf,
+    /// When the file was last modified and how big it was; `None` when it
+    /// does not exist or could not be read.
+    stamp: Option<(SystemTime, u64)>,
+    /// Lowercase alias -> the system's name.
+    targets: HashMap<String, String>,
+}
+
+/// The shape of the aliases file.
+#[derive(serde::Deserialize)]
+struct AliasFile {
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+}
+
+impl SystemAliases {
+    /// The name of the aliases file, next to the SDE database.
+    pub(crate) const FILE: &'static str = "system_aliases.toml";
+
+    /// Points the aliases at the file at `path`, reading it again when it is
+    /// another file or it changed. Cheap otherwise (one `stat`), so it can run
+    /// on every pass of the event loop. A missing file means no aliases; an
+    /// unreadable one is reported and means none either.
+    pub(crate) fn set_path(&self, path: &Path) {
+        let stamp = Self::stamp(path);
+        {
+            let index = self
+                .index
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if index.path == path && index.stamp == stamp {
+                return;
+            }
+        }
+        // Read outside the lock: the detection thread keeps resolving with
+        // the old aliases meanwhile.
+        let targets = if stamp.is_some() {
+            Self::load(path).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        *self
+            .index
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = AliasIndex {
+            path: path.to_path_buf(),
+            stamp,
+            targets,
+        };
+    }
+
+    /// The system `word` stands for, if the user named it.
+    fn target(&self, word: &str) -> Option<String> {
+        self.index
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .resolve(name)
+            .targets
+            .get(&Self::normalize(word))
+            .cloned()
+    }
+
+    /// `word` as the aliases are keyed: lowercase, one blank between words.
+    fn normalize(word: &str) -> String {
+        word.split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }
+
+    /// The aliases of the file at `path`; `None` if it cannot be read or is not
+    /// valid.
+    fn load(path: &Path) -> Option<HashMap<String, String>> {
+        let text = std::fs::read_to_string(path)
+            .inspect_err(|error| tracing::warn!("could not read {}: {error}", path.display()))
+            .ok()?;
+        let file: AliasFile = toml::from_str(&text)
+            .inspect_err(|error| tracing::warn!("invalid {}: {error}", path.display()))
+            .ok()?;
+        Some(
+            file.aliases
+                .into_iter()
+                .map(|(alias, system)| (Self::normalize(&alias), system))
+                .filter(|(alias, _)| !alias.is_empty())
+                .collect(),
+        )
+    }
+}
+
+/// A [`ShipResolver`] backed by the ship types of the SDE database: the
+/// published types of the ship category, by lowercase name. The database is
+/// read when it is first pointed at and again whenever the file changes (an
+/// SDE update replaces it while Telescope runs), never while resolving.
+#[derive(Default)]
+pub(crate) struct SdeShips {
+    index: Mutex<ShipIndex>,
+}
+
+/// The ships read from one version of one database file.
+#[derive(Default)]
+struct ShipIndex {
+    path: PathBuf,
+    /// When the file was last modified and how big it was; `None` when it
+    /// could not be read.
+    stamp: Option<(SystemTime, u64)>,
+    ids: HashMap<String, u32>,
+}
+
+impl SdeShips {
+    /// The ship category of the SDE.
+    const SHIP_CATEGORY: u32 = 6;
+    const SHIPS_SQL: &'static str = "SELECT t.typeId, t.typeName FROM invTypes t \
+         JOIN invGroups g ON g.groupId = t.groupId \
+         WHERE g.categoryId = ?1 AND t.published = 1";
+
+    /// Points the index at the database at `path`, reading its ships again
+    /// when it is another file or the file changed. Cheap otherwise (one
+    /// `stat`), so it can run on every pass of the event loop.
+    pub(crate) fn set_path(&self, path: &Path) {
+        let stamp = Self::stamp(path);
+        {
+            let index = self
+                .index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if index.path == path && index.stamp == stamp {
+                return;
+            }
+        }
+        // Read outside the lock: the detection thread keeps resolving with
+        // the old index meanwhile.
+        let ids = if stamp.is_some() {
+            Self::load(path).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        *self
+            .index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = ShipIndex {
+            path: path.to_path_buf(),
+            stamp,
+            ids,
+        };
+    }
+
+    fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+        let metadata = std::fs::metadata(path).ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }
+
+    /// The lowercase name -> type id of every published ship in the database
+    /// at `path`, opened read-only. `None` if it can't be read or has no
+    /// such tables.
+    fn load(path: &Path) -> Option<HashMap<String, u32>> {
+        let connection = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .ok()?;
+        let mut statement = connection.prepare(Self::SHIPS_SQL).ok()?;
+        let rows = statement
+            .query_map([Self::SHIP_CATEGORY], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })
+            .ok()?;
+        Some(
+            rows.flatten()
+                .map(|(id, name)| (name.to_lowercase(), id))
+                .collect(),
+        )
+    }
+}
+
+impl ShipResolver for SdeShips {
+    fn resolve_ship(&self, name: &str) -> Option<u32> {
+        self.index
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .ids
+            .get(&name.to_lowercase())
+            .copied()
     }
 }
 
@@ -231,7 +503,8 @@ mod system_lookup_tests {
 #[cfg(test)]
 mod real_line_tests {
     use super::UniverseResolver;
-    use webb::graph::{Data, Executor, LineContext, RuleGraph};
+    use webb::event::IntelEvent;
+    use webb::graph::{Data, Executor, RuleGraph};
     use webb::intel::IntelLine;
     use webb::map_alerts::{AlertPart, AlertSummary, leftover};
     use webb::rules::OutputKind;
@@ -298,15 +571,15 @@ mod real_line_tests {
         );
         let (executor, errors) = Executor::new(RuleGraph::default_graph());
         assert!(errors.is_empty(), "{errors:?}");
-        let context = LineContext {
-            line: IntelLine {
+        let context = IntelEvent::text(
+            IntelLine {
                 timestamp: chrono::DateTime::from_timestamp(0, 0).unwrap(),
                 author: String::from("Pilot"),
                 text: text.to_string(),
             },
-            channel: String::from("Intel"),
-            kind: webb::rules::InputKind::ChatLog,
-        };
+            "Intel",
+            webb::rules::InputKind::ChatLog,
+        );
         let activations = executor.run(&context, &resolver);
 
         let mut systems = Vec::new();
@@ -691,5 +964,247 @@ mod real_line_tests {
         let names = "Floris Saucus ".repeat(500);
         assert!(names.len() > 5000);
         assert!(systems_of(&names).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ship_index_tests {
+    use super::{SdeShips, SharedResolver};
+    use std::path::{Path, PathBuf};
+    use webb::graph::{ShipResolver, SystemResolver};
+
+    /// A database of its own, removed when dropped.
+    struct TempDb(PathBuf);
+
+    impl TempDb {
+        /// A database with the two tables the index reads: the ship group
+        /// (category 6) and a module group (category 7).
+        fn with_ships(tag: &str, ships: &[(u32, &str, u32, bool)]) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("telescope-ships-{tag}-{}.db", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE invGroups (groupId INTEGER, categoryId INTEGER, groupName TEXT, anchorable INTEGER);
+                     CREATE TABLE invTypes (typeId INTEGER, groupId INTEGER, typeName TEXT, iconId INTEGER, published INTEGER, volume REAL);
+                     INSERT INTO invGroups VALUES (25, 6, 'Frigate', 0), (60, 7, 'Module', 0);",
+                )
+                .unwrap();
+            for (id, name, group, published) in ships {
+                connection
+                    .execute(
+                        "INSERT INTO invTypes VALUES (?1, ?2, ?3, NULL, ?4, 0)",
+                        rusqlite::params![id, group, name, published],
+                    )
+                    .unwrap();
+            }
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn published_ships_resolve_by_name_in_any_case() {
+        let db = TempDb::with_ships(
+            "resolve",
+            &[
+                (587, "Rifter", 25, true),
+                (584, "Merlin", 25, true),
+                (1, "Damage Control I", 60, true),
+                (999, "Retired Frigate", 25, false),
+            ],
+        );
+        let ships = SdeShips::default();
+        ships.set_path(db.path());
+        assert_eq!(ships.resolve_ship("Rifter"), Some(587));
+        assert_eq!(ships.resolve_ship("MERLIN"), Some(584));
+        // Not a ship, not published, not in the SDE.
+        assert_eq!(ships.resolve_ship("Damage Control I"), None);
+        assert_eq!(ships.resolve_ship("Retired Frigate"), None);
+        assert_eq!(ships.resolve_ship("Zzyzx Hauler"), None);
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_database_resolves_nothing() {
+        let ships = SdeShips::default();
+        assert_eq!(ships.resolve_ship("Rifter"), None);
+        ships.set_path(Path::new("/nonexistent/sde.db"));
+        assert_eq!(ships.resolve_ship("Rifter"), None);
+    }
+
+    #[test]
+    fn another_database_replaces_the_ships_and_the_same_one_is_not_read_again() {
+        let first = TempDb::with_ships("first", &[(587, "Rifter", 25, true)]);
+        let second = TempDb::with_ships("second", &[(584, "Merlin", 25, true)]);
+        let ships = SdeShips::default();
+        ships.set_path(first.path());
+        ships.set_path(first.path());
+        assert_eq!(ships.resolve_ship("Rifter"), Some(587));
+        ships.set_path(second.path());
+        assert_eq!(ships.resolve_ship("Rifter"), None);
+        assert_eq!(ships.resolve_ship("Merlin"), Some(584));
+    }
+
+    #[test]
+    fn the_shared_resolver_offers_the_ships_of_its_database() {
+        let db = TempDb::with_ships("shared", &[(587, "Rifter", 25, true)]);
+        let resolver = SharedResolver::new(&sde::objects::Universe::default());
+        assert!(resolver.ship_resolver().is_some());
+        assert_eq!(
+            resolver.ship_resolver().unwrap().resolve_ship("Rifter"),
+            None
+        );
+        resolver.set_sde_path(db.path());
+        assert_eq!(
+            resolver.ship_resolver().unwrap().resolve_ship("Rifter"),
+            Some(587)
+        );
+    }
+}
+
+#[cfg(test)]
+mod abbreviation_tests {
+    use super::{SharedResolver, SystemAliases, UniverseResolver};
+    use sde::objects::{SolarSystem, Universe};
+    use std::path::PathBuf;
+    use webb::graph::SystemResolver;
+
+    /// Resolvers over a handful of systems, and a place for alias files.
+    struct Fixture {
+        dir: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("telescope-alias-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+
+        fn systems() -> UniverseResolver {
+            UniverseResolver::from_names([
+                ("YMJG-4", 1),
+                ("MSHD-4", 2),
+                ("UMI-KK", 3),
+                ("ABCD-1", 4),
+                ("ABCD-2", 5),
+                ("FYI-49", 6),
+                ("Jita", 7),
+                ("Tash-Murkon Prime", 8),
+            ])
+        }
+
+        fn shared() -> SharedResolver {
+            let mut universe = Universe::new(1.0);
+            for (id, name) in [(3, "UMI-KK"), (8, "IPAY-2"), (9, "YMJG-4")] {
+                let mut system = SolarSystem::new(1.0);
+                system.id = id;
+                system.name = name.to_string();
+                universe.solar_systems.insert(id, system);
+            }
+            SharedResolver::new(&universe)
+        }
+
+        fn write(&self, text: &str) -> PathBuf {
+            let path = self.dir.join(SystemAliases::FILE);
+            std::fs::write(&path, text).unwrap();
+            path
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn four_letters_before_the_dash_name_the_only_system_that_has_them() {
+        let resolver = Fixture::systems();
+        assert_eq!(resolver.resolve("ymjg"), Some(1));
+        assert_eq!(resolver.resolve("YMJG"), Some(1));
+        assert_eq!(resolver.resolve("mshd"), Some(2));
+        assert_eq!(resolver.resolve("tash"), Some(8));
+    }
+
+    #[test]
+    fn a_shorter_abbreviation_is_not_a_system() {
+        let resolver = Fixture::systems();
+        assert_eq!(resolver.resolve("umi"), None);
+        assert_eq!(resolver.resolve("fyi"), None);
+        assert_eq!(resolver.resolve("ym"), None);
+    }
+
+    #[test]
+    fn an_abbreviation_that_fits_two_systems_is_not_guessed() {
+        let resolver = Fixture::systems();
+        assert_eq!(resolver.resolve("abcd"), None);
+        // Written in full it is not ambiguous.
+        assert_eq!(resolver.resolve("abcd-2"), Some(5));
+    }
+
+    #[test]
+    fn the_whole_name_still_wins_and_words_are_not_abbreviations() {
+        let resolver = Fixture::systems();
+        assert_eq!(resolver.resolve("Jita"), Some(7));
+        assert_eq!(resolver.resolve("ymjg4"), None);
+        assert_eq!(resolver.resolve("ymjg blue"), None);
+    }
+
+    #[test]
+    fn an_alias_names_a_system_the_user_chose() {
+        let fixture = Fixture::new("names");
+        let resolver = Fixture::shared();
+        assert_eq!(resolver.resolve("umi"), None);
+        resolver
+            .set_aliases_path(&fixture.write("[aliases]\numi = \"UMI-KK\"\nIPAY = \"IPAY-2\"\n"));
+        assert_eq!(resolver.resolve("umi"), Some(3));
+        assert_eq!(resolver.resolve("UMI"), Some(3));
+        assert_eq!(resolver.resolve("ipay"), Some(8));
+    }
+
+    #[test]
+    fn an_alias_wins_over_the_automatic_abbreviation() {
+        let fixture = Fixture::new("wins");
+        let resolver = Fixture::shared();
+        assert_eq!(resolver.resolve("ymjg"), Some(9));
+        resolver.set_aliases_path(&fixture.write("[aliases]\nymjg = \"UMI-KK\"\n"));
+        assert_eq!(resolver.resolve("ymjg"), Some(3));
+    }
+
+    #[test]
+    fn aliases_follow_the_file_when_it_changes_or_goes_away() {
+        let fixture = Fixture::new("changes");
+        let resolver = Fixture::shared();
+        let path = fixture.write("[aliases]\numi = \"UMI-KK\"\n");
+        resolver.set_aliases_path(&path);
+        assert_eq!(resolver.resolve("umi"), Some(3));
+        fixture.write("[aliases]\nthe-other-one = \"IPAY-2\"\n");
+        resolver.set_aliases_path(&path);
+        assert_eq!(resolver.resolve("umi"), None);
+        assert_eq!(resolver.resolve("the-other-one"), Some(8));
+        std::fs::remove_file(&path).unwrap();
+        resolver.set_aliases_path(&path);
+        assert_eq!(resolver.resolve("the-other-one"), None);
+    }
+
+    #[test]
+    fn an_invalid_aliases_file_means_no_aliases() {
+        let fixture = Fixture::new("invalid");
+        let resolver = Fixture::shared();
+        resolver.set_aliases_path(&fixture.write("this is = not [valid"));
+        assert_eq!(resolver.resolve("umi"), None);
+        assert_eq!(resolver.resolve("ymjg"), Some(9));
     }
 }

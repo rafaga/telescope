@@ -21,7 +21,7 @@ key differences.
   lines as they are written, recognising the channel from the log file name.
 * **Intel rules** — a node graph edited in *Settings -> Rules*: inputs
   (chat logs or the live zKillboard killmail feed), detections (systems, ships, pilot counts, keywords, custom
-  regexes or word lists), logic nodes (aggregators, gates, formatters) and
+  regexes or word lists), logic nodes (unions, formatters) and
   outputs (map alert, sound, log, tooltip, suppress). Stored in the local
   database; the whole graph can be exported to or imported from
   `rules.toml`.

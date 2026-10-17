@@ -8,6 +8,68 @@ The entries up to *1.0.0-rc01* were reconstructed from the git history, grouped
 by topic and dated by the period they happened in. The entries of the later
 versions were written for the tag that shipped them.
 
+## [Unreleased]
+
+### Changed
+
+* The rule engine is independent of the format of its input. It evaluates an
+  `IntelEvent` (`webb::event`, which replaces `LineContext`): the text of the
+  event, which the text detections read, and the `Facts` its source knows by
+  itself (solar systems, ships, pilot count). Each source decodes its own format
+  through the `EventSource` trait (`ChatLogDecoder` for chat lines,
+  `ZKillboardDecoder` for killmails, which are no longer flattened to a sentence
+  and searched again). *System report*, *Ship names* and *Pilot count* read the
+  facts when the source gave them (`DetectionType::fact`) and the text when it
+  did not: a killmail now reports a pilot count over 999, every ship that took
+  part (not only the first eight attackers') and a ship named like a system,
+  which the sentence could not carry. A fact the source gave is final, even when
+  empty. Chat lines have no facts and are read exactly as before (October 2026).
+* Ships are identified by their SDE type id. `Facts.ships` and `Data::Ships`
+  carry `ShipCount { type_id, name, times }` instead of a name and a count: a
+  killmail fills the id, and the ships of a chat line get theirs from the new
+  `ShipResolver` (`SystemResolver::ship_resolver`), backed by the published
+  ship types of the SDE (`SdeShips`, reloaded when the database file changes).
+  The same ship has the same id whatever the source, and ships are merged by
+  id when both sides have one and by name otherwise. A name the SDE does not
+  know (a nickname, a typo) stays known by its name only. The map tooltips and
+  the log text are unchanged. `sync_zkillboard` is now `sync_sde_path` (October
+  2026).
+* An `IntelEvent` records when it happened (`IntelEvent::at()`): the date of
+  the line in the chat log or the time of the killmail, and where it comes from
+  (`TimeOrigin::Reported` or `Assumed`). EVE's default settings can leave the
+  date out of the chat logs: such a line used to be dropped without a word, and
+  now it is read like any other (`IntelLine::parse_or_assume`), taking the moment
+  it was read, and Telescope warns once per log in the status log. A killmail
+  whose time can't be read is treated the same way, with a warning (October
+  2026).
+* A Detection node chooses what it reads (`DetectionNode::source`, the *Reads*
+  field of its panel): *facts or text* (the default: the facts of the event when
+  its source gave them, the text otherwise), *facts only* (an event without that
+  fact has nothing for it) or *text only*. Only *System report*, *Ship names* and
+  *Pilot count* offer it, the validator rejects *facts only* on any other, and
+  saved graphs without the field load as *facts or text* (October 2026).
+* **Breaking: the node graph works differently (engine v2).** A wire no longer
+  carries a true / false signal per pin: it carries "the event goes on" and the
+  findings gathered by the nodes it passed. Every node has a single output.
+  Chaining nodes is an AND; the *Aggregator* is now a *Union* (the event goes on
+  when it reaches any input, findings merged without repeats); a Detection has a
+  *Mode*, *Requires* (default) or *Excludes* (the event goes on unchanged when
+  it finds nothing), which replaces the NOT. A Detection always reads the event
+  itself, never what an earlier node found. The Output fires when it is reached,
+  with all the findings. The default rules were rewritten without gates (the
+  tooltip rule is `union -> not_status (Excludes) -> tooltip`).
+  Saved graphs of the previous model cannot be converted: database schema 3
+  keeps the old graph as it was in the tables `node_v2_backup` and
+  `edge_v2_backup` and replaces it with the default graph, and a `rules.toml`
+  exported before this version, with gates or `from_pin`, does not import any
+  more (October 2026).
+
+### Removed
+
+* The AND / OR / XOR / NOT gate nodes (`NodeKind::Gate`, `GateKind`), the `F`
+  (false) output of the Detections, `Edge::from_pin`, `Pin`, `Signal` and the
+  `LINE_TAG` marker. XOR has no replacement (October 2026).
+
 ## [1.0.4] - 2026-10-14
 
 ### Added
@@ -497,7 +559,8 @@ back end was split into the `webb` crate in March 2023, the multi-tab map
 layout (`egui_tiles`) and the regional maps arrived in early 2024, and the
 native dialog code (including macOS) in mid-2026.
 
-[Unreleased]: https://github.com/rafaga/telescope/compare/1.0.3...HEAD
+[Unreleased]: https://github.com/rafaga/telescope/compare/1.0.4...HEAD
+[1.0.4]: https://github.com/rafaga/telescope/compare/1.0.3...1.0.4
 [1.0.3]: https://github.com/rafaga/telescope/compare/1.0.2...1.0.3
 [1.0.2]: https://github.com/rafaga/telescope/compare/1.0.1...1.0.2
 [1.0.1]: https://github.com/rafaga/telescope/compare/1.0.0...1.0.1

@@ -24,6 +24,7 @@ case_insensitive = false
 
 [nodes.kind.kind]
 type = "system_report"
+ignore_words = ["van", "jan", "half", "tar", "pain", "sosa", "mara", "ned", "bar", "ham", "reset", "mora", "col", "ana", "lor"]
 
 [[nodes]]
 id = "pilot_count_prefix"
@@ -37,19 +38,6 @@ case_insensitive = false
 
 [nodes.kind.kind]
 type = "pilot_count"
-
-[[nodes]]
-id = "ship_report_zh"
-enabled = true
-x = -280.58258
-y = 73.37106
-
-[nodes.kind]
-node = "detection"
-case_insensitive = false
-
-[nodes.kind.kind]
-type = "ship_names_zh"
 
 [[nodes]]
 id = "ship_names"
@@ -89,7 +77,7 @@ y = -350.42142
 
 [nodes.kind]
 node = "aggregator"
-inputs = 5
+inputs = 4
 
 [[nodes]]
 id = "visual"
@@ -164,17 +152,6 @@ type = "clear_report"
 keywords = ["clear", "clr"]
 
 [[nodes]]
-id = "or_1"
-enabled = true
-x = 885.4807
-y = -112.11994
-
-[nodes.kind]
-node = "gate"
-kind = "or"
-inputs = 2
-
-[[nodes]]
 id = "status_query"
 enabled = true
 x = -284.8771
@@ -219,208 +196,141 @@ type = "keyword"
 keywords = ["nv"]
 
 [[nodes]]
+id = "not_status"
+enabled = true
+x = 885.0
+y = 60.0
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+mode = "exclude"
+
+[nodes.kind.kind]
+type = "query"
+keywords = ["status"]
+
+[[nodes]]
 id = "suppress_in"
 enabled = true
 x = 885.0
 y = -250.0
 
 [nodes.kind]
-node = "gate"
-kind = "or"
-inputs = 2
-
-[[nodes]]
-id = "not_query"
-enabled = true
-x = 885.0
-y = 60.0
-
-[nodes.kind]
-node = "gate"
-kind = "not"
-inputs = 1
-
-[[nodes]]
-id = "tooltip_gate"
-enabled = true
-x = 1100.0
-y = -20.0
-
-[nodes.kind]
-node = "gate"
-kind = "and"
+node = "aggregator"
 inputs = 2
 
 [[edges]]
 from = "chat_logs"
-from_pin = "out"
 to = "clear_report"
 to_pin = 0
 
 [[edges]]
 from = "chat_logs"
-from_pin = "out"
 to = "status_query"
 to_pin = 0
 
 [[edges]]
 from = "chat_logs"
-from_pin = "out"
 to = "pilot_count_prefix"
 to_pin = 0
 
 [[edges]]
 from = "chat_logs"
-from_pin = "out"
 to = "ship_names"
 to_pin = 0
 
 [[edges]]
 from = "chat_logs"
-from_pin = "out"
-to = "ship_report_zh"
-to_pin = 0
-
-[[edges]]
-from = "chat_logs"
-from_pin = "out"
 to = "system_reported"
 to_pin = 0
 
 [[edges]]
-from = "clear_report"
-from_pin = "t"
-to = "or_1"
-to_pin = 0
-
-[[edges]]
 from = "status_query"
-from_pin = "t"
 to = "log_in"
-to_pin = 3
+to_pin = 2
 
 [[edges]]
 from = "log_in"
-from_pin = "out"
 to = "log"
 to_pin = 0
 
 [[edges]]
 from = "pilot_count_prefix"
-from_pin = "t"
 to = "log_in"
-to_pin = 2
+to_pin = 1
 
 [[edges]]
 from = "pilot_count_prefix"
-from_pin = "t"
 to = "tooltip_in"
 to_pin = 1
 
 [[edges]]
 from = "ship_names"
-from_pin = "t"
-to = "log_in"
-to_pin = 1
-
-[[edges]]
-from = "ship_names"
-from_pin = "t"
-to = "tooltip_in"
-to_pin = 3
-
-[[edges]]
-from = "ship_report_zh"
-from_pin = "t"
 to = "log_in"
 to_pin = 0
 
 [[edges]]
-from = "ship_report_zh"
-from_pin = "t"
+from = "ship_names"
 to = "tooltip_in"
 to_pin = 2
 
 [[edges]]
 from = "system_reported"
-from_pin = "t"
 to = "sound"
 to_pin = 0
 
 [[edges]]
 from = "system_reported"
-from_pin = "t"
 to = "tooltip_in"
 to_pin = 0
 
 [[edges]]
 from = "system_reported"
-from_pin = "t"
 to = "visual"
 to_pin = 0
 
 [[edges]]
-from = "tooltip_in"
-from_pin = "out"
-to = "or_1"
-to_pin = 1
-
-[[edges]]
 from = "chat_logs"
-from_pin = "out"
 to = "neutral_spotted"
 to_pin = 0
 
 [[edges]]
 from = "neutral_spotted"
-from_pin = "t"
 to = "tooltip_in"
-to_pin = 4
+to_pin = 3
 
 [[edges]]
 from = "system_reported"
-from_pin = "t"
 to = "log_in"
-to_pin = 4
+to_pin = 3
 
 [[edges]]
 from = "clear_report"
-from_pin = "t"
 to = "suppress_in"
 to_pin = 0
 
 [[edges]]
 from = "status_query"
-from_pin = "t"
 to = "suppress_in"
 to_pin = 1
 
 [[edges]]
 from = "suppress_in"
-from_pin = "out"
 to = "suppress"
 to_pin = 0
 
 [[edges]]
-from = "status_query"
-from_pin = "t"
-to = "not_query"
+from = "clear_report"
+to = "tooltip_in"
+to_pin = 4
+
+[[edges]]
+from = "tooltip_in"
+to = "not_status"
 to_pin = 0
 
 [[edges]]
-from = "or_1"
-from_pin = "out"
-to = "tooltip_gate"
-to_pin = 0
-
-[[edges]]
-from = "not_query"
-from_pin = "out"
-to = "tooltip_gate"
-to_pin = 1
-
-[[edges]]
-from = "tooltip_gate"
-from_pin = "out"
+from = "not_status"
 to = "tooltip"
 to_pin = 0
