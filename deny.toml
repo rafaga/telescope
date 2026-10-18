@@ -44,6 +44,7 @@ ignore = [
   # egui accessibility stack still pulls `zbus` 5; revisit when it moves to 6.
   { id = "RUSTSEC-2026-0372", reason = "unmaintained standalone derive crate, transitive through zbus 5 (accesskit_unix, ashpd), no vulnerability" },
   { id = "RUSTSEC-2026-0370", reason = "unmaintained standalone crate `zvariant`, transitive through zbus 5 (accesskit_unix, ashpd), no vulnerability" },
+  { id = "RUSTSEC-2026-0371", reason = "unmaintained standalone crate `zbus_names`, transitive through zbus 5 (accesskit_unix, ashpd), no vulnerability" },
 ]
 
 
