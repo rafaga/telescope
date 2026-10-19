@@ -28,8 +28,6 @@ use webb::rules::{
 
 /// File the rules are imported from / exported to (next to the app).
 const RULES_FILE: &str = "rules.toml";
-/// Where the rules are saved before the defaults replace them.
-const RULES_BACKUP_FILE: &str = "rules.backup.toml";
 
 /// The detection types, by `type_name()`.
 const DETECTION_TYPES: [&str; 7] = [
@@ -645,15 +643,6 @@ impl TelescopeApp {
                 &SettingsPage::Rules.title(),
                 Some(&t!("settings.patterns.description")),
             );
-            if self.rules_outdated {
-                egui_panels::status(ui, StatusKind::Warning, &t!("settings.patterns.outdated"));
-                if egui_panels::button(ui, t!("settings.patterns.restore"), Variant::Secondary)
-                    .clicked()
-                {
-                    self.restore_default_rules();
-                }
-                ui.add_space(8.0);
-            }
             let has_inputs = !self.patterns_editor.input_ids().is_empty();
             let (mut add, mut open, mut import, mut export) = (false, false, false, false);
             // With little room the buttons share wrapped lines instead of the
@@ -809,57 +798,6 @@ impl TelescopeApp {
         self.patterns_editor.clear_errors();
         self.patterns_editor.reset(&graph);
         self.patterns_editor.state.dirty = true;
-    }
-
-    /// Replaces the editor's rules with the built-in defaults, after saving the
-    /// stored rules to `rules.backup.toml`. Like an import, it only fills the
-    /// draft: nothing changes until the settings are applied.
-    pub(crate) fn restore_default_rules(&mut self) {
-        match toml::to_string(&self.intel_graph) {
-            Ok(text) => {
-                if let Err(error) = std::fs::write(RULES_BACKUP_FILE, text) {
-                    self.patterns_editor.set_errors(vec![format!(
-                        "cannot write {RULES_BACKUP_FILE}: {error}; the rules were not restored"
-                    )]);
-                    return;
-                }
-            }
-            Err(error) => {
-                self.patterns_editor.set_errors(vec![error.to_string()]);
-                return;
-            }
-        }
-        let mut graph = RuleGraph::default_graph();
-        // The default inputs have no path: keep the ones the user has, and
-        // fall back to the chat log folder of the settings.
-        let intel_dir = self.settings.get_intel().display().to_string();
-        for node in &mut graph.nodes {
-            if let NodeKind::Input(input) = &mut node.kind {
-                let current = self
-                    .intel_graph
-                    .nodes
-                    .iter()
-                    .find_map(|old| match &old.kind {
-                        NodeKind::Input(old_input) if old.id == node.id => {
-                            Some(old_input.path.clone())
-                        }
-                        _ => None,
-                    });
-                input.path = match current {
-                    Some(path) if !path.is_empty() => path,
-                    _ => intel_dir.clone(),
-                };
-            }
-        }
-        self.patterns_editor.clear_errors();
-        self.patterns_editor.reset(&graph);
-        self.patterns_editor.state.dirty = true;
-        self.task_msg.spawn(Message::GenericNotification((
-            Type::Info,
-            String::from("Patterns"),
-            String::from("restore_default_rules"),
-            format!("The previous rules were saved to {RULES_BACKUP_FILE}; apply the settings to use the default rules"),
-        )));
     }
 
     /// Writes the editor's graph to `rules.toml`.

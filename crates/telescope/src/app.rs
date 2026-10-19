@@ -148,9 +148,6 @@ pub struct TelescopeApp {
     intel_resolver: intel::detection::ResolverHandle,
     /// The graph the executor was built from (source of truth for the editor).
     intel_graph: RuleGraph,
-    /// The stored rules come from an older default set than this build's
-    /// (see `webb::esi::RulesStatus`): the Rules page offers to restore them.
-    rules_outdated: bool,
     /// The zKillboard killmail source: on while the graph has an enabled
     /// zKillboard input (see `intel::zkillboard`).
     intel_zkillboard: intel::zkillboard::ZKillboardHandle,
@@ -321,7 +318,6 @@ impl TelescopeApp {
         // built-in default graph, `rules.toml`, by the schema migration),
         // compile the executor once, and start the detection thread that
         // evaluates the lines the watcher reports.
-        let rules_outdated = matches!(esi.rules_status(), Ok(webb::esi::RulesStatus::Outdated));
         let mut intel_graph = match esi.load_graph() {
             Ok(graph) if !graph.nodes.is_empty() => graph,
             // No rules yet (fresh or emptied database): fall back to the
@@ -515,7 +511,6 @@ impl TelescopeApp {
             intel_executor,
             intel_resolver,
             intel_graph,
-            rules_outdated,
             intel_zkillboard,
             intel_offsets,
             alarm_shared,
@@ -618,7 +613,6 @@ impl eframe::App for TelescopeApp {
             intel_executor: _,
             intel_resolver: _,
             intel_graph: _,
-            rules_outdated: _,
             intel_zkillboard: _,
             intel_offsets: _,
             alarm_shared: _,
@@ -651,7 +645,6 @@ impl eframe::App for TelescopeApp {
             self.open_startup_regions();
 
             self.report_player_database_status();
-            self.report_rules_status();
             if !self.esi.characters.is_empty() {
                 let mut ids = vec![];
                 for char in &self.esi.characters {

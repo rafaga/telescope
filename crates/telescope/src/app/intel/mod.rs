@@ -169,10 +169,6 @@ impl TelescopeApp {
         // input to feed.
         self.intel_zkillboard.follow(&graph);
         self.intel_graph = graph;
-        self.rules_outdated = matches!(
-            self.esi.rules_status(),
-            Ok(webb::esi::RulesStatus::Outdated)
-        );
     }
 }
 
