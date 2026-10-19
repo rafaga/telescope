@@ -12,6 +12,14 @@ versions were written for the tag that shipped them.
 
 ### Changed
 
+* Telescope detects when the intel rules in the player database come from an
+  older version of the default rules (`rules.toml` changed without a schema
+  bump). The database now records which default set it was seeded from
+  (`rules_seed`); a database from before that is recognised when it holds the
+  rules of the first schema 3 build. The user gets one warning per default-rules
+  version, and the Rules page shows a banner with a "Restore default rules"
+  button: it saves the stored rules to `rules.backup.toml` and loads the
+  defaults into the draft, to be applied like any other change.
 * The rule engine is independent of the format of its input. It evaluates an
   `IntelEvent` (`webb::event`, which replaces `LineContext`): the text of the
   event, which the text detections read, and the `Facts` its source knows by

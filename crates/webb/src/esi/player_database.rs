@@ -2,7 +2,7 @@
 //! corporations, alliances and the authorization tokens of the linked characters.
 
 use crate::esi::Error;
-use crate::graph::{Edge, Node, RuleGraph};
+use crate::graph::{Edge, Node, NodeKind, RuleGraph};
 use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
 use chrono::{DateTime, Utc};
 use rusqlite::types::Type;
@@ -205,7 +205,7 @@ impl PlayerDatabase {
         }
         conn.execute_batch("DROP TABLE edge; DROP TABLE node;")?;
         conn.execute_batch(CREATE_RULE_TABLES)?;
-        PlayerDatabase::save_graph(conn, &RuleGraph::default_graph())?;
+        PlayerDatabase::seed_default_graph(conn)?;
         Ok(())
     }
 
@@ -629,8 +629,113 @@ impl PlayerDatabase {
     }
 }
 
+/// Metadata row holding the fingerprint of the default graph last seeded.
+const RULES_SEED: &str = "rules_seed";
+/// Metadata row holding the default-rules version the user was told about.
+const RULES_NOTICE: &str = "rules_notice";
+
+/// Fingerprints of default graphs shipped before the seed was recorded
+/// (`rules.toml` of 199d7dd, the first with schema 3). A database holding
+/// exactly one of them was seeded by that build and never edited. Closed
+/// list: databases seeded from now on record their seed (`rules_seed`), so a
+/// future change to `rules.toml` needs nothing here. To fingerprint an old
+/// `rules.toml` anyway, see the `print_default_fingerprint` test.
+const OUTDATED_DEFAULTS: &[&str] = &["4996d9e337858923"];
+
+/// How the stored rules compare with the defaults this build ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesStatus {
+    /// The stored rules are the current defaults, or were seeded from them
+    /// and then edited by the user.
+    Current,
+    /// The stored rules come from an older default set than this build's.
+    Outdated,
+}
+
+/// Fingerprint of a graph: FNV-1a 64 over its JSON. Input paths are
+/// machine-specific (the app fills them in), so they do not count.
+pub(crate) fn graph_fingerprint(graph: &RuleGraph) -> String {
+    let mut graph = graph.clone();
+    for node in &mut graph.nodes {
+        if let NodeKind::Input(input) = &mut node.kind {
+            input.path.clear();
+        }
+    }
+    let json = serde_json::to_string(&graph).unwrap_or_default();
+    let hash = json.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// Fingerprint of the default graph this build ships.
+pub(crate) fn default_fingerprint() -> String {
+    graph_fingerprint(&RuleGraph::default_graph())
+}
+
 /// Repository of the intel node graph stored in the player database.
 impl PlayerDatabase {
+    fn meta(conn: &Connection, id: &str) -> Result<Option<String>, Error> {
+        let mut statement = conn.prepare("SELECT value FROM metadata WHERE id = ?1")?;
+        let mut rows = statement.query([id])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get(0)?),
+            None => None,
+        })
+    }
+
+    fn set_meta(conn: &Connection, id: &str, value: &str) -> Result<(), Error> {
+        conn.execute(
+            "INSERT INTO metadata (id, value) VALUES (?1, ?2) \
+             ON CONFLICT(id) DO UPDATE SET value = excluded.value",
+            [id, value],
+        )?;
+        Ok(())
+    }
+
+    /// Stores the built-in default graph and records which version it is.
+    pub(crate) fn seed_default_graph(conn: &Connection) -> Result<(), Error> {
+        PlayerDatabase::save_graph(conn, &RuleGraph::default_graph())
+    }
+
+    /// Compares the stored rules with the defaults of this build. The graph
+    /// is `Outdated` when it was seeded from a different default set (the
+    /// recorded seed differs from the current default), or, for a database
+    /// that never recorded one, when it is exactly a known old default.
+    pub(crate) fn rules_status(conn: &Connection) -> Result<RulesStatus, Error> {
+        let current = default_fingerprint();
+        let seed = match PlayerDatabase::meta(conn, RULES_SEED)? {
+            Some(seed) => seed,
+            None => {
+                let stored = graph_fingerprint(&PlayerDatabase::load_graph(conn)?);
+                return Ok(if OUTDATED_DEFAULTS.contains(&stored.as_str()) {
+                    RulesStatus::Outdated
+                } else {
+                    RulesStatus::Current
+                });
+            }
+        };
+        Ok(if seed == current {
+            RulesStatus::Current
+        } else {
+            RulesStatus::Outdated
+        })
+    }
+
+    /// Whether the user still has to be told about outdated rules: true once
+    /// per default-rules version, and never when the rules are current.
+    pub(crate) fn take_rules_notice(conn: &Connection) -> Result<bool, Error> {
+        if PlayerDatabase::rules_status(conn)? != RulesStatus::Outdated {
+            return Ok(false);
+        }
+        let current = default_fingerprint();
+        if PlayerDatabase::meta(conn, RULES_NOTICE)?.as_deref() == Some(current.as_str()) {
+            return Ok(false);
+        }
+        PlayerDatabase::set_meta(conn, RULES_NOTICE, &current)?;
+        Ok(true)
+    }
+
     /// Loads the whole intel node graph.
     #[tracing::instrument(skip(conn))]
     pub(crate) fn load_graph(conn: &Connection) -> Result<RuleGraph, Error> {
@@ -688,6 +793,12 @@ impl PlayerDatabase {
                 "INSERT INTO edge (from_node, to_node, to_pin) VALUES (?1, ?2, ?3)",
                 params![edge.from, edge.to, edge.to_pin.to_string()],
             )?;
+        }
+        // Saving exactly the current defaults (seeding, or restoring them)
+        // records that the rules are up to date.
+        let fingerprint = graph_fingerprint(graph);
+        if fingerprint == default_fingerprint() {
+            PlayerDatabase::set_meta(conn, RULES_SEED, &fingerprint)?;
         }
         Ok(())
     }
@@ -861,7 +972,7 @@ mod tests {
 
     fn token_rows_in_metadata(conn: &Connection) -> i64 {
         conn.query_row(
-            "SELECT count(*) FROM metadata WHERE id <> 'db'",
+            "SELECT count(*) FROM metadata WHERE id IN ('token', 'refresh_token', 'expiration')",
             [],
             |row| row.get(0),
         )
@@ -1447,5 +1558,123 @@ mod tests {
         let stored = PlayerDatabase::select_auth(&conn).unwrap();
         assert!(!stored.contains_key(&1));
         assert!(stored.contains_key(&2));
+    }
+
+    // ---------------------------------------------------------------------
+    // Default rules version
+    // ---------------------------------------------------------------------
+
+    fn current_database() -> Connection {
+        let conn = memory_connection();
+        PlayerDatabase::ensure_schema(&conn).unwrap();
+        conn
+    }
+
+    fn edited_graph() -> RuleGraph {
+        let mut graph = RuleGraph::default_graph();
+        if let Some(node) = graph.nodes.pop() {
+            graph
+                .edges
+                .retain(|edge| edge.from != node.id && edge.to != node.id);
+        }
+        graph
+    }
+
+    #[test]
+    fn a_new_database_holds_the_current_rules() {
+        let conn = current_database();
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Current
+        );
+        assert!(!PlayerDatabase::take_rules_notice(&conn).unwrap());
+    }
+
+    #[test]
+    fn rules_seeded_from_other_defaults_are_outdated_and_noticed_once() {
+        let conn = current_database();
+        PlayerDatabase::set_meta(&conn, RULES_SEED, "0123456789abcdef").unwrap();
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Outdated
+        );
+        assert!(PlayerDatabase::take_rules_notice(&conn).unwrap());
+        assert!(!PlayerDatabase::take_rules_notice(&conn).unwrap());
+        // Still outdated after the notice.
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Outdated
+        );
+    }
+
+    #[test]
+    fn restoring_the_defaults_clears_the_outdated_state() {
+        let conn = current_database();
+        PlayerDatabase::set_meta(&conn, RULES_SEED, "0123456789abcdef").unwrap();
+        PlayerDatabase::save_graph(&conn, &RuleGraph::default_graph()).unwrap();
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Current
+        );
+    }
+
+    #[test]
+    fn user_edits_do_not_move_the_recorded_seed() {
+        let conn = current_database();
+        PlayerDatabase::save_graph(&conn, &edited_graph()).unwrap();
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Current
+        );
+    }
+
+    #[test]
+    fn a_database_without_a_seed_is_outdated_only_when_it_holds_an_old_default() {
+        let conn = current_database();
+        conn.execute("DELETE FROM metadata WHERE id = ?1", [RULES_SEED])
+            .unwrap();
+        // Unknown rules (the user's own): nothing to say.
+        PlayerDatabase::save_graph(&conn, &edited_graph()).unwrap();
+        conn.execute("DELETE FROM metadata WHERE id = ?1", [RULES_SEED])
+            .unwrap();
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Current
+        );
+    }
+
+    #[test]
+    fn the_rules_of_the_first_schema_3_build_are_a_known_outdated_default() {
+        let conn = current_database();
+        let old: RuleGraph = toml::from_str(include_str!("fixtures/rules_199d7dd.toml")).unwrap();
+        PlayerDatabase::save_graph(&conn, &old).unwrap();
+        conn.execute("DELETE FROM metadata WHERE id = ?1", [RULES_SEED])
+            .unwrap();
+        assert_eq!(
+            PlayerDatabase::rules_status(&conn).unwrap(),
+            RulesStatus::Outdated
+        );
+    }
+
+    /// `cargo test -p webb print_default_fingerprint -- --ignored --nocapture`
+    /// prints the fingerprint of the `rules.toml` this build embeds.
+    #[test]
+    #[ignore = "prints the fingerprint of the embedded default rules"]
+    fn print_default_fingerprint() {
+        println!("default rules fingerprint: {}", default_fingerprint());
+    }
+
+    #[test]
+    fn the_fingerprint_ignores_input_paths_and_tracks_the_rules() {
+        let mut graph = RuleGraph::default_graph();
+        let base = graph_fingerprint(&graph);
+        for node in &mut graph.nodes {
+            if let NodeKind::Input(input) = &mut node.kind {
+                input.path = String::from("/somewhere/else");
+            }
+        }
+        assert_eq!(graph_fingerprint(&graph), base);
+        assert_ne!(graph_fingerprint(&edited_graph()), base);
+        assert_ne!(base, OUTDATED_DEFAULTS[0]);
     }
 }

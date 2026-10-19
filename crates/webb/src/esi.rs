@@ -23,7 +23,7 @@ use bytes::Bytes;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 
 use self::player_database::PlayerDatabase;
-pub use self::player_database::{SCHEMA_VERSION, SchemaStatus};
+pub use self::player_database::{RulesStatus, SCHEMA_VERSION, SchemaStatus};
 #[cfg(feature = "crypted-db")]
 pub(crate) mod cipher;
 pub mod player_database;
@@ -353,6 +353,23 @@ impl<T: EsiApi> EsiManagerCore<T> {
         PlayerDatabase::save_graph(&transaction, graph)?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Whether the stored rules come from an older default set than this
+    /// build's (see [`RulesStatus`]).
+    #[tracing::instrument(skip(self))]
+    pub fn rules_status(&self) -> Result<RulesStatus, Error> {
+        let connection = self.get_standard_connection()?;
+        PlayerDatabase::rules_status(&connection)
+    }
+
+    /// True the first time outdated rules are found for a default-rules
+    /// version: the caller shows the alert, and it is not repeated until the
+    /// defaults change again.
+    #[tracing::instrument(skip(self))]
+    pub fn take_rules_notice(&self) -> Result<bool, Error> {
+        let connection = self.get_standard_connection()?;
+        PlayerDatabase::take_rules_notice(&connection)
     }
 
     // Alliance

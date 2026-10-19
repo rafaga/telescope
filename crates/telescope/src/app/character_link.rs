@@ -197,6 +197,25 @@ impl TelescopeApp {
         ));
     }
 
+    /// Tells the user, once per default-rules version, that the stored intel
+    /// rules come from older defaults than this build's (see `RulesStatus`).
+    /// The Rules page keeps showing it, with the button to restore them.
+    pub(crate) fn report_rules_status(&mut self) {
+        if !self.esi.take_rules_notice().unwrap_or(false) {
+            return;
+        }
+        self.update_status_with_error((
+            Type::Warning,
+            String::from("Intel"),
+            String::from("rules_version"),
+            String::from(
+                "The intel rules in the player database come from an older version of the \
+                 default rules. Review them in Settings -> Rules, or restore the default \
+                 rules there.",
+            ),
+        ));
+    }
+
     fn notify_character_error(&self, operation: &str, message: String) {
         self.task_msg.spawn(Message::GenericNotification((
             Type::Error,
