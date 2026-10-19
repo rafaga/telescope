@@ -26,7 +26,10 @@ pub(crate) struct PlayerDatabase {}
 ///   graph of version 2 is kept in `node_v2_backup` and `edge_v2_backup`, the
 ///   tables are rebuilt without the edges' source pin and the default graph is
 ///   seeded again.
-pub const SCHEMA_VERSION: i32 = 3;
+/// - 4: the built-in default rules changed after version 3 shipped: the rules
+///   stored by version 3 are replaced by the current default graph, and the
+///   `node_v2_backup` and `edge_v2_backup` tables left by version 3 are dropped.
+pub const SCHEMA_VERSION: i32 = 4;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
@@ -36,6 +39,7 @@ const MIGRATIONS: &[Migration] = &[
     PlayerDatabase::migrate_0_to_1,
     PlayerDatabase::migrate_1_to_2,
     PlayerDatabase::migrate_2_to_3,
+    PlayerDatabase::migrate_3_to_4,
 ];
 
 // One migration per version step, always.
@@ -205,6 +209,22 @@ impl PlayerDatabase {
         }
         conn.execute_batch("DROP TABLE edge; DROP TABLE node;")?;
         conn.execute_batch(CREATE_RULE_TABLES)?;
+        PlayerDatabase::save_graph(conn, &RuleGraph::default_graph())?;
+        Ok(())
+    }
+
+    /// 3 -> 4: the default rules changed after version 3 shipped, so the
+    /// databases seeded with the old ones are reseeded. The version 2 backups
+    /// that 2 -> 3 left behind are dropped. The graph is not reseeded when it
+    /// already is the current default (a database created from scratch).
+    #[tracing::instrument]
+    fn migrate_3_to_4(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS node_v2_backup; DROP TABLE IF EXISTS edge_v2_backup;",
+        )?;
+        if PlayerDatabase::load_graph(conn)? == RuleGraph::default_graph() {
+            return Ok(());
+        }
         PlayerDatabase::save_graph(conn, &RuleGraph::default_graph())?;
         Ok(())
     }
@@ -1041,11 +1061,9 @@ mod tests {
     }
 
     #[test]
-    fn migrating_to_3_backs_up_the_old_graph_and_seeds_the_default() {
+    fn a_version_2_database_ends_with_the_default_graph() {
         let conn = memory_connection();
         PlayerDatabase::create_database(&conn).unwrap();
-        // A fresh database has nothing to back up.
-        assert!(!table_names(&conn).contains(&String::from("node_v2_backup")));
 
         // Back to version 2 with a graph of its own.
         conn.execute_batch("DROP TABLE edge; DROP TABLE node;")
@@ -1066,16 +1084,50 @@ mod tests {
             PlayerDatabase::schema_version(&conn).unwrap(),
             Some(SCHEMA_VERSION)
         );
-        let count = |table: &str| -> i64 {
-            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })
-            .unwrap()
-        };
-        assert_eq!(count("node_v2_backup"), 2);
-        assert_eq!(count("edge_v2_backup"), 1);
         let graph = PlayerDatabase::load_graph(&conn).unwrap();
         assert_eq!(graph, RuleGraph::default_graph());
+    }
+
+    #[test]
+    fn migrating_to_4_replaces_the_version_3_rules_and_drops_the_version_2_backups() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+
+        // Back to version 3 with rules of its own (an edited default).
+        let mut old = RuleGraph::default_graph();
+        if let Some(node) = old.nodes.iter_mut().find(|node| node.id == "chat_logs")
+            && let NodeKind::Input(input) = &mut node.kind
+        {
+            input.path = String::from("/logs");
+        }
+        PlayerDatabase::save_graph(&conn, &old).unwrap();
+        // The backups that migrating to 3 left behind.
+        conn.execute_batch(
+            "CREATE TABLE node_v2_backup AS SELECT * FROM node;
+             CREATE TABLE edge_v2_backup AS SELECT * FROM edge;",
+        )
+        .unwrap();
+        conn.execute("UPDATE metadata SET value = '3' WHERE id = 'db'", [])
+            .unwrap();
+
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Migrated(3)
+        );
+
+        let tables = table_names(&conn);
+        for dropped in [
+            "node_v2_backup",
+            "edge_v2_backup",
+            "node_v3_backup",
+            "edge_v3_backup",
+        ] {
+            assert!(!tables.contains(&String::from(dropped)), "{dropped}");
+        }
+        assert_eq!(
+            PlayerDatabase::load_graph(&conn).unwrap(),
+            RuleGraph::default_graph()
+        );
     }
 
     #[test]
