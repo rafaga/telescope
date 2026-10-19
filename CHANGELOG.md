@@ -14,9 +14,9 @@ versions were written for the tag that shipped them.
 
 * Player database schema 4: the default intel rules changed after schema 3
   shipped (1.0.5), so databases at version 3 still held the old ones. The
-  migration keeps the stored rules in `node_v3_backup` and `edge_v3_backup` and
-  seeds the current default rules in their place. A database created from
-  scratch is left alone.
+  migration replaces the stored rules with the current default rules and drops
+  the `node_v2_backup` and `edge_v2_backup` tables left by schema 3. A database
+  created from scratch is left alone.
 * The rule engine is independent of the format of its input. It evaluates an
   `IntelEvent` (`webb::event`, which replaces `LineContext`): the text of the
   event, which the text detections read, and the `Facts` its source knows by
