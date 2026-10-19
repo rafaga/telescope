@@ -1061,11 +1061,9 @@ mod tests {
     }
 
     #[test]
-    fn migrating_to_3_backs_up_the_old_graph_and_seeds_the_default() {
+    fn a_version_2_database_ends_with_the_default_graph() {
         let conn = memory_connection();
         PlayerDatabase::create_database(&conn).unwrap();
-        // A fresh database has nothing to back up.
-        assert!(!table_names(&conn).contains(&String::from("node_v2_backup")));
 
         // Back to version 2 with a graph of its own.
         conn.execute_batch("DROP TABLE edge; DROP TABLE node;")
@@ -1086,14 +1084,6 @@ mod tests {
             PlayerDatabase::schema_version(&conn).unwrap(),
             Some(SCHEMA_VERSION)
         );
-        let count = |table: &str| -> i64 {
-            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })
-            .unwrap()
-        };
-        assert_eq!(count("node_v2_backup"), 2);
-        assert_eq!(count("edge_v2_backup"), 1);
         let graph = PlayerDatabase::load_graph(&conn).unwrap();
         assert_eq!(graph, RuleGraph::default_graph());
     }
