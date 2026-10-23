@@ -6121,6 +6121,7 @@ dependencies = [
  "chrono",
  "directories",
  "eframe",
+ "egui",
  "egui-map",
  "egui-panels",
  "egui-snarl",

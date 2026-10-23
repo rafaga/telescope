@@ -32,6 +32,10 @@ serde_json = "1.0"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+# Since 0.37 egui no longer bundles its emoji fonts by default (it relies on
+# the platform's); `monochrome_emoji_fonts` brings back NotoEmoji and the
+# emoji icon font so the tooltip/message icons draw the same everywhere.
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
 # `builder` pulls in reqwest/tokio/zip/etc. (see sde's own Cargo.toml) so
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see

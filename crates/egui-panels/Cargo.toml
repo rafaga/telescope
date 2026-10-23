@@ -16,7 +16,7 @@ egui = { version = "0.37", default-features = false }
 
 [dev-dependencies]
 # Fonts for the headless tests, and a window for the example.
-egui = { version = "0.37", features = ["default_fonts"] }
+egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 
 [[example]]
