@@ -364,9 +364,13 @@ impl OverlayState {
         if pressed {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
-        let close_response =
-            ui.interact(close, egui::Id::unique("overlay_close"), egui::Sense::click());
-        let lock_response = ui.interact(lock, egui::Id::unique("overlay_lock"), egui::Sense::click());
+        let close_response = ui.interact(
+            close,
+            egui::Id::unique("overlay_close"),
+            egui::Sense::click(),
+        );
+        let lock_response =
+            ui.interact(lock, egui::Id::unique("overlay_lock"), egui::Sense::click());
         if close_response.clicked() {
             self.close();
             return;

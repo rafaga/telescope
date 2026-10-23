@@ -4,8 +4,8 @@ use crate::theme::{Theme, mix};
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
     Align, Align2, Button, Color32, CornerRadius, FontId, Frame, ImageSource, InnerResponse, Label,
-    Layout, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, Vec2,
-    WidgetInfo, WidgetText, Role, pos2, vec2,
+    Layout, Rect, Response, RichText, Role, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder,
+    Vec2, WidgetInfo, WidgetText, pos2, vec2,
 };
 
 /// Paints `text` on one line, cut with an ellipsis where it would pass
@@ -331,12 +331,7 @@ pub fn segmented<T: PartialEq + Copy>(
         let segment_response = ui.interact(segment, id, Sense::click());
         let selected = *value == *option;
         segment_response.widget_info(|| {
-            WidgetInfo::selected(
-                Role::RadioButton,
-                ui.is_enabled(),
-                selected,
-                *label,
-            )
+            WidgetInfo::selected(Role::RadioButton, ui.is_enabled(), selected, *label)
         });
         if segment_response.clicked() && !selected {
             *value = *option;
@@ -412,8 +407,7 @@ pub fn tile(ui: &mut Ui, on: &mut bool, title: &str, subtitle: Option<&str>) -> 
         *on = !*on;
         response.mark_changed();
     }
-    response
-        .widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, title));
+    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, title));
     if ui.is_rect_visible(rect) {
         if response.hovered() {
             ui.painter().rect_filled(
@@ -507,8 +501,7 @@ pub fn toggle_button(ui: &mut Ui, on: &mut bool, label: &str, tag: Option<&str>)
         *on = !*on;
         response.mark_changed();
     }
-    response
-        .widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, label));
+    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, label));
     if ui.is_rect_visible(rect) {
         let radius = CornerRadius::same(theme.radius.saturating_sub(1));
         let (fill, stroke, text) = if *on {
