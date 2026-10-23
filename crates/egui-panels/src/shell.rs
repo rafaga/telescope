@@ -32,9 +32,9 @@ pub struct SettingsLayout {
 
 impl SettingsLayout {
     /// A screen whose panels are identified by `id_salt`.
-    pub fn new(id_salt: impl Into<Id>) -> Self {
+    pub fn new(id_salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         Self {
-            id: id_salt.into(),
+            id: Id::unique(id_salt),
             scroll: true,
         }
     }

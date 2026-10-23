@@ -2,8 +2,8 @@
 
 use crate::theme::Theme;
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Response, RichText, Sense, Ui, WidgetInfo, WidgetType,
-    pos2, vec2,
+    Align2, Color32, CornerRadius, FontId, Response, RichText, Role, Sense, Ui, WidgetInfo, pos2,
+    vec2,
 };
 
 /// One page in a [`SideNav`].
@@ -163,14 +163,8 @@ fn nav_entry<T>(ui: &mut Ui, theme: &Theme, item: &NavItem<T>, selected: bool) -
     let palette = theme.palette(ui.visuals());
     let size = vec2(ui.available_width(), theme.nav_item_height);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    response.widget_info(|| {
-        WidgetInfo::selected(
-            WidgetType::SelectableLabel,
-            ui.is_enabled(),
-            selected,
-            &item.label,
-        )
-    });
+    response
+        .widget_info(|| WidgetInfo::selected(Role::Tab, ui.is_enabled(), selected, &item.label));
     if ui.is_rect_visible(rect) {
         let fill = if selected {
             palette.accent

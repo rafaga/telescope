@@ -221,7 +221,7 @@ impl DatabaseUpdater {
         };
         let mut accepted = false;
         egui::Window::new(t!("sde_update.title"))
-            .id(egui::Id::new("sde_update_window"))
+            .id(egui::Id::unique("sde_update_window"))
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
@@ -317,7 +317,7 @@ impl DatabaseUpdater {
                             phase.index()
                         };
                         let fraction = ui.ctx().animate_value_with_time(
-                            egui::Id::new("sde_update_progress"),
+                            egui::Id::unique("sde_update_progress"),
                             target,
                             0.4,
                         );
@@ -2070,7 +2070,7 @@ mod updater_run_tests {
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         let ctx = egui::Context::default();
         let mut updater = DatabaseUpdater::default();
-        let id = egui::Id::new("sde_update_window");
+        let id = egui::Id::unique("sde_update_window");
 
         frame(&ctx, |ctx| updater.show(ctx));
         assert!(ctx.memory(|memory| memory.area_rect(id)).is_none());
@@ -2107,7 +2107,7 @@ mod updater_run_tests {
                     frame(&ctx, |ctx| updater.show(ctx));
                     frame(&ctx, |ctx| updater.show(ctx));
                     assert!(
-                        ctx.memory(|memory| memory.area_rect(egui::Id::new("sde_update_window")))
+                        ctx.memory(|memory| memory.area_rect(egui::Id::unique("sde_update_window")))
                             .is_some(),
                         "{phase:?} finished={finished} cancelling={cancelling}"
                     );

@@ -11,7 +11,7 @@ impl TelescopeApp {
     #[tracing::instrument(skip(self, ctx))]
     pub(crate) fn open_about_window(&mut self, ctx: &egui::Context) {
         egui::Window::new(t!("about.title"))
-            .id(egui::Id::new("about_window"))
+            .id(egui::Id::unique("about_window"))
             .fixed_size((400.0, 200.0))
             .open(&mut self.open[0])
             .show(ctx, |ui| {

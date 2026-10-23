@@ -72,7 +72,7 @@ impl Default for Theme {
 
 impl Theme {
     fn id() -> Id {
-        Id::new("egui_panels::theme")
+        Id::unique("egui_panels::theme")
     }
 
     /// The theme stored for `ctx`, or the default one.

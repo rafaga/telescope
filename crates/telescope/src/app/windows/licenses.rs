@@ -282,7 +282,7 @@ impl TelescopeApp {
         let mut open = true;
         let mut close = false;
         egui::Window::new(t!("licenses.title"))
-            .id(egui::Id::new("licenses_window"))
+            .id(egui::Id::unique("licenses_window"))
             .open(&mut open)
             .default_size([860.0, 560.0])
             .min_size([600.0, 360.0])

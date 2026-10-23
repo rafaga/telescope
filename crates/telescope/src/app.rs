@@ -1162,7 +1162,7 @@ impl TelescopeApp {
         let id = tiles.insert_pane(pane);
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
-        egui_tiles::Tree::new("maps", root, tiles)
+        egui_tiles::Tree::new(egui::Id::unique("maps"), root, tiles)
     }
 
     #[tracing::instrument(skip(self))]
@@ -1268,11 +1268,14 @@ mod font_tests {
     }
 
     // `draws` can't be used for the icon: egui reports every glyph of the font
-    // holding its replacement glyph (NotoEmoji, `◻`) as missing, emoji
-    // included. Instead, check the icon isn't painted as that `◻`.
+    // holding its replacement glyph (NotoEmoji) as missing, emoji included.
+    // Instead, check the icon isn't painted as the glyph of a code point no
+    // font has. The emoji come from egui's `monochrome_emoji_fonts` feature
+    // (off by default since egui 0.37).
     #[test]
     fn tooltip_icons_are_drawn() {
         let ctx = context_with(TelescopeApp::font_definitions());
+        let missing = glyph_uv(&ctx, "\u{10FFFD}");
         for text in [
             tiles::CHARACTER_ICON,
             webb::map_alerts::ALERT_ICON,
@@ -1280,10 +1283,29 @@ mod font_tests {
         ] {
             let icon = glyph_uv(&ctx, text);
             assert_ne!(icon.0, icon.1, "{text}");
-            assert_ne!(icon, glyph_uv(&ctx, "◻"), "{text}");
+            assert_ne!(icon, missing, "{text}");
         }
-        // A code point no font has, to show the check tells them apart.
-        assert_eq!(glyph_uv(&ctx, "\u{10FFFD}"), glyph_uv(&ctx, "◻"));
+        // A known glyph, to show the check tells them apart.
+        assert_ne!(glyph_uv(&ctx, "A"), missing);
+    }
+
+    #[test]
+    fn settings_page_icons_are_drawn() {
+        use crate::app::messages::SettingsPage;
+        let ctx = context_with(TelescopeApp::font_definitions());
+        let missing = glyph_uv(&ctx, "\u{10FFFD}");
+        for page in [
+            SettingsPage::Sources,
+            SettingsPage::Rules,
+            SettingsPage::Alerts,
+            SettingsPage::Maps,
+            SettingsPage::Characters,
+            SettingsPage::Application,
+        ] {
+            let icon = glyph_uv(&ctx, page.icon());
+            assert_ne!(icon.0, icon.1, "{}", page.icon());
+            assert_ne!(icon, missing, "{}", page.icon());
+        }
     }
 
     #[test]

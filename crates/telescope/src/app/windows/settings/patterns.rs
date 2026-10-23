@@ -967,7 +967,7 @@ impl TelescopeApp {
             area.min,
             egui::pos2(area.right() - inspector_width, area.bottom()),
         );
-        let graph_id = egui::Id::new("rules_graph");
+        let graph_id = egui::Id::unique("rules_graph");
         let snarl_selection = egui_snarl::ui::get_selected_nodes(graph_id, ui.ctx());
         ui.scope_builder(egui::UiBuilder::new().max_rect(canvas), |ui| {
             let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
@@ -1527,7 +1527,7 @@ impl RulesViewer<'_> {
     /// selects with Shift or a rectangle, which is not how anyone expects a
     /// click on a node to work.
     fn select_on_click(&mut self, ui: &mut Ui, node: NodeId, rect: egui::Rect) {
-        let id = ui.id().with(("select_node", node));
+        let id = ui.scope_id().with(("select_node", node));
         if ui.interact(rect, id, egui::Sense::click()).clicked() {
             self.state.selected = Some(node);
         }

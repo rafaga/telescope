@@ -31,7 +31,11 @@ winresource = "0.1"
 serde_json = "1.0"
 
 [dependencies]
-eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+# Since 0.37 egui no longer bundles its emoji fonts by default (it relies on
+# the platform's); `monochrome_emoji_fonts` brings back NotoEmoji and the
+# emoji icon font so the tooltip/message icons draw the same everywhere.
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
 # `builder` pulls in reqwest/tokio/zip/etc. (see sde's own Cargo.toml) so
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
@@ -47,7 +51,7 @@ sde = { version = "0.7", features = ["builder"] }
 rusqlite = { version = "0.40" }
 kdtree = { version = "0.8" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.14" }
+egui-map = { version = "0.15" }
 open = "5.4"
 # `crypted-db` explicitly: with `default-features = false` alone the player
 # database was encrypted or not depending on whether the build also selected
@@ -57,13 +61,14 @@ webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
 chrono = "0.4"
 tokio = { version = "1.53", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
-egui_extras = { version = "0.36", features = ["all_loaders"] }
+egui_extras = { version = "0.37", features = ["all_loaders"] }
 image = { version = "0.25", features = ["jpeg","png"] }
 # The window handle eframe exposes (same version as eframe/winit), to own the
 # native file dialogs.
 raw-window-handle = "0.6"
-egui_tiles = { version = "0.17" }
-egui-snarl = "0.12"
+egui_tiles = { version = "0.18" }
+egui-snarl = { git = "https://github.com/rafaga/egui-snarl", branch = "telescope" } 
+# version = "0.13"
 toml = "1.1"
 hyper = { version = "1.12", features = ["server", "http1", "client"] }
 serde = { version = "1.0", features = ["derive"] }
