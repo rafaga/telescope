@@ -2,7 +2,7 @@
 
 use crate::theme::Theme;
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Response, RichText, Sense, Ui, WidgetInfo, WidgetType,
+    Align2, Color32, CornerRadius, FontId, Response, RichText, Sense, Ui, WidgetInfo, Role,
     pos2, vec2,
 };
 
@@ -165,7 +165,7 @@ fn nav_entry<T>(ui: &mut Ui, theme: &Theme, item: &NavItem<T>, selected: bool) -
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| {
         WidgetInfo::selected(
-            WidgetType::SelectableLabel,
+            Role::Tab,
             ui.is_enabled(),
             selected,
             &item.label,

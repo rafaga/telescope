@@ -1162,7 +1162,7 @@ impl TelescopeApp {
         let id = tiles.insert_pane(pane);
         let tile_ids = vec![id];
         let root = tiles.insert_tab_tile(tile_ids);
-        egui_tiles::Tree::new("maps", root, tiles)
+        egui_tiles::Tree::new(egui::Id::unique("maps"), root, tiles)
     }
 
     #[tracing::instrument(skip(self))]

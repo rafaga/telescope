@@ -18,7 +18,7 @@ impl TelescopeApp {
         };
         let mut open_release = false;
         let mut dismissed = false;
-        let modal = egui::Modal::new(egui::Id::new("update_modal"))
+        let modal = egui::Modal::new(egui::Id::unique("update_modal"))
             .frame(egui_panels::dialog_frame(ctx).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let theme = egui_panels::Theme::get(ui.ctx());

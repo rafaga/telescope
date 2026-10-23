@@ -5,7 +5,7 @@ use egui::text::{LayoutJob, TextFormat, TextWrapping};
 use egui::{
     Align, Align2, Button, Color32, CornerRadius, FontId, Frame, ImageSource, InnerResponse, Label,
     Layout, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, UiBuilder, Vec2,
-    WidgetInfo, WidgetText, WidgetType, pos2, vec2,
+    WidgetInfo, WidgetText, Role, pos2, vec2,
 };
 
 /// Paints `text` on one line, cut with an ellipsis where it would pass
@@ -268,7 +268,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
         *on = !*on;
         response.mark_changed();
     }
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, ""));
+    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, ""));
     if ui.is_rect_visible(rect) {
         let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
         let visuals = ui.style().interact_selectable(&response, *on);
@@ -332,7 +332,7 @@ pub fn segmented<T: PartialEq + Copy>(
         let selected = *value == *option;
         segment_response.widget_info(|| {
             WidgetInfo::selected(
-                WidgetType::SelectableLabel,
+                Role::RadioButton,
                 ui.is_enabled(),
                 selected,
                 *label,
@@ -413,7 +413,7 @@ pub fn tile(ui: &mut Ui, on: &mut bool, title: &str, subtitle: Option<&str>) -> 
         response.mark_changed();
     }
     response
-        .widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, title));
+        .widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, title));
     if ui.is_rect_visible(rect) {
         if response.hovered() {
             ui.painter().rect_filled(
@@ -508,7 +508,7 @@ pub fn toggle_button(ui: &mut Ui, on: &mut bool, label: &str, tag: Option<&str>)
         response.mark_changed();
     }
     response
-        .widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), *on, label));
+        .widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, label));
     if ui.is_rect_visible(rect) {
         let radius = CornerRadius::same(theme.radius.saturating_sub(1));
         let (fill, stroke, text) = if *on {
@@ -663,7 +663,7 @@ impl<'a> PathPicker<'a> {
                 let mut edit = TextEdit::singleline(self.path)
                     .desired_width(ui.available_width())
                     .min_size(vec2(0.0, theme.control_height))
-                    .vertical_align(Align::Center)
+                    .align(Align2::LEFT_CENTER)
                     .interactive(self.editable);
                 if let Some(hint) = self.hint {
                     edit = edit.hint_text(hint);

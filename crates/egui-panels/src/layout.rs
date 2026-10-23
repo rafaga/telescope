@@ -173,7 +173,7 @@ pub fn divider(ui: &mut Ui) -> Response {
 /// How many sections were drawn before this one on the current page (this
 /// frame): the first one has no divider above it.
 fn next_section_index(ui: &Ui) -> usize {
-    let id = Id::new("egui_panels::sections").with(ui.id());
+    let id = Id::unique("egui_panels::sections").with(ui.scope_id());
     let pass = ui.ctx().cumulative_pass_nr();
     ui.ctx().data_mut(|data| {
         let (last_pass, count) = data.get_temp::<(u64, usize)>(id).unwrap_or((pass, 0));

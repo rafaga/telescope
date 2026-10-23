@@ -214,7 +214,7 @@ impl TelescopeApp {
         // Remember the layout once the user is done changing it (not on every
         // frame of a resize drag).
         let height =
-            egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::new(LOG_PANEL_ID))
+            egui::containers::panel::PanelState::load(ui.ctx(), egui::Id::unique(LOG_PANEL_ID))
                 .filter(|_| expanded)
                 .map_or(saved.log_height, |state| state.size().y.round());
         let state = UiState {
