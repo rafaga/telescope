@@ -10,13 +10,39 @@ versions were written for the tag that shipped them.
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-23
+
 ### Changed
 
 * Player database schema 4: the default intel rules changed after schema 3
   shipped (1.0.5), so databases at version 3 still held the old ones. The
-  migration replaces the stored rules with the current default rules and drops
-  the `node_v2_backup` and `edge_v2_backup` tables left by schema 3. A database
-  created from scratch is left alone.
+  migration replaces the stored rules with the current default rules, without
+  keeping a copy of the old ones, and drops the `node_v2_backup` and
+  `edge_v2_backup` tables left by schema 3. A database created from scratch is
+  left alone. Rules edited by hand in a schema 3 database are replaced by the
+  defaults and cannot be recovered after migrating (October 2026).
+* Upgraded the GUI stack to egui 0.37: `eframe`, `egui_extras`, `egui_tiles`
+  0.18 and `egui-map` 0.15. `egui-panels` follows the new API: widget ids use
+  `Id::unique` and `ui.scope_id()`, accessibility roles use `Role` (navigation
+  entries are tabs, segmented options radio buttons, switches, tiles and
+  toggles check boxes), the path picker aligns its text with
+  `TextEdit::align`, and `SettingsLayout::new` accepts any `Hash + Debug`
+  salt (October 2026).
+* `egui-snarl` is temporarily taken from the `telescope` branch of
+  `rafaga/egui-snarl` (egui 0.37 support) until the upstream release is
+  published.
+
+### Fixed
+
+* Emojis are drawn again. egui 0.37 no longer bundles its emoji fonts by
+  default, so the settings page icons, the node tooltip icons and the message
+  icons were missing. The `monochrome_emoji_fonts` feature of egui is enabled
+  to bundle them (October 2026).
+
+## [1.0.5] - 2026-10-18
+
+### Changed
+
 * The rule engine is independent of the format of its input. It evaluates an
   `IntelEvent` (`webb::event`, which replaces `LineContext`): the text of the
   event, which the text detections read, and the `Facts` its source knows by
@@ -564,7 +590,9 @@ back end was split into the `webb` crate in March 2023, the multi-tab map
 layout (`egui_tiles`) and the regional maps arrived in early 2024, and the
 native dialog code (including macOS) in mid-2026.
 
-[Unreleased]: https://github.com/rafaga/telescope/compare/1.0.4...HEAD
+[Unreleased]: https://github.com/rafaga/telescope/compare/1.0.6...HEAD
+[1.0.6]: https://github.com/rafaga/telescope/compare/1.0.5...1.0.6
+[1.0.5]: https://github.com/rafaga/telescope/compare/1.0.4...1.0.5
 [1.0.4]: https://github.com/rafaga/telescope/compare/1.0.3...1.0.4
 [1.0.3]: https://github.com/rafaga/telescope/compare/1.0.2...1.0.3
 [1.0.2]: https://github.com/rafaga/telescope/compare/1.0.1...1.0.2
