@@ -1551,6 +1551,7 @@ dependencies = [
 [[package]]
 name = "egui-snarl"
 version = "0.13.0"
+source = "git+https://github.com/rafaga/egui-snarl?branch=telescope#ace3c159ab1a3df07cc8ff776fcccb3fe5404d85"
 dependencies = [
  "ahash",
  "egui",
@@ -8140,8 +8141,3 @@ dependencies = [
  "syn 3.0.9",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "egui-snarl"
-version = "0.13.0"
-source = "git+https://github.com/rafaga/egui-snarl?branch=telescope#fc49dd6fe077d86949655ca73cbaf477c8453ae5"
