@@ -15,7 +15,7 @@ workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 # `System_Profile` and `Storage_Streams`: the machine identifier
 # (`get_windows_unique_id`).
-windows = { version = "0.62", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation","System_Profile","Storage_Streams","Win32_UI_WindowsAndMessaging","Win32_Graphics_Gdi","Win32_Graphics_Dwm","Win32_UI_Controls"] }
+windows = { version = "0.62", features = ["Win32_UI_Shell","Win32_UI_Shell_Common","Win32_System_Com","Win32_Foundation","System_Profile","Storage_Streams","Win32_UI_WindowsAndMessaging","Win32_Graphics_Gdi"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "tokio"] }

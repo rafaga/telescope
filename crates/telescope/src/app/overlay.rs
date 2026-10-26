@@ -99,9 +99,10 @@ pub(crate) struct OverlayState {
     native_attempts: u32,
     /// The overlay window has the keyboard focus.
     overlay_focused: bool,
-    /// When the window's transparency was last asserted natively (see
-    /// `keep_transparent`).
-    last_transparency: Option<Instant>,
+    /// The opacity (0 to 255) last given to the window natively, and whether
+    /// the system blends the window itself (then the panel is drawn opaque).
+    applied_opacity: Option<u8>,
+    native_opacity: bool,
     /// The window is shown (it is hidden while the game is not in front).
     visible: bool,
     fullscreen: FullScreenState,
@@ -156,7 +157,8 @@ impl OverlayState {
             native_applied: false,
             native_attempts: 0,
             overlay_focused: false,
-            last_transparency: None,
+            applied_opacity: None,
+            native_opacity: false,
             visible: true,
             fullscreen: FullScreenState::new(),
             warned_exclusive: false,
@@ -200,7 +202,8 @@ impl OverlayState {
         self.last_game_rect = None;
         self.last_target = None;
         self.overlay_focused = false;
-        self.last_transparency = None;
+        self.applied_opacity = None;
+        self.native_opacity = false;
         self.visible = true;
     }
 
@@ -239,7 +242,7 @@ impl OverlayState {
             .with_title(Self::TITLE)
             .with_inner_size(Self::SIZE)
             .with_decorations(false)
-            .with_transparent(true)
+            .with_transparent(!cfg!(target_os = "windows"))
             .with_always_on_top()
             .with_taskbar(false)
             .with_resizable(false);
@@ -385,22 +388,36 @@ impl OverlayState {
         }
     }
 
-    /// How often the window's transparency is asserted again.
-    const TRANSPARENCY_EVERY: Duration = Duration::from_millis(500);
-
-    /// Windows can drop the transparency a window was created with (when its
-    /// styles or region change, when it is shown again, when it gains or loses
-    /// the focus): it is asserted again now and then. A no-op elsewhere.
-    fn keep_transparent(&mut self) {
-        if !self.native_applied
-            || self
-                .last_transparency
-                .is_some_and(|last| last.elapsed() < Self::TRANSPARENCY_EVERY)
-        {
+    /// Gives the window its opacity natively where the system can blend a
+    /// whole window (Windows), and says so, so the panel is drawn opaque then.
+    /// Elsewhere the panel blends with the alpha of its own pixels.
+    fn apply_opacity(&mut self) {
+        let alpha = (self.opacity * 255.0).round() as u8;
+        if !self.native_applied || self.applied_opacity == Some(alpha) {
             return;
         }
-        self.last_transparency = Some(Instant::now());
-        let _ = self.native.keep_transparent_by_title(Self::TITLE);
+        match self.native.set_opacity_by_title(Self::TITLE, self.opacity) {
+            Ok(()) => {
+                self.applied_opacity = Some(alpha);
+                self.native_opacity = true;
+            }
+            Err(OverlayError::Unsupported) => {
+                self.applied_opacity = Some(alpha);
+                self.native_opacity = false;
+            }
+            // the window is not ready yet: the next frame tries again
+            Err(_) => {}
+        }
+    }
+
+    /// The opacity the panel's pixels are drawn with: opaque when the system
+    /// blends the window.
+    fn paint_opacity(&self) -> f32 {
+        if self.native_opacity {
+            1.0
+        } else {
+            self.opacity
+        }
     }
 
     /// The contents of the overlay window.
@@ -410,14 +427,9 @@ impl OverlayState {
             self.close();
             return;
         }
-        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
-        if focused != self.overlay_focused {
-            // gaining or losing the focus can drop the transparency
-            self.last_transparency = None;
-        }
-        self.overlay_focused = focused;
+        self.overlay_focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
         self.apply_native();
-        self.keep_transparent();
+        self.apply_opacity();
         let ppp = Self::pixels_per_point(&ctx);
         if let Some(outer) = ctx.input(|input| input.viewport().outer_rect) {
             self.track_drag(outer, ppp);
@@ -715,18 +727,18 @@ impl OverlayState {
         let rows = self.panel_rows();
         let painter = ui.painter();
         let panel = self.panel_rect(area);
-        let border = Self::with_opacity(Self::PANEL_BORDER, (self.opacity + 0.2).min(1.0));
+        let border = Self::with_opacity(Self::PANEL_BORDER, (self.paint_opacity() + 0.2).min(1.0));
         painter.rect_filled(
             panel,
             0.0,
-            Self::with_opacity(Self::PANEL_COLOR, self.opacity),
+            Self::with_opacity(Self::PANEL_COLOR, self.paint_opacity()),
         );
         let header =
             egui::Rect::from_min_size(panel.min, egui::vec2(panel.width(), Self::HEADER_HEIGHT));
         painter.rect_filled(
             header,
             0.0,
-            Self::with_opacity(Self::HEADER_COLOR, self.opacity),
+            Self::with_opacity(Self::HEADER_COLOR, self.paint_opacity()),
         );
         let title = if self.is_example() {
             format!("{} · {}", t!("overlay.nearby"), t!("overlay.example"))
@@ -762,7 +774,7 @@ impl OverlayState {
                 painter.rect_filled(
                     rect,
                     0.0,
-                    Self::with_opacity((70, 20, 24), self.opacity * 0.7),
+                    Self::with_opacity((70, 20, 24), self.paint_opacity() * 0.7),
                 );
             }
             painter.rect_filled(
