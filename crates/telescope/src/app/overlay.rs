@@ -46,6 +46,9 @@ impl crate::app::TelescopeApp {
         if !self.open[2] {
             self.save_settings();
         }
+        // The close button was pressed in the overlay's own window: repaint
+        // the main one too, so the Settings switch shows the new value.
+        crate::repaint::request();
     }
 
     /// The events near the linked characters, as the widget lists them: newest
