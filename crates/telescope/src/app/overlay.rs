@@ -465,7 +465,7 @@ impl OverlayState {
             egui::pos2(bar.left() + 8.0, bar.center().y),
             egui::Align2::LEFT_CENTER,
             Self::TITLE,
-            egui::FontId::proportional(12.0),
+            Self::font(12.0),
             egui::Color32::from_gray(225),
         );
         let hover_color = |response: &egui::Response, hover: egui::Color32| {
@@ -484,7 +484,7 @@ impl OverlayState {
             close.center(),
             egui::Align2::CENTER_CENTER,
             "x",
-            egui::FontId::proportional(13.0),
+            Self::font(13.0),
             hover_color(&close_response, egui::Color32::from_rgb(255, 120, 120)),
         );
         self.paint_content(ui, area);
@@ -538,6 +538,14 @@ impl OverlayState {
             .collect();
         painter.add(egui::Shape::line(shackle, egui::Stroke::new(1.8, color)));
         painter.circle_filled(body.center(), 1.2, Self::BAR_COLOR);
+    }
+
+    /// The overlay's font (Oxanium, see `OVERLAY_FONT`).
+    fn font(size: f32) -> egui::FontId {
+        egui::FontId::new(
+            size,
+            egui::FontFamily::Name(crate::app::OVERLAY_FONT.into()),
+        )
     }
 
     const ROW_HEIGHT: f32 = 22.0;
@@ -650,16 +658,11 @@ impl OverlayState {
     fn text_galley(
         painter: &egui::Painter,
         text: &str,
-        size: f32,
+        font: egui::FontId,
         color: egui::Color32,
         width: f32,
     ) -> std::sync::Arc<egui::Galley> {
-        let mut job = egui::text::LayoutJob::simple(
-            text.to_string(),
-            egui::FontId::proportional(size),
-            color,
-            width.max(1.0),
-        );
+        let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, width.max(1.0));
         job.wrap.max_rows = 1;
         job.wrap.break_anywhere = true;
         job.wrap.overflow_character = Some('\u{2026}');
@@ -698,7 +701,7 @@ impl OverlayState {
             egui::pos2(header.left() + 8.0, header.center().y),
             egui::Align2::LEFT_CENTER,
             title,
-            egui::FontId::proportional(10.5),
+            Self::font(10.5),
             egui::Color32::from_rgb(170, 180, 196),
         );
         if !self.is_example() {
@@ -706,7 +709,7 @@ impl OverlayState {
                 egui::pos2(header.right() - 8.0, header.center().y),
                 egui::Align2::RIGHT_CENTER,
                 rows.len().to_string(),
-                egui::FontId::proportional(10.5),
+                Self::font(10.5),
                 egui::Color32::from_rgb(224, 129, 58),
             );
         }
@@ -735,13 +738,13 @@ impl OverlayState {
                 egui::pos2(rect.left() + 9.0, mid),
                 egui::Align2::LEFT_CENTER,
                 format!("{}j", row.jumps),
-                egui::FontId::proportional(11.0),
+                Self::font(11.0),
                 color,
             );
             let system = Self::text_galley(
                 painter,
                 &row.system,
-                11.5,
+                Self::font(11.5),
                 egui::Color32::from_rgb(238, 241, 245),
                 64.0,
             );
@@ -756,14 +759,14 @@ impl OverlayState {
                 egui::pos2(rect.right() - 6.0, mid),
                 egui::Align2::RIGHT_CENTER,
                 age,
-                egui::FontId::proportional(10.5),
+                Self::font(10.5),
                 egui::Color32::from_rgb(125, 137, 155),
             );
             let text_left = rect.left() + 102.0;
             let summary = Self::text_galley(
                 painter,
                 &row.text,
-                11.0,
+                Self::font(11.0),
                 egui::Color32::from_rgb(181, 189, 201),
                 rect.right() - age_width - 6.0 - text_left,
             );

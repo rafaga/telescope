@@ -56,6 +56,12 @@ mod windows;
 /// `TelescopeApp::font_definitions`).
 const CJK_FONT: &str = "Noto Sans CJK";
 
+/// The overlay's font: Oxanium at weight 600, a static instance made from the
+/// variable font in `assets` (egui draws a variable font at its lightest
+/// weight, 200). It falls back to the interface fonts for the glyphs Oxanium
+/// lacks.
+pub(crate) const OVERLAY_FONT: &str = "Oxanium";
+
 /// Face of `NotoSansCJK-Medium.ttc` Telescope uses: 0 JP, 1 KR, 2 SC, 3 TC,
 /// 4 HK. Every face has every glyph; only the shape of Han characters
 /// changes.
@@ -1101,6 +1107,24 @@ impl TelescopeApp {
         }
 
         fonts.font_data.insert(
+            OVERLAY_FONT.to_owned(),
+            Arc::new(FontData::from_static(include_bytes!(
+                "../../../assets/Oxanium-SemiBold.ttf"
+            ))),
+        );
+        let mut chain = vec![OVERLAY_FONT.to_owned()];
+        chain.extend(
+            fonts
+                .families
+                .get(&FontFamily::Proportional)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        fonts
+            .families
+            .insert(FontFamily::Name(OVERLAY_FONT.into()), chain);
+
+        fonts.font_data.insert(
             "Fira Sans Bold".to_owned(),
             Arc::new(FontData::from_static(include_bytes!(
                 "../../../assets/FiraSans-Bold.ttf"
@@ -1275,6 +1299,24 @@ mod font_tests {
     // Instead, check the icon isn't painted as the glyph of a code point no
     // font has. The emoji come from egui's `monochrome_emoji_fonts` feature
     // (off by default since egui 0.37).
+    #[test]
+    fn the_overlay_font_is_registered_with_the_interface_fonts_as_fallback() {
+        let fonts = TelescopeApp::font_definitions();
+        assert!(fonts.font_data.contains_key(OVERLAY_FONT));
+        let chain = &fonts.families[&egui::FontFamily::Name(OVERLAY_FONT.into())];
+        assert_eq!(chain[0], OVERLAY_FONT);
+        assert!(chain.len() > 1, "no fallback");
+        let ctx = context_with(fonts);
+        let id = FontId::new(12.0, egui::FontFamily::Name(OVERLAY_FONT.into()));
+        let width = ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap("Tama 1j".to_owned(), id, Color32::WHITE)
+                .size()
+                .x
+        });
+        assert!(width > 0.0);
+    }
+
     #[test]
     fn tooltip_icons_are_drawn() {
         let ctx = context_with(TelescopeApp::font_definitions());
