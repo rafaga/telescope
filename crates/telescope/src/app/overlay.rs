@@ -99,6 +99,9 @@ pub(crate) struct OverlayState {
     native_attempts: u32,
     /// The overlay window has the keyboard focus.
     overlay_focused: bool,
+    /// When the window's transparency was last asserted natively (see
+    /// `keep_transparent`).
+    last_transparency: Option<Instant>,
     /// The window is shown (it is hidden while the game is not in front).
     visible: bool,
     fullscreen: FullScreenState,
@@ -153,6 +156,7 @@ impl OverlayState {
             native_applied: false,
             native_attempts: 0,
             overlay_focused: false,
+            last_transparency: None,
             visible: true,
             fullscreen: FullScreenState::new(),
             warned_exclusive: false,
@@ -196,6 +200,7 @@ impl OverlayState {
         self.last_game_rect = None;
         self.last_target = None;
         self.overlay_focused = false;
+        self.last_transparency = None;
         self.visible = true;
     }
 
@@ -380,6 +385,24 @@ impl OverlayState {
         }
     }
 
+    /// How often the window's transparency is asserted again.
+    const TRANSPARENCY_EVERY: Duration = Duration::from_millis(500);
+
+    /// Windows can drop the transparency a window was created with (when its
+    /// styles or region change, when it is shown again, when it gains or loses
+    /// the focus): it is asserted again now and then. A no-op elsewhere.
+    fn keep_transparent(&mut self) {
+        if !self.native_applied
+            || self
+                .last_transparency
+                .is_some_and(|last| last.elapsed() < Self::TRANSPARENCY_EVERY)
+        {
+            return;
+        }
+        self.last_transparency = Some(Instant::now());
+        let _ = self.native.keep_transparent_by_title(Self::TITLE);
+    }
+
     /// The contents of the overlay window.
     fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -387,8 +410,14 @@ impl OverlayState {
             self.close();
             return;
         }
-        self.overlay_focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
+        let focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
+        if focused != self.overlay_focused {
+            // gaining or losing the focus can drop the transparency
+            self.last_transparency = None;
+        }
+        self.overlay_focused = focused;
         self.apply_native();
+        self.keep_transparent();
         let ppp = Self::pixels_per_point(&ctx);
         if let Some(outer) = ctx.input(|input| input.viewport().outer_rect) {
             self.track_drag(outer, ppp);

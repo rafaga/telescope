@@ -29,9 +29,14 @@ mod macos;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, POINT, RECT},
+        Graphics::Dwm::{
+            DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow,
+            DwmExtendFrameIntoClientArea,
+        },
         Graphics::Gdi::{
             ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, RGN_OR, SetWindowRgn,
         },
+        UI::Controls::MARGINS,
         UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState},
         UI::WindowsAndMessaging::{
             EnumWindows, FindWindowW, GWL_EXSTYLE, GetClientRect, GetForegroundWindow,
@@ -627,7 +632,7 @@ impl OverlayWindow {
                 style &= !(WS_EX_NOACTIVATE.0 | WS_EX_TRANSPARENT.0);
             }
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style as isize);
-            SetWindowPos(
+            let placed = SetWindowPos(
                 hwnd,
                 Some(HWND_TOPMOST),
                 0,
@@ -636,7 +641,11 @@ impl OverlayWindow {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             )
-            .map_err(|error| OverlayError::Os(error.to_string()))
+            .map_err(|error| OverlayError::Os(error.to_string()));
+            // changing the styles can undo the transparency the window was
+            // created with
+            Self::keep_transparent(hwnd);
+            placed
         }
     }
 
@@ -708,6 +717,55 @@ impl OverlayWindow {
         self.apply_hwnd(hwnd)
     }
 
+    /// Makes the window transparent again: the system can drop the effect the
+    /// UI toolkit enabled when it created the window (changing its styles or
+    /// region, or its gaining or losing the focus). Does nothing where the
+    /// window does not need it.
+    #[cfg(target_os = "windows")]
+    pub fn keep_transparent_by_title(&self, title: &str) -> Result<(), OverlayError> {
+        // SAFETY: plain lookup by title; the result is only used if it is Ok.
+        #[allow(unsafe_code)]
+        let hwnd = unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) }
+            .map_err(|_| OverlayError::InvalidHandle)?;
+        Self::keep_transparent(hwnd);
+        Ok(())
+    }
+
+    /// See the Windows version.
+    #[cfg(not(target_os = "windows"))]
+    pub fn keep_transparent_by_title(&self, _title: &str) -> Result<(), OverlayError> {
+        Ok(())
+    }
+
+    /// The two ways Windows lets a window blend its own alpha with what is
+    /// behind it: an empty blur-behind region (what winit sets at creation)
+    /// and a frame extended over the whole client area. Failures are ignored:
+    /// the window then keeps what it had.
+    #[cfg(target_os = "windows")]
+    #[allow(unsafe_code)]
+    fn keep_transparent(hwnd: HWND) {
+        // SAFETY: `hwnd` belongs to a live window of this process; the
+        // region is created here and freed right after the call.
+        unsafe {
+            let region = CreateRectRgn(0, 0, -1, -1);
+            let blur = DWM_BLURBEHIND {
+                dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+                fEnable: BOOL(1),
+                hRgnBlur: region,
+                fTransitionOnMaximized: BOOL(0),
+            };
+            let _ = DwmEnableBlurBehindWindow(hwnd, &blur);
+            let _ = DeleteObject(region.into());
+            let margins = MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
+            };
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        }
+    }
+
     /// Applies the native settings to the window of this process whose title
     /// is `title` (see the Windows version). Must run on the main thread.
     #[cfg(target_os = "macos")]
@@ -772,6 +830,7 @@ impl OverlayWindow {
                 let _ = DeleteObject(region.into());
                 return Err(OverlayError::Os(String::from("SetWindowRgn failed")));
             }
+            Self::keep_transparent(hwnd);
         }
         Ok(())
     }
