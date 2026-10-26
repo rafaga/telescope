@@ -10,6 +10,15 @@ versions were written for the tag that shipped them.
 
 ## [Unreleased]
 
+### Added
+
+* Experimental overlay (cargo feature `overlay`): the overlay window now lists
+  the events near the linked characters. Every intel report or killmail in a
+  system within the alarm radius shows as a row (jumps, system, summary, age),
+  newest first, colored by distance; with nothing to show the locked overlay
+  paints nothing. The panel is semi-transparent, with an opacity setting
+  (`overlay_opacity`, in the Debug window for now).
+
 ## [1.0.6] - 2026-10-23
 
 ### Changed

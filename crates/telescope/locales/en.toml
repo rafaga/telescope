@@ -263,6 +263,9 @@ title = "Log (%{count})"
 collapse = "Collapse the log"
 expand = "Expand the log"
 
+[overlay]
+nearby = "Nearby"
+
 [update_modal]
 title = "A new version of Telescope is available"
 message = "Telescope %{latest} is available. You are running %{current}."

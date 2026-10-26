@@ -105,10 +105,19 @@ pub(crate) struct Mapping {
     /// before this option existed get the default.
     #[serde(default = "default_glow_intensity")]
     pub glow_intensity: f32,
+    /// Opacity of the overlay's events panel, 0.3 to 1 (1 is opaque).
+    /// `serde(default)`: settings files written before this option existed
+    /// get the default.
+    #[serde(default = "default_overlay_opacity")]
+    pub overlay_opacity: f32,
 }
 
 fn default_alert_duration_secs() -> u32 {
     Mapping::DEFAULT_ALERT_DURATION_SECS
+}
+
+fn default_overlay_opacity() -> f32 {
+    Mapping::DEFAULT_OVERLAY_OPACITY
 }
 
 fn default_glow_intensity() -> f32 {
@@ -123,6 +132,7 @@ impl Default for Mapping {
             center_on_alert: false,
             alert_duration_secs: Mapping::DEFAULT_ALERT_DURATION_SECS,
             glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
+            overlay_opacity: Mapping::DEFAULT_OVERLAY_OPACITY,
         }
     }
 }
@@ -136,6 +146,11 @@ impl Mapping {
     pub(crate) const MAX_ALERT_DURATION_SECS: u32 = 600;
     /// Default of [`Mapping::glow_intensity`].
     pub(crate) const DEFAULT_GLOW_INTENSITY: f32 = 0.6;
+    /// Default of [`Mapping::overlay_opacity`].
+    pub(crate) const DEFAULT_OVERLAY_OPACITY: f32 = 0.8;
+    /// Lowest overlay opacity: below it the text is hard to read.
+    #[cfg(feature = "overlay")]
+    pub(crate) const MIN_OVERLAY_OPACITY: f32 = 0.3;
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -686,6 +701,20 @@ impl Settings {
         self.saved = false;
     }
 
+    /// Opacity of the overlay's events panel.
+    #[cfg(feature = "overlay")]
+    pub(crate) fn get_overlay_opacity(&self) -> f32 {
+        self.mapping
+            .overlay_opacity
+            .clamp(Mapping::MIN_OVERLAY_OPACITY, 1.0)
+    }
+
+    #[cfg(feature = "overlay")]
+    pub(crate) fn set_overlay_opacity(&mut self, opacity: f32) {
+        self.mapping.overlay_opacity = opacity.clamp(Mapping::MIN_OVERLAY_OPACITY, 1.0);
+        self.saved = false;
+    }
+
     pub(crate) fn get_center_on_alert(&self) -> bool {
         self.mapping.center_on_alert
     }
@@ -1105,6 +1134,22 @@ mod tests {
         assert_eq!(settings.ui.language, crate::i18n::AUTO);
         assert!(settings.get_startup_regions().is_empty());
         assert!(!settings.get_center_on_alert());
+    }
+
+    #[cfg(feature = "overlay")]
+    #[test]
+    fn the_overlay_opacity_defaults_and_is_clamped() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            settings.get_overlay_opacity(),
+            Mapping::DEFAULT_OVERLAY_OPACITY
+        );
+        settings.set_overlay_opacity(0.0);
+        assert_eq!(settings.get_overlay_opacity(), Mapping::MIN_OVERLAY_OPACITY);
+        settings.set_overlay_opacity(5.0);
+        assert_eq!(settings.get_overlay_opacity(), 1.0);
+        let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
+        assert_eq!(old.overlay_opacity, Mapping::DEFAULT_OVERLAY_OPACITY);
     }
 
     #[test]

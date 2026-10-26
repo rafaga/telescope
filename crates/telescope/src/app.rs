@@ -678,7 +678,11 @@ impl eframe::App for TelescopeApp {
         self.database_updater.show(ui.ctx());
         self.show_update_prompt(ui.ctx());
         #[cfg(feature = "overlay")]
-        self.overlay.show(ui.ctx());
+        if self.overlay.is_open() {
+            let rows = self.nearby_rows();
+            let opacity = self.settings.get_overlay_opacity();
+            self.overlay.show(ui.ctx(), &rows, opacity);
+        }
         #[cfg(feature = "overlay")]
         if let Some(text) = self.overlay.take_warning() {
             self.update_status_with_error((

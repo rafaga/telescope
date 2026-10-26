@@ -1,9 +1,11 @@
 //! Experimental overlay (feature `overlay`): a transparent, borderless window
 //! that stays above the game and follows the EVE client window.
 //!
-//! For now it only shows a placeholder: a rectangle with a title bar to drag it
-//! and a struck-through body, to try the native behaviour on Windows, macOS and
-//! Linux (X11). Nothing is injected into the game; see `native_tools::overlay`.
+//! It shows the events near the linked characters (see
+//! `intel::nearby`): a small semi-transparent panel with one row per event, the
+//! closest and newest first. With nothing to show it draws nothing when locked,
+//! and a crossed-out placeholder while it is being positioned. Nothing is
+//! injected into the game; see `native_tools::overlay`.
 
 use eframe::egui;
 use native_tools::overlay::{
@@ -11,6 +13,42 @@ use native_tools::overlay::{
     OverlayWindow, ScreenRect,
 };
 use std::time::{Duration, Instant};
+
+/// One event near a character, as the widget lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NearbyRow {
+    /// Stargate jumps from the closest linked character.
+    pub jumps: u8,
+    pub system: String,
+    pub text: String,
+    /// Seconds since the event was received.
+    pub age_secs: u64,
+}
+
+impl crate::app::TelescopeApp {
+    /// The events near the linked characters, as the widget lists them: newest
+    /// first, with the system's name, and only those still within the alert
+    /// duration.
+    pub(crate) fn nearby_rows(&self) -> Vec<NearbyRow> {
+        let now = std::time::Instant::now();
+        self.alarm_shared
+            .nearby
+            .recent(now, self.settings.get_alert_duration())
+            .into_iter()
+            .map(|event| NearbyRow {
+                jumps: event.jumps,
+                system: self
+                    .universe
+                    .solar_systems
+                    .get(&event.system_id)
+                    .map(|system| system.name.clone())
+                    .unwrap_or_else(|| event.system_id.to_string()),
+                text: event.text,
+                age_secs: now.saturating_duration_since(event.received).as_secs(),
+            })
+            .collect()
+    }
+}
 
 /// State of the overlay window.
 pub(crate) struct OverlayState {
@@ -42,6 +80,10 @@ pub(crate) struct OverlayState {
     /// The game is in exclusive full screen and the user was told.
     warned_exclusive: bool,
     pending_warning: Option<String>,
+    /// The events listed, as last given to `show`.
+    rows: Vec<NearbyRow>,
+    /// Opacity of the panel, from `Settings::get_overlay_opacity`.
+    opacity: f32,
 }
 
 impl Default for OverlayState {
@@ -90,6 +132,8 @@ impl OverlayState {
             fullscreen: FullScreenState::new(),
             warned_exclusive: false,
             pending_warning: None,
+            rows: Vec::new(),
+            opacity: 1.0,
         }
     }
 
@@ -154,10 +198,14 @@ impl OverlayState {
 
     /// Draws the overlay window, when it is open. Called every frame by the
     /// app; it also keeps a slow repaint going to follow the game window.
-    pub(crate) fn show(&mut self, ctx: &egui::Context) {
+    pub(crate) fn show(&mut self, ctx: &egui::Context, rows: &[NearbyRow], opacity: f32) {
         if !self.open {
             return;
         }
+        if self.rows != rows {
+            self.rows = rows.to_vec();
+        }
+        self.opacity = opacity.clamp(0.0, 1.0);
         ctx.request_repaint_after(Self::POLL);
         self.poll_game(ctx);
 
@@ -343,13 +391,13 @@ impl OverlayState {
         // Only what is painted is shown: the window has no background and no
         // border. The rest is cut away natively, so this needs no
         // transparent swapchain.
-        let mut shown = Self::indicator_rects(area);
+        let mut shown = self.shown_parts(area);
         if !self.locked {
             shown.push(bar);
         }
         self.apply_region(rect, &shown, ppp);
         if self.locked {
-            self.paint_area(ui, area);
+            self.paint_content(ui, area);
             return;
         }
 
@@ -418,7 +466,7 @@ impl OverlayState {
             egui::FontId::proportional(13.0),
             hover_color(&close_response, egui::Color32::from_rgb(255, 120, 120)),
         );
-        self.paint_area(ui, area);
+        self.paint_content(ui, area);
     }
 
     /// Cuts the window down to `shown` (screen-space egui rectangles of the
@@ -469,6 +517,206 @@ impl OverlayState {
             .collect();
         painter.add(egui::Shape::line(shackle, egui::Stroke::new(1.8, color)));
         painter.circle_filled(body.center(), 1.2, Self::BAR_COLOR);
+    }
+
+    const ROW_HEIGHT: f32 = 22.0;
+    const HEADER_HEIGHT: f32 = 22.0;
+    const PANEL_COLOR: (u8, u8, u8) = (12, 16, 23);
+    const HEADER_COLOR: (u8, u8, u8) = (24, 32, 46);
+    const PANEL_BORDER: (u8, u8, u8) = (70, 90, 120);
+
+    /// The rows that fit in `area`, below the header.
+    fn visible_rows(&self, area: egui::Rect) -> usize {
+        let room = ((area.height() - Self::HEADER_HEIGHT - 2.0) / Self::ROW_HEIGHT).floor();
+        self.rows.len().min(room.max(0.0) as usize)
+    }
+
+    /// Where the panel is: the top of `area`, as tall as its rows need.
+    fn panel_rect(&self, area: egui::Rect) -> egui::Rect {
+        let height = Self::HEADER_HEIGHT + 2.0 + self.visible_rows(area) as f32 * Self::ROW_HEIGHT;
+        egui::Rect::from_min_size(area.min, egui::vec2(area.width(), height))
+    }
+
+    /// The window parts that are painted, besides the title bar: only these
+    /// are shown, the rest of the window is cut away.
+    fn shown_parts(&self, area: egui::Rect) -> Vec<egui::Rect> {
+        if self.rows.is_empty() {
+            if self.locked {
+                // nothing to show: a single pixel stands for "no region"
+                return vec![egui::Rect::from_min_size(area.min, egui::vec2(1.0, 1.0))];
+            }
+            return Self::indicator_rects(area);
+        }
+        vec![self.panel_rect(area)]
+    }
+
+    /// The colors of a row by distance: its stripe, its text, and whether its
+    /// background is tinted (the closest ones). The distance is always written
+    /// too, so the color never carries it alone.
+    fn jump_colors(jumps: u8) -> (egui::Color32, egui::Color32, bool) {
+        match jumps {
+            0 | 1 => (
+                egui::Color32::from_rgb(210, 56, 44),
+                egui::Color32::from_rgb(255, 106, 92),
+                true,
+            ),
+            2 => (
+                egui::Color32::from_rgb(224, 129, 58),
+                egui::Color32::from_rgb(240, 160, 90),
+                false,
+            ),
+            _ => (
+                egui::Color32::from_rgb(201, 178, 74),
+                egui::Color32::from_rgb(220, 198, 92),
+                false,
+            ),
+        }
+    }
+
+    /// `m:ss` since the event.
+    fn age_text(age_secs: u64) -> String {
+        format!("{}:{:02}", age_secs / 60, age_secs % 60)
+    }
+
+    /// A color of the panel with the opacity of the setting.
+    fn with_opacity((r, g, b): (u8, u8, u8), alpha: f32) -> egui::Color32 {
+        egui::Color32::from_rgba_unmultiplied(
+            r,
+            g,
+            b,
+            (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+        )
+    }
+
+    /// One line of text, cut with an ellipsis to `width`.
+    fn text_galley(
+        painter: &egui::Painter,
+        text: &str,
+        size: f32,
+        color: egui::Color32,
+        width: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        let mut job = egui::text::LayoutJob::simple(
+            text.to_string(),
+            egui::FontId::proportional(size),
+            color,
+            width.max(1.0),
+        );
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('\u{2026}');
+        painter.layout_job(job)
+    }
+
+    /// The content of the area: the events panel, or the placeholder while
+    /// positioning with nothing to list (nothing at all when locked).
+    fn paint_content(&self, ui: &egui::Ui, area: egui::Rect) {
+        if self.rows.is_empty() {
+            if !self.locked {
+                self.paint_area(ui, area);
+            }
+            return;
+        }
+        let painter = ui.painter();
+        let panel = self.panel_rect(area);
+        let border = Self::with_opacity(Self::PANEL_BORDER, (self.opacity + 0.2).min(1.0));
+        painter.rect_filled(
+            panel,
+            0.0,
+            Self::with_opacity(Self::PANEL_COLOR, self.opacity),
+        );
+        let header =
+            egui::Rect::from_min_size(panel.min, egui::vec2(panel.width(), Self::HEADER_HEIGHT));
+        painter.rect_filled(
+            header,
+            0.0,
+            Self::with_opacity(Self::HEADER_COLOR, self.opacity),
+        );
+        let title = t!("overlay.nearby").to_uppercase();
+        painter.text(
+            egui::pos2(header.left() + 8.0, header.center().y),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(10.5),
+            egui::Color32::from_rgb(170, 180, 196),
+        );
+        painter.text(
+            egui::pos2(header.right() - 8.0, header.center().y),
+            egui::Align2::RIGHT_CENTER,
+            self.rows.len().to_string(),
+            egui::FontId::proportional(10.5),
+            egui::Color32::from_rgb(224, 129, 58),
+        );
+
+        let mut top = header.bottom();
+        for row in self.rows.iter().take(self.visible_rows(area)) {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(panel.left(), top),
+                egui::vec2(panel.width(), Self::ROW_HEIGHT),
+            );
+            let (stripe, color, tinted) = Self::jump_colors(row.jumps);
+            if tinted {
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    Self::with_opacity((70, 20, 24), self.opacity * 0.7),
+                );
+            }
+            painter.rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+                0.0,
+                stripe,
+            );
+            let mid = rect.center().y;
+            painter.text(
+                egui::pos2(rect.left() + 9.0, mid),
+                egui::Align2::LEFT_CENTER,
+                format!("{}j", row.jumps),
+                egui::FontId::proportional(11.0),
+                color,
+            );
+            let system = Self::text_galley(
+                painter,
+                &row.system,
+                11.5,
+                egui::Color32::from_rgb(238, 241, 245),
+                64.0,
+            );
+            painter.galley(
+                egui::pos2(rect.left() + 34.0, mid - system.size().y / 2.0),
+                system,
+                egui::Color32::WHITE,
+            );
+            let age = Self::age_text(row.age_secs);
+            let age_width = 30.0;
+            painter.text(
+                egui::pos2(rect.right() - 6.0, mid),
+                egui::Align2::RIGHT_CENTER,
+                age,
+                egui::FontId::proportional(10.5),
+                egui::Color32::from_rgb(125, 137, 155),
+            );
+            let text_left = rect.left() + 102.0;
+            let summary = Self::text_galley(
+                painter,
+                &row.text,
+                11.0,
+                egui::Color32::from_rgb(181, 189, 201),
+                rect.right() - age_width - 6.0 - text_left,
+            );
+            painter.galley(
+                egui::pos2(text_left, mid - summary.size().y / 2.0),
+                summary,
+                egui::Color32::WHITE,
+            );
+            top += Self::ROW_HEIGHT;
+        }
+        painter.rect_stroke(
+            panel,
+            0.0,
+            egui::Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
     }
 
     /// The rectangle outline of the placeholder, and the stroke it is drawn
@@ -551,6 +799,85 @@ mod tests {
         let mut overlay = OverlayState::new();
         overlay.check_exclusive_full_screen();
         assert_eq!(overlay.take_warning(), None);
+    }
+
+    fn row(jumps: u8, system: &str) -> NearbyRow {
+        NearbyRow {
+            jumps,
+            system: system.to_string(),
+            text: String::from("2 in gate"),
+            age_secs: 5,
+        }
+    }
+
+    fn area() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(0.0, 24.0), egui::vec2(260.0, 136.0))
+    }
+
+    #[test]
+    fn the_panel_is_as_tall_as_its_rows_and_fits_the_area() {
+        let mut overlay = OverlayState::new();
+        overlay.rows = vec![row(1, "Tama"), row(2, "Kedama")];
+        let panel = overlay.panel_rect(area());
+        assert_eq!(panel.height(), 22.0 + 2.0 + 2.0 * 22.0);
+        assert_eq!(panel.min, area().min);
+
+        overlay.rows = (0..20).map(|id| row(3, &format!("S{id}"))).collect();
+        assert_eq!(overlay.visible_rows(area()), 5);
+        assert!(overlay.panel_rect(area()).height() <= area().height());
+    }
+
+    #[test]
+    fn nothing_is_painted_when_locked_without_events() {
+        let mut overlay = OverlayState::new();
+        overlay.locked = true;
+        let parts = overlay.shown_parts(area());
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].size(), egui::vec2(1.0, 1.0));
+
+        // positioning keeps the placeholder
+        overlay.locked = false;
+        assert!(overlay.shown_parts(area()).len() > 1);
+
+        overlay.rows = vec![row(1, "Tama")];
+        assert_eq!(
+            overlay.shown_parts(area()),
+            vec![overlay.panel_rect(area())]
+        );
+    }
+
+    #[test]
+    fn rows_are_colored_by_distance_and_the_closest_are_tinted() {
+        assert!(OverlayState::jump_colors(0).2);
+        assert!(OverlayState::jump_colors(1).2);
+        assert!(!OverlayState::jump_colors(2).2);
+        assert_ne!(
+            OverlayState::jump_colors(1).0,
+            OverlayState::jump_colors(2).0
+        );
+        assert_ne!(
+            OverlayState::jump_colors(2).0,
+            OverlayState::jump_colors(3).0
+        );
+        assert_eq!(
+            OverlayState::jump_colors(3).0,
+            OverlayState::jump_colors(9).0
+        );
+    }
+
+    #[test]
+    fn ages_are_minutes_and_seconds() {
+        assert_eq!(OverlayState::age_text(5), "0:05");
+        assert_eq!(OverlayState::age_text(125), "2:05");
+    }
+
+    #[test]
+    fn the_opacity_scales_the_panel_alpha() {
+        assert_eq!(OverlayState::with_opacity((12, 16, 23), 1.0).a(), 255);
+        assert_eq!(OverlayState::with_opacity((12, 16, 23), 0.0).a(), 0);
+        assert_eq!(OverlayState::with_opacity((12, 16, 23), 2.0).a(), 255);
+        let half = OverlayState::with_opacity((12, 16, 23), 0.5).a();
+        assert!((126..=129).contains(&half), "{half}");
     }
 
     #[test]

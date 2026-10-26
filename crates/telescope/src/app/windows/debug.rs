@@ -157,6 +157,14 @@ impl TelescopeApp {
                         {
                             self.overlay.set_locked(locked);
                         }
+                        let mut opacity = self.settings.get_overlay_opacity();
+                        if ui
+                            .add(egui::Slider::new(&mut opacity, 0.3..=1.0).text("Overlay opacity"))
+                            .on_hover_text("1 is opaque; lower lets the game show through")
+                            .changed()
+                        {
+                            self.settings.set_overlay_opacity(opacity);
+                        }
                     }
                 }
                 ui.separator();

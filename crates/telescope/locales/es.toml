@@ -264,6 +264,9 @@ title = "Bitácora (%{count})"
 collapse = "Colapsar la bitácora"
 expand = "Expandir la bitácora"
 
+[overlay]
+nearby = "Cerca de ti"
+
 [update_modal]
 title = "Hay una nueva versión de Telescope"
 message = "Telescope %{latest} está disponible. Estás usando la %{current}."
