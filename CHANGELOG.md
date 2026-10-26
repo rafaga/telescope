@@ -12,12 +12,12 @@ versions were written for the tag that shipped them.
 
 ### Added
 
-* Experimental overlay (cargo feature `overlay`): the overlay window now lists
-  the events near the linked characters. Every intel report or killmail in a
-  system within the alarm radius shows as a row (jumps, system, summary, age),
-  newest first, colored by distance; with nothing to show the locked overlay
-  paints nothing. The panel is semi-transparent, with an opacity setting
-  (`overlay_opacity`, in the Debug window for now).
+* Overlay: a panel over the EVE window that lists the events near the linked
+  characters, no longer behind a cargo feature. Every intel report or killmail
+  in a system within the alarm radius shows as a row (jumps, system, summary,
+  age), newest first, colored by distance; with nothing to show the locked
+  overlay paints nothing. The panel is semi-transparent: Settings -> Alerts has
+  its opacity. Open it from File -> Overlay.
 
 ## [1.0.6] - 2026-10-23
 

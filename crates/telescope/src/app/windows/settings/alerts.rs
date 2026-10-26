@@ -25,6 +25,7 @@ impl TelescopeApp {
             self.show_distance_section(ui);
             self.show_map_alert_section(ui);
             self.show_sound_section(ui);
+            self.show_overlay_section(ui);
         });
     }
 
@@ -83,6 +84,29 @@ impl TelescopeApp {
                 );
             });
         });
+    }
+
+    fn show_overlay_section(&mut self, ui: &mut egui::Ui) {
+        Section::new(&t!("settings.alerts.overlay_title"))
+            .description(&t!("settings.alerts.overlay_description"))
+            .show(ui, |ui| {
+                egui_panels::form(ui, |form| {
+                    form.row(t!("settings.alerts.overlay_opacity"), |ui| {
+                        let mut percent = (self.settings.get_overlay_opacity() * 100.0).round();
+                        let slider = Slider::new(&mut percent, 30.0..=100.0)
+                            .step(5.0)
+                            .width(220.0)
+                            .show(ui);
+                        if slider.changed() {
+                            self.settings.set_overlay_opacity(percent / 100.0);
+                        }
+                        ui.label(format!("{percent:.0}%"));
+                    });
+                    form.note(|ui| {
+                        ui.weak(t!("settings.alerts.overlay_hint"));
+                    });
+                });
+            });
     }
 
     fn show_sound_section(&mut self, ui: &mut egui::Ui) {

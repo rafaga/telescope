@@ -149,7 +149,6 @@ impl Mapping {
     /// Default of [`Mapping::overlay_opacity`].
     pub(crate) const DEFAULT_OVERLAY_OPACITY: f32 = 0.8;
     /// Lowest overlay opacity: below it the text is hard to read.
-    #[cfg(feature = "overlay")]
     pub(crate) const MIN_OVERLAY_OPACITY: f32 = 0.3;
 }
 
@@ -702,14 +701,12 @@ impl Settings {
     }
 
     /// Opacity of the overlay's events panel.
-    #[cfg(feature = "overlay")]
     pub(crate) fn get_overlay_opacity(&self) -> f32 {
         self.mapping
             .overlay_opacity
             .clamp(Mapping::MIN_OVERLAY_OPACITY, 1.0)
     }
 
-    #[cfg(feature = "overlay")]
     pub(crate) fn set_overlay_opacity(&mut self, opacity: f32) {
         self.mapping.overlay_opacity = opacity.clamp(Mapping::MIN_OVERLAY_OPACITY, 1.0);
         self.saved = false;
@@ -1136,7 +1133,6 @@ mod tests {
         assert!(!settings.get_center_on_alert());
     }
 
-    #[cfg(feature = "overlay")]
     #[test]
     fn the_overlay_opacity_defaults_and_is_clamped() {
         let mut settings = Settings::default();

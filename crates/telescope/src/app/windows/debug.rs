@@ -138,7 +138,6 @@ impl TelescopeApp {
                 ui.label(RichText::new(target_text).weak());
                 // The experimental overlay (cargo feature `overlay`): on/off
                 // here as well as in the File menu.
-                #[cfg(feature = "overlay")]
                 {
                     let mut overlay_on = self.overlay.is_open();
                     if ui

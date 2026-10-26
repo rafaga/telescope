@@ -74,8 +74,7 @@ cargo run --release    # optimized build
 
 * Optional features of the `telescope` crate (see
   [Profiling with Tracy](#profiling-with-tracy)):
-  `profile`, `profile-memory` and `overlay` (an experimental overlay window above
-  the game).
+  `profile` and `profile-memory`.
 * On Windows the intel reader also looks at the monitored chat logs every
   second, besides the file watcher's events: `ReadDirectoryChangesW` can defer
   or never report the writes of a file another process (EVE) keeps open. It is

@@ -16,6 +16,10 @@ quit = "Salir"
 help = "Ayuda"
 about = "Acerca de Telescope"
 licenses = "Licencias de terceros"
+overlay = "Overlay"
+overlay_hint = "Un panel sobre la ventana de EVE con los eventos cerca de tus personajes"
+overlay_lock = "Fijar la posición del overlay"
+overlay_lock_hint = "Oculta la barra de título; el ratón pasa al juego"
 
 [licenses]
 title = "Licencias de terceros"
@@ -108,6 +112,10 @@ test_hint = "Pulsa el sistema de tu personaje y suena, sin guardar nada."
 test_line = "Alerta de prueba en %{system}"
 test_done = "Alerta enviada a %{system} (%{name})"
 test_no_character = "Ningún personaje vinculado tiene ubicación conocida"
+overlay_title = "Overlay"
+overlay_description = "El panel sobre el juego que lista los eventos cerca de tus personajes. Se abre desde el menú Archivo."
+overlay_opacity = "Opacidad"
+overlay_hint = "Al 100 % el panel es opaco. Si no se ve el juego a través, tu sistema puede no admitir una ventana transparente."
 
 [settings.maps]
 description = "Qué mapas se abren al iniciar y cómo se marcan tus personajes."

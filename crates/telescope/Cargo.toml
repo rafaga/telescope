@@ -21,9 +21,6 @@ profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/
 # most of all -- so `profile` alone stays usable for measuring frame time. See
 # the `ProfiledAllocator` comment in `src/main.rs`.
 profile-memory = ["profile"]
-# Experimental overlay window above the game (src/app/overlay.rs): a movable
-# placeholder for now. Windows, macOS and Linux (X11).
-overlay = []
 
 # Embeds assets/icon.ico in the Windows executable (see build.rs).
 [build-dependencies]

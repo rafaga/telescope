@@ -1,4 +1,4 @@
-//! Experimental overlay (feature `overlay`): a transparent, borderless window
+//! Experimental overlay: a transparent, borderless window
 //! that stays above the game and follows the EVE client window.
 //!
 //! It shows the events near the linked characters (see

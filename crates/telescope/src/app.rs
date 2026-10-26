@@ -44,7 +44,6 @@ mod housekeeping;
 mod intel;
 mod messages;
 mod notifications;
-#[cfg(feature = "overlay")]
 mod overlay;
 mod persistence;
 mod settings;
@@ -184,7 +183,6 @@ pub struct TelescopeApp {
     // single check here covers both cases without touching either source.
     last_notification: Option<(Type, String, String, String, std::time::Instant)>,
     /// The experimental overlay window above the game.
-    #[cfg(feature = "overlay")]
     overlay: overlay::OverlayState,
 }
 
@@ -521,7 +519,6 @@ impl TelescopeApp {
             database_updater: database_updater::DatabaseUpdater::default(),
             update_prompt: None,
             last_notification: None,
-            #[cfg(feature = "overlay")]
             overlay: overlay::OverlayState::new(),
         }
     }
@@ -537,7 +534,6 @@ impl eframe::App for TelescopeApp {
     /// The color every window is cleared with before egui paints. By default
     /// it is the opaque window color, which makes the overlay's transparent
     /// window look solid; the main window is covered by its panels anyway.
-    #[cfg(feature = "overlay")]
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Rgba::TRANSPARENT.to_array()
     }
@@ -623,8 +619,7 @@ impl eframe::App for TelescopeApp {
             database_updater: _,
             update_prompt: _,
             last_notification: _,
-            #[cfg(feature = "overlay")]
-                overlay: _,
+            overlay: _,
         } = self;
 
         if !self.initialized {
@@ -677,13 +672,11 @@ impl eframe::App for TelescopeApp {
         // Over the Settings screen too: its Application page starts updates.
         self.database_updater.show(ui.ctx());
         self.show_update_prompt(ui.ctx());
-        #[cfg(feature = "overlay")]
         if self.overlay.is_open() {
             let rows = self.nearby_rows();
             let opacity = self.settings.get_overlay_opacity();
             self.overlay.show(ui.ctx(), &rows, opacity);
         }
-        #[cfg(feature = "overlay")]
         if let Some(text) = self.overlay.take_warning() {
             self.update_status_with_error((
                 Type::Warning,
@@ -715,6 +708,25 @@ impl eframe::App for TelescopeApp {
                     if ui.button(t!("menu.preferences")).clicked() {
                         self.open_settings();
                     }
+                    let mut overlay_on = self.overlay.is_open();
+                    if ui
+                        .checkbox(&mut overlay_on, t!("menu.overlay"))
+                        .on_hover_text(t!("menu.overlay_hint"))
+                        .changed()
+                    {
+                        self.overlay.toggle();
+                    }
+                    if self.overlay.is_open() {
+                        let mut locked = self.overlay.is_locked();
+                        if ui
+                            .checkbox(&mut locked, t!("menu.overlay_lock"))
+                            .on_hover_text(t!("menu.overlay_lock_hint"))
+                            .changed()
+                        {
+                            self.overlay.set_locked(locked);
+                        }
+                    }
+                    ui.separator();
                     #[cfg(debug_assertions)]
                     if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;

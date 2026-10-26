@@ -44,8 +44,6 @@ impl NearbyEvents {
         events.truncate(CAPACITY);
     }
 
-    // Read only by the overlay widget (cargo feature `overlay`).
-    #[allow(dead_code)]
     /// The events received less than `max_age` before `now`, newest first.
     pub(crate) fn recent(&self, now: Instant, max_age: Duration) -> Vec<NearbyEvent> {
         self.events
