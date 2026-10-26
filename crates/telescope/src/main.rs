@@ -103,6 +103,11 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
             .with_min_inner_size([400.0, 300.0])
+            // eframe gives every window (the overlay's too) a surface that
+            // can blend with what is behind it only when the main window
+            // asks for it. The main window is covered by its panels, so it
+            // looks the same; the overlay's opacity setting depends on this.
+            .with_transparent(true)
             .with_icon(
                 eframe::icon_data::from_png_bytes(&include_bytes!("../../../assets/icon.png")[..])
                     .unwrap(),
