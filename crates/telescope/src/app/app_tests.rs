@@ -456,6 +456,39 @@ fn scanning_the_chat_logs_lists_their_channels() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// ---- Overlay ----
+
+#[test]
+fn the_overlay_follows_its_setting_and_the_setting_follows_its_close_button() {
+    let (mut app, dir) = app("overlay-setting");
+    assert!(!app.overlay.is_open());
+
+    app.settings.set_overlay_enabled(true);
+    app.sync_overlay();
+    assert!(app.overlay.is_open());
+
+    // Cancelling the settings screen brings the old value back.
+    app.settings.set_overlay_enabled(false);
+    app.sync_overlay();
+    assert!(!app.overlay.is_open());
+
+    // The overlay's own close button turns the setting off, also in the
+    // snapshot Cancel returns to.
+    app.settings.set_overlay_enabled(true);
+    app.sync_overlay();
+    app.settings_snapshot = Some(app.settings.clone());
+    app.open[2] = true;
+    app.overlay_closed_by_user();
+    assert!(!app.settings.get_overlay_enabled());
+    assert!(
+        !app.settings_snapshot
+            .as_ref()
+            .unwrap()
+            .get_overlay_enabled()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // ---- Character link ----
 
 #[test]

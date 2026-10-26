@@ -640,6 +640,7 @@ impl eframe::App for TelescopeApp {
             self.open_startup_regions();
 
             self.report_player_database_status();
+            self.sync_overlay();
             if !self.esi.characters.is_empty() {
                 let mut ids = vec![];
                 for char in &self.esi.characters {
@@ -676,6 +677,9 @@ impl eframe::App for TelescopeApp {
             let rows = self.nearby_rows();
             let opacity = self.settings.get_overlay_opacity();
             self.overlay.show(ui.ctx(), &rows, opacity);
+            if !self.overlay.is_open() {
+                self.overlay_closed_by_user();
+            }
         }
         if let Some(text) = self.overlay.take_warning() {
             self.update_status_with_error((
@@ -708,25 +712,6 @@ impl eframe::App for TelescopeApp {
                     if ui.button(t!("menu.preferences")).clicked() {
                         self.open_settings();
                     }
-                    let mut overlay_on = self.overlay.is_open();
-                    if ui
-                        .checkbox(&mut overlay_on, t!("menu.overlay"))
-                        .on_hover_text(t!("menu.overlay_hint"))
-                        .changed()
-                    {
-                        self.overlay.toggle();
-                    }
-                    if self.overlay.is_open() {
-                        let mut locked = self.overlay.is_locked();
-                        if ui
-                            .checkbox(&mut locked, t!("menu.overlay_lock"))
-                            .on_hover_text(t!("menu.overlay_lock_hint"))
-                            .changed()
-                        {
-                            self.overlay.set_locked(locked);
-                        }
-                    }
-                    ui.separator();
                     #[cfg(debug_assertions)]
                     if ui.button(t!("menu.debug")).clicked() {
                         self.open[1] = true;
@@ -805,6 +790,7 @@ impl TelescopeApp {
         crate::i18n::apply_language(&self.settings.get_ui_state().language);
         self.reset_startup_flags();
         self.apply_intel_settings();
+        self.sync_overlay();
         let graph = self.intel_graph.clone();
         self.patterns_editor.reset(&graph);
         self.open[2] = false;
@@ -836,6 +822,7 @@ impl TelescopeApp {
             self.change_sde();
         }
         self.apply_node_style();
+        self.sync_overlay();
         self.apply_graph(graph);
         self.patterns_editor.mark_applied();
         // What was just applied is the new baseline for Cancel.

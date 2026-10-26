@@ -91,6 +91,16 @@ impl TelescopeApp {
             .description(&t!("settings.alerts.overlay_description"))
             .show(ui, |ui| {
                 egui_panels::form(ui, |form| {
+                    form.row_hint(
+                        t!("settings.alerts.overlay_enable"),
+                        &t!("settings.alerts.overlay_enable_hint"),
+                        |ui| {
+                            let mut enabled = self.settings.get_overlay_enabled();
+                            if egui_panels::switch(ui, &mut enabled).changed() {
+                                self.settings.set_overlay_enabled(enabled);
+                            }
+                        },
+                    );
                     form.row(t!("settings.alerts.overlay_opacity"), |ui| {
                         let mut percent = (self.settings.get_overlay_opacity() * 100.0).round();
                         let slider = Slider::new(&mut percent, 30.0..=100.0)

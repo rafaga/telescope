@@ -26,6 +26,28 @@ pub(crate) struct NearbyRow {
 }
 
 impl crate::app::TelescopeApp {
+    /// Opens or closes the overlay to match the setting (at start-up, when
+    /// the settings are applied and when they are cancelled).
+    pub(crate) fn sync_overlay(&mut self) {
+        if self.settings.get_overlay_enabled() != self.overlay.is_open() {
+            self.overlay.toggle();
+        }
+    }
+
+    /// The user closed the overlay with its own button: the setting follows.
+    /// It is saved right away, unless the Settings screen is open with edits
+    /// of its own, which wait for Apply (the snapshot Cancel returns to is
+    /// updated too, so Cancel does not bring the overlay back).
+    pub(crate) fn overlay_closed_by_user(&mut self) {
+        self.settings.set_overlay_enabled(false);
+        if let Some(snapshot) = self.settings_snapshot.as_mut() {
+            snapshot.set_overlay_enabled(false);
+        }
+        if !self.open[2] {
+            self.save_settings();
+        }
+    }
+
     /// The events near the linked characters, as the widget lists them: newest
     /// first, with the system's name, and only those still within the alert
     /// duration.
@@ -151,10 +173,6 @@ impl OverlayState {
         } else {
             self.open = true;
         }
-    }
-
-    pub(crate) fn is_locked(&self) -> bool {
-        self.locked
     }
 
     /// Fixes the window where it is (`true`: the title bar goes away and the

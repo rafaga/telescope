@@ -110,6 +110,9 @@ pub(crate) struct Mapping {
     /// get the default.
     #[serde(default = "default_overlay_opacity")]
     pub overlay_opacity: f32,
+    /// Show the overlay over the game. `serde(default)`: off.
+    #[serde(default)]
+    pub overlay_enabled: bool,
 }
 
 fn default_alert_duration_secs() -> u32 {
@@ -133,6 +136,7 @@ impl Default for Mapping {
             alert_duration_secs: Mapping::DEFAULT_ALERT_DURATION_SECS,
             glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
             overlay_opacity: Mapping::DEFAULT_OVERLAY_OPACITY,
+            overlay_enabled: false,
         }
     }
 }
@@ -712,6 +716,15 @@ impl Settings {
         self.saved = false;
     }
 
+    pub(crate) fn get_overlay_enabled(&self) -> bool {
+        self.mapping.overlay_enabled
+    }
+
+    pub(crate) fn set_overlay_enabled(&mut self, enabled: bool) {
+        self.mapping.overlay_enabled = enabled;
+        self.saved = false;
+    }
+
     pub(crate) fn get_center_on_alert(&self) -> bool {
         self.mapping.center_on_alert
     }
@@ -1146,6 +1159,9 @@ mod tests {
         assert_eq!(settings.get_overlay_opacity(), 1.0);
         let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
         assert_eq!(old.overlay_opacity, Mapping::DEFAULT_OVERLAY_OPACITY);
+        assert!(!old.overlay_enabled);
+        settings.set_overlay_enabled(true);
+        assert!(settings.get_overlay_enabled());
     }
 
     #[test]
