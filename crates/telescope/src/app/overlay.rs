@@ -4,7 +4,7 @@
 //! It shows the events near the linked characters (see
 //! `intel::nearby`): a small semi-transparent panel with one row per event, the
 //! closest and newest first. With nothing to show it draws nothing when locked,
-//! and a crossed-out placeholder while it is being positioned. Nothing is
+//! and an example while it is being positioned. Nothing is
 //! injected into the game; see `native_tools::overlay`.
 
 use eframe::egui;
@@ -543,10 +543,50 @@ impl OverlayState {
     const HEADER_COLOR: (u8, u8, u8) = (24, 32, 46);
     const PANEL_BORDER: (u8, u8, u8) = (70, 90, 120);
 
+    /// Whether the panel shows made-up rows: while positioning with no real
+    /// event, so the user sees what the overlay looks like.
+    fn is_example(&self) -> bool {
+        self.rows.is_empty() && !self.locked
+    }
+
+    /// The rows the panel lists: the events, or the example while positioning
+    /// without any.
+    fn panel_rows(&self) -> std::borrow::Cow<'_, [NearbyRow]> {
+        if self.is_example() {
+            std::borrow::Cow::Owned(Self::example_rows())
+        } else {
+            std::borrow::Cow::Borrowed(&self.rows)
+        }
+    }
+
+    /// Three made-up events at different distances.
+    fn example_rows() -> Vec<NearbyRow> {
+        vec![
+            NearbyRow {
+                jumps: 1,
+                system: String::from("Tama"),
+                text: t!("overlay.example_hostiles").to_string(),
+                age_secs: 12,
+            },
+            NearbyRow {
+                jumps: 2,
+                system: String::from("Kedama"),
+                text: t!("overlay.example_kill").to_string(),
+                age_secs: 48,
+            },
+            NearbyRow {
+                jumps: 3,
+                system: String::from("Amamake"),
+                text: t!("overlay.example_gate").to_string(),
+                age_secs: 125,
+            },
+        ]
+    }
+
     /// The rows that fit in `area`, below the header.
     fn visible_rows(&self, area: egui::Rect) -> usize {
         let room = ((area.height() - Self::HEADER_HEIGHT - 2.0) / Self::ROW_HEIGHT).floor();
-        self.rows.len().min(room.max(0.0) as usize)
+        self.panel_rows().len().min(room.max(0.0) as usize)
     }
 
     /// Where the panel is: the top of `area`, as tall as its rows need.
@@ -558,12 +598,9 @@ impl OverlayState {
     /// The window parts that are painted, besides the title bar: only these
     /// are shown, the rest of the window is cut away.
     fn shown_parts(&self, area: egui::Rect) -> Vec<egui::Rect> {
-        if self.rows.is_empty() {
-            if self.locked {
-                // nothing to show: a single pixel stands for "no region"
-                return vec![egui::Rect::from_min_size(area.min, egui::vec2(1.0, 1.0))];
-            }
-            return Self::indicator_rects(area);
+        if self.rows.is_empty() && self.locked {
+            // nothing to show: a single pixel stands for "no region"
+            return vec![egui::Rect::from_min_size(area.min, egui::vec2(1.0, 1.0))];
         }
         vec![self.panel_rect(area)]
     }
@@ -626,15 +663,13 @@ impl OverlayState {
         painter.layout_job(job)
     }
 
-    /// The content of the area: the events panel, or the placeholder while
-    /// positioning with nothing to list (nothing at all when locked).
+    /// The content of the area: the events panel, with an example while
+    /// positioning with no events (nothing at all when locked and empty).
     fn paint_content(&self, ui: &egui::Ui, area: egui::Rect) {
-        if self.rows.is_empty() {
-            if !self.locked {
-                self.paint_area(ui, area);
-            }
+        if self.rows.is_empty() && self.locked {
             return;
         }
+        let rows = self.panel_rows();
         let painter = ui.painter();
         let panel = self.panel_rect(area);
         let border = Self::with_opacity(Self::PANEL_BORDER, (self.opacity + 0.2).min(1.0));
@@ -650,7 +685,12 @@ impl OverlayState {
             0.0,
             Self::with_opacity(Self::HEADER_COLOR, self.opacity),
         );
-        let title = t!("overlay.nearby").to_uppercase();
+        let title = if self.is_example() {
+            format!("{} · {}", t!("overlay.nearby"), t!("overlay.example"))
+        } else {
+            t!("overlay.nearby").to_string()
+        }
+        .to_uppercase();
         painter.text(
             egui::pos2(header.left() + 8.0, header.center().y),
             egui::Align2::LEFT_CENTER,
@@ -658,16 +698,18 @@ impl OverlayState {
             egui::FontId::proportional(10.5),
             egui::Color32::from_rgb(170, 180, 196),
         );
-        painter.text(
-            egui::pos2(header.right() - 8.0, header.center().y),
-            egui::Align2::RIGHT_CENTER,
-            self.rows.len().to_string(),
-            egui::FontId::proportional(10.5),
-            egui::Color32::from_rgb(224, 129, 58),
-        );
+        if !self.is_example() {
+            painter.text(
+                egui::pos2(header.right() - 8.0, header.center().y),
+                egui::Align2::RIGHT_CENTER,
+                rows.len().to_string(),
+                egui::FontId::proportional(10.5),
+                egui::Color32::from_rgb(224, 129, 58),
+            );
+        }
 
         let mut top = header.bottom();
-        for row in self.rows.iter().take(self.visible_rows(area)) {
+        for row in rows.iter().take(self.visible_rows(area)) {
             let rect = egui::Rect::from_min_size(
                 egui::pos2(panel.left(), top),
                 egui::vec2(panel.width(), Self::ROW_HEIGHT),
@@ -736,66 +778,6 @@ impl OverlayState {
             egui::StrokeKind::Inside,
         );
     }
-
-    /// The rectangle outline of the placeholder, and the stroke it is drawn
-    /// with.
-    fn indicator_outline(area: egui::Rect) -> egui::Rect {
-        area.shrink(14.0)
-    }
-
-    const STROKE: f32 = 2.0;
-
-    /// The window parts the placeholder covers: only these are shown, so the
-    /// area between the strokes is as transparent as the rest of the window.
-    /// The diagonals are cut in small steps along their length.
-    fn indicator_rects(area: egui::Rect) -> Vec<egui::Rect> {
-        let inner = Self::indicator_outline(area);
-        let half = Self::STROKE;
-        let mut rects = vec![
-            egui::Rect::from_min_max(
-                inner.left_top() - egui::vec2(half, half),
-                egui::pos2(inner.right() + half, inner.top() + half),
-            ),
-            egui::Rect::from_min_max(
-                egui::pos2(inner.left() - half, inner.bottom() - half),
-                inner.right_bottom() + egui::vec2(half, half),
-            ),
-            egui::Rect::from_min_max(
-                inner.left_top() - egui::vec2(half, half),
-                egui::pos2(inner.left() + half, inner.bottom() + half),
-            ),
-            egui::Rect::from_min_max(
-                egui::pos2(inner.right() - half, inner.top() - half),
-                inner.right_bottom() + egui::vec2(half, half),
-            ),
-        ];
-        let step = 2.0;
-        let steps = (inner.width() / step).ceil() as usize;
-        let slope = inner.height() / inner.width();
-        for index in 0..steps {
-            let x0 = inner.left() + index as f32 * step;
-            let x1 = (x0 + step).min(inner.right());
-            let down = |x: f32| inner.top() + (x - inner.left()) * slope;
-            let up = |x: f32| inner.bottom() - (x - inner.left()) * slope;
-            for (y0, y1) in [(down(x0), down(x1)), (up(x0), up(x1))] {
-                rects.push(egui::Rect::from_min_max(
-                    egui::pos2(x0, y0.min(y1) - half),
-                    egui::pos2(x1, y0.max(y1) + half),
-                ));
-            }
-        }
-        rects
-    }
-
-    /// The placeholder: a crossed-out area, painted opaque on no background.
-    fn paint_area(&self, ui: &egui::Ui, area: egui::Rect) {
-        let painter = ui.painter();
-        let inner = Self::indicator_outline(area);
-        let stroke = egui::Stroke::new(Self::STROKE, egui::Color32::from_rgb(200, 90, 90));
-        painter.line_segment([inner.left_top(), inner.right_bottom()], stroke);
-        painter.line_segment([inner.right_top(), inner.left_bottom()], stroke);
-        painter.rect_stroke(inner, 0.0, stroke, egui::StrokeKind::Inside);
-    }
 }
 
 #[cfg(test)]
@@ -853,15 +835,37 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].size(), egui::vec2(1.0, 1.0));
 
-        // positioning keeps the placeholder
+        // positioning shows the example in its place
         overlay.locked = false;
-        assert!(overlay.shown_parts(area()).len() > 1);
+        assert_eq!(
+            overlay.shown_parts(area()),
+            vec![overlay.panel_rect(area())]
+        );
 
         overlay.rows = vec![row(1, "Tama")];
         assert_eq!(
             overlay.shown_parts(area()),
             vec![overlay.panel_rect(area())]
         );
+    }
+
+    #[test]
+    fn positioning_without_events_shows_an_example_and_locking_hides_it() {
+        let mut overlay = OverlayState::new();
+        assert!(overlay.is_example());
+        assert_eq!(overlay.panel_rows().len(), 3);
+        assert_eq!(overlay.visible_rows(area()), 3);
+
+        // real events replace the example
+        overlay.rows = vec![row(1, "Tama")];
+        assert!(!overlay.is_example());
+        assert_eq!(overlay.panel_rows().len(), 1);
+
+        // locked and empty: nothing to list
+        overlay.rows.clear();
+        overlay.locked = true;
+        assert!(!overlay.is_example());
+        assert!(overlay.panel_rows().is_empty());
     }
 
     #[test]

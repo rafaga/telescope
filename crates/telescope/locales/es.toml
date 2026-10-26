@@ -272,6 +272,10 @@ expand = "Expandir la bitácora"
 
 [overlay]
 nearby = "Cerca de ti"
+example = "ejemplo"
+example_hostiles = "+4 Loki, Sabre, Huginn"
+example_kill = "Kill 412M · Ishtar"
+example_gate = "2 en la puerta"
 
 [update_modal]
 title = "Hay una nueva versión de Telescope"

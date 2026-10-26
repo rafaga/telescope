@@ -271,6 +271,10 @@ expand = "Expand the log"
 
 [overlay]
 nearby = "Nearby"
+example = "example"
+example_hostiles = "+4 Loki, Sabre, Huginn"
+example_kill = "Kill 412M · Ishtar"
+example_gate = "2 at the gate"
 
 [update_modal]
 title = "A new version of Telescope is available"
