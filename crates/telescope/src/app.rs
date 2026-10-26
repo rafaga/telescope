@@ -56,11 +56,12 @@ mod windows;
 /// `TelescopeApp::font_definitions`).
 const CJK_FONT: &str = "Noto Sans CJK";
 
-/// The overlay's font: Oxanium at weight 600, a static instance made from the
-/// variable font in `assets` (egui draws a variable font at its lightest
-/// weight, 200). It falls back to the interface fonts for the glyphs Oxanium
-/// lacks.
+/// The overlay's fonts: Oxanium at weight 600 for the text and at 700 for the
+/// system name and the jumps, static instances made from the variable font in
+/// `assets` (egui draws a variable font at its lightest weight, 200). Both
+/// fall back to the interface fonts for the glyphs Oxanium lacks.
 pub(crate) const OVERLAY_FONT: &str = "Oxanium";
+pub(crate) const OVERLAY_FONT_BOLD: &str = "Oxanium Bold";
 
 /// Face of `NotoSansCJK-Medium.ttc` Telescope uses: 0 JP, 1 KR, 2 SC, 3 TC,
 /// 4 HK. Every face has every glyph; only the shape of Han characters
@@ -1106,23 +1107,29 @@ impl TelescopeApp {
                 .push(CJK_FONT.to_owned());
         }
 
-        fonts.font_data.insert(
-            OVERLAY_FONT.to_owned(),
-            Arc::new(FontData::from_static(include_bytes!(
-                "../../../assets/Oxanium-SemiBold.ttf"
-            ))),
-        );
-        let mut chain = vec![OVERLAY_FONT.to_owned()];
-        chain.extend(
+        for (name, bytes) in [
+            (
+                OVERLAY_FONT,
+                &include_bytes!("../../../assets/Oxanium-SemiBold.ttf")[..],
+            ),
+            (
+                OVERLAY_FONT_BOLD,
+                &include_bytes!("../../../assets/Oxanium-Bold.ttf")[..],
+            ),
+        ] {
             fonts
-                .families
-                .get(&FontFamily::Proportional)
-                .cloned()
-                .unwrap_or_default(),
-        );
-        fonts
-            .families
-            .insert(FontFamily::Name(OVERLAY_FONT.into()), chain);
+                .font_data
+                .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+            let mut chain = vec![name.to_owned()];
+            chain.extend(
+                fonts
+                    .families
+                    .get(&FontFamily::Proportional)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            fonts.families.insert(FontFamily::Name(name.into()), chain);
+        }
 
         fonts.font_data.insert(
             "Fira Sans Bold".to_owned(),
@@ -1300,21 +1307,25 @@ mod font_tests {
     // font has. The emoji come from egui's `monochrome_emoji_fonts` feature
     // (off by default since egui 0.37).
     #[test]
-    fn the_overlay_font_is_registered_with_the_interface_fonts_as_fallback() {
+    fn the_overlay_fonts_are_registered_with_the_interface_fonts_as_fallback() {
         let fonts = TelescopeApp::font_definitions();
-        assert!(fonts.font_data.contains_key(OVERLAY_FONT));
-        let chain = &fonts.families[&egui::FontFamily::Name(OVERLAY_FONT.into())];
-        assert_eq!(chain[0], OVERLAY_FONT);
-        assert!(chain.len() > 1, "no fallback");
+        for name in [OVERLAY_FONT, OVERLAY_FONT_BOLD] {
+            assert!(fonts.font_data.contains_key(name), "{name}");
+            let chain = &fonts.families[&egui::FontFamily::Name(name.into())];
+            assert_eq!(chain[0], name);
+            assert!(chain.len() > 1, "{name} has no fallback");
+        }
         let ctx = context_with(fonts);
-        let id = FontId::new(12.0, egui::FontFamily::Name(OVERLAY_FONT.into()));
-        let width = ctx.fonts_mut(|fonts| {
-            fonts
-                .layout_no_wrap("Tama 1j".to_owned(), id, Color32::WHITE)
-                .size()
-                .x
-        });
-        assert!(width > 0.0);
+        for family in [OVERLAY_FONT, OVERLAY_FONT_BOLD] {
+            let id = FontId::new(12.0, egui::FontFamily::Name(family.into()));
+            let width = ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap("Tama 1j".to_owned(), id, Color32::WHITE)
+                    .size()
+                    .x
+            });
+            assert!(width > 0.0, "{family}");
+        }
     }
 
     #[test]

@@ -548,6 +548,14 @@ impl OverlayState {
         )
     }
 
+    /// The bold weight, for the system name and the jumps.
+    fn font_bold(size: f32) -> egui::FontId {
+        egui::FontId::new(
+            size,
+            egui::FontFamily::Name(crate::app::OVERLAY_FONT_BOLD.into()),
+        )
+    }
+
     const ROW_HEIGHT: f32 = 22.0;
     const HEADER_HEIGHT: f32 = 22.0;
     const PANEL_COLOR: (u8, u8, u8) = (12, 16, 23);
@@ -738,13 +746,13 @@ impl OverlayState {
                 egui::pos2(rect.left() + 9.0, mid),
                 egui::Align2::LEFT_CENTER,
                 format!("{}j", row.jumps),
-                Self::font(11.0),
+                Self::font_bold(11.0),
                 color,
             );
             let system = Self::text_galley(
                 painter,
                 &row.system,
-                Self::font(11.5),
+                Self::font_bold(11.5),
                 egui::Color32::from_rgb(238, 241, 245),
                 64.0,
             );
