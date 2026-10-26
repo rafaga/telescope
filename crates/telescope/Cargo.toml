@@ -45,7 +45,7 @@ sde = { version = "0.7", features = ["builder"] }
 # on its own; see that module's docs). Cargo unifies this with the same
 # `rusqlite` version `sde`/`webb` already pull in, so this doesn't
 # duplicate the SQLite build.
-rusqlite = { version = "0.40" }
+rusqlite = { version = "0.41" }
 kdtree = { version = "0.8" }
 # egui-map = { path = "../../../egui-map/" }
 egui-map = { version = "0.15" }
@@ -57,7 +57,7 @@ open = "5.4"
 webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
 chrono = "0.4"
-tokio = { version = "1.53", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.54", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.37", features = ["all_loaders"] }
 image = { version = "0.25", features = ["jpeg","png"] }
 # The window handle eframe exposes (same version as eframe/winit), to own the
