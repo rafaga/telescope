@@ -15,9 +15,10 @@ versions were written for the tag that shipped them.
 * Overlay: a panel over the EVE window that lists the events near the linked
   characters, no longer behind a cargo feature. Every intel report or killmail
   in a system within the alarm radius shows as a row (jumps, system, summary,
-  age), newest first, colored by distance; with nothing to show the locked
-  overlay paints nothing, and while it is being positioned it shows an example. The panel is semi-transparent: Turn it on and set its
-  opacity in Settings -> Alerts.
+  age), newest first, colored by distance. While it is being positioned it
+  shows an example, and once locked with nothing to show it paints nothing. The
+  panel is semi-transparent. Turn it on and set its opacity in
+  Settings -> Alerts.
 
 ## [1.0.6] - 2026-10-23
 
