@@ -8,7 +8,8 @@
 //! alarm neither reads UI state nor waits for a frame.
 
 use super::detection::DetectedLine;
-use super::resolve::{JumpGraph, nearest_origin_within};
+use super::nearby::{NearbyEvent, NearbyEvents};
+use super::resolve::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within};
 use crate::app::audio::AudioHandle;
 use crate::app::messages::{MapSync, Message, MessageSpawner, Target, Type};
 use crate::app::settings::Settings;
@@ -64,6 +65,8 @@ pub(crate) struct AlarmShared {
     pub locations: RwLock<Vec<u32>>,
     /// Stargate connections of the loaded universe.
     pub jumps: RwLock<JumpGraph>,
+    /// Recent events near the linked characters (read by the overlay).
+    pub nearby: NearbyEvents,
 }
 
 /// The known solar systems of `characters` (those with a location).
@@ -189,6 +192,9 @@ impl Dispatcher {
             systems = systems.len(),
             "line matched"
         );
+        if !suppress {
+            self.record_nearby(&config, &line, &systems);
+        }
         if visual && !suppress {
             self.pulse(&config, &line, &systems);
         }
@@ -211,6 +217,46 @@ impl Dispatcher {
             elapsed_us = started.elapsed().as_micros() as u64,
             "line dispatched"
         );
+    }
+
+    /// Keeps, for the overlay, every reported system that is within the
+    /// warning radius of a linked character. Like the sound, it needs the
+    /// characters' locations and the stargate graph to judge the distance.
+    fn record_nearby(&self, config: &AlarmConfig, line: &IntelLine, systems: &[usize]) {
+        if systems.is_empty() {
+            return;
+        }
+        let origins = self
+            .shared
+            .locations
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let jumps = self
+            .shared
+            .jumps
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if origins.is_empty() || jumps.is_empty() {
+            return;
+        }
+        let received = Instant::now();
+        for system_id in systems {
+            let Ok(target) = u32::try_from(*system_id) else {
+                continue;
+            };
+            if let Some((_, distance)) =
+                jumps_to_nearest_origin(&jumps, &origins, target, config.warning_area)
+            {
+                self.shared.nearby.push(NearbyEvent {
+                    system_id: target,
+                    jumps: distance,
+                    text: line.text.clone(),
+                    received,
+                });
+            }
+        }
+        crate::repaint::request();
     }
 
     /// Sends a map message and wakes the UI so the panes pick it up.
@@ -467,6 +513,44 @@ mod tests {
             drain_map(&mut rig).as_slice(),
             [MapSync::CenterOn((1, Target::System))]
         ));
+    }
+
+    #[test]
+    fn events_within_the_radius_are_kept_for_the_overlay() {
+        let rig = rig(vec![1]);
+        rig.dispatcher.process(detected(vec![
+            activation(OutputKind::Visual, &[3]),
+            activation(OutputKind::Visual, &[5]),
+        ]));
+        let kept = rig
+            .dispatcher
+            .shared
+            .nearby
+            .recent(Instant::now(), Duration::from_secs(60));
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].system_id, kept[0].jumps), (3, 2));
+        assert_eq!(kept[0].text, "reported");
+    }
+
+    #[test]
+    fn suppressed_lines_and_unlocated_characters_leave_nothing_for_the_overlay() {
+        let rig = rig(vec![1]);
+        rig.dispatcher.process(detected(vec![
+            activation(OutputKind::Visual, &[2]),
+            activation(OutputKind::Suppress, &[]),
+        ]));
+        let rig2 = self::rig(Vec::new());
+        rig2.dispatcher
+            .process(detected(vec![activation(OutputKind::Visual, &[1])]));
+        for rig in [&rig, &rig2] {
+            assert!(
+                rig.dispatcher
+                    .shared
+                    .nearby
+                    .recent(Instant::now(), Duration::from_secs(60))
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

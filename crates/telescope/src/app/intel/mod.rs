@@ -17,6 +17,7 @@ use webb::graph::{Executor, RuleGraph};
 pub(crate) mod detection;
 pub(crate) mod dispatch;
 pub(crate) mod input;
+pub(crate) mod nearby;
 pub(crate) mod reader;
 pub(crate) mod resolve;
 pub(crate) mod zkillboard;
