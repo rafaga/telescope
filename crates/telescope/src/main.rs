@@ -113,6 +113,7 @@ fn main() -> eframe::Result {
                     .unwrap(),
             ),
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
 
@@ -121,4 +122,32 @@ fn main() -> eframe::Result {
         native_options,
         Box::new(|cc| Ok(Box::new(telescope::TelescopeApp::new(cc)))),
     )
+}
+
+/// The wgpu setup. On Windows the swapchain is made from a DirectComposition
+/// visual: wgpu's default one, made directly from the window, does not support
+/// transparency (its own documentation says so), and the overlay's panel then
+/// blends with a white background instead of the game. `WGPU_DX12_PRESENTATION_SYSTEM`
+/// still overrides it (`hwnd` brings the default back).
+#[cfg(target_os = "windows")]
+fn wgpu_options() -> eframe::WgpuConfiguration {
+    use eframe::egui_wgpu::WgpuSetup;
+    use eframe::wgpu::Dx12SwapchainKind;
+
+    let mut options = eframe::WgpuConfiguration::default();
+    if let WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup
+        && Dx12SwapchainKind::from_env().is_none()
+    {
+        setup
+            .instance_descriptor
+            .backend_options
+            .dx12
+            .presentation_system = Dx12SwapchainKind::DxgiFromVisual;
+    }
+    options
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wgpu_options() -> eframe::WgpuConfiguration {
+    eframe::WgpuConfiguration::default()
 }
