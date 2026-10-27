@@ -190,7 +190,7 @@ pub struct TelescopeApp {
     // single check here covers both cases without touching either source.
     last_notification: Option<(Type, String, String, String, std::time::Instant)>,
     /// The experimental overlay window above the game.
-    overlay: overlay::OverlayState,
+    overlay: overlay::Overlays,
 }
 
 impl Default for TelescopeApp {
@@ -526,7 +526,7 @@ impl TelescopeApp {
             database_updater: database_updater::DatabaseUpdater::default(),
             update_prompt: None,
             last_notification: None,
-            overlay: overlay::OverlayState::new(),
+            overlay: overlay::Overlays::new(),
         }
     }
 
@@ -647,6 +647,7 @@ impl eframe::App for TelescopeApp {
             self.open_startup_regions();
 
             self.report_player_database_status();
+            self.migrate_overlay_settings();
             self.sync_overlay();
             if !self.esi.characters.is_empty() {
                 let mut ids = vec![];
@@ -681,13 +682,15 @@ impl eframe::App for TelescopeApp {
         self.database_updater.show(ui.ctx());
         self.show_update_prompt(ui.ctx());
         if self.overlay.is_open() {
-            let rows = self.nearby_rows();
+            let views = self.overlay_views();
             let opacity = self.settings.get_overlay_opacity();
-            self.overlay.show(ui.ctx(), &rows, opacity);
+            let max_rows = usize::from(self.settings.get_overlay_max_rows());
+            self.overlay.show(ui.ctx(), &views, max_rows, opacity);
             if !self.overlay.is_open() {
                 self.overlay_closed_by_user();
             }
         }
+        self.save_overlay_positions();
         if let Some(text) = self.overlay.take_warning() {
             self.update_status_with_error((
                 Type::Warning,

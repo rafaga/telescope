@@ -537,6 +537,24 @@ impl OverlayPlacement {
     }
 }
 
+/// Where the mouse pointer is on screen, in the units of the system's window
+/// coordinates (Windows only; elsewhere `None`). It lets the overlay react to
+/// the pointer while its window is click-through and receives no mouse events.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub fn cursor_position() -> Option<(i32, i32)> {
+    let mut point = POINT::default();
+    // SAFETY: `point` is a valid out pointer for the call.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point) }.ok()?;
+    Some((point.x, point.y))
+}
+
+/// Where the mouse pointer is on screen (Windows only; elsewhere `None`).
+#[cfg(not(target_os = "windows"))]
+pub fn cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
 /// Whether a game is in *exclusive* full screen, where no other window can be
 /// drawn over it (Windows only; elsewhere the answer is always `false`).
 ///
@@ -576,6 +594,7 @@ impl FullScreenState {
 #[derive(Debug, Clone, Copy)]
 pub struct OverlayWindow {
     click_through: bool,
+    input_rect: Option<ScreenRect>,
 }
 
 impl OverlayWindow {
@@ -583,7 +602,28 @@ impl OverlayWindow {
     pub fn new() -> Self {
         Self {
             click_through: true,
+            input_rect: None,
         }
+    }
+
+    /// The part of a click-through window that still takes the mouse.
+    pub fn input_rect(&self) -> Option<ScreenRect> {
+        self.input_rect
+    }
+
+    /// Keeps a part of the click-through window (pixels, relative to its
+    /// top-left corner) clickable, e.g. a button, while the rest lets the
+    /// mouse through. Only the X11 backend (Shape input region) honours it;
+    /// elsewhere the window is click-through as a whole, and the caller has to
+    /// toggle [`Self::set_click_through`] instead. Takes effect on the next
+    /// apply.
+    pub fn set_input_rect(&mut self, rect: Option<ScreenRect>) {
+        self.input_rect = rect;
+    }
+
+    /// Whether [`Self::set_input_rect`] is honoured on this platform.
+    pub const fn supports_input_rect() -> bool {
+        cfg!(target_os = "linux")
     }
 
     /// Whether the overlay lets the mouse through to the game.
@@ -685,7 +725,7 @@ impl OverlayWindow {
             RawWindowHandle::Wayland(_) => return Err(OverlayError::Unsupported),
             _ => return Err(OverlayError::InvalidHandle),
         };
-        x11::X11Session::connect()?.apply(id, self.click_through)
+        x11::X11Session::connect()?.apply(id, self.click_through, self.input_rect)
     }
 
     /// Applies the native settings to the window behind `window`.
@@ -760,7 +800,7 @@ impl OverlayWindow {
     /// (see the Windows version). X11 only.
     #[cfg(target_os = "linux")]
     pub fn apply_by_title(&self, title: &str) -> Result<(), OverlayError> {
-        x11::X11Session::connect()?.apply_by_title(title, self.click_through)
+        x11::X11Session::connect()?.apply_by_title(title, self.click_through, self.input_rect)
     }
 
     /// Applies the native settings to the window whose title is `title`.
@@ -1025,6 +1065,9 @@ mod tests {
         assert!(overlay.click_through());
         overlay.set_click_through(false);
         assert!(!overlay.click_through());
+        assert_eq!(overlay.input_rect(), None);
+        overlay.set_input_rect(Some(ScreenRect::new(1, 2, 3, 4)));
+        assert_eq!(overlay.input_rect(), Some(ScreenRect::new(1, 2, 3, 4)));
     }
 
     #[test]

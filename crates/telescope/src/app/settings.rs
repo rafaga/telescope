@@ -113,6 +113,61 @@ pub(crate) struct Mapping {
     /// Show the overlay over the game. `serde(default)`: off.
     #[serde(default)]
     pub overlay_enabled: bool,
+    /// How the overlay orders its events. `serde(default)`: newest first.
+    #[serde(default)]
+    pub overlay_order: OverlayOrder,
+    /// Most events the overlay grows to list, 1 to 8. `serde(default)`:
+    /// settings files written before this option existed get the default.
+    #[serde(default = "default_overlay_max_rows")]
+    pub overlay_max_rows: u8,
+    /// The overlay joins the events of every linked character instead of
+    /// monitoring only the selected one. `serde(default)`: on, so the
+    /// overlay that joins them all is the one that appears.
+    #[serde(default = "default_true")]
+    pub overlay_all_characters: bool,
+    /// Where the user left the overlay that joins all the characters. The
+    /// overlay of each character keeps its own in the player database (see
+    /// `webb::objects::CharacterOverlay`). `serde(default)`: not placed yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_position: Option<OverlayPosition>,
+    /// Per-character overlays as the first builds kept them here, before they
+    /// moved to the player database. Only read, to be migrated (see
+    /// [`Settings::take_legacy_overlay_characters`]); never written back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlay_characters: Vec<OverlayCharacter>,
+}
+
+/// A per-character overlay entry of the old `telescope.toml` layout.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OverlayCharacter {
+    pub id: i64,
+    /// `serde(default)`: off.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where the user left the overlay; `None` until it is placed.
+    #[serde(default)]
+    pub placement: Option<OverlayPosition>,
+}
+
+pub(crate) use webb::objects::{OverlayAnchor, OverlayPosition};
+
+fn default_overlay_max_rows() -> u8 {
+    Mapping::DEFAULT_OVERLAY_MAX_ROWS
+}
+
+/// How the overlay's events are ordered.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OverlayOrder {
+    /// The newest event first.
+    #[default]
+    Age,
+    /// The closest event first (the newest first among equals).
+    Jumps,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_alert_duration_secs() -> u32 {
@@ -137,6 +192,11 @@ impl Default for Mapping {
             glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
             overlay_opacity: Mapping::DEFAULT_OVERLAY_OPACITY,
             overlay_enabled: false,
+            overlay_order: OverlayOrder::default(),
+            overlay_max_rows: Mapping::DEFAULT_OVERLAY_MAX_ROWS,
+            overlay_all_characters: true,
+            overlay_position: None,
+            overlay_characters: Vec::new(),
         }
     }
 }
@@ -152,6 +212,10 @@ impl Mapping {
     pub(crate) const DEFAULT_GLOW_INTENSITY: f32 = 0.6;
     /// Default of [`Mapping::overlay_opacity`].
     pub(crate) const DEFAULT_OVERLAY_OPACITY: f32 = 0.8;
+    /// Default of [`Mapping::overlay_max_rows`].
+    pub(crate) const DEFAULT_OVERLAY_MAX_ROWS: u8 = 5;
+    /// Most rows the overlay can list (what the events list keeps).
+    pub(crate) const MAX_OVERLAY_MAX_ROWS: u8 = crate::app::intel::nearby::MAX_ROWS as u8;
     /// Lowest overlay opacity: below it the text is hard to read.
     pub(crate) const MIN_OVERLAY_OPACITY: f32 = 0.3;
 }
@@ -725,6 +789,73 @@ impl Settings {
         self.saved = false;
     }
 
+    pub(crate) fn get_overlay_max_rows(&self) -> u8 {
+        self.mapping
+            .overlay_max_rows
+            .clamp(1, Mapping::MAX_OVERLAY_MAX_ROWS)
+    }
+
+    pub(crate) fn set_overlay_max_rows(&mut self, rows: u8) {
+        self.mapping.overlay_max_rows = rows.clamp(1, Mapping::MAX_OVERLAY_MAX_ROWS);
+        self.saved = false;
+    }
+
+    /// Where the user left the overlay that joins all the characters.
+    pub(crate) fn get_overlay_position(&self) -> Option<OverlayPosition> {
+        self.mapping.overlay_position
+    }
+
+    pub(crate) fn set_overlay_position(&mut self, position: OverlayPosition) {
+        if self.mapping.overlay_position != Some(position) {
+            self.mapping.overlay_position = Some(position);
+            self.saved = false;
+        }
+    }
+
+    /// Whether the file still has per-character overlay entries of the old
+    /// layout to migrate.
+    pub(crate) fn has_legacy_overlay_characters(&self) -> bool {
+        !self.mapping.overlay_characters.is_empty()
+    }
+
+    /// Takes out the per-character overlay entries the first builds kept in
+    /// `telescope.toml`, for the caller to move into the player database (they
+    /// are no longer written back). The place of the entry for key 0, the
+    /// overlay that joins all the characters, becomes
+    /// [`Self::get_overlay_position`] unless one is already set. Empty once
+    /// done, so it migrates only once.
+    pub(crate) fn take_legacy_overlay_characters(&mut self) -> Vec<OverlayCharacter> {
+        let entries = std::mem::take(&mut self.mapping.overlay_characters);
+        if entries.is_empty() {
+            return entries;
+        }
+        self.saved = false;
+        let (single, characters): (Vec<_>, Vec<_>) =
+            entries.into_iter().partition(|entry| entry.id == 0);
+        if self.mapping.overlay_position.is_none() {
+            self.mapping.overlay_position = single.into_iter().find_map(|entry| entry.placement);
+        }
+        characters
+    }
+
+    pub(crate) fn get_overlay_all_characters(&self) -> bool {
+        self.mapping.overlay_all_characters
+    }
+
+    pub(crate) fn set_overlay_all_characters(&mut self, all: bool) {
+        self.mapping.overlay_all_characters = all;
+        self.saved = false;
+    }
+
+    pub(crate) fn get_overlay_order(&self) -> OverlayOrder {
+        self.mapping.overlay_order
+    }
+
+    pub(crate) fn set_overlay_order(&mut self, order: OverlayOrder) {
+        self.mapping.overlay_order = order;
+        self.saved = false;
+    }
+
     pub(crate) fn get_center_on_alert(&self) -> bool {
         self.mapping.center_on_alert
     }
@@ -1147,6 +1278,61 @@ mod tests {
     }
 
     #[test]
+    fn the_unified_overlay_place_survives_a_round_trip_through_toml() {
+        let position = OverlayPosition {
+            anchor: OverlayAnchor::Center,
+            offset_x: -5,
+            offset_y: 7,
+            width: 260,
+            height: 200,
+            reference_height: None,
+        };
+        let mapping = Mapping {
+            overlay_position: Some(position),
+            ..Mapping::default()
+        };
+        let text = toml::to_string(&mapping).unwrap();
+        let back: Mapping = toml::from_str(&text).unwrap();
+        assert_eq!(back.overlay_position, Some(position));
+        assert!(!text.contains("overlay_characters"));
+    }
+
+    #[test]
+    fn the_overlay_entries_of_the_old_layout_are_taken_out_once() {
+        let text = "startup_regions = []\nwarning_area = 4\n\
+            [[overlay_characters]]\nid = 0\nenabled = true\n\
+            [overlay_characters.placement]\nanchor = \"top_left\"\noffset_x = 1\n\
+            offset_y = 2\nwidth = 260\nheight = 200\n\
+            [[overlay_characters]]\nid = 7\nenabled = true\n\
+            [[overlay_characters]]\nid = 8\n";
+        let mapping: Mapping = toml::from_str(text).unwrap();
+        assert_eq!(mapping.overlay_characters.len(), 3);
+        let mut settings = Settings {
+            mapping,
+            saved: true,
+            ..Settings::default()
+        };
+        let characters = settings.take_legacy_overlay_characters();
+        let ids: Vec<i64> = characters.iter().map(|entry| entry.id).collect();
+        assert_eq!(ids, vec![7, 8]);
+        assert!(characters[0].enabled);
+        assert!(!characters[1].enabled);
+        // the place of the unified overlay moved to its own setting
+        assert_eq!(
+            settings.get_overlay_position().map(|p| p.anchor),
+            Some(OverlayAnchor::TopLeft)
+        );
+        assert!(!settings.saved);
+        // done: nothing left to migrate, and nothing is written back
+        assert!(settings.take_legacy_overlay_characters().is_empty());
+        assert!(
+            !toml::to_string(&settings.mapping)
+                .unwrap()
+                .contains("overlay_characters")
+        );
+    }
+
+    #[test]
     fn the_overlay_opacity_defaults_and_is_clamped() {
         let mut settings = Settings::default();
         assert_eq!(
@@ -1160,6 +1346,35 @@ mod tests {
         let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
         assert_eq!(old.overlay_opacity, Mapping::DEFAULT_OVERLAY_OPACITY);
         assert!(!old.overlay_enabled);
+        assert_eq!(old.overlay_order, OverlayOrder::Age);
+        settings.set_overlay_order(OverlayOrder::Jumps);
+        assert_eq!(settings.get_overlay_order(), OverlayOrder::Jumps);
+        assert_eq!(old.overlay_max_rows, Mapping::DEFAULT_OVERLAY_MAX_ROWS);
+        assert!(old.overlay_characters.is_empty());
+        assert_eq!(old.overlay_position, None);
+        // the overlay that joins them all is the one shown by default
+        assert!(settings.get_overlay_all_characters());
+        assert_eq!(settings.get_overlay_position(), None);
+        let position = OverlayPosition {
+            anchor: OverlayAnchor::TopRight,
+            offset_x: 40,
+            offset_y: 80,
+            width: 260,
+            height: 200,
+            reference_height: Some(1080),
+        };
+        settings.set_overlay_position(position);
+        assert_eq!(settings.get_overlay_position(), Some(position));
+        assert!(old.overlay_all_characters);
+        settings.set_overlay_all_characters(false);
+        assert!(!settings.get_overlay_all_characters());
+        settings.set_overlay_max_rows(0);
+        assert_eq!(settings.get_overlay_max_rows(), 1);
+        settings.set_overlay_max_rows(99);
+        assert_eq!(
+            settings.get_overlay_max_rows(),
+            Mapping::MAX_OVERLAY_MAX_ROWS
+        );
         settings.set_overlay_enabled(true);
         assert!(settings.get_overlay_enabled());
     }

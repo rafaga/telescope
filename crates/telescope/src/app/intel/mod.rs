@@ -183,6 +183,23 @@ impl TelescopeApp {
             AlarmConfig::from_settings(&self.settings),
             dispatch::character_locations(&self.esi.characters),
         );
+        // each character has an overlay measuring from itself, unless the
+        // setting joins them all in one
+        let groups = if self.settings.get_overlay_all_characters() {
+            vec![(0, dispatch::character_locations(&self.esi.characters))]
+        } else {
+            self.esi
+                .characters
+                .iter()
+                .map(|character| {
+                    (
+                        character.id,
+                        dispatch::character_locations(std::slice::from_ref(character)),
+                    )
+                })
+                .collect()
+        };
+        self.alarm_shared.set_nearby_origins(groups);
     }
 
     /// Points what reads the SDE database at the one the settings name: the

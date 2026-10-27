@@ -136,3 +136,8 @@ sha2 = "0.11"
 # To read a sample R2Z2 killmail file in `zkillboard`'s tests (the feed's
 # files themselves are read through `reqwest`).
 serde_json = "1.0"
+# Headless GUI tests: drive a piece of the interface by its accessible
+# names (find a widget, click it, run a frame) and check the state.
+# With `snapshot` and `wgpu` it also renders and compares images (the
+# overlay, which is painted, not made of widgets).
+egui_kittest = { version = "0.37", features = ["snapshot", "wgpu"] }

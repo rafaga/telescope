@@ -9,7 +9,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ClientMessageEvent, ClipOrdering, ConnectionExt as _, EventMask, MapState,
-    Window,
+    Rectangle, Window,
 };
 use x11rb::rust_connection::RustConnection;
 
@@ -147,10 +147,11 @@ impl X11Session {
         &self,
         title: &str,
         click_through: bool,
+        input_rect: Option<ScreenRect>,
     ) -> Result<(), OverlayError> {
         for window in self.client_list()? {
             if self.window_title(window).as_deref() == Some(title) {
-                return self.apply(window, click_through);
+                return self.apply(window, click_through, input_rect);
             }
         }
         Err(OverlayError::InvalidHandle)
@@ -226,8 +227,14 @@ impl X11Session {
     }
 
     /// Above the other windows, out of the taskbar and pager, and (if
-    /// `click_through`) transparent to the mouse.
-    pub(super) fn apply(&self, window: Window, click_through: bool) -> Result<(), OverlayError> {
+    /// `click_through`) transparent to the mouse, except for `input_rect`
+    /// (window-relative pixels), which keeps taking it.
+    pub(super) fn apply(
+        &self,
+        window: Window,
+        click_through: bool,
+        input_rect: Option<ScreenRect>,
+    ) -> Result<(), OverlayError> {
         self.add_state(
             window,
             b"_NET_WM_STATE_ABOVE",
@@ -235,7 +242,18 @@ impl X11Session {
         )?;
         self.add_state(window, b"_NET_WM_STATE_SKIP_PAGER", None)?;
         if click_through {
-            // an empty input region: every click goes to the window below
+            // an input region with nothing but the button (or empty): every
+            // other click goes to the window below
+            let button: Vec<Rectangle> = input_rect
+                .filter(|rect| !rect.is_empty())
+                .map(|rect| Rectangle {
+                    x: rect.x as i16,
+                    y: rect.y as i16,
+                    width: rect.width as u16,
+                    height: rect.height as u16,
+                })
+                .into_iter()
+                .collect();
             self.conn
                 .shape_rectangles(
                     shape::SO::SET,
@@ -244,7 +262,7 @@ impl X11Session {
                     window,
                     0,
                     0,
-                    &[],
+                    &button,
                 )
                 .map_err(Self::os_error)?
                 .check()

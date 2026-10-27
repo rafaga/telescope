@@ -1,0 +1,19 @@
+# Tolerances of the image snapshots of the GUI tests (egui_kittest), for
+# example the overlay's in `crates/telescope/tests/snapshots`.
+#
+# A pixel fails when it differs by more than `threshold`; a snapshot fails
+# when more than `max_failed_pixels` pixels do. The reference images are made
+# on Windows; the other systems (and GPUs) antialias text and edges a little
+# differently, so they get some room.
+#
+# To accept a change of look: run the tests with `UPDATE_SNAPSHOTS=true`
+# (`force` rewrites every image) and review the new images before committing.
+
+threshold = 0.6
+max_failed_pixels = 0
+
+[linux]
+max_failed_pixels = 400
+
+[mac]
+max_failed_pixels = 400

@@ -57,7 +57,9 @@ mod widgets;
 
 pub use action_bar::{Action, ActionBar};
 pub use draft::Draft;
-pub use layout::{Form, Section, dialog_frame, divider, form, page, page_header, page_header_with};
+pub use layout::{
+    Form, Section, dialog_frame, divider, form, label_with_row, page, page_header, page_header_with,
+};
 pub use nav::{NavGroup, NavItem, SideNav};
 pub use shell::SettingsLayout;
 pub use theme::{Palette, Theme};

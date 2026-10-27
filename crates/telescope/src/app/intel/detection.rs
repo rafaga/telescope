@@ -210,14 +210,21 @@ mod tests {
             }
         }
 
-        /// Appends a line to the log and tells the reader, as the watcher would.
+        /// Appends a line written now to the log and tells the reader, as
+        /// the watcher would.
         fn write_line(&self, text: &str) {
+            self.write_line_at(chrono::Utc::now(), text);
+        }
+
+        /// The same for a line the log says was written at `when`.
+        fn write_line_at(&self, when: chrono::DateTime<chrono::Utc>, text: &str) {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(self.dir.join(LOG))
                 .unwrap();
             file.write_all(&utf16(&format!(
-                "[ 2024.01.01 12:00:01 ] Pilot > {text}\r\n"
+                "[ {} ] Pilot > {text}\r\n",
+                when.format("%Y.%m.%d %H:%M:%S")
             )))
             .unwrap();
             drop(file);
@@ -263,6 +270,32 @@ mod tests {
                 .unwrap(),
             PathBuf::from("alarm.wav")
         );
+    }
+
+    #[test]
+    fn a_sighting_older_than_the_grace_period_neither_pulses_nor_sounds() {
+        // the pipeline's grace period is 5 seconds
+        let mut pipeline = Pipeline::start("backlog");
+        let long_ago = chrono::Utc::now() - chrono::Duration::hours(2);
+        pipeline.write_line_at(long_ago, "H-5GUI*  Floris Saucus  nv");
+        while let Some(message) = pipeline.next_map(Duration::from_millis(800)) {
+            assert!(
+                !matches!(message, MapSync::SystemAlert(_)),
+                "an old line must not pulse"
+            );
+        }
+        assert!(pipeline.sounds.try_recv().is_err());
+
+        // a line from now, behind it, still alerts
+        pipeline.write_line("H-5GUI*  Floris Saucus  nv");
+        let mut pulsed = false;
+        while let Some(message) = pipeline.next_map(Duration::from_secs(3)) {
+            if matches!(message, MapSync::SystemAlert(_)) {
+                pulsed = true;
+                break;
+            }
+        }
+        assert!(pulsed, "the fresh line must pulse");
     }
 
     #[test]

@@ -67,6 +67,11 @@ pub(crate) struct AlarmShared {
     pub jumps: RwLock<JumpGraph>,
     /// Recent events near the linked characters (read by the overlay).
     pub nearby: NearbyEvents,
+    /// The systems each overlay measures its events from, by the overlay's
+    /// key: a character's id and its location, or 0 and every location when
+    /// one overlay joins them. Empty (before the first sync): one overlay
+    /// from `locations`.
+    pub nearby_origins: RwLock<Vec<(i64, Vec<u32>)>>,
 }
 
 /// The known solar systems of `characters` (those with a location).
@@ -112,6 +117,20 @@ impl AlarmShared {
         changed
     }
 
+    /// Sets where each overlay measures from (see [`Self::nearby_origins`]).
+    /// The events of an overlay that is gone are dropped.
+    pub(crate) fn set_nearby_origins(&self, groups: Vec<(i64, Vec<u32>)>) {
+        let mut current = self
+            .nearby_origins
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *current != groups {
+            let keys: Vec<i64> = groups.iter().map(|(key, _)| *key).collect();
+            self.nearby.retain_keys(&keys);
+            *current = groups;
+        }
+    }
+
     /// Replaces the stargate graph (see `TelescopeApp::sync_alarm_jumps`).
     pub(crate) fn set_jumps(&self, graph: JumpGraph) {
         *self
@@ -127,6 +146,20 @@ pub(crate) struct Dispatcher {
     pub audio: Arc<AudioHandle>,
     pub map_msg: Arc<broadcast::Sender<MapSync>>,
     pub task_msg: Arc<MessageSpawner>,
+}
+
+/// Whether a line written at `timestamp` is still within the grace period
+/// (the alert duration) at `now`: only then it is alerted. A timestamp ahead
+/// of `now` (clocks that differ a little) counts as fresh.
+pub(crate) fn is_fresh(
+    timestamp: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    grace: Duration,
+) -> bool {
+    now.signed_duration_since(timestamp)
+        .to_std()
+        .is_ok_and(|age| age <= grace)
+        || timestamp > now
 }
 
 /// Spawns the dispatch thread and returns immediately. It ends when the
@@ -192,13 +225,25 @@ impl Dispatcher {
             systems = systems.len(),
             "line matched"
         );
-        if !suppress {
+        // Lines that piled up (Telescope was busy, or started late) are all
+        // processed at once. The ones older than the grace period are only
+        // recorded below (tooltip, log): they are not alerted, neither with
+        // the map pulse and the overlay nor with the sound.
+        let fresh = is_fresh(line.timestamp, Utc::now(), config.alert_duration);
+        if !fresh {
+            tracing::debug!(
+                timestamp = %line.timestamp,
+                "line outside the grace period: recorded, not alerted"
+            );
+        }
+        let alert = fresh && !suppress;
+        if alert {
             self.record_nearby(&config, &line, &systems);
         }
-        if visual && !suppress {
+        if visual && alert {
             self.pulse(&config, &line, &systems);
         }
-        if sound && !suppress {
+        if sound && alert {
             self.sound(&config, &systems);
         }
         for activation in activations
@@ -226,34 +271,49 @@ impl Dispatcher {
         if systems.is_empty() {
             return;
         }
-        let origins = self
+        let mut groups = self
             .shared
-            .locations
+            .nearby_origins
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        if groups.is_empty() {
+            let all = self
+                .shared
+                .locations
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            groups.push((0, all));
+        }
         let jumps = self
             .shared
             .jumps
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if origins.is_empty() || jumps.is_empty() {
+        if jumps.is_empty() {
             return;
         }
         let received = Instant::now();
-        for system_id in systems {
-            let Ok(target) = u32::try_from(*system_id) else {
+        for (key, origins) in &groups {
+            if origins.is_empty() {
                 continue;
-            };
-            if let Some((_, distance)) =
-                jumps_to_nearest_origin(&jumps, &origins, target, config.warning_area)
-            {
-                self.shared.nearby.push(NearbyEvent {
-                    system_id: target,
-                    jumps: distance,
-                    text: line.text.clone(),
-                    received,
-                });
+            }
+            for system_id in systems {
+                let Ok(target) = u32::try_from(*system_id) else {
+                    continue;
+                };
+                if let Some((_, distance)) =
+                    jumps_to_nearest_origin(&jumps, origins, target, config.warning_area)
+                {
+                    self.shared.nearby.push(NearbyEvent {
+                        key: *key,
+                        system_id: target,
+                        jumps: distance,
+                        text: line.text.clone(),
+                        received,
+                    });
+                }
             }
         }
         crate::repaint::request();
@@ -478,6 +538,95 @@ mod tests {
         std::iter::from_fn(|| rig.map.try_recv().ok()).collect()
     }
 
+    /// A line written `seconds` ago.
+    fn detected_ago(seconds: i64, activations: Vec<Activation>) -> DetectedLine {
+        let mut line = detected(activations);
+        line.line.timestamp = Utc::now() - chrono::Duration::seconds(seconds);
+        line
+    }
+
+    #[test]
+    fn a_line_is_fresh_only_within_the_grace_period() {
+        let now = Utc::now();
+        let grace = Duration::from_secs(60);
+        let ago = |seconds: i64| now - chrono::Duration::seconds(seconds);
+        assert!(is_fresh(ago(0), now, grace));
+        assert!(is_fresh(ago(60), now, grace));
+        assert!(!is_fresh(ago(61), now, grace));
+        assert!(!is_fresh(ago(86_400), now, grace));
+        // a timestamp a little ahead (clocks that differ) is fresh
+        assert!(is_fresh(now + chrono::Duration::seconds(3), now, grace));
+        // with no grace only the present counts
+        assert!(is_fresh(now, now, Duration::ZERO));
+        assert!(!is_fresh(ago(1), now, Duration::ZERO));
+    }
+
+    #[test]
+    fn lines_older_than_the_grace_period_are_logged_but_not_alerted() {
+        // the rig's grace period is 5 seconds; a backlog is processed at once
+        let mut rig = rig(vec![1]);
+        let old = |activations| detected_ago(3_600, activations);
+        rig.dispatcher.process(old(vec![
+            activation(OutputKind::Visual, &[2]),
+            activation(OutputKind::Sound, &[2]),
+            activation(OutputKind::Tooltip, &[2]),
+            activation(OutputKind::Log, &[]),
+        ]));
+
+        // no sound, no pulse, nothing for the overlay
+        assert!(rig.sounds.try_recv().is_err());
+        let sent = drain_map(&mut rig);
+        assert!(
+            sent.iter().all(|m| !matches!(m, MapSync::SystemAlert(_))),
+            "no visual alert"
+        );
+        assert!(
+            sent.iter().all(|m| !matches!(m, MapSync::CenterOn(_))),
+            "no centering"
+        );
+        assert!(
+            rig.dispatcher
+                .shared
+                .nearby
+                .recent(0, Instant::now(), Duration::from_secs(60))
+                .is_empty()
+        );
+        // but it was recorded: the tooltip and the log keep it
+        assert!(sent.iter().any(|m| matches!(m, MapSync::SystemTooltip(_))));
+        assert!(matches!(
+            rig.app.try_recv(),
+            Ok(Message::GenericNotification((Type::Info, _, _, _)))
+        ));
+    }
+
+    #[test]
+    fn in_a_backlog_only_the_lines_within_the_grace_period_alert() {
+        let mut rig = rig(vec![1]);
+        let outputs = || {
+            vec![
+                activation(OutputKind::Visual, &[2]),
+                activation(OutputKind::Sound, &[2]),
+            ]
+        };
+        // an hour of old lines, then one from a second ago
+        for seconds in [3_600, 1_800, 600, 30] {
+            rig.dispatcher.process(detected_ago(seconds, outputs()));
+        }
+        assert!(rig.sounds.try_recv().is_err(), "nothing sounded yet");
+        assert!(drain_map(&mut rig).is_empty(), "nothing pulsed yet");
+
+        rig.dispatcher.process(detected_ago(1, outputs()));
+        assert_eq!(rig.sounds.try_recv().unwrap(), PathBuf::from("alarm.wav"));
+        let sent = drain_map(&mut rig);
+        assert!(sent.iter().any(|m| matches!(m, MapSync::SystemAlert(_))));
+        let kept = rig
+            .dispatcher
+            .shared
+            .nearby
+            .recent(0, Instant::now(), Duration::from_secs(60));
+        assert_eq!(kept.len(), 1, "only the fresh line reaches the overlay");
+    }
+
     #[test]
     fn a_visual_output_pulses_every_reported_system() {
         let mut rig = rig(vec![1]);
@@ -526,7 +675,7 @@ mod tests {
             .dispatcher
             .shared
             .nearby
-            .recent(Instant::now(), Duration::from_secs(60));
+            .recent(0, Instant::now(), Duration::from_secs(60));
         assert_eq!(kept.len(), 1);
         assert_eq!((kept[0].system_id, kept[0].jumps), (3, 2));
         assert_eq!(kept[0].text, "reported");
@@ -547,7 +696,7 @@ mod tests {
                 rig.dispatcher
                     .shared
                     .nearby
-                    .recent(Instant::now(), Duration::from_secs(60))
+                    .recent(0, Instant::now(), Duration::from_secs(60))
                     .is_empty()
             );
         }

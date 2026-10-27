@@ -669,3 +669,209 @@ fn a_settings_file_that_cannot_be_written_is_reported() {
     assert!(!app.settings.its_saved());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---- Interface (egui_kittest) ----
+//
+// Pieces of the interface run headless: a widget is found by its accessible
+// name, clicked, a frame runs, and the state is checked. The fonts are
+// Telescope's own, so the texts are measured as in the app.
+
+/// The text of `key` in the language in use. Other tests apply the system's
+/// language (the setting's default), which is global: the widgets are found
+/// by their translated names, not by the English ones.
+fn text(key: &str) -> String {
+    t!(key).into_owned()
+}
+
+/// A harness that draws the Alerts page of the Settings screen of `app`.
+fn alerts_page(app: TelescopeApp) -> egui_kittest::Harness<'static, TelescopeApp> {
+    egui_kittest::Harness::builder()
+        .with_size([900.0, 2400.0])
+        .with_context_setup(|ctx| ctx.set_fonts(TelescopeApp::font_definitions()))
+        .build_ui_state(|ui, app: &mut TelescopeApp| app.show_alerts_page(ui), app)
+}
+
+/// A harness that draws the whole Settings screen of `app` (navigation,
+/// page and action bar) open on `page`. `check` turns the harness's own
+/// accessibility check on or off.
+fn settings_screen(
+    mut app: TelescopeApp,
+    page: SettingsPage,
+    check: bool,
+) -> egui_kittest::Harness<'static, TelescopeApp> {
+    // as the app opens it: with the snapshot Cancel returns to
+    app.open_settings();
+    app.selected_settings_page = page;
+    egui_kittest::Harness::builder()
+        .with_size([1200.0, 2400.0])
+        .with_accessibility_check(check)
+        .with_context_setup(|ctx| ctx.set_fonts(TelescopeApp::font_definitions()))
+        .build_ui_state(
+            |ui, app: &mut TelescopeApp| app.show_settings_screen(ui),
+            app,
+        )
+}
+
+const ALL_PAGES: [SettingsPage; 6] = [
+    SettingsPage::Sources,
+    SettingsPage::Rules,
+    SettingsPage::Alerts,
+    SettingsPage::Maps,
+    SettingsPage::Characters,
+    SettingsPage::Application,
+];
+
+#[test]
+fn every_control_of_every_settings_page_has_a_name() {
+    let mut unnamed = Vec::new();
+    for page in ALL_PAGES {
+        let (app, dir) = app("kittest-names");
+        let mut harness = settings_screen(app, page, false);
+        harness.run_steps(4);
+        for widget in harness.unnamed_widgets() {
+            unnamed.push(format!("{page:?}: {widget}"));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    assert!(
+        unnamed.is_empty(),
+        "controls a screen reader (and a test) cannot reach:\n{}",
+        unnamed.join("\n")
+    );
+}
+
+use egui::accesskit::Role;
+
+/// Clicks the control of `role` named `label` and runs a frame.
+fn click(harness: &mut egui_kittest::Harness<'_, TelescopeApp>, role: Role, label: &str) {
+    use egui_kittest::kittest::Queryable as _;
+    harness.get_by_role_and_label(role, label).click();
+    harness.run();
+}
+
+#[test]
+fn the_navigation_opens_every_settings_page() {
+    let (app, dir) = app("kittest-nav");
+    let mut harness = settings_screen(app, SettingsPage::Sources, true);
+    harness.run();
+    for page in ALL_PAGES.into_iter().rev() {
+        click(&mut harness, Role::Tab, &page.title());
+        assert_eq!(harness.state().selected_settings_page, page);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_steps_of_the_intel_flow_open_their_pages() {
+    let (app, dir) = app("kittest-steps");
+    let mut harness = settings_screen(app, SettingsPage::Sources, true);
+    harness.run();
+    for (index, page) in SettingsPage::INTEL_FLOW.into_iter().enumerate().rev() {
+        let step = format!("{} · {}", index + 1, page.title());
+        click(&mut harness, Role::RadioButton, &step);
+        assert_eq!(harness.state().selected_settings_page, page);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_change_is_kept_by_apply_and_undone_by_cancel() {
+    let (app, dir) = app("kittest-apply");
+    let mut harness = settings_screen(app, SettingsPage::Alerts, true);
+    harness.run();
+    let radius = harness.state().settings.get_warning_area();
+    let other = if radius == 3 { 5 } else { 3 };
+
+    // Apply keeps it, saved, and the screen stays open
+    click(&mut harness, Role::RadioButton, &other.to_string());
+    assert_eq!(harness.state().settings.get_warning_area(), other);
+    click(&mut harness, Role::Button, &text("settings.apply"));
+    assert_eq!(harness.state().settings.get_warning_area(), other);
+    assert!(harness.state().settings.its_saved());
+    assert!(harness.state().open[2]);
+
+    // Cancel goes back to what was applied, and closes the screen
+    click(&mut harness, Role::RadioButton, &radius.to_string());
+    assert_eq!(harness.state().settings.get_warning_area(), radius);
+    click(&mut harness, Role::Button, &text("common.cancel"));
+    assert_eq!(harness.state().settings.get_warning_area(), other);
+    assert!(!harness.state().open[2]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_channel_is_monitored_from_the_sources_page() {
+    let (mut app, dir) = app("kittest-channels");
+    with_chat_logs(&mut app, &dir);
+    let mut harness = settings_screen(app, SettingsPage::Sources, true);
+    harness.run();
+    let monitored = |harness: &egui_kittest::Harness<'_, TelescopeApp>| {
+        harness.state().settings.get_available_channels()["Intel"]
+    };
+    let before = monitored(&harness);
+
+    click(&mut harness, Role::CheckBox, "Intel");
+    assert_eq!(monitored(&harness), !before);
+    click(&mut harness, Role::CheckBox, "Intel");
+    assert_eq!(monitored(&harness), before);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_overlay_mode_is_chosen_in_the_alerts_page() {
+    use egui_kittest::kittest::Queryable as _;
+    let (app, dir) = app("kittest-overlay-mode");
+    let mut harness = alerts_page(app);
+    harness.run();
+    // off by default, the unified overlay chosen for when it is turned on
+    assert!(!harness.state().settings.get_overlay_enabled());
+    assert!(harness.state().settings.get_overlay_all_characters());
+
+    harness
+        .get_by_label(&text("settings.alerts.overlay_mode_each"))
+        .click();
+    harness.run();
+    assert!(harness.state().settings.get_overlay_enabled());
+    assert!(!harness.state().settings.get_overlay_all_characters());
+
+    harness
+        .get_by_label(&text("settings.alerts.overlay_mode_all"))
+        .click();
+    harness.run();
+    assert!(harness.state().settings.get_overlay_enabled());
+    assert!(harness.state().settings.get_overlay_all_characters());
+
+    // off keeps the choice between one and one per character
+    harness
+        .get_by_label(&text("settings.alerts.overlay_mode_off"))
+        .click();
+    harness.run();
+    assert!(!harness.state().settings.get_overlay_enabled());
+    assert!(harness.state().settings.get_overlay_all_characters());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_characters_can_be_picked_only_with_one_overlay_per_character() {
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+    let (mut app, dir) = app("kittest-overlay-characters");
+    app.esi.characters.push(character(7, "Pilot Seven"));
+    let mut harness = alerts_page(app);
+    harness.run();
+    let disabled = |harness: &egui_kittest::Harness<'_, TelescopeApp>| {
+        harness
+            .get_by_label("Pilot Seven")
+            .accesskit_node()
+            .is_disabled()
+    };
+
+    // one overlay for all (the default): the list is there, read-only
+    assert!(disabled(&harness));
+
+    harness
+        .get_by_label(&text("settings.alerts.overlay_mode_each"))
+        .click();
+    harness.run();
+    assert!(!disabled(&harness));
+    let _ = std::fs::remove_dir_all(dir);
+}

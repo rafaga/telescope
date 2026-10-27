@@ -14,5 +14,7 @@ mod corporation;
 pub use alliance::Alliance;
 pub use auth::{AuthClaims, AuthData, AuthorizeInfo, TokenSet};
 pub use catalog::BasicCatalog;
-pub use character::{Character, CharacterPublicInfo};
+pub use character::{
+    Character, CharacterOverlay, CharacterPublicInfo, OverlayAnchor, OverlayPosition,
+};
 pub use corporation::Corporation;

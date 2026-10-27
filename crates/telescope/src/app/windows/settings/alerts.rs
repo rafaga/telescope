@@ -4,17 +4,53 @@
 
 use crate::app::TelescopeApp;
 use crate::app::messages::{MapSync, SettingsPage, Target};
-use crate::app::settings::Mapping;
+use crate::app::settings::{Mapping, OverlayOrder, Settings};
 use eframe::egui;
 use egui_panels::{Section, Slider, StatusKind, Variant};
 use std::time::Instant;
 use webb::map_alerts::{AlertSummary, IntelAlert};
 
+/// What the overlay shows, out of the two settings behind it (`overlay_enabled`
+/// and `overlay_all_characters`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OverlayMode {
+    /// No overlay.
+    Off,
+    /// One overlay for all the characters.
+    All,
+    /// One overlay for each character turned on in the list.
+    Each,
+}
+
+impl OverlayMode {
+    fn of(settings: &Settings) -> Self {
+        match (
+            settings.get_overlay_enabled(),
+            settings.get_overlay_all_characters(),
+        ) {
+            (false, _) => Self::Off,
+            (true, true) => Self::All,
+            (true, false) => Self::Each,
+        }
+    }
+
+    /// Writes the mode into the settings. Off keeps the choice between one
+    /// overlay and one per character for when it is turned on again.
+    fn apply(self, settings: &mut Settings) {
+        settings.set_overlay_enabled(self != Self::Off);
+        match self {
+            Self::Off => {}
+            Self::All => settings.set_overlay_all_characters(true),
+            Self::Each => settings.set_overlay_all_characters(false),
+        }
+    }
+}
+
 /// The warning radii offered, in jumps.
 const RADII: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
 
 impl TelescopeApp {
-    pub(super) fn show_alerts_page(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn show_alerts_page(&mut self, ui: &mut egui::Ui) {
         egui_panels::page(ui, |ui| {
             self.intel_flow_stepper(ui, SettingsPage::Alerts);
             egui_panels::page_header(
@@ -87,20 +123,72 @@ impl TelescopeApp {
     }
 
     fn show_overlay_section(&mut self, ui: &mut egui::Ui) {
+        // The overlay of each character lives in the player database, so a
+        // change there is stored right away, not with Apply.
+        let mut toggled: Option<(i64, bool)> = None;
         Section::new(&t!("settings.alerts.overlay_title"))
             .description(&t!("settings.alerts.overlay_description"))
             .show(ui, |ui| {
                 egui_panels::form(ui, |form| {
-                    form.row_hint(
-                        t!("settings.alerts.overlay_enable"),
-                        &t!("settings.alerts.overlay_enable_hint"),
-                        |ui| {
-                            let mut enabled = self.settings.get_overlay_enabled();
-                            if egui_panels::switch(ui, &mut enabled).changed() {
-                                self.settings.set_overlay_enabled(enabled);
+                    let mode = OverlayMode::of(&self.settings);
+                    form.row(t!("settings.alerts.overlay_mode"), |ui| {
+                        let off = t!("settings.alerts.overlay_mode_off");
+                        let all = t!("settings.alerts.overlay_mode_all");
+                        let each = t!("settings.alerts.overlay_mode_each");
+                        let options = [
+                            (OverlayMode::Off, off.as_ref()),
+                            (OverlayMode::All, all.as_ref()),
+                            (OverlayMode::Each, each.as_ref()),
+                        ];
+                        let mut chosen = mode;
+                        if egui_panels::segmented(ui, &mut chosen, &options).changed() {
+                            chosen.apply(&mut self.settings);
+                        }
+                    });
+                    form.row(t!("settings.alerts.overlay_characters"), |ui| {
+                        let picking = mode == OverlayMode::Each;
+                        ui.vertical(|ui| {
+                            // the list can only be edited with one overlay per character
+                            ui.add_enabled_ui(picking, |ui| {
+                                if self.esi.characters.is_empty() {
+                                    ui.weak(t!("settings.alerts.overlay_no_characters"));
+                                }
+                                for character in &self.esi.characters {
+                                    let mut enabled = character.overlay.enabled;
+                                    if ui.checkbox(&mut enabled, &character.name).changed() {
+                                        toggled = Some((character.id, enabled));
+                                    }
+                                }
+                            });
+                            if !picking {
+                                ui.weak(t!("settings.alerts.overlay_characters_hint"));
                             }
-                        },
-                    );
+                        });
+                    });
+                    form.row(t!("settings.alerts.overlay_order"), |ui| {
+                        let mut order = self.settings.get_overlay_order();
+                        let age = t!("settings.alerts.overlay_order_age");
+                        let jumps = t!("settings.alerts.overlay_order_jumps");
+                        let options = [
+                            (OverlayOrder::Age, age.as_ref()),
+                            (OverlayOrder::Jumps, jumps.as_ref()),
+                        ];
+                        if egui_panels::segmented(ui, &mut order, &options).changed() {
+                            self.settings.set_overlay_order(order);
+                        }
+                    });
+                    form.row(t!("settings.alerts.overlay_max_rows"), |ui| {
+                        let mut rows = f64::from(self.settings.get_overlay_max_rows());
+                        let slider =
+                            Slider::new(&mut rows, 1.0..=f64::from(Mapping::MAX_OVERLAY_MAX_ROWS))
+                                .step(1.0)
+                                .width(220.0)
+                                .show(ui);
+                        if slider.changed() {
+                            self.settings.set_overlay_max_rows(rows as u8);
+                        }
+                        ui.label(format!("{rows:.0}"));
+                    });
                     form.row(t!("settings.alerts.overlay_opacity"), |ui| {
                         let mut percent = (self.settings.get_overlay_opacity() * 100.0).round();
                         let slider = Slider::new(&mut percent, 30.0..=100.0)
@@ -117,6 +205,15 @@ impl TelescopeApp {
                     });
                 });
             });
+        if let Some((id, enabled)) = toggled
+            && let Some(character) = self.esi.characters.iter().find(|c| c.id == id)
+        {
+            let overlay = webb::objects::CharacterOverlay {
+                enabled,
+                ..character.overlay
+            };
+            self.write_character_overlay(id, overlay);
+        }
     }
 
     fn show_sound_section(&mut self, ui: &mut egui::Ui) {
@@ -128,7 +225,7 @@ impl TelescopeApp {
                         .get_alert_sound()
                         .to_string_lossy()
                         .into_owned();
-                    egui::ComboBox::from_id_salt("alert_sound")
+                    let combo = egui::ComboBox::from_id_salt("alert_sound")
                         .selected_text(current.clone())
                         .width(220.0_f32.min(ui.available_width()))
                         .show_ui(ui, |ui| {
@@ -151,6 +248,7 @@ impl TelescopeApp {
                                 }
                             }
                         });
+                    egui_panels::label_with_row(ui, &combo.response);
                     // Plays the selected sound (even before saving).
                     if egui_panels::button(ui, "▶", Variant::Secondary)
                         .on_hover_text(t!("settings.alerts.play"))

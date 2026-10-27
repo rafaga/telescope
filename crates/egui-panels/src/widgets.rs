@@ -269,6 +269,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
         response.mark_changed();
     }
     response.widget_info(|| WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, ""));
+    crate::label_with_row(ui, &response);
     if ui.is_rect_visible(rect) {
         let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
         let visuals = ui.style().interact_selectable(&response, *on);
@@ -661,7 +662,9 @@ impl<'a> PathPicker<'a> {
                 if let Some(hint) = self.hint {
                     edit = edit.hint_text(hint);
                 }
-                ui.add(edit)
+                let field = ui.add(edit);
+                crate::label_with_row(ui, &field);
+                field
             })
             .inner;
         PathPickerResponse {
@@ -975,6 +978,7 @@ impl<'a, N: egui::emath::Numeric> Slider<'a, N> {
             response.mark_changed();
         }
         response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), new, ""));
+        crate::label_with_row(ui, &response);
         if ui.is_rect_visible(rect) {
             let t = if max == min {
                 0.0

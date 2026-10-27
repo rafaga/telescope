@@ -16,3 +16,7 @@ telescope.toml
 sde-build-cache
 .env
 .claude
+# What a failed image snapshot (egui_kittest) leaves next to the reference
+**/tests/snapshots/**/*.new.png
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.old.png
