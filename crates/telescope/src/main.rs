@@ -103,12 +103,6 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
             .with_min_inner_size([400.0, 300.0])
-            // Where the overlay blends through the alpha of its own pixels
-            // (not Windows, which blends the whole window: see
-            // `OverlayWindow::set_opacity_by_title`), eframe gives the
-            // overlay's surface an alpha channel only when the main window
-            // asks for it. The main window is covered by its panels.
-            .with_transparent(!cfg!(target_os = "windows"))
             .with_icon(
                 eframe::icon_data::from_png_bytes(&include_bytes!("../../../assets/icon.png")[..])
                     .unwrap(),

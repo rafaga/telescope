@@ -1017,6 +1017,8 @@ impl OverlayState {
         self.overlay_focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
         self.apply_native();
         self.apply_opacity();
+        // macOS: the window's layer is configured opaque unless told again
+        let _ = self.native.enable_pixel_alpha_by_title(&self.title);
         let ppp = Self::pixels_per_point(&ctx);
         if let Some(outer) = ctx.input(|input| input.viewport().outer_rect) {
             self.track_drag(outer, ppp);

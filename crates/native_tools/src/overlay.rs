@@ -44,7 +44,7 @@ use windows::{
 };
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowCollectionBehavior};
+use objc2_app_kit::{NSApplication, NSColor, NSView, NSWindow, NSWindowCollectionBehavior};
 #[cfg(target_os = "macos")]
 use objc2_foundation::MainThreadMarker;
 
@@ -772,6 +772,60 @@ impl OverlayWindow {
             SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA)
                 .map_err(|error| OverlayError::Os(error.to_string()))
         }
+    }
+
+    /// Lets the window blend the alpha of the pixels it draws with what is
+    /// behind it, so the unpainted parts are see-through and the painted ones
+    /// translucent. The window is created transparent by the UI toolkit, but
+    /// its surface is configured opaque unless the *main* window asked for
+    /// transparency too: this undoes that for this window alone, on its own
+    /// Core Animation layer, so the main window stays a normal one. It is
+    /// cheap and idempotent, and the toolkit can configure the layer again
+    /// (when the window is resized), so the caller repeats it every frame.
+    ///
+    /// Only macOS needs it: Windows blends the whole window
+    /// ([`Self::set_opacity_by_title`]) and X11 cuts the window down
+    /// ([`Self::set_visible_region_by_title`]); elsewhere it does nothing.
+    #[cfg(target_os = "macos")]
+    pub fn enable_pixel_alpha_by_title(&self, title: &str) -> Result<(), OverlayError> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| OverlayError::Os(String::from("not on the main thread")))?;
+        let application = NSApplication::sharedApplication(mtm);
+        for window in application.windows().iter() {
+            if window.title().to_string() != title {
+                continue;
+            }
+            if window.isOpaque() {
+                window.setOpaque(false);
+            }
+            window.setBackgroundColor(Some(&NSColor::clearColor()));
+            // the shadow of a window is cut from its alpha: with only a panel
+            // painted it would draw an outline around the window's rectangle
+            window.setHasShadow(false);
+            if let Some(layer) = window.contentView().and_then(|view| view.layer()) {
+                if layer.isOpaque() {
+                    layer.setOpaque(false);
+                }
+                // SAFETY: on the main thread, and the array is only read
+                // while nothing else changes the layer tree.
+                #[allow(unsafe_code)]
+                if let Some(sublayers) = unsafe { layer.sublayers() } {
+                    for sublayer in sublayers.iter() {
+                        if sublayer.isOpaque() {
+                            sublayer.setOpaque(false);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+        Err(OverlayError::InvalidHandle)
+    }
+
+    /// See the macOS version.
+    #[cfg(not(target_os = "macos"))]
+    pub fn enable_pixel_alpha_by_title(&self, _title: &str) -> Result<(), OverlayError> {
+        Ok(())
     }
 
     /// See the Windows version.

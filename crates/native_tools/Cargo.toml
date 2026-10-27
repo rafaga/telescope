@@ -46,6 +46,11 @@ objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
     "NSWorkspace",
     "NSRunningApplication",
+    "NSColor",
+    "objc2-quartz-core",
 ] }
+# The window's Core Animation layer: wgpu marks it opaque, and the overlay
+# needs it not to be (see `OverlayWindow::enable_pixel_alpha_by_title`).
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer"] }
 block2 = "0.6"
 objc2 = { version = "0.6", features = ["objc2-proc-macros"] }
