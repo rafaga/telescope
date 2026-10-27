@@ -48,18 +48,15 @@ impl TelescopeApp {
                     .filter(|(_, name)| filter.is_empty() || name.to_lowercase().contains(&filter))
                     .collect();
                 regions.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                // a list of rows with a check, like the watched channels
                 let tile_data = &mut self.behavior.tile_data;
-                egui_panels::tile_grid(ui, 4, regions.len(), |ui, index| {
+                egui_panels::tile_grid(ui, 2, regions.len(), |ui, index| {
                     let (region, name) = &regions[index];
                     let count = characters_here.get(region);
                     let tag = count.map(|count| t!("settings.maps.characters_tag", count = count));
                     if let Some(data) = tile_data.get_mut(region) {
-                        let response = egui_panels::toggle_button(
-                            ui,
-                            &mut data.show_on_startup,
-                            name,
-                            tag.as_deref(),
-                        );
+                        let response =
+                            egui_panels::tile(ui, &mut data.show_on_startup, name, tag.as_deref());
                         if let Some(count) = count {
                             response
                                 .on_hover_text(t!("settings.maps.characters_here", count = count));

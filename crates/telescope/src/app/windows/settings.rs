@@ -2,10 +2,9 @@
 //! grouped by what they configure, the selected page and the Cancel / Apply
 //! / Accept bar.
 //!
-//! The intel pages follow the path of a chat line -- `sources` (where it is
-//! read), `patterns` (the rules that turn it into an alert) and `alerts`
-//! (what the alert does) -- then come `maps`, `characters` and
-//! `application`.
+//! The tree has two roots: the intelligence rules (`patterns`), with the
+//! `sources` they read from and the `alerts` they raise under them, and the
+//! `application`, with the `characters` and the `maps`.
 //!
 //! Every change is a draft until Apply or Accept: the settings are edited in
 //! place and `TelescopeApp::cancel_settings` puts back the snapshot taken
@@ -18,7 +17,8 @@ use crate::app::intel::input::monitored_channel_names;
 use crate::app::messages::{Message, SettingsPage};
 use crate::app::settings::Settings;
 use eframe::egui;
-use egui_panels::{Action, ActionBar, NavGroup, NavItem, SettingsLayout, SideNav, StatusKind};
+use egui_ltreeview::{Action as TreeAction, IndentHintStyle, NodeBuilder, TreeView, TreeViewState};
+use egui_panels::{Action, ActionBar, SettingsLayout, StatusKind};
 use native_tools::dialog::{Dialog, DialogResult, DialogType, FileFilter};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -50,9 +50,122 @@ pub(crate) struct SettingsUi {
     sde_text: Option<String>,
     /// The window file dialogs belong to (see `Dialog::set_owner`).
     window_owner: Option<isize>,
-    /// A step of the intel flow was clicked this frame (it changes the page
-    /// like the navigation does).
-    step_clicked: bool,
+    /// Which groups of the navigation tree are open, and what is selected.
+    nav_tree: TreeViewState<NavNode>,
+}
+
+/// The groups of pages of the navigation tree.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum NavGroupId {
+    /// The rules, which are also the root of everything an intel line goes
+    /// through: a group that is a page itself.
+    Rules,
+    /// Where a line is read from; inside `Rules`.
+    Sources,
+    /// The ways a reported system is alerted; inside `Rules`.
+    Alerts,
+    /// The application itself, a page that is also the root of the characters
+    /// and the maps.
+    Application,
+}
+
+/// What a group (or the tree itself) holds: a page or another group.
+#[derive(Clone, Copy)]
+enum NavEntry {
+    Page(SettingsPage),
+    Group(NavGroupId),
+}
+
+impl NavGroupId {
+    /// The roots of the tree, in order: the rules with everything an intel
+    /// line goes through, and the application with the rest.
+    const TOP: [NavEntry; 2] = [
+        NavEntry::Group(NavGroupId::Rules),
+        NavEntry::Group(NavGroupId::Application),
+    ];
+
+    /// Every group, nested or not.
+    const ALL: [NavGroupId; 4] = [
+        NavGroupId::Rules,
+        NavGroupId::Sources,
+        NavGroupId::Alerts,
+        NavGroupId::Application,
+    ];
+
+    /// The page the group is itself, if it is one (clicking its row opens it).
+    fn page(self) -> Option<SettingsPage> {
+        match self {
+            NavGroupId::Rules => Some(SettingsPage::Rules),
+            NavGroupId::Application => Some(SettingsPage::Application),
+            NavGroupId::Sources | NavGroupId::Alerts => None,
+        }
+    }
+
+    /// The node of the tree that is the group.
+    fn node(self) -> NavNode {
+        match self.page() {
+            Some(page) => NavNode::Page(page),
+            None => NavNode::Group(self),
+        }
+    }
+
+    /// An emoji before the name of the group, for the roots of the tree only
+    /// (a glyph of egui's bundled emoji fonts).
+    fn icon(self) -> Option<&'static str> {
+        match self {
+            NavGroupId::Rules => Some("🔀"),
+            NavGroupId::Application => Some("⚙"),
+            NavGroupId::Sources | NavGroupId::Alerts => None,
+        }
+    }
+
+    fn title(self) -> String {
+        match self {
+            NavGroupId::Rules => SettingsPage::Rules.title(),
+            NavGroupId::Application => SettingsPage::Application.title(),
+            NavGroupId::Sources => t!("settings.groups.sources").into_owned(),
+            NavGroupId::Alerts => t!("settings.groups.alerts").into_owned(),
+        }
+    }
+
+    /// What the group holds, in order.
+    fn entries(self) -> &'static [NavEntry] {
+        match self {
+            NavGroupId::Rules => &[
+                NavEntry::Group(NavGroupId::Sources),
+                NavEntry::Group(NavGroupId::Alerts),
+            ],
+            NavGroupId::Sources => &[
+                NavEntry::Page(SettingsPage::Sources),
+                NavEntry::Page(SettingsPage::Zkillboard),
+            ],
+            NavGroupId::Alerts => &[
+                NavEntry::Page(SettingsPage::AlertsVisual),
+                NavEntry::Page(SettingsPage::AlertsSound),
+                NavEntry::Page(SettingsPage::AlertsOverlay),
+            ],
+            NavGroupId::Application => &[
+                NavEntry::Page(SettingsPage::Characters),
+                NavEntry::Page(SettingsPage::Maps),
+            ],
+        }
+    }
+}
+
+/// The emojis of the roots of the navigation tree (for the font tests).
+#[cfg(test)]
+pub(crate) fn root_icons() -> Vec<&'static str> {
+    NavGroupId::ALL
+        .into_iter()
+        .filter_map(NavGroupId::icon)
+        .collect()
+}
+
+/// A node of the navigation tree: a group of pages, or a page.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum NavNode {
+    Group(NavGroupId),
+    Page(SettingsPage),
 }
 
 impl SettingsUi {
@@ -92,30 +205,6 @@ impl TelescopeApp {
     #[tracing::instrument(skip(self, ui))]
     pub(crate) fn show_settings_screen(&mut self, ui: &mut egui::Ui) {
         let dirty = self.dirty_settings_pages();
-        let item = |page: SettingsPage| {
-            NavItem::new(page, page.title())
-                .icon(page.icon())
-                .dirty(dirty.contains(&page))
-        };
-        let groups = [
-            NavGroup::new(
-                t!("settings.groups.intel"),
-                SettingsPage::INTEL_FLOW.into_iter().map(item).collect(),
-            ),
-            NavGroup::new(t!("settings.groups.view"), vec![item(SettingsPage::Maps)]),
-            NavGroup::new(
-                t!("settings.groups.account"),
-                vec![item(SettingsPage::Characters)],
-            ),
-            NavGroup::new(
-                t!("settings.groups.system"),
-                vec![item(SettingsPage::Application)],
-            ),
-        ];
-        let title = t!("settings.title");
-        let subtitle = format!("Telescope {}", env!("CARGO_PKG_VERSION"));
-        let nav = SideNav::new(&groups).title(&title).subtitle(&subtitle);
-
         let pending = (!dirty.is_empty()).then(|| {
             let pages: Vec<String> = dirty.iter().map(|page| page.title()).collect();
             t!("settings.pending", pages = pages.join(", ")).into_owned()
@@ -133,26 +222,28 @@ impl TelescopeApp {
         let mut page = self.selected_settings_page;
         // The node editor fills the page itself.
         let scroll = !(page == SettingsPage::Rules && self.patterns_editor.is_open());
-        let action = SettingsLayout::new("settings").scroll(scroll).show(
-            ui,
-            nav,
-            bar,
-            &mut page,
-            |ui, page| match page {
-                SettingsPage::Sources => self.show_sources_page(ui),
-                SettingsPage::Rules => self.show_patterns_page(ui),
-                SettingsPage::Alerts => self.show_alerts_page(ui),
-                SettingsPage::Maps => self.show_maps_page(ui),
-                SettingsPage::Characters => self.show_characters_page(ui),
-                SettingsPage::Application => self.show_application_page(ui),
-            },
-        );
-        // A step of the intel flow clicked inside the page wins over the
-        // navigation, which didn't change then.
-        if page != self.selected_settings_page && !self.settings_ui.step_clicked {
-            self.selected_settings_page = page;
-        }
-        self.settings_ui.step_clicked = false;
+        let mut nav_tree = std::mem::take(&mut self.settings_ui.nav_tree);
+        let action = SettingsLayout::new("settings")
+            .scroll(scroll)
+            .show_with_nav(
+                ui,
+                |ui, page| Self::show_settings_nav(ui, &mut nav_tree, page, &dirty),
+                bar,
+                &mut page,
+                |ui, page| match page {
+                    SettingsPage::Sources => self.show_sources_page(ui),
+                    SettingsPage::Zkillboard => self.show_zkillboard_page(ui),
+                    SettingsPage::Rules => self.show_patterns_page(ui),
+                    SettingsPage::AlertsVisual => self.show_alerts_visual_page(ui),
+                    SettingsPage::AlertsSound => self.show_alerts_sound_page(ui),
+                    SettingsPage::AlertsOverlay => self.show_alerts_overlay_page(ui),
+                    SettingsPage::Maps => self.show_maps_page(ui),
+                    SettingsPage::Characters => self.show_characters_page(ui),
+                    SettingsPage::Application => self.show_application_page(ui),
+                },
+            );
+        self.settings_ui.nav_tree = nav_tree;
+        self.selected_settings_page = page;
         match action {
             Some(Action::Cancel) => self.cancel_settings(),
             Some(Action::Apply) => {
@@ -160,6 +251,113 @@ impl TelescopeApp {
             }
             Some(Action::Accept) => self.accept_settings(),
             None => {}
+        }
+    }
+
+    /// The navigation of the Settings screen: the pages in a tree, grouped by
+    /// what they configure. A page with changes not applied yet has a dot.
+    /// `selected` follows the page picked (and the tree follows `selected`
+    /// when something else changes it, as the steps of the intel flow do).
+    fn show_settings_nav(
+        ui: &mut egui::Ui,
+        tree: &mut TreeViewState<NavNode>,
+        selected: &mut SettingsPage,
+        dirty: &[SettingsPage],
+    ) {
+        let theme = egui_panels::Theme::get(ui.ctx());
+        let palette = theme.palette(ui.visuals());
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(t!("settings.title"))
+                .size(theme.section_title_size + 3.0)
+                .color(palette.strong_text),
+        );
+        ui.label(
+            egui::RichText::new(format!("Telescope {}", env!("CARGO_PKG_VERSION")))
+                .size(theme.small_size)
+                .color(palette.muted_text),
+        );
+        ui.add_space(8.0);
+
+        // The groups are always open: nothing in the tree collapses.
+        let open_all = |tree: &mut TreeViewState<NavNode>| {
+            for group in NavGroupId::ALL {
+                tree.set_openness(group.node(), true);
+            }
+        };
+        open_all(tree);
+        tree.set_one_selected(NavNode::Page(*selected));
+        let (_, actions) = TreeView::new(ui.scope_id().with("settings_nav"))
+            .fill_available_width(true)
+            // as tall as its rows: filling the panel would make it taller
+            // than the space under the title and give the panel a scroll bar
+            .fill_available_height(false)
+            // one page at a time, and nothing to drag around
+            .allow_multi_selection(false)
+            .allow_drag_and_drop(false)
+            // lines that connect every group and page to its parent
+            .indent_hint_style(IndentHintStyle::Hook)
+            .show_state(ui, tree, |builder| {
+                for entry in NavGroupId::TOP {
+                    Self::add_nav_entry(builder, entry, dirty, &palette);
+                }
+            });
+        // a click on a group row must not close it either
+        open_all(tree);
+        for action in actions {
+            if let TreeAction::SetSelected(picked) = action
+                && let Some(NavNode::Page(page)) = picked.first()
+            {
+                *selected = *page;
+            }
+        }
+    }
+
+    /// A page or a group of the navigation tree. A group holds its pages and
+    /// the groups inside it, and has no button to collapse it. The rows are
+    /// plain, the tree's lines connect them; only the roots have an emoji. A
+    /// group that is a page itself (the rules, the application) opens it when
+    /// clicked, and has the dot of changes not applied like any page.
+    fn add_nav_entry(
+        builder: &mut egui_ltreeview::TreeViewBuilder<'_, NavNode>,
+        entry: NavEntry,
+        dirty: &[SettingsPage],
+        palette: &egui_panels::Palette,
+    ) {
+        let row = |title: String, page: Option<SettingsPage>, icon: Option<&'static str>| {
+            let is_dirty = page.is_some_and(|page| dirty.contains(&page));
+            let dot = palette.dirty;
+            move |ui: &mut egui::Ui| {
+                // the emoji is a label of its own: the name stays the name
+                if let Some(icon) = icon {
+                    ui.add(egui::Label::new(icon).selectable(false));
+                }
+                ui.add(egui::Label::new(title.clone()).selectable(false));
+                if is_dirty {
+                    ui.label(egui::RichText::new("●").color(dot));
+                }
+            }
+        };
+        match entry {
+            NavEntry::Page(page) => {
+                builder.node(NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(
+                    page.title(),
+                    Some(page),
+                    None,
+                )));
+            }
+            NavEntry::Group(group) => {
+                builder.node(
+                    NodeBuilder::dir(group.node())
+                        .default_open(true)
+                        .closer(|_ui, _state| {})
+                        .label_ui(row(group.title(), group.page(), group.icon())),
+                );
+                for &inner in group.entries() {
+                    Self::add_nav_entry(builder, inner, dirty, palette);
+                }
+                builder.close_dir();
+            }
         }
     }
 
@@ -179,11 +377,21 @@ impl TelescopeApp {
             pages.push(SettingsPage::Sources);
         }
         if now.get_warning_area() != saved.get_warning_area()
-            || now.get_alert_sound() != saved.get_alert_sound()
             || now.get_alert_duration_secs() != saved.get_alert_duration_secs()
             || now.get_center_on_alert() != saved.get_center_on_alert()
         {
-            pages.push(SettingsPage::Alerts);
+            pages.push(SettingsPage::AlertsVisual);
+        }
+        if now.get_alert_sound() != saved.get_alert_sound() {
+            pages.push(SettingsPage::AlertsSound);
+        }
+        if now.get_overlay_enabled() != saved.get_overlay_enabled()
+            || now.get_overlay_all_characters() != saved.get_overlay_all_characters()
+            || now.get_overlay_order() != saved.get_overlay_order()
+            || now.get_overlay_max_rows() != saved.get_overlay_max_rows()
+            || now.get_overlay_opacity() != saved.get_overlay_opacity()
+        {
+            pages.push(SettingsPage::AlertsOverlay);
         }
         let startup: HashSet<usize> = saved.get_startup_regions().iter().copied().collect();
         let startup_changed = self
@@ -203,32 +411,6 @@ impl TelescopeApp {
         // In the navigation's order.
         pages.sort_by_key(|page| *page as u8);
         pages
-    }
-
-    /// The "1 · Sources → 2 · Rules → 3 · Alerts" steps at the top of the
-    /// intel pages; clicking one opens that page.
-    fn intel_flow_stepper(&mut self, ui: &mut egui::Ui, current: SettingsPage) {
-        let titles: Vec<String> = SettingsPage::INTEL_FLOW
-            .iter()
-            .map(|page| page.title())
-            .collect();
-        let steps: Vec<&str> = titles.iter().map(String::as_str).collect();
-        let index = SettingsPage::INTEL_FLOW
-            .iter()
-            .position(|page| *page == current)
-            .unwrap_or_default();
-        let clicked = ui
-            .horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                let clicked = egui_panels::stepper(ui, &steps, index);
-                ui.weak(t!("settings.intel_flow_hint"));
-                clicked
-            })
-            .inner;
-        if let Some(step) = clicked {
-            self.selected_settings_page = SettingsPage::INTEL_FLOW[step];
-            self.settings_ui.step_clicked = true;
-        }
     }
 
     /// Opens `dialog` at `start` (its folder, for a file); the path picked is

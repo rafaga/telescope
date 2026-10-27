@@ -131,48 +131,52 @@ pub enum Target {
     Region,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum SettingsPage {
+    /// The EVE chat logs: the folder and the channels watched.
     Sources,
+    /// The zKillboard feed (an empty page for now).
+    Zkillboard,
     Rules,
-    Alerts,
+    /// How a reported system is alerted on the maps: the distance and the
+    /// visual alert.
+    AlertsVisual,
+    AlertsSound,
+    AlertsOverlay,
     Maps,
     Characters,
     Application,
 }
 
 impl SettingsPage {
-    /// The pages an intel line goes through, in order (the stepper at the top
-    /// of those pages).
-    pub const INTEL_FLOW: [SettingsPage; 3] = [
+    /// Every page, in the order of the navigation (for the tests).
+    #[cfg(test)]
+    pub const ALL: [SettingsPage; 9] = [
         SettingsPage::Sources,
+        SettingsPage::Zkillboard,
         SettingsPage::Rules,
-        SettingsPage::Alerts,
+        SettingsPage::AlertsVisual,
+        SettingsPage::AlertsSound,
+        SettingsPage::AlertsOverlay,
+        SettingsPage::Maps,
+        SettingsPage::Characters,
+        SettingsPage::Application,
     ];
 
     /// Label shown for this page in the Settings navigation.
     pub fn title(self) -> String {
         match self {
             SettingsPage::Sources => t!("settings.pages.sources"),
+            SettingsPage::Zkillboard => t!("settings.pages.zkillboard"),
             SettingsPage::Rules => t!("settings.pages.rules"),
-            SettingsPage::Alerts => t!("settings.pages.alerts"),
+            SettingsPage::AlertsVisual => t!("settings.pages.alerts_visual"),
+            SettingsPage::AlertsSound => t!("settings.pages.alerts_sound"),
+            SettingsPage::AlertsOverlay => t!("settings.pages.alerts_overlay"),
             SettingsPage::Maps => t!("settings.pages.maps"),
             SettingsPage::Characters => t!("settings.pages.characters"),
             SettingsPage::Application => t!("settings.pages.application"),
         }
         .into_owned()
-    }
-
-    /// Icon drawn before the title (a glyph of egui's bundled emoji fonts).
-    pub fn icon(self) -> &'static str {
-        match self {
-            SettingsPage::Sources => "📂",
-            SettingsPage::Rules => "🔀",
-            SettingsPage::Alerts => "🔔",
-            SettingsPage::Maps => "🗺",
-            SettingsPage::Characters => "👤",
-            SettingsPage::Application => "⚙",
-        }
     }
 }
 
@@ -658,30 +662,11 @@ mod enum_tests {
     }
 
     #[test]
-    fn the_settings_pages_have_a_title_and_a_distinct_icon() {
-        let pages = [
-            SettingsPage::Sources,
-            SettingsPage::Rules,
-            SettingsPage::Alerts,
-            SettingsPage::Maps,
-            SettingsPage::Characters,
-            SettingsPage::Application,
-        ];
-        let icons: std::collections::HashSet<&str> = pages.iter().map(|p| p.icon()).collect();
-        assert_eq!(icons.len(), pages.len());
-        assert!(pages.iter().all(|page| !page.title().is_empty()));
-    }
-
-    #[test]
-    fn the_intel_flow_goes_from_the_sources_to_the_alerts() {
-        assert_eq!(
-            SettingsPage::INTEL_FLOW,
-            [
-                SettingsPage::Sources,
-                SettingsPage::Rules,
-                SettingsPage::Alerts
-            ]
-        );
+    fn the_settings_pages_have_a_distinct_title() {
+        let pages = SettingsPage::ALL;
+        let titles: std::collections::HashSet<String> = pages.iter().map(|p| p.title()).collect();
+        assert_eq!(titles.len(), pages.len());
+        assert!(titles.iter().all(|title| !title.is_empty()));
     }
 
     #[test]

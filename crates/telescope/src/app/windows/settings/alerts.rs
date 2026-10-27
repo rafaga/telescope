@@ -1,6 +1,7 @@
-//! Settings page "Alerts": how close a reported system has to be for the
-//! sound, how long the map alert lasts, the sound itself and a button that
-//! plays the whole alert with the values being edited.
+//! The alert pages of the Settings screen, one for each way a reported
+//! system is alerted: the visual alert (how close it has to be for the
+//! sound, how long the map alert lasts), the sound (with a button that plays
+//! the whole alert with the values being edited) and the overlay.
 
 use crate::app::TelescopeApp;
 use crate::app::messages::{MapSync, SettingsPage, Target};
@@ -50,17 +51,39 @@ impl OverlayMode {
 const RADII: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
 
 impl TelescopeApp {
-    pub(crate) fn show_alerts_page(&mut self, ui: &mut egui::Ui) {
+    /// The distance and the alert on the maps.
+    pub(crate) fn show_alerts_visual_page(&mut self, ui: &mut egui::Ui) {
         egui_panels::page(ui, |ui| {
-            self.intel_flow_stepper(ui, SettingsPage::Alerts);
             egui_panels::page_header(
                 ui,
-                &SettingsPage::Alerts.title(),
-                Some(&t!("settings.alerts.description")),
+                &SettingsPage::AlertsVisual.title(),
+                Some(&t!("settings.alerts.visual_description")),
             );
             self.show_distance_section(ui);
             self.show_map_alert_section(ui);
+        });
+    }
+
+    /// The sound, and the button that plays the whole alert.
+    pub(crate) fn show_alerts_sound_page(&mut self, ui: &mut egui::Ui) {
+        egui_panels::page(ui, |ui| {
+            egui_panels::page_header(
+                ui,
+                &SettingsPage::AlertsSound.title(),
+                Some(&t!("settings.alerts.sound_description")),
+            );
             self.show_sound_section(ui);
+        });
+    }
+
+    /// The overlay over the game.
+    pub(crate) fn show_alerts_overlay_page(&mut self, ui: &mut egui::Ui) {
+        egui_panels::page(ui, |ui| {
+            egui_panels::page_header(
+                ui,
+                &SettingsPage::AlertsOverlay.title(),
+                Some(&t!("settings.alerts.overlay_page_description")),
+            );
             self.show_overlay_section(ui);
         });
     }

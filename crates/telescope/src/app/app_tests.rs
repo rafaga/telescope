@@ -683,12 +683,15 @@ fn text(key: &str) -> String {
     t!(key).into_owned()
 }
 
-/// A harness that draws the Alerts page of the Settings screen of `app`.
-fn alerts_page(app: TelescopeApp) -> egui_kittest::Harness<'static, TelescopeApp> {
+/// A harness that draws the Overlay page of the Settings screen of `app`.
+fn overlay_page(app: TelescopeApp) -> egui_kittest::Harness<'static, TelescopeApp> {
     egui_kittest::Harness::builder()
         .with_size([900.0, 2400.0])
         .with_context_setup(|ctx| ctx.set_fonts(TelescopeApp::font_definitions()))
-        .build_ui_state(|ui, app: &mut TelescopeApp| app.show_alerts_page(ui), app)
+        .build_ui_state(
+            |ui, app: &mut TelescopeApp| app.show_alerts_overlay_page(ui),
+            app,
+        )
 }
 
 /// A harness that draws the whole Settings screen of `app` (navigation,
@@ -712,19 +715,10 @@ fn settings_screen(
         )
 }
 
-const ALL_PAGES: [SettingsPage; 6] = [
-    SettingsPage::Sources,
-    SettingsPage::Rules,
-    SettingsPage::Alerts,
-    SettingsPage::Maps,
-    SettingsPage::Characters,
-    SettingsPage::Application,
-];
-
 #[test]
 fn every_control_of_every_settings_page_has_a_name() {
     let mut unnamed = Vec::new();
-    for page in ALL_PAGES {
+    for page in SettingsPage::ALL {
         let (app, dir) = app("kittest-names");
         let mut harness = settings_screen(app, page, false);
         harness.run_steps(4);
@@ -750,34 +744,109 @@ fn click(harness: &mut egui_kittest::Harness<'_, TelescopeApp>, role: Role, labe
 }
 
 #[test]
-fn the_navigation_opens_every_settings_page() {
+fn the_navigation_tree_opens_every_settings_page() {
+    use egui_kittest::kittest::Queryable as _;
     let (app, dir) = app("kittest-nav");
     let mut harness = settings_screen(app, SettingsPage::Sources, true);
     harness.run();
-    for page in ALL_PAGES.into_iter().rev() {
-        click(&mut harness, Role::Tab, &page.title());
-        assert_eq!(harness.state().selected_settings_page, page);
+    for page in SettingsPage::ALL.into_iter().rev() {
+        // The title is also the heading of the open page: the row of the
+        // tree is the first one found, as the navigation is drawn first.
+        harness
+            .get_all_by_label(&page.title())
+            .next()
+            .expect("the page has a row in the tree")
+            .click();
+        harness.run();
+        assert_eq!(
+            harness.state().selected_settings_page,
+            page,
+            "{}",
+            page.title()
+        );
     }
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
-fn the_steps_of_the_intel_flow_open_their_pages() {
-    let (app, dir) = app("kittest-steps");
-    let mut harness = settings_screen(app, SettingsPage::Sources, true);
+fn the_rules_and_the_application_are_the_roots_of_the_tree() {
+    use egui_kittest::kittest::Queryable as _;
+    let (app, dir) = app("kittest-nav-roots");
+    let mut harness = settings_screen(app, SettingsPage::Maps, true);
     harness.run();
-    for (index, page) in SettingsPage::INTEL_FLOW.into_iter().enumerate().rev() {
-        let step = format!("{} · {}", index + 1, page.title());
-        click(&mut harness, Role::RadioButton, &step);
-        assert_eq!(harness.state().selected_settings_page, page);
+    // a root is a group that opens its own page when its row is clicked
+    for root in [SettingsPage::Rules, SettingsPage::Application] {
+        harness
+            .get_all_by_label(&root.title())
+            .next()
+            .expect("the root has a row in the tree")
+            .click();
+        harness.run();
+        assert_eq!(harness.state().selected_settings_page, root);
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_groups_of_the_tree_are_always_open() {
+    use egui_kittest::kittest::Queryable as _;
+    let (app, dir) = app("kittest-nav-open");
+    let mut harness = settings_screen(app, SettingsPage::Maps, true);
+    harness.run();
+    let pages_visible = |harness: &egui_kittest::Harness<'_, TelescopeApp>| {
+        SettingsPage::ALL
+            .iter()
+            .all(|page| harness.query_all_by_label(&page.title()).next().is_some())
+    };
+    assert!(pages_visible(&harness));
+
+    // clicking the name of a group does not close it (the rules and the
+    // application are groups that are pages too: they open, and stay open)
+    for group in [
+        SettingsPage::Rules.title(),
+        text("settings.groups.sources"),
+        text("settings.groups.alerts"),
+        SettingsPage::Application.title(),
+    ] {
+        harness
+            .get_all_by_label(&group)
+            .next()
+            .expect("the group has a row in the tree")
+            .click();
+        harness.run_steps(3);
+        assert!(pages_visible(&harness), "{group}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_intel_pages_have_no_numbered_steps_at_the_top() {
+    use egui_kittest::kittest::Queryable as _;
+    for page in [
+        SettingsPage::Sources,
+        SettingsPage::Rules,
+        SettingsPage::AlertsVisual,
+    ] {
+        let (app, dir) = app("kittest-no-steps");
+        let mut harness = settings_screen(app, page, true);
+        harness.run();
+        // "1 · ...", "2 · ...", "3 · ..." were the steps of the old flow
+        for number in 1..=3 {
+            assert!(
+                harness
+                    .query_by_label_contains(&format!("{number} · "))
+                    .is_none(),
+                "{page:?}: step {number}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 #[test]
 fn a_change_is_kept_by_apply_and_undone_by_cancel() {
     let (app, dir) = app("kittest-apply");
-    let mut harness = settings_screen(app, SettingsPage::Alerts, true);
+    let mut harness = settings_screen(app, SettingsPage::AlertsVisual, true);
     harness.run();
     let radius = harness.state().settings.get_warning_area();
     let other = if radius == 3 { 5 } else { 3 };
@@ -800,6 +869,31 @@ fn a_change_is_kept_by_apply_and_undone_by_cancel() {
 }
 
 #[test]
+fn a_start_up_region_is_checked_from_the_maps_page() {
+    let (mut app, dir) = app("kittest-regions");
+    app.behavior
+        .tile_data
+        .insert(10000002, region("The Forge", false));
+    app.behavior
+        .tile_data
+        .insert(10000043, region("Domain", true));
+    let mut harness = settings_screen(app, SettingsPage::Maps, true);
+    harness.run();
+    let on = |harness: &egui_kittest::Harness<'_, TelescopeApp>, id: usize| {
+        harness.state().behavior.tile_data[&id].show_on_startup
+    };
+    assert!(!on(&harness, 10000002));
+    assert!(on(&harness, 10000043));
+
+    // each region is a row with a check, named after it
+    click(&mut harness, Role::CheckBox, "The Forge");
+    assert!(on(&harness, 10000002));
+    click(&mut harness, Role::CheckBox, "Domain");
+    assert!(!on(&harness, 10000043));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_channel_is_monitored_from_the_sources_page() {
     let (mut app, dir) = app("kittest-channels");
     with_chat_logs(&mut app, &dir);
@@ -818,10 +912,10 @@ fn a_channel_is_monitored_from_the_sources_page() {
 }
 
 #[test]
-fn the_overlay_mode_is_chosen_in_the_alerts_page() {
+fn the_overlay_mode_is_chosen_in_the_overlay_page() {
     use egui_kittest::kittest::Queryable as _;
     let (app, dir) = app("kittest-overlay-mode");
-    let mut harness = alerts_page(app);
+    let mut harness = overlay_page(app);
     harness.run();
     // off by default, the unified overlay chosen for when it is turned on
     assert!(!harness.state().settings.get_overlay_enabled());
@@ -856,7 +950,7 @@ fn the_characters_can_be_picked_only_with_one_overlay_per_character() {
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
     let (mut app, dir) = app("kittest-overlay-characters");
     app.esi.characters.push(character(7, "Pilot Seven"));
-    let mut harness = alerts_page(app);
+    let mut harness = overlay_page(app);
     harness.run();
     let disabled = |harness: &egui_kittest::Harness<'_, TelescopeApp>| {
         harness

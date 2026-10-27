@@ -1349,21 +1349,14 @@ mod font_tests {
     }
 
     #[test]
-    fn settings_page_icons_are_drawn() {
-        use crate::app::messages::SettingsPage;
+    fn the_emojis_of_the_settings_roots_are_drawn() {
+        use crate::app::windows::settings::root_icons;
         let ctx = context_with(TelescopeApp::font_definitions());
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
-        for page in [
-            SettingsPage::Sources,
-            SettingsPage::Rules,
-            SettingsPage::Alerts,
-            SettingsPage::Maps,
-            SettingsPage::Characters,
-            SettingsPage::Application,
-        ] {
-            let icon = glyph_uv(&ctx, page.icon());
-            assert_ne!(icon.0, icon.1, "{}", page.icon());
-            assert_ne!(icon, missing, "{}", page.icon());
+        for icon in root_icons() {
+            let uv = glyph_uv(&ctx, icon);
+            assert_ne!(uv.0, uv.1, "{icon}");
+            assert_ne!(uv, missing, "{icon}");
         }
     }
 

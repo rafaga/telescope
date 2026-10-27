@@ -11,7 +11,6 @@ use native_tools::dialog::DialogType;
 impl TelescopeApp {
     pub(super) fn show_sources_page(&mut self, ui: &mut egui::Ui) {
         egui_panels::page(ui, |ui| {
-            self.intel_flow_stepper(ui, SettingsPage::Sources);
             egui_panels::page_header(
                 ui,
                 &SettingsPage::Sources.title(),
@@ -19,6 +18,13 @@ impl TelescopeApp {
             );
             self.show_folder_section(ui);
             self.show_channels_section(ui);
+        });
+    }
+
+    /// The zKillboard page: empty for now, only its title.
+    pub(super) fn show_zkillboard_page(&mut self, ui: &mut egui::Ui) {
+        egui_panels::page(ui, |ui| {
+            egui_panels::page_header(ui, &SettingsPage::Zkillboard.title(), None);
         });
     }
 

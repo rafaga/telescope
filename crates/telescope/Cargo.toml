@@ -107,6 +107,7 @@ rust-i18n = "4.2"
 sys-locale = "0.3"
 semver = { version = "1.0"}
 reqwest = { version = "0.13", features=["json"] }
+egui_ltreeview = { version = "0.10" }
 
 
 # native:

@@ -637,7 +637,6 @@ impl TelescopeApp {
         }
 
         egui_panels::page(ui, |ui| {
-            self.intel_flow_stepper(ui, SettingsPage::Rules);
             egui_panels::page_header(
                 ui,
                 &SettingsPage::Rules.title(),
