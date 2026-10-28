@@ -318,14 +318,6 @@ impl Overlays {
             .into_iter()
             .next()
     }
-
-    /// Why each window was last shown or hidden: for the status log.
-    pub(crate) fn take_notes(&mut self) -> Vec<String> {
-        self.windows
-            .iter_mut()
-            .filter_map(|(_, window)| window.take_note())
-            .collect()
-    }
 }
 
 /// Orders the widget's rows: the newest first, or the closest first (the
@@ -369,9 +361,6 @@ pub(crate) struct OverlayState {
     /// The game is in exclusive full screen and the user was told.
     warned_exclusive: bool,
     pending_warning: Option<String>,
-    /// Why the window was last shown or hidden, for the status log (see
-    /// `take_note`).
-    pending_note: Option<String>,
     /// The events listed, as last given to `show`.
     rows: Vec<NearbyRow>,
     /// Opacity of the panel, from `Settings::get_overlay_opacity`.
@@ -638,7 +627,6 @@ impl OverlayState {
             fullscreen: FullScreenState::new(),
             warned_exclusive: false,
             pending_warning: None,
-            pending_note: None,
             rows: Vec::new(),
             opacity: 1.0,
             characters: String::new(),
@@ -924,11 +912,6 @@ impl OverlayState {
         self.pending_warning.take()
     }
 
-    /// Why the window was last shown or hidden, once: for the status log.
-    pub(crate) fn take_note(&mut self) -> Option<String> {
-        self.pending_note.take()
-    }
-
     /// Shows the overlay while the game is in front (or Telescope itself, to
     /// move the overlay); with no game running it is a free window. Hidden, the
     /// window stays alive so it does not flicker when the focus comes back.
@@ -972,29 +955,6 @@ impl OverlayState {
         let visible = Self::should_show(self.game, self.locked, self.hide_unfocused, own_focus);
         if visible != self.visible {
             self.visible = visible;
-            self.pending_note = Some(format!(
-                "{} {}: game window {}, game in front {}, Telescope focused {}, \
-                 hide when not in front {}, locked {}",
-                self.title,
-                if visible { "shown" } else { "hidden" },
-                match self.game {
-                    Some(game) => format!("found at {:?}", game.rect),
-                    None => String::from("not found"),
-                },
-                self.game.is_some_and(|game| game.focused),
-                own_focus,
-                self.hide_unfocused,
-                self.locked,
-            ));
-            // with no game found, say what the system lists for it
-            if self.game.is_none()
-                && let Some(note) = self.pending_note.as_mut()
-            {
-                let seen = self.tracker.describe_candidates();
-                if !seen.is_empty() {
-                    note.push_str(&format!("; windows of the game: {seen}"));
-                }
-            }
             ctx.send_viewport_cmd_to(self.viewport_id(), egui::ViewportCommand::Visible(visible));
         }
     }
