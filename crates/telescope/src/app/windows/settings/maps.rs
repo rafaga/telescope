@@ -80,13 +80,17 @@ impl TelescopeApp {
                         // the "ok" green; the name keeps the check box's own color.
                         let label: egui::WidgetText = match count {
                             Some(_) => {
-                                let palette = egui_panels::Theme::get(ui.ctx()).palette(ui.visuals());
+                                let palette =
+                                    egui_panels::Theme::get(ui.ctx()).palette(ui.visuals());
                                 let font = egui::TextStyle::Button.resolve(ui.style());
                                 let mut job = egui::text::LayoutJob::default();
                                 job.append(
                                     name,
                                     0.0,
-                                    egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER),
+                                    egui::TextFormat::simple(
+                                        font.clone(),
+                                        egui::Color32::PLACEHOLDER,
+                                    ),
                                 );
                                 job.append(
                                     &format!(" {CHARACTER_ICON}"),
