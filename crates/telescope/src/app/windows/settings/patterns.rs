@@ -1136,12 +1136,9 @@ impl TelescopeApp {
             egui_panels::divider(ui);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                duplicate = egui_panels::button(
-                    ui,
-                    t!("settings.patterns.duplicate_node"),
-                    Variant::Ghost,
-                )
-                .clicked();
+                duplicate =
+                    egui_panels::button(ui, t!("settings.patterns.duplicate_node"), Variant::Ghost)
+                        .clicked();
                 delete =
                     egui_panels::button(ui, t!("settings.patterns.delete_node"), Variant::Ghost)
                         .clicked();
@@ -2501,7 +2498,12 @@ mod tests {
     fn add_input_creates_the_kind_that_was_chosen() {
         let mut editor = editor();
         let id = editor.add_input(InputKind::ZKillboard);
-        let node = editor.graph.nodes.iter().find(|node| node.id == id).unwrap();
+        let node = editor
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap();
         let NodeKind::Input(input) = &node.kind else {
             panic!("an input was expected");
         };
