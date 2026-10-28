@@ -124,9 +124,11 @@ impl GameWindowTracker {
 
     /// A tracker for windows whose title starts with `title_prefix`.
     /// Names of the game's process on macOS, where window titles are not
-    /// readable without a permission. Change them with
+    /// readable without a permission: the client's windows are owned by `EVE`
+    /// (seen on a Mac), and `EVE Online` is the name of the application. The
+    /// match is exact, so `EVE Launcher` is not the game. Change them with
     /// [`Self::with_process_names`] if the client is called something else.
-    pub const DEFAULT_PROCESS_NAMES: [&'static str; 1] = ["EVE Online"];
+    pub const DEFAULT_PROCESS_NAMES: [&'static str; 2] = ["EVE", "EVE Online"];
 
     pub fn new(title_prefix: impl Into<String>) -> Self {
         Self {
@@ -1020,8 +1022,10 @@ mod tests {
     #[test]
     fn the_process_is_recognised_by_its_name() {
         let tracker = GameWindowTracker::default();
+        assert!(tracker.matches_process("EVE"));
         assert!(tracker.matches_process("EVE Online"));
         assert!(!tracker.matches_process("EVE Launcher"));
+        assert!(!tracker.matches_process("Firefox Developer Edition"));
         assert!(!tracker.matches_process("Safari"));
         let tracker = tracker.with_process_names([String::from("exefile")]);
         assert!(tracker.matches_process("exefile"));
