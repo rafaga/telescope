@@ -113,6 +113,11 @@ pub(crate) struct Mapping {
     /// Show the overlay over the game. `serde(default)`: off.
     #[serde(default)]
     pub overlay_enabled: bool,
+    /// Hide the overlay while EVE is not the window in front (Telescope's own
+    /// windows still show it). `serde(default)`: on; off keeps the overlay
+    /// while its client exists, over any window.
+    #[serde(default = "default_overlay_hide_unfocused")]
+    pub overlay_hide_unfocused: bool,
     /// How the overlay orders its events. `serde(default)`: newest first.
     #[serde(default)]
     pub overlay_order: OverlayOrder,
@@ -174,6 +179,10 @@ fn default_alert_duration_secs() -> u32 {
     Mapping::DEFAULT_ALERT_DURATION_SECS
 }
 
+fn default_overlay_hide_unfocused() -> bool {
+    true
+}
+
 fn default_overlay_opacity() -> f32 {
     Mapping::DEFAULT_OVERLAY_OPACITY
 }
@@ -192,6 +201,7 @@ impl Default for Mapping {
             glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
             overlay_opacity: Mapping::DEFAULT_OVERLAY_OPACITY,
             overlay_enabled: false,
+            overlay_hide_unfocused: true,
             overlay_order: OverlayOrder::default(),
             overlay_max_rows: Mapping::DEFAULT_OVERLAY_MAX_ROWS,
             overlay_all_characters: true,
@@ -789,6 +799,15 @@ impl Settings {
         self.saved = false;
     }
 
+    pub(crate) fn get_overlay_hide_unfocused(&self) -> bool {
+        self.mapping.overlay_hide_unfocused
+    }
+
+    pub(crate) fn set_overlay_hide_unfocused(&mut self, hide: bool) {
+        self.mapping.overlay_hide_unfocused = hide;
+        self.saved = false;
+    }
+
     pub(crate) fn get_overlay_max_rows(&self) -> u8 {
         self.mapping
             .overlay_max_rows
@@ -1346,6 +1365,10 @@ mod tests {
         let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
         assert_eq!(old.overlay_opacity, Mapping::DEFAULT_OVERLAY_OPACITY);
         assert!(!old.overlay_enabled);
+        assert!(old.overlay_hide_unfocused);
+        assert!(settings.get_overlay_hide_unfocused());
+        settings.set_overlay_hide_unfocused(false);
+        assert!(!settings.get_overlay_hide_unfocused());
         assert_eq!(old.overlay_order, OverlayOrder::Age);
         settings.set_overlay_order(OverlayOrder::Jumps);
         assert_eq!(settings.get_overlay_order(), OverlayOrder::Jumps);

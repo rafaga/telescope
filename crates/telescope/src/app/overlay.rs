@@ -267,6 +267,7 @@ impl Overlays {
         views: &[OverlayView],
         max_rows: usize,
         opacity: f32,
+        hide_unfocused: bool,
     ) {
         if !self.open {
             return;
@@ -290,6 +291,7 @@ impl Overlays {
                 if view.key != 0 {
                     window.follow_character(&view.name);
                 }
+                window.hide_unfocused = hide_unfocused;
                 window.show(ctx, &view.rows, view.active, &view.name, max_rows, opacity);
             }
         }
@@ -371,6 +373,9 @@ pub(crate) struct OverlayState {
     active: usize,
     /// Most rows the panel grows to, from `Settings::get_overlay_max_rows`.
     max_rows: usize,
+    /// Hide the window while the game is not in front (see `should_show`),
+    /// from `Settings::get_overlay_hide_unfocused`.
+    hide_unfocused: bool,
     /// The window's own title, which finds it natively; it is unique per
     /// window (see [`Self::for_window`]).
     title: String,
@@ -626,6 +631,7 @@ impl OverlayState {
             opacity: 1.0,
             characters: String::new(),
             max_rows: crate::app::intel::nearby::MAX_ROWS,
+            hide_unfocused: true,
             active: 0,
             title: if key == 0 {
                 String::from(Self::TITLE)
@@ -926,15 +932,27 @@ impl OverlayState {
         self.last_poll = None;
     }
 
-    /// Whether the window is shown: as long as the client exists, whoever has
-    /// the focus; with no client, only while it is being positioned, since a
-    /// locked overlay has nothing to sit on once the client is closed.
-    fn should_show(game: Option<GameWindow>, locked: bool) -> bool {
-        game.is_some() || !locked
+    /// Whether the window is shown: with `hide_unfocused` (the default), only
+    /// while the game is in front or Telescope itself has the focus; without
+    /// it, as long as the client exists, whoever has the focus. With no
+    /// client, only while it is being positioned, since a locked overlay has
+    /// nothing to sit on once the client is closed.
+    fn should_show(
+        game: Option<GameWindow>,
+        locked: bool,
+        hide_unfocused: bool,
+        own_focus: bool,
+    ) -> bool {
+        match game {
+            Some(game) => !hide_unfocused || game.focused || own_focus,
+            None => !locked,
+        }
     }
 
     fn update_visibility(&mut self, ctx: &egui::Context) {
-        let visible = Self::should_show(self.game, self.locked);
+        let own_focus =
+            ctx.input(|input| input.viewport().focused.unwrap_or(false)) || self.overlay_focused;
+        let visible = Self::should_show(self.game, self.locked, self.hide_unfocused, own_focus);
         if visible != self.visible {
             self.visible = visible;
             ctx.send_viewport_cmd_to(self.viewport_id(), egui::ViewportCommand::Visible(visible));
@@ -2194,12 +2212,31 @@ mod tests {
             })
         };
         // the client is there: shown, in front or not
-        assert!(OverlayState::should_show(game(true), true));
-        assert!(OverlayState::should_show(game(false), true));
-        assert!(OverlayState::should_show(game(false), false));
+        assert!(OverlayState::should_show(game(true), true, false, false));
+        assert!(OverlayState::should_show(game(false), true, false, false));
+        assert!(OverlayState::should_show(game(false), false, false, false));
         // the client is gone: only the overlay being positioned stays
-        assert!(!OverlayState::should_show(None, true));
-        assert!(OverlayState::should_show(None, false));
+        assert!(!OverlayState::should_show(None, true, false, false));
+        assert!(OverlayState::should_show(None, false, false, false));
+    }
+
+    #[test]
+    fn hiding_when_the_game_is_not_in_front_is_an_option() {
+        let game = |focused| {
+            Some(GameWindow {
+                rect: ScreenRect::new(0, 0, 100, 100),
+                focused,
+            })
+        };
+        // the game in front, or Telescope itself: shown
+        assert!(OverlayState::should_show(game(true), true, true, false));
+        assert!(OverlayState::should_show(game(false), true, true, true));
+        // another window in front: hidden
+        assert!(!OverlayState::should_show(game(false), true, true, false));
+        assert!(!OverlayState::should_show(game(false), false, true, false));
+        // no client: the option changes nothing
+        assert!(!OverlayState::should_show(None, true, true, false));
+        assert!(OverlayState::should_show(None, false, true, false));
     }
 
     #[test]

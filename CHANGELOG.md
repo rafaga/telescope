@@ -18,10 +18,10 @@ versions were written for the tag that shipped them.
   age), newest first, colored by distance. While it is being positioned it
   shows an example, and once locked with nothing to show it paints nothing. The
   panel is semi-transparent and drawn in Oxanium (weight 600, bold for the
-  system and the jumps). It does not depend on which window has the focus: a
-  locked overlay hides only when its client closes (the one of each character,
-  where window titles are readable). Turn it on and set its opacity in
-  Settings -> Alerts.
+  system and the jumps). It hides while EVE is not in front (Telescope's own
+  windows still show it; an option keeps it over any window), and a locked one
+  hides when its client closes (the one of each character, where window titles
+  are readable). Turn it on and set its opacity in Settings -> Alerts.
 
 ## [1.0.6] - 2026-10-23
 

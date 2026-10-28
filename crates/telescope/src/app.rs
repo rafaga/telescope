@@ -685,7 +685,9 @@ impl eframe::App for TelescopeApp {
             let views = self.overlay_views();
             let opacity = self.settings.get_overlay_opacity();
             let max_rows = usize::from(self.settings.get_overlay_max_rows());
-            self.overlay.show(ui.ctx(), &views, max_rows, opacity);
+            let hide_unfocused = self.settings.get_overlay_hide_unfocused();
+            self.overlay
+                .show(ui.ctx(), &views, max_rows, opacity, hide_unfocused);
             if !self.overlay.is_open() {
                 self.overlay_closed_by_user();
             }

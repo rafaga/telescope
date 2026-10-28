@@ -200,6 +200,16 @@ impl TelescopeApp {
                             self.settings.set_overlay_order(order);
                         }
                     });
+                    form.row_hint(
+                        t!("settings.alerts.overlay_hide_unfocused"),
+                        &t!("settings.alerts.overlay_hide_unfocused_hint"),
+                        |ui| {
+                            let mut hide = self.settings.get_overlay_hide_unfocused();
+                            if egui_panels::switch(ui, &mut hide).changed() {
+                                self.settings.set_overlay_hide_unfocused(hide);
+                            }
+                        },
+                    );
                     form.row(t!("settings.alerts.overlay_max_rows"), |ui| {
                         let mut rows = f64::from(self.settings.get_overlay_max_rows());
                         let slider =
