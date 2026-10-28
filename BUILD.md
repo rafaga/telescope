@@ -177,6 +177,18 @@ your `telescope.toml` or your `sde.db`.
   plays CCP's `latest.jsonl` index (`database_updater.rs`, module
   `updater_run_tests`). Tests that touch its process-wide update lock or
   cancel flag take the module's `serial()` guard first.
+* The overlay's image snapshot tests (`egui_kittest`, references in
+  `crates/telescope/tests/snapshots`, tolerances in `kittest.toml`) render with a
+  GPU adapter. A headless Linux machine has none: install Mesa's software Vulkan
+  driver (`sudo apt install mesa-vulkan-drivers`, what the CI does). To accept a
+  change of look, run the tests with `UPDATE_SNAPSHOTS=true` and review the new
+  images.
+
+On macOS the default limit of 256 open files per process is too low for the
+whole suite (the tests run in parallel and each one opens databases, a runtime
+and watchers): they fail with `Too many open files` (os error 24), or with
+errors that follow from it, such as `unable to open database file`. Raise it in
+the terminal first: `ulimit -n 10240`, or run `cargo test -- --test-threads=4`.
 
 Not covered: drawing code of the Settings pages and the map, the ESI polling
 loop of the location watchdog and a full SDE rebuild from a real export, since
