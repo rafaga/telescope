@@ -1414,8 +1414,13 @@ fn input_card(
                                     );
                                 }
                                 let mut text = description.to_string();
+                                // The hint is also the control's accessible name.
                                 if ui
-                                    .add(egui::TextEdit::singleline(&mut text).desired_width(240.0))
+                                    .add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .hint_text(t!("settings.patterns.field_description"))
+                                            .desired_width(240.0),
+                                    )
                                     .changed()
                                 {
                                     actions.push(CardAction::Describe(text));
@@ -1435,10 +1440,11 @@ fn input_card(
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
                                 let mut on = enabled;
-                                if egui_panels::switch(ui, &mut on).changed() {
+                                let switch = egui_panels::switch(ui, &mut on);
+                                if switch.changed() {
                                     actions.push(CardAction::Enable(on));
                                 }
-                                ui.label(
+                                let state = ui.label(
                                     RichText::new(if enabled {
                                         t!("settings.patterns.state_on")
                                     } else {
@@ -1447,6 +1453,8 @@ fn input_card(
                                     .size(theme.small_size)
                                     .color(palette.muted_text),
                                 );
+                                // The state text is the switch's accessible name.
+                                let _ = switch.labelled_by(state.id);
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
