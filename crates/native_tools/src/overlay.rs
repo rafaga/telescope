@@ -1189,11 +1189,16 @@ mod tests {
     #[test]
     fn a_window_that_is_not_there_is_not_ready_yet() {
         // nothing carries this title: the caller has to try again (on a
-        // platform with nothing to do it is a quiet success instead)
+        // platform with nothing to do it is a quiet success instead; on macOS
+        // a test thread is not the main one, which AppKit requires)
         let mut overlay = OverlayWindow::new();
         let answer = overlay.set_opacity_by_title("no such window", 0.5);
         assert!(
-            matches!(answer, Ok(()) | Err(OverlayError::InvalidHandle)),
+            match &answer {
+                Ok(()) | Err(OverlayError::InvalidHandle) => true,
+                Err(OverlayError::Os(message)) => message.contains("main thread"),
+                Err(_) => false,
+            },
             "{answer:?}"
         );
         // closing it forgets what was applied
