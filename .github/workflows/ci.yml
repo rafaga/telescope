@@ -69,11 +69,13 @@ jobs:
           cache-on-failure: true
       # ALSA for the alarm sound (rodio/cpal), OpenSSL for SQLCipher and TLS.
       # The window system libraries are loaded at run time, not linked.
+      # Mesa's Vulkan drivers hold lavapipe, a software adapter: the runners
+      # have no GPU and the image snapshot tests (egui_kittest) render with one.
       - name: Install the Linux libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config mesa-vulkan-drivers
       # OpenSSL is built from source (SQLCipher); the `perl` that ships with
       # Git for Windows cannot do it, Strawberry Perl can.
       - name: Put Strawberry Perl first on the PATH
@@ -121,7 +123,7 @@ jobs:
       - name: Install the Linux libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libasound2-dev libssl-dev pkg-config mesa-vulkan-drivers
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run the tests with coverage
         run: cargo llvm-cov --workspace --locked --no-report
