@@ -285,6 +285,11 @@ impl Overlays {
         }
         for view in views {
             if let Some((_, window)) = self.windows.iter_mut().find(|(key, _)| *key == view.key) {
+                // the overlay of a character follows that character's client
+                // (the one for all of them follows any client)
+                if view.key != 0 {
+                    window.follow_character(&view.name);
+                }
                 window.show(ctx, &view.rows, view.active, &view.name, max_rows, opacity);
             }
         }
@@ -331,6 +336,8 @@ pub(crate) struct OverlayState {
     /// The parts of the window shown (window pixels), as last sent to it.
     region: Option<Vec<ScreenRect>>,
     tracker: GameWindowTracker,
+    /// The character whose client `tracker` looks for (empty: any client).
+    followed: String,
     native: OverlayWindow,
     placement: OverlayPlacement,
     /// The placement has been made for a game window (see `place`).
@@ -591,6 +598,7 @@ impl OverlayState {
             locked: false,
             region: None,
             tracker: GameWindowTracker::default(),
+            followed: String::new(),
             native,
             placement: saved.map(Self::placement_from).unwrap_or_else(|| {
                 OverlayPlacement::new(
@@ -901,10 +909,38 @@ impl OverlayState {
     /// Shows the overlay while the game is in front (or Telescope itself, to
     /// move the overlay); with no game running it is a free window. Hidden, the
     /// window stays alive so it does not flicker when the focus comes back.
+    /// Makes this overlay follow the client window of `name` (`EVE - <name>`)
+    /// instead of any client, so it hides when that client closes. Only where
+    /// window titles are readable (Windows, Linux): macOS names the windows'
+    /// owner, the same for every client, and keeps following any of them.
+    fn follow_character(&mut self, name: &str) {
+        if self.followed == name {
+            return;
+        }
+        self.followed = name.to_owned();
+        self.tracker = GameWindowTracker::new(format!(
+            "{} - {name}",
+            GameWindowTracker::DEFAULT_TITLE_PREFIX
+        ));
+        // look for the window again right away
+        self.last_poll = None;
+    }
+
+    /// Whether the window is shown: with the game running, while it is in
+    /// front (or the overlay itself has the focus); with no game, only while
+    /// it is being positioned, since a locked overlay has nothing to sit on
+    /// once the client is closed.
+    fn should_show(game: Option<GameWindow>, locked: bool, own_focus: bool) -> bool {
+        match game {
+            Some(game) => game.focused || own_focus,
+            None => !locked,
+        }
+    }
+
     fn update_visibility(&mut self, ctx: &egui::Context) {
         let own_focus =
             ctx.input(|input| input.viewport().focused.unwrap_or(false)) || self.overlay_focused;
-        let visible = self.game.is_none_or(|game| game.focused || own_focus);
+        let visible = Self::should_show(self.game, self.locked, own_focus);
         if visible != self.visible {
             self.visible = visible;
             ctx.send_viewport_cmd_to(self.viewport_id(), egui::ViewportCommand::Visible(visible));
@@ -2153,6 +2189,39 @@ mod tests {
         sort_rows(&mut rows, OverlayOrder::Jumps);
         let names: Vec<&str> = rows.iter().map(|row| row.system.as_str()).collect();
         assert_eq!(names, ["B", "A", "C"]);
+    }
+
+    #[test]
+    fn a_locked_overlay_hides_when_the_game_is_gone() {
+        let game = |focused| {
+            Some(GameWindow {
+                rect: ScreenRect::new(0, 0, 100, 100),
+                focused,
+            })
+        };
+        // no game: only the positioning overlay stays
+        assert!(!OverlayState::should_show(None, true, false));
+        assert!(!OverlayState::should_show(None, true, true));
+        assert!(OverlayState::should_show(None, false, false));
+        // the game running: shown while it is in front, or the overlay is
+        assert!(OverlayState::should_show(game(true), true, false));
+        assert!(!OverlayState::should_show(game(false), true, false));
+        assert!(OverlayState::should_show(game(false), false, true));
+    }
+
+    #[test]
+    fn a_character_overlay_follows_the_client_of_its_character() {
+        let mut overlay = OverlayState::for_window(7, 0, None);
+        overlay.follow_character("Alice Pilot");
+        assert!(overlay.tracker.matches_title("EVE - Alice Pilot"));
+        assert!(!overlay.tracker.matches_title("EVE - Bob Pilot"));
+        assert!(!overlay.tracker.matches_title("EVE"));
+        // asking again for the same character keeps the poll it has
+        overlay.last_poll = Some(Instant::now());
+        overlay.follow_character("Alice Pilot");
+        assert!(overlay.last_poll.is_some());
+        // the overlay of all the characters follows any client
+        assert!(OverlayState::new().tracker.matches_title("EVE - Bob Pilot"));
     }
 
     #[test]
