@@ -926,21 +926,15 @@ impl OverlayState {
         self.last_poll = None;
     }
 
-    /// Whether the window is shown: with the game running, while it is in
-    /// front (or the overlay itself has the focus); with no game, only while
-    /// it is being positioned, since a locked overlay has nothing to sit on
-    /// once the client is closed.
-    fn should_show(game: Option<GameWindow>, locked: bool, own_focus: bool) -> bool {
-        match game {
-            Some(game) => game.focused || own_focus,
-            None => !locked,
-        }
+    /// Whether the window is shown: as long as the client exists, whoever has
+    /// the focus; with no client, only while it is being positioned, since a
+    /// locked overlay has nothing to sit on once the client is closed.
+    fn should_show(game: Option<GameWindow>, locked: bool) -> bool {
+        game.is_some() || !locked
     }
 
     fn update_visibility(&mut self, ctx: &egui::Context) {
-        let own_focus =
-            ctx.input(|input| input.viewport().focused.unwrap_or(false)) || self.overlay_focused;
-        let visible = Self::should_show(self.game, self.locked, own_focus);
+        let visible = Self::should_show(self.game, self.locked);
         if visible != self.visible {
             self.visible = visible;
             ctx.send_viewport_cmd_to(self.viewport_id(), egui::ViewportCommand::Visible(visible));
@@ -2192,21 +2186,20 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_overlay_hides_when_the_game_is_gone() {
+    fn the_overlay_depends_on_the_client_and_not_on_the_focus() {
         let game = |focused| {
             Some(GameWindow {
                 rect: ScreenRect::new(0, 0, 100, 100),
                 focused,
             })
         };
-        // no game: only the positioning overlay stays
-        assert!(!OverlayState::should_show(None, true, false));
-        assert!(!OverlayState::should_show(None, true, true));
-        assert!(OverlayState::should_show(None, false, false));
-        // the game running: shown while it is in front, or the overlay is
-        assert!(OverlayState::should_show(game(true), true, false));
-        assert!(!OverlayState::should_show(game(false), true, false));
-        assert!(OverlayState::should_show(game(false), false, true));
+        // the client is there: shown, in front or not
+        assert!(OverlayState::should_show(game(true), true));
+        assert!(OverlayState::should_show(game(false), true));
+        assert!(OverlayState::should_show(game(false), false));
+        // the client is gone: only the overlay being positioned stays
+        assert!(!OverlayState::should_show(None, true));
+        assert!(OverlayState::should_show(None, false));
     }
 
     #[test]

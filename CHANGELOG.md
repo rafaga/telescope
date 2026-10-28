@@ -17,7 +17,10 @@ versions were written for the tag that shipped them.
   in a system within the alarm radius shows as a row (jumps, system, summary,
   age), newest first, colored by distance. While it is being positioned it
   shows an example, and once locked with nothing to show it paints nothing. The
-  panel is semi-transparent and drawn in Oxanium (weight 600, bold for the system and the jumps). Turn it on and set its opacity in
+  panel is semi-transparent and drawn in Oxanium (weight 600, bold for the
+  system and the jumps). It does not depend on which window has the focus: a
+  locked overlay hides only when its client closes (the one of each character,
+  where window titles are readable). Turn it on and set its opacity in
   Settings -> Alerts.
 
 ## [1.0.6] - 2026-10-23
