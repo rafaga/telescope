@@ -586,6 +586,19 @@ impl FullScreenState {
     }
 }
 
+/// Who blends the overlay with what is behind it, which decides how the
+/// caller paints it (see [`OverlayWindow::blending`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blending {
+    /// The system blends the whole window by the opacity given to
+    /// [`OverlayWindow::set_opacity_by_title`]: the content is drawn opaque.
+    Window,
+    /// The alpha of the pixels drawn is used: the unpainted parts are
+    /// see-through and the painted ones as translucent as drawn. The window
+    /// has to be created transparent.
+    Pixels,
+}
+
 /// Native settings of the overlay window: above the game, click-through, out
 /// of the task switcher, and (macOS) visible over a full screen app.
 ///
@@ -595,6 +608,9 @@ impl FullScreenState {
 pub struct OverlayWindow {
     click_through: bool,
     input_rect: Option<ScreenRect>,
+    /// The opacity (0 to 255) last given to the window, so it is not set again
+    /// while it does not change.
+    opacity_applied: Option<u8>,
 }
 
 impl OverlayWindow {
@@ -603,6 +619,7 @@ impl OverlayWindow {
         Self {
             click_through: true,
             input_rect: None,
+            opacity_applied: None,
         }
     }
 
@@ -748,17 +765,59 @@ impl OverlayWindow {
         self.apply_hwnd(hwnd)
     }
 
+    /// Who blends the overlay on this platform: the system, the whole window
+    /// (Windows, X11), or the pixels it draws (macOS and anywhere else). The
+    /// caller paints accordingly, and creates the window transparent only for
+    /// [`Blending::Pixels`].
+    pub const fn blending() -> Blending {
+        if cfg!(any(target_os = "windows", target_os = "linux")) {
+            Blending::Window
+        } else {
+            Blending::Pixels
+        }
+    }
+
+    /// Makes the window titled `title` as opaque as `opacity` says, 0
+    /// (invisible) to 1 (opaque), however the platform does it (see
+    /// [`Self::blending`]). Cheap and idempotent: call it every frame, the
+    /// window is only touched when the opacity changes (or, where the toolkit
+    /// can undo it behind the scenes, always). The window may not exist yet on
+    /// the first frames: [`OverlayError::InvalidHandle`] means try again.
+    /// Where the system has no way to do it this is a quiet success, and the
+    /// window stays opaque.
+    pub fn set_opacity_by_title(&mut self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+        let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        match Self::blending() {
+            Blending::Pixels => self.make_pixels_see_through(title),
+            Blending::Window => {
+                if self.opacity_applied == Some(alpha) {
+                    return Ok(());
+                }
+                match self.blend_window(title, opacity) {
+                    Ok(()) | Err(OverlayError::Unsupported) => {
+                        self.opacity_applied = Some(alpha);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
+
+    /// Forgets what was given to the window: call it when the window is
+    /// closed, so the next one gets its opacity again.
+    pub fn window_closed(&mut self) {
+        self.opacity_applied = None;
+    }
+
     /// Blends the whole window with what is behind it, `opacity` from 0
-    /// (invisible) to 1 (opaque), for the window titled `title`. The window
-    /// is drawn opaque: the system does the blending, so this does not depend
-    /// on the window having a swapchain with an alpha channel (on Windows
-    /// that needs DirectComposition and often shows a white background).
-    /// Where the system has no such call this returns
-    /// [`OverlayError::Unsupported`] and the caller blends with the alpha of
-    /// the pixels it draws.
+    /// (invisible) to 1 (opaque). The window is drawn opaque: the system does
+    /// the blending, so this does not depend on the window having a swapchain
+    /// with an alpha channel (on Windows that needs DirectComposition and often
+    /// shows a white background).
     #[cfg(target_os = "windows")]
     #[allow(unsafe_code)]
-    pub fn set_opacity_by_title(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+    fn blend_window(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
         // SAFETY: plain lookup by title; the result is only used if it is Ok.
         let hwnd = unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) }
             .map_err(|_| OverlayError::InvalidHandle)?;
@@ -774,20 +833,30 @@ impl OverlayWindow {
         }
     }
 
+    /// Gives the window its opacity through the compositor
+    /// (`_NET_WM_WINDOW_OPACITY`): the window is drawn opaque and the whole of
+    /// it is blended. Without a connection to an X server (a native Wayland
+    /// session) it is [`OverlayError::Unsupported`].
+    #[cfg(target_os = "linux")]
+    fn blend_window(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+        let session = x11::X11Session::connect().map_err(|_| OverlayError::Unsupported)?;
+        session.set_opacity_by_title(title, opacity)
+    }
+
+    /// Nothing blends the whole window here.
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    fn blend_window(&self, _title: &str, _opacity: f32) -> Result<(), OverlayError> {
+        Err(OverlayError::Unsupported)
+    }
+
     /// Lets the window blend the alpha of the pixels it draws with what is
     /// behind it, so the unpainted parts are see-through and the painted ones
     /// translucent. The window is created transparent by the UI toolkit, but
     /// its surface is configured opaque unless the *main* window asked for
     /// transparency too: this undoes that for this window alone, on its own
-    /// Core Animation layer, so the main window stays a normal one. It is
-    /// cheap and idempotent, and the toolkit can configure the layer again
-    /// (when the window is resized), so the caller repeats it every frame.
-    ///
-    /// Only macOS needs it: Windows blends the whole window
-    /// ([`Self::set_opacity_by_title`]) and X11 cuts the window down
-    /// ([`Self::set_visible_region_by_title`]); elsewhere it does nothing.
+    /// Core Animation layer, so the main window stays a normal one.
     #[cfg(target_os = "macos")]
-    pub fn enable_pixel_alpha_by_title(&self, title: &str) -> Result<(), OverlayError> {
+    fn make_pixels_see_through(&self, title: &str) -> Result<(), OverlayError> {
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| OverlayError::Os(String::from("not on the main thread")))?;
         let application = NSApplication::sharedApplication(mtm);
@@ -822,27 +891,10 @@ impl OverlayWindow {
         Err(OverlayError::InvalidHandle)
     }
 
-    /// See the macOS version.
+    /// Where nothing needs doing.
     #[cfg(not(target_os = "macos"))]
-    pub fn enable_pixel_alpha_by_title(&self, _title: &str) -> Result<(), OverlayError> {
+    fn make_pixels_see_through(&self, _title: &str) -> Result<(), OverlayError> {
         Ok(())
-    }
-
-    /// Gives the window titled `title` its opacity through the compositor
-    /// (`_NET_WM_WINDOW_OPACITY`), like the Windows version: the window is
-    /// drawn opaque and the whole of it is blended. Without a connection to an
-    /// X server (a native Wayland session) it is [`OverlayError::Unsupported`].
-    #[cfg(target_os = "linux")]
-    pub fn set_opacity_by_title(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
-        let session = x11::X11Session::connect().map_err(|_| OverlayError::Unsupported)?;
-        session.set_opacity_by_title(title, opacity)
-    }
-
-    /// Where the system has no such call this returns
-    /// [`OverlayError::Unsupported`].
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    pub fn set_opacity_by_title(&self, _title: &str, _opacity: f32) -> Result<(), OverlayError> {
-        Err(OverlayError::Unsupported)
     }
 
     /// Applies the native settings to the window of this process whose title
@@ -1122,6 +1174,31 @@ mod tests {
     #[test]
     fn exclusive_full_screen_is_only_reported_on_windows() {
         assert!(!FullScreenState::new().is_exclusive());
+    }
+
+    #[test]
+    fn who_blends_follows_the_platform() {
+        let expected = if cfg!(any(target_os = "windows", target_os = "linux")) {
+            Blending::Window
+        } else {
+            Blending::Pixels
+        };
+        assert_eq!(OverlayWindow::blending(), expected);
+    }
+
+    #[test]
+    fn a_window_that_is_not_there_is_not_ready_yet() {
+        // nothing carries this title: the caller has to try again (on a
+        // platform with nothing to do it is a quiet success instead)
+        let mut overlay = OverlayWindow::new();
+        let answer = overlay.set_opacity_by_title("no such window", 0.5);
+        assert!(
+            matches!(answer, Ok(()) | Err(OverlayError::InvalidHandle)),
+            "{answer:?}"
+        );
+        // closing it forgets what was applied
+        overlay.window_closed();
+        assert_eq!(overlay.opacity_applied, None);
     }
 
     #[test]

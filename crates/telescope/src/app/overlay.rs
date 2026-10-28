@@ -14,8 +14,8 @@
 use crate::app::settings::{OverlayAnchor, OverlayOrder, OverlayPosition};
 use eframe::egui;
 use native_tools::overlay::{
-    Anchor, FullScreenState, GameWindow, GameWindowTracker, OverlayError, OverlayPlacement,
-    OverlayWindow, ScreenRect,
+    Anchor, Blending, FullScreenState, GameWindow, GameWindowTracker, OverlayError,
+    OverlayPlacement, OverlayWindow, ScreenRect,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -346,10 +346,6 @@ pub(crate) struct OverlayState {
     native_attempts: u32,
     /// The overlay window has the keyboard focus.
     overlay_focused: bool,
-    /// The opacity (0 to 255) last given to the window natively, and whether
-    /// the system blends the window itself (then the panel is drawn opaque).
-    applied_opacity: Option<u8>,
-    native_opacity: bool,
     /// The window is shown (it is hidden while the game is not in front).
     visible: bool,
     fullscreen: FullScreenState,
@@ -614,8 +610,6 @@ impl OverlayState {
             native_applied: false,
             native_attempts: 0,
             overlay_focused: false,
-            applied_opacity: None,
-            native_opacity: false,
             visible: true,
             fullscreen: FullScreenState::new(),
             warned_exclusive: false,
@@ -714,8 +708,7 @@ impl OverlayState {
         self.last_game_rect = None;
         self.last_target = None;
         self.overlay_focused = false;
-        self.applied_opacity = None;
-        self.native_opacity = false;
+        self.native.window_closed();
         self.visible = true;
     }
 
@@ -818,7 +811,7 @@ impl OverlayState {
             .with_title(&self.title)
             .with_inner_size(size)
             .with_decorations(false)
-            .with_transparent(!cfg!(target_os = "windows"))
+            .with_transparent(OverlayWindow::blending() == Blending::Pixels)
             .with_always_on_top()
             .with_taskbar(false)
             .with_resizable(false);
@@ -975,35 +968,21 @@ impl OverlayState {
         }
     }
 
-    /// Gives the window its opacity natively where the system can blend a
-    /// whole window (Windows), and says so, so the panel is drawn opaque then.
-    /// Elsewhere the panel blends with the alpha of its own pixels.
+    /// Gives the window its opacity once it exists (`native_tools` does it
+    /// the way each system can, and only touches the window when it changes).
     fn apply_opacity(&mut self) {
-        let alpha = (self.opacity * 255.0).round() as u8;
-        if !self.native_applied || self.applied_opacity == Some(alpha) {
-            return;
-        }
-        match self.native.set_opacity_by_title(&self.title, self.opacity) {
-            Ok(()) => {
-                self.applied_opacity = Some(alpha);
-                self.native_opacity = true;
-            }
-            Err(OverlayError::Unsupported) => {
-                self.applied_opacity = Some(alpha);
-                self.native_opacity = false;
-            }
-            // the window is not ready yet: the next frame tries again
-            Err(_) => {}
+        if self.native_applied {
+            // a window that is not ready yet answers an error: try again
+            let _ = self.native.set_opacity_by_title(&self.title, self.opacity);
         }
     }
 
     /// The opacity the panel's pixels are drawn with: opaque when the system
-    /// blends the window.
+    /// blends the whole window, as they are when it blends the pixels.
     fn paint_opacity(&self) -> f32 {
-        if self.native_opacity {
-            1.0
-        } else {
-            self.opacity
+        match OverlayWindow::blending() {
+            Blending::Window => 1.0,
+            Blending::Pixels => self.opacity,
         }
     }
 
@@ -1017,8 +996,6 @@ impl OverlayState {
         self.overlay_focused = ctx.input(|input| input.viewport().focused.unwrap_or(false));
         self.apply_native();
         self.apply_opacity();
-        // macOS: the window's layer is configured opaque unless told again
-        let _ = self.native.enable_pixel_alpha_by_title(&self.title);
         let ppp = Self::pixels_per_point(&ctx);
         if let Some(outer) = ctx.input(|input| input.viewport().outer_rect) {
             self.track_drag(outer, ppp);
