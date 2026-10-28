@@ -693,6 +693,14 @@ impl eframe::App for TelescopeApp {
             }
         }
         self.save_overlay_positions();
+        for text in self.overlay.take_notes() {
+            self.update_status_with_error((
+                Type::Debug,
+                String::from("Telescope"),
+                String::from("Overlay"),
+                text,
+            ));
+        }
         if let Some(text) = self.overlay.take_warning() {
             self.update_status_with_error((
                 Type::Warning,
