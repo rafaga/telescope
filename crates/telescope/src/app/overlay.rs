@@ -986,6 +986,15 @@ impl OverlayState {
                 self.hide_unfocused,
                 self.locked,
             ));
+            // with no game found, say what the system lists for it
+            if self.game.is_none()
+                && let Some(note) = self.pending_note.as_mut()
+            {
+                let seen = self.tracker.describe_candidates();
+                if !seen.is_empty() {
+                    note.push_str(&format!("; windows of the game: {seen}"));
+                }
+            }
             ctx.send_viewport_cmd_to(self.viewport_id(), egui::ViewportCommand::Visible(visible));
         }
     }

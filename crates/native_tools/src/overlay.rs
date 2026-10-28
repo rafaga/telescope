@@ -239,6 +239,21 @@ impl GameWindowTracker {
         macos::MacWindowList::locate(self)
     }
 
+    /// A line for the diagnostics: every window the system lists for the game's
+    /// process, with its layer, rectangle and opacity, and whether it was
+    /// taken for the game. Where the tracker looks at titles instead of
+    /// processes it is empty.
+    #[cfg(target_os = "macos")]
+    pub fn describe_candidates(&self) -> String {
+        macos::MacWindowList::describe(self)
+    }
+
+    /// See the macOS version.
+    #[cfg(not(target_os = "macos"))]
+    pub fn describe_candidates(&self) -> String {
+        String::new()
+    }
+
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     pub fn locate(&self) -> Option<GameWindow> {
         None

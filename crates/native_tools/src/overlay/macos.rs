@@ -67,6 +67,40 @@ impl MacWindowList {
         )
     }
 
+    /// A window of the game smaller than this on either side is not the game:
+    /// the client also has a title bar strip, seen as 1920 x 44.
+    const MIN_GAME_SIDE: u32 = 200;
+
+    /// Every window the list has for the game's process, as a line for the
+    /// diagnostics (see `GameWindowTracker::describe_candidates`).
+    pub(super) fn describe(tracker: &GameWindowTracker) -> String {
+        let Some(windows) = Self::windows() else {
+            return String::from("the window list is not available");
+        };
+        let lines: Vec<String> = windows
+            .iter()
+            .filter_map(|entry| {
+                let entry = entry.downcast_ref::<WindowInfo>()?;
+                let owner = Self::text(entry, "kCGWindowOwnerName")?;
+                if !tracker.matches_process(&owner) {
+                    return None;
+                }
+                let layer = Self::number(entry, "kCGWindowLayer")?;
+                let rect = Self::rect(entry)?;
+                let alpha = Self::number(entry, "kCGWindowAlpha").unwrap_or(1.0);
+                Some(format!(
+                    "{owner} layer {layer} {}x{} at ({}, {}) alpha {alpha}",
+                    rect.width, rect.height, rect.x, rect.y
+                ))
+            })
+            .collect();
+        if lines.is_empty() {
+            String::from("the list has no window of the game's process")
+        } else {
+            lines.join("; ")
+        }
+    }
+
     /// The rectangle of `entry` in screen coordinates.
     fn rect(entry: &WindowInfo) -> Option<ScreenRect> {
         let bounds = entry
@@ -121,7 +155,8 @@ impl MacWindowList {
             let Some(rect) = Self::rect(entry) else {
                 continue;
             };
-            if rect.is_empty() {
+            // a strip (a title bar or a toolbar of the client) is not the game
+            if rect.width < Self::MIN_GAME_SIDE || rect.height < Self::MIN_GAME_SIDE {
                 continue;
             }
             let pid = Self::number(entry, "kCGWindowOwnerPID").map(|pid| pid as i32);
