@@ -148,10 +148,10 @@ impl MacWindowList {
                 above.extend(Self::facts(entry));
                 continue;
             }
-            // layer 0 is a normal window (the menu bar, the Dock... are above)
-            if Self::number(entry, "kCGWindowLayer") != Some(0.0) {
-                continue;
-            }
+            // Any layer: the client raises its window (to layer 25, seen on a
+            // Mac) while it is the active application, and puts it back on
+            // layer 0 when it is not. The menu bar and the Dock are not the
+            // game's, and the owner filter above already leaves them out.
             let Some(rect) = Self::rect(entry) else {
                 continue;
             };
