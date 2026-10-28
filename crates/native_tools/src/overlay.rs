@@ -108,6 +108,49 @@ pub struct GameWindow {
     pub focused: bool,
 }
 
+/// What a window list says about one window: enough to tell whether it covers
+/// another (macOS, whose frontmost application says nothing about a game on
+/// another screen).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct WindowFacts {
+    pub pid: i32,
+    pub layer: i64,
+    pub rect: ScreenRect,
+    pub alpha: f64,
+}
+
+/// Whether some window of `above` (the windows in front of the game, ordered
+/// or not) covers at least half of the game window, leaving out `own_pid`'s
+/// windows (Telescope's own main window and its overlay): the game is then
+/// *behind* something. A window on another screen never covers it, which is
+/// what makes "in front" mean "not covered" and not "the active application":
+/// with several screens the game can be in plain view while the focus is on
+/// another one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn game_is_covered(game: &ScreenRect, above: &[WindowFacts], own_pid: i32) -> bool {
+    const MIN_SIDE: u32 = 100;
+    let game_area = i64::from(game.width) * i64::from(game.height);
+    above.iter().any(|window| {
+        if window.layer != 0
+            || window.pid == own_pid
+            || window.rect.width < MIN_SIDE
+            || window.rect.height < MIN_SIDE
+            || window.alpha <= 0.0
+        {
+            return false;
+        }
+        let left = i64::from(game.x).max(i64::from(window.rect.x));
+        let top = i64::from(game.y).max(i64::from(window.rect.y));
+        let right = (i64::from(game.x) + i64::from(game.width))
+            .min(i64::from(window.rect.x) + i64::from(window.rect.width));
+        let bottom = (i64::from(game.y) + i64::from(game.height))
+            .min(i64::from(window.rect.y) + i64::from(window.rect.height));
+        let overlap = (right - left).max(0) * (bottom - top).max(0);
+        overlap * 2 >= game_area
+    })
+}
+
 /// Finds the game window.
 ///
 /// Only the window's position and size are read: no pixels, no process
@@ -1178,6 +1221,52 @@ mod tests {
     #[test]
     fn exclusive_full_screen_is_only_reported_on_windows() {
         assert!(!FullScreenState::new().is_exclusive());
+    }
+
+    fn window(pid: i32, layer: i64, x: i32, width: u32, height: u32) -> WindowFacts {
+        WindowFacts {
+            pid,
+            layer,
+            rect: ScreenRect::new(x, 0, width, height),
+            alpha: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_game_is_covered_only_by_a_window_that_hides_most_of_it() {
+        let game = ScreenRect::new(0, 0, 1920, 1080);
+        // a maximized browser over it
+        assert!(game_is_covered(&game, &[window(40, 0, 0, 1920, 1080)], 10));
+        // a small window in a corner does not
+        assert!(!game_is_covered(&game, &[window(40, 0, 0, 300, 300)], 10));
+        // nothing above it
+        assert!(!game_is_covered(&game, &[], 10));
+    }
+
+    #[test]
+    fn a_window_on_another_screen_does_not_cover_the_game() {
+        // the game on the left screen, a maximized window on the right one
+        let game = ScreenRect::new(0, 0, 1920, 1080);
+        assert!(!game_is_covered(
+            &game,
+            &[window(40, 0, 1920, 1920, 1080)],
+            10
+        ));
+    }
+
+    #[test]
+    fn menus_ghosts_and_our_own_windows_do_not_cover_it() {
+        let game = ScreenRect::new(0, 0, 1920, 1080);
+        // the menu bar and the Dock live on other layers
+        assert!(!game_is_covered(&game, &[window(1, 25, 0, 1920, 1080)], 10));
+        // Telescope's own window
+        assert!(!game_is_covered(&game, &[window(10, 0, 0, 1920, 1080)], 10));
+        // a tiny invisible one
+        assert!(!game_is_covered(&game, &[window(20, 0, 0, 1, 1)], 10));
+        // a fully transparent one
+        let mut ghost = window(50, 0, 0, 1920, 1080);
+        ghost.alpha = 0.0;
+        assert!(!game_is_covered(&game, &[ghost], 10));
     }
 
     #[test]

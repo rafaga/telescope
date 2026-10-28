@@ -6,7 +6,7 @@
 //! window *titles* would need Screen Recording, so the game is recognised by
 //! the name of its process instead.
 
-use super::{GameWindow, GameWindowTracker, ScreenRect};
+use super::{GameWindow, GameWindowTracker, ScreenRect, WindowFacts, game_is_covered};
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -67,10 +67,42 @@ impl MacWindowList {
         )
     }
 
-    /// The frontmost window of the game, if it is on screen.
+    /// The rectangle of `entry` in screen coordinates.
+    fn rect(entry: &WindowInfo) -> Option<ScreenRect> {
+        let bounds = entry
+            .objectForKey(&NSString::from_str("kCGWindowBounds"))
+            .and_then(|value| value.downcast::<WindowInfo>().ok())?;
+        Some(ScreenRect::new(
+            Self::number(&bounds, "X")?.round() as i32,
+            Self::number(&bounds, "Y")?.round() as i32,
+            Self::number(&bounds, "Width")?.max(0.0).round() as u32,
+            Self::number(&bounds, "Height")?.max(0.0).round() as u32,
+        ))
+    }
+
+    /// What the list says about `entry`, to tell whether it covers the game.
+    fn facts(entry: &WindowInfo) -> Option<WindowFacts> {
+        Some(WindowFacts {
+            pid: Self::number(entry, "kCGWindowOwnerPID")? as i32,
+            layer: Self::number(entry, "kCGWindowLayer")? as i64,
+            rect: Self::rect(entry)?,
+            alpha: Self::number(entry, "kCGWindowAlpha").unwrap_or(1.0),
+        })
+    }
+
+    /// The game's window, if it is on screen. It counts as in front when no
+    /// other window above it in the list covers most of it (Telescope's own do
+    /// not count), or when the system says the game is the frontmost
+    /// application. "Frontmost application" alone is wrong with several
+    /// screens, where the game can be in plain view on one while the focus is
+    /// on another, and the client's windows can also belong to a process other
+    /// than the application NSWorkspace names.
     pub(super) fn locate(tracker: &GameWindowTracker) -> Option<GameWindow> {
         let windows = Self::windows()?;
         let frontmost = Self::frontmost_pid();
+        let own_pid = i32::try_from(std::process::id()).unwrap_or(-1);
+        // the windows of other applications seen so far, front to back
+        let mut above: Vec<WindowFacts> = Vec::new();
         for entry in windows.iter() {
             let Some(entry) = entry.downcast_ref::<WindowInfo>() else {
                 continue;
@@ -79,39 +111,24 @@ impl MacWindowList {
                 continue;
             };
             if !tracker.matches_process(&owner) {
+                above.extend(Self::facts(entry));
                 continue;
             }
             // layer 0 is a normal window (the menu bar, the Dock... are above)
             if Self::number(entry, "kCGWindowLayer") != Some(0.0) {
                 continue;
             }
-            let Some(bounds) = entry
-                .objectForKey(&NSString::from_str("kCGWindowBounds"))
-                .and_then(|value| value.downcast::<WindowInfo>().ok())
-            else {
+            let Some(rect) = Self::rect(entry) else {
                 continue;
             };
-            let (Some(x), Some(y), Some(width), Some(height)) = (
-                Self::number(&bounds, "X"),
-                Self::number(&bounds, "Y"),
-                Self::number(&bounds, "Width"),
-                Self::number(&bounds, "Height"),
-            ) else {
-                continue;
-            };
-            let rect = ScreenRect::new(
-                x.round() as i32,
-                y.round() as i32,
-                width.max(0.0).round() as u32,
-                height.max(0.0).round() as u32,
-            );
             if rect.is_empty() {
                 continue;
             }
             let pid = Self::number(entry, "kCGWindowOwnerPID").map(|pid| pid as i32);
             return Some(GameWindow {
                 rect,
-                focused: pid.is_some() && pid == frontmost,
+                focused: !game_is_covered(&rect, &above, own_pid)
+                    || (pid.is_some() && pid == frontmost),
             });
         }
         None
