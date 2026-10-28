@@ -9,9 +9,10 @@ use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ClientMessageEvent, ClipOrdering, ConnectionExt as _, EventMask, MapState,
-    Rectangle, Window,
+    PropMode, Rectangle, Window,
 };
 use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
 
 /// A connection to the X server and its root window.
 pub(super) struct X11Session {
@@ -192,6 +193,48 @@ impl X11Session {
                 self.conn.flush().map_err(Self::os_error)?;
                 return Ok(());
             }
+        }
+        Err(OverlayError::InvalidHandle)
+    }
+
+    /// Gives the managed window titled `title` its opacity, `opacity` from 0
+    /// to 1, through `_NET_WM_WINDOW_OPACITY`: the compositor blends the whole
+    /// window with what is behind it. Without a compositor nothing changes
+    /// and the window stays opaque.
+    pub(super) fn set_opacity_by_title(
+        &self,
+        title: &str,
+        opacity: f32,
+    ) -> Result<(), OverlayError> {
+        let property = self.atom(b"_NET_WM_WINDOW_OPACITY")?;
+        for window in self.client_list()? {
+            if self.window_title(window).as_deref() != Some(title) {
+                continue;
+            }
+            if opacity >= 1.0 {
+                // opaque is the absence of the property
+                self.conn
+                    .delete_property(window, property)
+                    .map_err(Self::os_error)?
+                    .check()
+                    .map_err(Self::os_error)?;
+            } else {
+                let value =
+                    (f64::from(opacity.clamp(0.0, 1.0)) * f64::from(u32::MAX)).round() as u32;
+                self.conn
+                    .change_property32(
+                        PropMode::REPLACE,
+                        window,
+                        property,
+                        AtomEnum::CARDINAL,
+                        &[value],
+                    )
+                    .map_err(Self::os_error)?
+                    .check()
+                    .map_err(Self::os_error)?;
+            }
+            self.conn.flush().map_err(Self::os_error)?;
+            return Ok(());
         }
         Err(OverlayError::InvalidHandle)
     }

@@ -828,8 +828,19 @@ impl OverlayWindow {
         Ok(())
     }
 
-    /// See the Windows version.
-    #[cfg(not(target_os = "windows"))]
+    /// Gives the window titled `title` its opacity through the compositor
+    /// (`_NET_WM_WINDOW_OPACITY`), like the Windows version: the window is
+    /// drawn opaque and the whole of it is blended. Without a connection to an
+    /// X server (a native Wayland session) it is [`OverlayError::Unsupported`].
+    #[cfg(target_os = "linux")]
+    pub fn set_opacity_by_title(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+        let session = x11::X11Session::connect().map_err(|_| OverlayError::Unsupported)?;
+        session.set_opacity_by_title(title, opacity)
+    }
+
+    /// Where the system has no such call this returns
+    /// [`OverlayError::Unsupported`].
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     pub fn set_opacity_by_title(&self, _title: &str, _opacity: f32) -> Result<(), OverlayError> {
         Err(OverlayError::Unsupported)
     }
