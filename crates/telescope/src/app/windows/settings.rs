@@ -9,7 +9,7 @@
 //! Every change is a draft until Apply or Accept: the settings are edited in
 //! place and `TelescopeApp::cancel_settings` puts back the snapshot taken
 //! when the screen opened. A page whose values differ from that snapshot
-//! shows a dot in the navigation. Linking and unlinking characters are the
+//! shows a circle in the navigation. Linking and unlinking characters are the
 //! exception: they go through EVE SSO and apply at once.
 
 use crate::app::TelescopeApp;
@@ -255,7 +255,8 @@ impl TelescopeApp {
     }
 
     /// The navigation of the Settings screen: the pages in a tree, grouped by
-    /// what they configure. A page with changes not applied yet has a dot.
+    /// what they configure. A page with changes not applied yet has a circle
+    /// at the right of its row.
     /// `selected` follows the page picked (and the tree follows `selected`
     /// when something else changes it, as the steps of the intel flow do).
     fn show_settings_nav(
@@ -304,6 +305,9 @@ impl TelescopeApp {
             });
         // a click on a group row must not close it either
         open_all(tree);
+        // ... nor select it: only the pages are selected (a group without a
+        // page is a disabled row)
+        tree.set_one_selected(NavNode::Page(*selected));
         for action in actions {
             if let TreeAction::SetSelected(picked) = action
                 && let Some(NavNode::Page(page)) = picked.first()
@@ -317,42 +321,62 @@ impl TelescopeApp {
     /// the groups inside it, and has no button to collapse it. The rows are
     /// plain, the tree's lines connect them; only the roots have an emoji. A
     /// group that is a page itself (the rules, the application) opens it when
-    /// clicked, and has the dot of changes not applied like any page.
+    /// clicked, and has the circle of changes not applied like any page; a group
+    /// that is not a page (the sources, the alerts) is a disabled row.
     fn add_nav_entry(
         builder: &mut egui_ltreeview::TreeViewBuilder<'_, NavNode>,
         entry: NavEntry,
         dirty: &[SettingsPage],
         palette: &egui_panels::Palette,
     ) {
+        let changed = |page: Option<SettingsPage>| page.is_some_and(|page| dirty.contains(&page));
+        // The mark of a page with changes not applied yet: a filled circle at
+        // the right end of its row, drawn as the tree's accessory.
+        let dot = palette.dirty;
+        let tip = t!("settings.page_changed").into_owned();
+        let badge = move |ui: &mut egui::Ui| {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 5.0, dot);
+            response.on_hover_text(&tip);
+        };
         let row = |title: String, page: Option<SettingsPage>, icon: Option<&'static str>| {
-            let is_dirty = page.is_some_and(|page| dirty.contains(&page));
-            let dot = palette.dirty;
+            // A row with no page behind it only groups other rows: it is
+            // shown disabled, as there is nothing to open.
+            let has_page = page.is_some();
             move |ui: &mut egui::Ui| {
-                // the emoji is a label of its own: the name stays the name
-                if let Some(icon) = icon {
-                    ui.add(egui::Label::new(icon).selectable(false));
-                }
-                ui.add(egui::Label::new(title.clone()).selectable(false));
-                if is_dirty {
-                    ui.label(egui::RichText::new("●").color(dot));
-                }
+                ui.add_enabled_ui(has_page, |ui| {
+                    // the emoji is a label of its own: the name stays the name
+                    if let Some(icon) = icon {
+                        ui.add(egui::Label::new(icon).selectable(false));
+                    }
+                    ui.add(egui::Label::new(title.clone()).selectable(false));
+                });
             }
         };
         match entry {
             NavEntry::Page(page) => {
-                builder.node(NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(
+                let node = NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(
                     page.title(),
                     Some(page),
                     None,
-                )));
+                ));
+                builder.node(if changed(Some(page)) {
+                    node.accessory(badge)
+                } else {
+                    node
+                });
             }
             NavEntry::Group(group) => {
-                builder.node(
-                    NodeBuilder::dir(group.node())
-                        .default_open(true)
-                        .closer(|_ui, _state| {})
-                        .label_ui(row(group.title(), group.page(), group.icon())),
-                );
+                let node = NodeBuilder::dir(group.node())
+                    .default_open(true)
+                    .closer(|_ui, _state| {})
+                    .label_ui(row(group.title(), group.page(), group.icon()));
+                builder.node(if changed(group.page()) {
+                    node.accessory(badge)
+                } else {
+                    node
+                });
                 for &inner in group.entries() {
                     Self::add_nav_entry(builder, inner, dirty, palette);
                 }
@@ -390,6 +414,7 @@ impl TelescopeApp {
             || now.get_overlay_order() != saved.get_overlay_order()
             || now.get_overlay_max_rows() != saved.get_overlay_max_rows()
             || now.get_overlay_opacity() != saved.get_overlay_opacity()
+            || now.get_overlay_hide_unfocused() != saved.get_overlay_hide_unfocused()
         {
             pages.push(SettingsPage::AlertsOverlay);
         }
@@ -403,6 +428,7 @@ impl TelescopeApp {
             pages.push(SettingsPage::Maps);
         }
         if now.get_ui_state().language != saved.get_ui_state().language
+            || now.get_show_debug_log() != saved.get_show_debug_log()
             || now.get_sde() != saved.get_sde()
             || now.get_db() != saved.get_db()
         {
@@ -477,4 +503,40 @@ fn time_ago(when: SystemTime) -> String {
         _ => t!("settings.time.days", count = secs / 86_400),
     }
     .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every setting a page edits must mark that page as changed, or the
+    /// circle in the navigation would not warn about changes to apply.
+    #[test]
+    fn the_settings_a_page_edits_mark_it_as_changed() {
+        let dir = std::env::temp_dir().join(format!("telescope-dirty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = TelescopeApp::for_test(&dir);
+        app.settings_snapshot = Some(app.settings.clone());
+        assert!(app.dirty_settings_pages().is_empty());
+
+        let debug_log = app.settings.get_show_debug_log();
+        app.settings.set_show_debug_log(!debug_log);
+        assert!(
+            app.dirty_settings_pages()
+                .contains(&SettingsPage::Application)
+        );
+        app.settings.set_show_debug_log(debug_log);
+        assert!(app.dirty_settings_pages().is_empty());
+
+        let hide = app.settings.get_overlay_hide_unfocused();
+        app.settings.set_overlay_hide_unfocused(!hide);
+        assert!(
+            app.dirty_settings_pages()
+                .contains(&SettingsPage::AlertsOverlay)
+        );
+        app.settings.set_overlay_hide_unfocused(hide);
+        assert!(app.dirty_settings_pages().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

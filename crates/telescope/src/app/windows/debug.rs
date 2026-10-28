@@ -95,6 +95,8 @@ pub(crate) struct DebugState {
     intel_result: Option<String>,
     effect: NodeEffect,
     move_character: Option<i64>,
+    /// Show the (internal) node ids, read-only, in the rules editor.
+    pub(crate) show_node_ids: bool,
 }
 
 impl Default for DebugState {
@@ -109,6 +111,7 @@ impl Default for DebugState {
             intel_result: None,
             effect: NodeEffect::default(),
             move_character: None,
+            show_node_ids: false,
         }
     }
 }
@@ -136,6 +139,10 @@ impl TelescopeApp {
                     None => String::from("Target system: none (pick one in Search)"),
                 };
                 ui.label(RichText::new(target_text).weak());
+                ui.checkbox(
+                    &mut self.debug.show_node_ids,
+                    "Show node ids in the rules editor (read-only)",
+                );
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| match self.debug.tab {
                     DebugTab::Search => self.debug_search_ui(ui),

@@ -3,6 +3,7 @@
 
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
+use crate::app::tiles::CHARACTER_ICON;
 use eframe::egui::{self, CornerRadius, Stroke, StrokeKind};
 use egui_panels::{Section, Slider};
 use std::collections::HashMap;
@@ -39,6 +40,26 @@ impl TelescopeApp {
                     );
                     egui_panels::badge(ui, &t!("settings.maps.selected", count = selected));
                 });
+                // Where the linked characters are, since the rows themselves
+                // are only check boxes: the rows say it on hover.
+                let mut here: Vec<(String, usize)> = characters_here
+                    .iter()
+                    .filter_map(|(region, count)| {
+                        let data = self.behavior.tile_data.get(region)?;
+                        Some((data.get_name(), *count))
+                    })
+                    .collect();
+                here.sort_unstable();
+                if !here.is_empty() {
+                    let regions: Vec<String> = here
+                        .iter()
+                        .map(|(name, count)| format!("{name} ({count})"))
+                        .collect();
+                    ui.weak(t!(
+                        "settings.maps.characters_summary",
+                        regions = regions.join(", ")
+                    ));
+                }
                 let filter = self.settings_ui.region_filter.trim().to_lowercase();
                 let mut regions: Vec<(usize, String)> = self
                     .behavior
@@ -48,15 +69,35 @@ impl TelescopeApp {
                     .filter(|(_, name)| filter.is_empty() || name.to_lowercase().contains(&filter))
                     .collect();
                 regions.sort_unstable_by(|a, b| a.1.cmp(&b.1));
-                // a list of rows with a check, like the watched channels
+                // a list of check boxes, like the watched channels and the
+                // overlay characters
                 let tile_data = &mut self.behavior.tile_data;
                 egui_panels::tile_grid(ui, 2, regions.len(), |ui, index| {
                     let (region, name) = &regions[index];
                     let count = characters_here.get(region);
-                    let tag = count.map(|count| t!("settings.maps.characters_tag", count = count));
                     if let Some(data) = tile_data.get_mut(region) {
-                        let response =
-                            egui_panels::tile(ui, &mut data.show_on_startup, name, tag.as_deref());
+                        // The icon after the name, so the names stay aligned, in
+                        // the "ok" green; the name keeps the check box's own color.
+                        let label: egui::WidgetText = match count {
+                            Some(_) => {
+                                let palette = egui_panels::Theme::get(ui.ctx()).palette(ui.visuals());
+                                let font = egui::TextStyle::Button.resolve(ui.style());
+                                let mut job = egui::text::LayoutJob::default();
+                                job.append(
+                                    name,
+                                    0.0,
+                                    egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER),
+                                );
+                                job.append(
+                                    &format!(" {CHARACTER_ICON}"),
+                                    0.0,
+                                    egui::TextFormat::simple(font, palette.ok),
+                                );
+                                job.into()
+                            }
+                            None => name.as_str().into(),
+                        };
+                        let response = ui.checkbox(&mut data.show_on_startup, label);
                         if let Some(count) = count {
                             response
                                 .on_hover_text(t!("settings.maps.characters_here", count = count));

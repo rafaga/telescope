@@ -110,12 +110,14 @@ impl TelescopeApp {
                 );
                 egui_panels::tile_grid(ui, 2, channels.len(), |ui, index| {
                     let channel = &channels[index];
-                    let subtitle = match activity.get(channel) {
+                    // The activity of the channel is the hover text: the row is
+                    // only a check box, like the other lists of the settings.
+                    let last_line = match activity.get(channel) {
                         Some(when) => t!("settings.sources.last_line", ago = time_ago(*when)),
                         None => t!("settings.sources.no_log"),
                     };
                     if let Some(on) = available.get_mut(channel) {
-                        egui_panels::tile(ui, on, channel, Some(&subtitle));
+                        ui.checkbox(on, channel).on_hover_text(last_line);
                     }
                 });
                 egui_panels::status(ui, StatusKind::Info, &t!("settings.sources.channel_rule"));
