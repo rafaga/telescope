@@ -1461,6 +1461,9 @@ mod tests {
     #[test]
     fn channel_activity_is_recorded_per_channel() {
         let mut settings = Settings::default();
+        // `Settings::default()` scans the chat logs of this computer, if EVE
+        // has any: start from none.
+        settings.channels.activity.clear();
         let first = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
         let second = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(20);
         settings.note_channel_activity("Intel", first);
