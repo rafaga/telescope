@@ -33,6 +33,15 @@ ignore = [
   # RSA private key. No fixed release exists (`patched = []`). Revisit when
   # `jsonwebtoken` moves to another backend or `rsa` ships a fix.
   { id = "RUSTSEC-2023-0071", reason = "rsa timing side channel; only reached through JWT validation, no private key operations, no fix available" },
+  # `crypto-bigint` 0.5.5 comes through `elliptic-curve` 0.13 (`p256`, `p384`),
+  # which `jsonwebtoken` (esi-openapi) uses to verify EVE SSO token signatures.
+  # The advisory is about constant-time operations on secret integers; verifying
+  # a signature only handles public keys, and Telescope holds no private key.
+  # The fix is `crypto-bigint` >= 0.7.6, which `elliptic-curve` 0.13 cannot use
+  # (it asks for 0.5), so `cargo update` cannot reach it: it needs `jsonwebtoken`
+  # (or esi-openapi) on newer RustCrypto crates, and that update is waiting for
+  # its maintainers' approval. Remove this entry once it lands.
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 timing variability; only reached through JWT signature verification (public keys), fix needs a newer jsonwebtoken that is pending upstream" },
   # `paste` is a build-time proc macro pulled in by `pulp` (exr -> image ->
   # eframe/egui-winit). Unmaintained, no vulnerability; it leaves the tree when
   # `image` drops it.
@@ -81,6 +90,8 @@ allow = [
   "OFL-1.1",                        # https://spdx.org/licenses/OFL-1.1.html
   "Ubuntu-font-1.0",                # https://spdx.org/licenses/Ubuntu-font-1.0.html - fonts of epaint_default_fonts
   "Unicode-3.0",                    # https://spdx.org/licenses/Unicode-3.0.html - icu / unicode-ident data
+  "WTFPL",                          # https://spdx.org/licenses/WTFPL.html - libtomcrypt, bundled by sqlcipher-src
+  "blessing",                       # https://www.sqlite.org/copyright.html - SQLite's public-domain blessing, bundled by sqlcipher-src
   "Zlib",                           # https://tldrlegal.com/license/zlib-libpng-license-(zlib)
 ]
 exceptions = []

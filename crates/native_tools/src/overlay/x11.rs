@@ -9,9 +9,10 @@ use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ClientMessageEvent, ClipOrdering, ConnectionExt as _, EventMask, MapState,
-    Window,
+    PropMode, Rectangle, Window,
 };
 use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
 
 /// A connection to the X server and its root window.
 pub(super) struct X11Session {
@@ -147,10 +148,11 @@ impl X11Session {
         &self,
         title: &str,
         click_through: bool,
+        input_rect: Option<ScreenRect>,
     ) -> Result<(), OverlayError> {
         for window in self.client_list()? {
             if self.window_title(window).as_deref() == Some(title) {
-                return self.apply(window, click_through);
+                return self.apply(window, click_through, input_rect);
             }
         }
         Err(OverlayError::InvalidHandle)
@@ -195,6 +197,48 @@ impl X11Session {
         Err(OverlayError::InvalidHandle)
     }
 
+    /// Gives the managed window titled `title` its opacity, `opacity` from 0
+    /// to 1, through `_NET_WM_WINDOW_OPACITY`: the compositor blends the whole
+    /// window with what is behind it. Without a compositor nothing changes
+    /// and the window stays opaque.
+    pub(super) fn set_opacity_by_title(
+        &self,
+        title: &str,
+        opacity: f32,
+    ) -> Result<(), OverlayError> {
+        let property = self.atom(b"_NET_WM_WINDOW_OPACITY")?;
+        for window in self.client_list()? {
+            if self.window_title(window).as_deref() != Some(title) {
+                continue;
+            }
+            if opacity >= 1.0 {
+                // opaque is the absence of the property
+                self.conn
+                    .delete_property(window, property)
+                    .map_err(Self::os_error)?
+                    .check()
+                    .map_err(Self::os_error)?;
+            } else {
+                let value =
+                    (f64::from(opacity.clamp(0.0, 1.0)) * f64::from(u32::MAX)).round() as u32;
+                self.conn
+                    .change_property32(
+                        PropMode::REPLACE,
+                        window,
+                        property,
+                        AtomEnum::CARDINAL,
+                        &[value],
+                    )
+                    .map_err(Self::os_error)?
+                    .check()
+                    .map_err(Self::os_error)?;
+            }
+            self.conn.flush().map_err(Self::os_error)?;
+            return Ok(());
+        }
+        Err(OverlayError::InvalidHandle)
+    }
+
     /// Sends a `_NET_WM_STATE` request to the window manager for `window`.
     fn add_state(
         &self,
@@ -226,8 +270,14 @@ impl X11Session {
     }
 
     /// Above the other windows, out of the taskbar and pager, and (if
-    /// `click_through`) transparent to the mouse.
-    pub(super) fn apply(&self, window: Window, click_through: bool) -> Result<(), OverlayError> {
+    /// `click_through`) transparent to the mouse, except for `input_rect`
+    /// (window-relative pixels), which keeps taking it.
+    pub(super) fn apply(
+        &self,
+        window: Window,
+        click_through: bool,
+        input_rect: Option<ScreenRect>,
+    ) -> Result<(), OverlayError> {
         self.add_state(
             window,
             b"_NET_WM_STATE_ABOVE",
@@ -235,7 +285,18 @@ impl X11Session {
         )?;
         self.add_state(window, b"_NET_WM_STATE_SKIP_PAGER", None)?;
         if click_through {
-            // an empty input region: every click goes to the window below
+            // an input region with nothing but the button (or empty): every
+            // other click goes to the window below
+            let button: Vec<Rectangle> = input_rect
+                .filter(|rect| !rect.is_empty())
+                .map(|rect| Rectangle {
+                    x: rect.x as i16,
+                    y: rect.y as i16,
+                    width: rect.width as u16,
+                    height: rect.height as u16,
+                })
+                .into_iter()
+                .collect();
             self.conn
                 .shape_rectangles(
                     shape::SO::SET,
@@ -244,7 +305,7 @@ impl X11Session {
                     window,
                     0,
                     0,
-                    &[],
+                    &button,
                 )
                 .map_err(Self::os_error)?
                 .check()

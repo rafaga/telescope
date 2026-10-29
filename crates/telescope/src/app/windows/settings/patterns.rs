@@ -1,6 +1,6 @@
 //! Settings -> Rules: the intel rule graph as a list of input nodes.
 //!
-//! Each Input node is a card (its switch, description, id, what the rule is
+//! Each Input node is a card (its switch, description, what the rule is
 //! made of and the outputs it reaches); opening one shows, in place of the
 //! list, the node editor of the **connected component** of that input. Nodes are shared instances of the
 //! underlying [`RuleGraph`]: opening another input shows the same nodes.
@@ -137,7 +137,9 @@ impl PatternsEditor {
         ids
     }
 
-    fn add_input(&mut self) -> String {
+    /// Adds an input of the given `kind`. The kind is only chosen here, when
+    /// the rule is created; the node editor never changes it.
+    fn add_input(&mut self, kind: InputKind) -> String {
         let id = unique_id(&self.rule_ids(), "input");
         self.graph.nodes.push(Node {
             id: id.clone(),
@@ -145,8 +147,8 @@ impl PatternsEditor {
             x: 0.0,
             y: 0.0,
             kind: NodeKind::Input(InputNode {
-                description: String::from("input"),
-                kind: InputKind::ChatLog,
+                description: kind.label(),
+                kind,
                 path: String::new(),
                 channels: Vec::new(),
                 exclude_motd: true,
@@ -168,33 +170,6 @@ impl PatternsEditor {
             self.selected_input = None;
         }
         self.state.dirty = true;
-    }
-
-    /// Renames the input `old` to `new`, updating every edge that referenced
-    /// it. Returns whether the new id was applied (valid and unused).
-    fn rename_input(&mut self, old: &str, new: &str) -> bool {
-        if new == old {
-            return true;
-        }
-        if !valid_id(new) || self.rules_has_id(new) {
-            return false;
-        }
-        if let Some(node) = self.graph.nodes.iter_mut().find(|node| node.id == old) {
-            node.id = new.to_string();
-        }
-        for edge in &mut self.graph.edges {
-            if edge.from == old {
-                edge.from = new.to_string();
-            }
-            if edge.to == old {
-                edge.to = new.to_string();
-            }
-        }
-        if self.selected_input.as_deref() == Some(old) {
-            self.selected_input = Some(new.to_string());
-        }
-        self.state.dirty = true;
-        true
     }
 
     fn set_input_description(&mut self, id: &str, description: String) {
@@ -637,14 +612,13 @@ impl TelescopeApp {
         }
 
         egui_panels::page(ui, |ui| {
-            self.intel_flow_stepper(ui, SettingsPage::Rules);
             egui_panels::page_header(
                 ui,
                 &SettingsPage::Rules.title(),
                 Some(&t!("settings.patterns.description")),
             );
             let has_inputs = !self.patterns_editor.input_ids().is_empty();
-            let (mut add, mut open, mut import, mut export) = (false, false, false, false);
+            let (mut new_input, mut open, mut import, mut export) = (None, false, false, false);
             // With little room the buttons share wrapped lines instead of the
             // right-hand group pushing the left-hand one out of view.
             let narrow = ui.available_width() < 560.0;
@@ -655,9 +629,19 @@ impl TelescopeApp {
             };
             ui.with_layout(layout, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
-                add =
-                    egui_panels::button(ui, t!("settings.patterns.add_input"), Variant::Secondary)
-                        .clicked();
+                egui_panels::menu_button(
+                    ui,
+                    t!("settings.patterns.add_input"),
+                    Variant::Secondary,
+                    |ui| {
+                        for kind in INPUT_KINDS {
+                            if ui.button(kind.label()).clicked() {
+                                new_input = Some(kind);
+                                ui.close();
+                            }
+                        }
+                    },
+                );
                 ui.add_enabled_ui(has_inputs, |ui| {
                     open = egui_panels::button(
                         ui,
@@ -695,8 +679,8 @@ impl TelescopeApp {
                     );
                 }
             });
-            if add {
-                let id = self.patterns_editor.add_input();
+            if let Some(kind) = new_input {
+                let id = self.patterns_editor.add_input(kind);
                 self.patterns_editor.selected_input = Some(id);
             }
             if open {
@@ -718,13 +702,22 @@ impl TelescopeApp {
                 egui_panels::status(ui, StatusKind::Info, &t!("settings.patterns.no_inputs"));
             }
             let mut actions = Vec::new();
+            let show_ids = self.node_ids_visible();
             for (index, id) in input_ids.iter().enumerate() {
                 let Some((description, enabled)) = self.patterns_editor.input_summary(id) else {
                     continue;
                 };
                 let summary = self.patterns_editor.component_summary(id);
                 let selected = self.patterns_editor.selected_input.as_deref() == Some(id.as_str());
-                let card = input_card(ui, index, id, &description, enabled, selected, &summary);
+                let card = input_card(
+                    ui,
+                    index,
+                    show_ids.then_some(id.as_str()),
+                    &description,
+                    enabled,
+                    selected,
+                    &summary,
+                );
                 actions.extend(card.into_iter().map(|action| (id.clone(), action)));
             }
             for (id, action) in actions {
@@ -737,13 +730,6 @@ impl TelescopeApp {
                     }
                     CardAction::Describe(description) => {
                         self.patterns_editor.set_input_description(&id, description);
-                    }
-                    CardAction::Rename(new_id) => {
-                        if !self.patterns_editor.rename_input(&id, &new_id) {
-                            self.patterns_editor.set_errors(vec![
-                                t!("settings.patterns.invalid_id", id = new_id).into_owned(),
-                            ]);
-                        }
                     }
                 }
             }
@@ -969,9 +955,13 @@ impl TelescopeApp {
         );
         let graph_id = egui::Id::unique("rules_graph");
         let snarl_selection = egui_snarl::ui::get_selected_nodes(graph_id, ui.ctx());
+        let show_ids = self.node_ids_visible();
         ui.scope_builder(egui::UiBuilder::new().max_rect(canvas), |ui| {
             let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
-            let mut viewer = RulesViewer { state: &mut *state };
+            let mut viewer = RulesViewer {
+                state: &mut *state,
+                show_ids,
+            };
             SnarlWidget::new()
                 .id(graph_id)
                 .style(graph_style(ui))
@@ -1016,9 +1006,23 @@ impl TelescopeApp {
         }
     }
 
+    /// Whether the node editor shows the node ids, which are internal. Only
+    /// the Debug window can turn it on, so a release build never does.
+    fn node_ids_visible(&self) -> bool {
+        #[cfg(debug_assertions)]
+        {
+            self.debug.show_node_ids
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            false
+        }
+    }
+
     /// The panel at the right of the graph editor: the selected node's
     /// fields, what it is connected to and the actions on it.
     fn show_inspector(&mut self, ui: &mut egui::Ui, selected: Option<NodeId>) {
+        let show_ids = self.node_ids_visible();
         let theme = egui_panels::Theme::get(ui.ctx());
         let palette = theme.palette(ui.visuals());
         ui.spacing_mut().item_spacing.y = 10.0;
@@ -1035,6 +1039,9 @@ impl TelescopeApp {
         let mut changed = false;
         let mut delete = false;
         let mut duplicate = false;
+        // The input is the root of its rule: it is created and removed with
+        // the rule on the Rules page, so the panel only edits what is left.
+        let is_input = matches!(self.patterns_editor.snarl[node_id].kind, NodeKind::Input(_));
         let mut connections = Vec::new();
         {
             let snarl = &self.patterns_editor.snarl;
@@ -1047,7 +1054,13 @@ impl TelescopeApp {
                     .remotes
                     .iter()
                     .filter_map(|remote| snarl.get_node(remote.node))
-                    .map(|node| node.id.clone())
+                    .map(|node| {
+                        if show_ids {
+                            node.id.clone()
+                        } else {
+                            node_kind_label(&node.kind)
+                        }
+                    })
                     .collect();
                 connections.push((output, targets));
             }
@@ -1073,18 +1086,23 @@ impl TelescopeApp {
                 });
             });
             egui_panels::divider(ui);
-            changed |= field_row(ui, &t!("settings.patterns.field_id"), |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut node.id.clone())
-                        .font(egui::TextStyle::Monospace)
-                        .interactive(false)
-                        .desired_width(ui.available_width()),
-                );
-                false
-            });
-            changed |= field_row(ui, &t!("settings.patterns.field_enabled"), |ui| {
-                ui.checkbox(&mut node.enabled, "").changed()
-            });
+            // The id is internal: read-only, and only with the Debug option.
+            if show_ids {
+                field_row(ui, &t!("settings.patterns.field_id"), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut node.id.clone())
+                            .font(egui::TextStyle::Monospace)
+                            .interactive(false)
+                            .desired_width(ui.available_width()),
+                    );
+                    false
+                });
+            }
+            if !is_input {
+                changed |= field_row(ui, &t!("settings.patterns.field_enabled"), |ui| {
+                    ui.checkbox(&mut node.enabled, "").changed()
+                });
+            }
             changed |= match &mut node.kind {
                 NodeKind::Input(input) => input_body(ui, input),
                 NodeKind::Detection(detection) => detection_body(ui, detection),
@@ -1114,19 +1132,18 @@ impl TelescopeApp {
                 });
             }
         }
-        egui_panels::divider(ui);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-            let can_duplicate =
-                !matches!(self.patterns_editor.snarl[node_id].kind, NodeKind::Input(_));
-            ui.add_enabled_ui(can_duplicate, |ui| {
+        if !is_input {
+            egui_panels::divider(ui);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                 duplicate =
                     egui_panels::button(ui, t!("settings.patterns.duplicate_node"), Variant::Ghost)
                         .clicked();
+                delete =
+                    egui_panels::button(ui, t!("settings.patterns.delete_node"), Variant::Ghost)
+                        .clicked();
             });
-            delete = egui_panels::button(ui, t!("settings.patterns.delete_node"), Variant::Ghost)
-                .clicked();
-        });
+        }
         if changed {
             self.patterns_editor.state.dirty = true;
         }
@@ -1323,23 +1340,17 @@ enum CardAction {
     Remove,
     Enable(bool),
     Describe(String),
-    Rename(String),
 }
 
-/// Rows at least this wide show their output tags at the right end.
-const TAGS_BESIDE_MIN_WIDTH: f32 = 760.0;
-
-/// Width of the column of output tags beside a row's text.
-const TAGS_WIDTH: f32 = 300.0;
-
-/// The row of an input rule: a dot that says whether it is on, its id and
+/// The row of an input rule: a dot that says whether it is on, its
 /// description, what it is made of and the outputs it reaches. A click
-/// selects it and a double click opens its editor; the right-click menu
-/// switches it on or off, edits its description and id, and removes it.
+/// selects it and a double click opens its editor; the description is
+/// edited in place and the row has its own switch and remove button. The
+/// `id` is internal: it is only given (and shown) with the Debug option.
 fn input_card(
     ui: &mut egui::Ui,
     index: usize,
-    id: &str,
+    id: Option<&str>,
     description: &str,
     enabled: bool,
     selected: bool,
@@ -1366,9 +1377,7 @@ fn input_card(
         .inner_margin(egui::Margin::symmetric(16, 12));
     let response = ui
         .scope_builder(
-            // Salted with the row's position, not the entry's id: renaming
-            // the entry would give every widget inside a new id, and the id
-            // field in the menu would lose the focus at each key.
+            // Salted with the row's position, not the entry's id.
             egui::UiBuilder::new()
                 .id_salt(("input_card", index))
                 .sense(egui::Sense::click()),
@@ -1376,15 +1385,6 @@ fn input_card(
                 frame.show(ui, |ui| {
                     let width = ui.available_width();
                     ui.set_width(width);
-                    // Wide enough, the output tags sit at the right end;
-                    // otherwise they wrap on a line of their own under the
-                    // text instead of covering it.
-                    let tags_beside = width >= TAGS_BESIDE_MIN_WIDTH;
-                    let tag_labels: Vec<String> = summary
-                        .outputs
-                        .iter()
-                        .map(|kind| output_kind_label(*kind))
-                        .collect();
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 14.0;
                         let (dot, _) = ui.allocate_exact_size(
@@ -1400,26 +1400,31 @@ fn input_card(
                                 palette.muted_text.gamma_multiply(0.6)
                             },
                         );
-                        let text_width = if tags_beside {
-                            width - 8.0 - TAGS_WIDTH - 2.0 * 14.0
-                        } else {
-                            width - 8.0 - 14.0
-                        };
+                        let text_width = width - 8.0 - 14.0;
                         ui.vertical(|ui| {
                             ui.set_width(text_width);
                             ui.spacing_mut().item_spacing.y = 3.0;
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 9.0;
-                                ui.label(
-                                    RichText::new(id)
-                                        .size(theme.section_title_size)
-                                        .color(palette.strong_text),
-                                );
-                                ui.label(
-                                    RichText::new(description)
-                                        .size(theme.small_size)
-                                        .color(palette.muted_text),
-                                );
+                                if let Some(id) = id {
+                                    ui.label(
+                                        RichText::new(id)
+                                            .size(theme.section_title_size)
+                                            .color(palette.strong_text),
+                                    );
+                                }
+                                let mut text = description.to_string();
+                                // The hint is also the control's accessible name.
+                                if ui
+                                    .add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .hint_text(t!("settings.patterns.field_description"))
+                                            .desired_width(240.0),
+                                    )
+                                    .changed()
+                                {
+                                    actions.push(CardAction::Describe(text));
+                                }
                             });
                             ui.label(
                                 RichText::new(t!(
@@ -1432,18 +1437,40 @@ fn input_card(
                                 .size(theme.small_size)
                                 .color(palette.muted_text),
                             );
-                            if !tags_beside && !summary.outputs.is_empty() {
-                                ui.add_space(3.0);
-                                egui_panels::badges(ui, &tag_labels);
-                            }
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let mut on = enabled;
+                                let switch = egui_panels::switch(ui, &mut on);
+                                if switch.changed() {
+                                    actions.push(CardAction::Enable(on));
+                                }
+                                let state = ui.label(
+                                    RichText::new(if enabled {
+                                        t!("settings.patterns.state_on")
+                                    } else {
+                                        t!("settings.patterns.state_off")
+                                    })
+                                    .size(theme.small_size)
+                                    .color(palette.muted_text),
+                                );
+                                // The state text is the switch's accessible name.
+                                let _ = switch.labelled_by(state.id);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if egui_panels::button(
+                                            ui,
+                                            t!("settings.patterns.remove_input"),
+                                            Variant::Ghost,
+                                        )
+                                        .clicked()
+                                        {
+                                            actions.push(CardAction::Remove);
+                                        }
+                                    },
+                                );
+                            });
                         });
-                        if tags_beside && !summary.outputs.is_empty() {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(TAGS_WIDTH, 0.0),
-                                egui::Layout::top_down(egui::Align::Min),
-                                |ui| egui_panels::badges(ui, &tag_labels),
-                            );
-                        }
                     });
                 });
             },
@@ -1457,56 +1484,6 @@ fn input_card(
     } else if response.clicked() {
         actions.push(CardAction::Select);
     }
-    response.context_menu(|ui| {
-        let mut on = enabled;
-        if ui
-            .checkbox(&mut on, t!("settings.patterns.state_on"))
-            .changed()
-        {
-            actions.push(CardAction::Enable(on));
-        }
-        ui.separator();
-        ui.label(RichText::new(t!("settings.patterns.field_description")).weak());
-        let mut text = description.to_string();
-        if ui
-            .add(egui::TextEdit::singleline(&mut text).desired_width(240.0))
-            .changed()
-        {
-            actions.push(CardAction::Describe(text));
-        }
-        // The id is edited as a draft and applied when the field is left
-        // (Enter, Tab or a click elsewhere): applied at each key, an id
-        // being typed is usually invalid (empty, or taken halfway through)
-        // and was put back.
-        ui.label(RichText::new(t!("settings.patterns.field_id")).weak());
-        let edit_id = ui.make_persistent_id("input_id");
-        let draft_id = edit_id.with("draft");
-        let mut id_text = ui
-            .data(|data| data.get_temp::<String>(draft_id))
-            .unwrap_or_else(|| id.to_string());
-        let field = ui
-            .add(
-                egui::TextEdit::singleline(&mut id_text)
-                    .id(edit_id)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(240.0),
-            )
-            .on_hover_text(t!("settings.patterns.id_hint"));
-        if field.lost_focus() {
-            ui.data_mut(|data| data.remove::<String>(draft_id));
-            let new_id = id_text.trim();
-            if new_id != id {
-                actions.push(CardAction::Rename(new_id.to_string()));
-            }
-        } else if field.has_focus() {
-            ui.data_mut(|data| data.insert_temp(draft_id, id_text));
-        }
-        ui.separator();
-        if ui.button(t!("settings.patterns.remove_input")).clicked() {
-            actions.push(CardAction::Remove);
-            ui.close();
-        }
-    });
     actions
 }
 
@@ -1520,6 +1497,8 @@ const NODE_BODY_MAX_WIDTH: f32 = 170.0;
 /// The snarl viewer of the graph editor.
 struct RulesViewer<'a> {
     state: &'a mut GraphState,
+    /// Show each node's internal id in its header (a Debug window option).
+    show_ids: bool,
 }
 
 impl RulesViewer<'_> {
@@ -1634,8 +1613,12 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
             let (mark, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
             ui.painter()
                 .rect_filled(mark, 2.0, node_kind_color(&node.kind));
-            ui.label(RichText::new(&node.id).strong());
-            ui.label(RichText::new(self.title(node)).small().weak());
+            if self.show_ids {
+                ui.label(RichText::new(&node.id).strong());
+                ui.label(RichText::new(self.title(node)).small().weak());
+            } else {
+                ui.label(RichText::new(self.title(node)).strong());
+            }
         });
         self.select_on_click(ui, node_id, row.response.rect);
     }
@@ -1806,15 +1789,6 @@ fn unique_id(existing: &HashSet<String>, prefix: &str) -> String {
     }
 }
 
-/// Whether `id` is a valid rule id (`[A-Za-z0-9_-]`, max 64 chars).
-fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
-}
-
 /// Width of the parameter-name column of a node body, so the rows line up like
 /// a table (`name | value`).
 const FIELD_NAME_WIDTH: f32 = 110.0;
@@ -1845,32 +1819,19 @@ fn field_row(ui: &mut Ui, name: &str, value: impl FnOnce(&mut Ui) -> bool) -> bo
 
 fn input_body(ui: &mut Ui, input: &mut InputNode) -> bool {
     let mut changed = false;
-    changed |= field_row(ui, &t!("settings.patterns.field_description"), |ui| {
-        ui.text_edit_singleline(&mut input.description).changed()
-    });
-    changed |= field_row(ui, &t!("settings.patterns.field_source"), |ui| {
-        let mut changed = false;
-        egui::ComboBox::from_id_salt("input_kind")
-            .selected_text(input.kind.label())
-            .show_ui(ui, |ui| {
-                for kind in INPUT_KINDS {
-                    if ui
-                        .selectable_label(input.kind == kind, kind.label())
-                        .clicked()
-                        && input.kind != kind
-                    {
-                        input.kind = kind;
-                        changed = true;
-                    }
-                }
-            });
-        changed
+    // The description is edited on the Rules page, the kind is chosen when the
+    // rule is created and the folder comes from Settings -> Sources: none of
+    // them is editable here.
+    field_row(ui, &t!("settings.patterns.field_description"), |ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut input.description.clone())
+                .interactive(false)
+                .desired_width(ui.available_width()),
+        );
+        false
     });
     match input.kind {
         InputKind::ChatLog => {
-            changed |= field_row(ui, &t!("settings.patterns.field_path"), |ui| {
-                ui.text_edit_singleline(&mut input.path).changed()
-            });
             changed |= field_row(ui, &t!("settings.patterns.field_channels"), |ui| {
                 string_list_editor(ui, &mut input.channels)
             });
@@ -1919,6 +1880,7 @@ fn detection_body(ui: &mut Ui, detection: &mut DetectionNode) -> bool {
         changed |= field_row(ui, &t!("settings.patterns.field_reads"), |ui| {
             let mut changed = false;
             egui::ComboBox::from_id_salt("detection_source")
+                .width(ui.available_width())
                 .selected_text(detection_source_label(detection.source))
                 .show_ui(ui, |ui| {
                     for source in DetectionSource::ALL {
@@ -1940,6 +1902,7 @@ fn detection_body(ui: &mut Ui, detection: &mut DetectionNode) -> bool {
     changed |= field_row(ui, &t!("settings.patterns.field_mode"), |ui| {
         let mut changed = false;
         egui::ComboBox::from_id_salt("detection_mode")
+            .width(ui.available_width())
             .selected_text(detection_mode_label(detection.mode))
             .show_ui(ui, |ui| {
                 for mode in DetectionMode::ALL {
@@ -2312,22 +2275,6 @@ mod tests {
     }
 
     #[test]
-    fn valid_id_follows_the_rule_id_charset_and_length() {
-        for id in ["a", "in_1", "Rule-2", &"x".repeat(64)] {
-            assert!(valid_id(id), "{id:?} should be valid");
-        }
-        for id in [
-            "",
-            "has space",
-            "dot.dot",
-            "\u{f1}and\u{fa}",
-            &"x".repeat(65),
-        ] {
-            assert!(!valid_id(id), "{id:?} should be invalid");
-        }
-    }
-
-    #[test]
     fn every_offered_detection_type_has_a_default_of_that_type() {
         for name in DETECTION_TYPES {
             assert_eq!(default_detection_kind(name).type_name(), name);
@@ -2495,7 +2442,7 @@ mod tests {
     fn ensure_loaded_copies_the_graph_only_once() {
         let mut editor = PatternsEditor::default();
         editor.ensure_loaded(&graph());
-        editor.add_input();
+        editor.add_input(InputKind::ChatLog);
         editor.ensure_loaded(&RuleGraph::default());
         assert_eq!(editor.graph.nodes.len(), graph().nodes.len() + 1);
     }
@@ -2546,13 +2493,30 @@ mod tests {
     fn add_input_makes_a_unique_enabled_input_and_marks_the_graph_dirty() {
         let mut editor = editor();
         assert!(!editor.state.dirty);
-        let first = editor.add_input();
-        let second = editor.add_input();
+        let first = editor.add_input(InputKind::ChatLog);
+        let second = editor.add_input(InputKind::ChatLog);
         assert_eq!((first.as_str(), second.as_str()), ("input_1", "input_2"));
         assert!(editor.state.dirty);
         let (description, enabled) = editor.input_summary("input_1").unwrap();
-        assert_eq!(description, "input");
+        assert_eq!(description, InputKind::ChatLog.label());
         assert!(enabled);
+    }
+
+    #[test]
+    fn add_input_creates_the_kind_that_was_chosen() {
+        let mut editor = editor();
+        let id = editor.add_input(InputKind::ZKillboard);
+        let node = editor
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap();
+        let NodeKind::Input(input) = &node.kind else {
+            panic!("an input was expected");
+        };
+        assert_eq!(input.kind, InputKind::ZKillboard);
+        assert_eq!(input.description, InputKind::ZKillboard.label());
     }
 
     #[test]
@@ -2586,38 +2550,6 @@ mod tests {
         editor.remove_input("in3");
         assert_eq!(editor.open_input.as_deref(), Some("in2"));
         assert_eq!(editor.selected_input.as_deref(), Some("in2"));
-    }
-
-    #[test]
-    fn rename_input_updates_nodes_edges_and_selection() {
-        let mut editor = editor();
-        editor.selected_input = Some(String::from("in1"));
-
-        assert!(editor.rename_input("in1", "front_door"));
-
-        assert!(ids(&editor).contains(&String::from("front_door")));
-        assert!(!ids(&editor).contains(&String::from("in1")));
-        assert!(editor.graph.edges.contains(&edge("front_door", "d1", 0)));
-        assert_eq!(editor.selected_input.as_deref(), Some("front_door"));
-        assert!(editor.state.dirty);
-    }
-
-    #[test]
-    fn rename_input_to_itself_succeeds_without_marking_dirty() {
-        let mut editor = editor();
-        assert!(editor.rename_input("in1", "in1"));
-        assert!(!editor.state.dirty);
-        assert_eq!(editor.to_graph(), graph());
-    }
-
-    #[test]
-    fn rename_input_rejects_invalid_and_taken_ids() {
-        let mut editor = editor();
-        for new in ["", "bad id", "d1", "in2", "visual"] {
-            assert!(!editor.rename_input("in1", new), "{new:?}");
-        }
-        assert_eq!(editor.to_graph(), graph());
-        assert!(!editor.state.dirty);
     }
 
     #[test]
@@ -3065,7 +2997,7 @@ mod tests {
         let mut editor = editor();
         assert!(!editor.is_modified(&live));
 
-        editor.add_input();
+        editor.add_input(InputKind::ChatLog);
         assert!(editor.is_modified(&live));
         assert!(editor.is_modified(&RuleGraph::default()));
     }

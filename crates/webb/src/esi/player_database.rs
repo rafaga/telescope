@@ -3,7 +3,10 @@
 
 use crate::esi::Error;
 use crate::graph::{Edge, Node, RuleGraph};
-use crate::objects::{Alliance, AuthData, BasicCatalog, Character, Corporation};
+use crate::objects::{
+    Alliance, AuthData, BasicCatalog, Character, CharacterOverlay, Corporation, OverlayAnchor,
+    OverlayPosition,
+};
 use chrono::{DateTime, Utc};
 use rusqlite::types::Type;
 use rusqlite::{Connection, ToSql, params};
@@ -29,7 +32,11 @@ pub(crate) struct PlayerDatabase {}
 /// - 4: the built-in default rules changed after version 3 shipped: the rules
 ///   stored by version 3 are replaced by the current default graph, and the
 ///   `node_v2_backup` and `edge_v2_backup` tables left by version 3 are dropped.
-pub const SCHEMA_VERSION: i32 = 4;
+/// - 5: each character keeps the state of its overlay in `char`: whether it
+///   is on (`overlay_enabled`) and where the user left it (`overlay_anchor`,
+///   `overlay_x`, `overlay_y`, `overlay_width`, `overlay_height`,
+///   `overlay_ref_height`; all NULL until it is placed).
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
@@ -40,6 +47,7 @@ const MIGRATIONS: &[Migration] = &[
     PlayerDatabase::migrate_1_to_2,
     PlayerDatabase::migrate_2_to_3,
     PlayerDatabase::migrate_3_to_4,
+    PlayerDatabase::migrate_4_to_5,
 ];
 
 // One migration per version step, always.
@@ -170,7 +178,10 @@ impl PlayerDatabase {
 
         if let Some(character_id) = jwt_character_id(&token)
             && !refresh_token.is_empty()
-            && !PlayerDatabase::select_characters(conn, vec![character_id])?.is_empty()
+            // (a plain count: `select_characters` reads columns later versions add)
+            && conn
+                .prepare("SELECT 1 FROM char WHERE id = ?1")?
+                .exists([character_id])?
         {
             let mut auth = AuthData::new();
             auth.token = token;
@@ -226,6 +237,32 @@ impl PlayerDatabase {
             return Ok(());
         }
         PlayerDatabase::save_graph(conn, &RuleGraph::default_graph())?;
+        Ok(())
+    }
+
+    /// 4 -> 5: the state of each character's overlay goes in its `char` row.
+    /// Existing characters start with the overlay off and no place.
+    #[tracing::instrument]
+    fn migrate_4_to_5(conn: &Connection) -> Result<(), Error> {
+        for (name, definition) in [
+            ("overlay_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("overlay_anchor", "TEXT"),
+            ("overlay_x", "INTEGER"),
+            ("overlay_y", "INTEGER"),
+            ("overlay_width", "INTEGER"),
+            ("overlay_height", "INTEGER"),
+            ("overlay_ref_height", "INTEGER"),
+        ] {
+            // SQLite cannot add a column twice: skip those already there
+            let present: i64 = conn.query_row(
+                "SELECT count(*) FROM pragma_table_info('char') WHERE name = ?1",
+                [name],
+                |row| row.get(0),
+            )?;
+            if present == 0 {
+                conn.execute_batch(&format!("ALTER TABLE char ADD COLUMN {name} {definition};"))?;
+            }
+        }
         Ok(())
     }
 
@@ -288,15 +325,13 @@ impl PlayerDatabase {
         ids: Vec<i64>,
     ) -> Result<Vec<Character>, Error> {
         let mut result = Vec::new();
-        let mut query = String::from(
-            "SELECT id, name, corporation, alliance, portrait, lastLogon, location FROM char",
-        );
+        const COLUMNS: &str = "id, name, corporation, alliance, portrait, lastLogon, location, \
+            overlay_enabled, overlay_anchor, overlay_x, overlay_y, overlay_width, \
+            overlay_height, overlay_ref_height";
+        let mut query = format!("SELECT {COLUMNS} FROM char");
         if !ids.is_empty() {
             let vars = PlayerDatabase::repeat_vars(ids.len());
-            query = format!(
-                "SELECT id, name, corporation, alliance, portrait, lastLogon, location FROM char WHERE id IN ({})",
-                vars
-            );
+            query = format!("SELECT {COLUMNS} FROM char WHERE id IN ({vars})");
         }
         let mut statement = conn.prepare(&query)?;
         let mut rows = statement.query(rusqlite::params_from_iter(ids))?;
@@ -321,9 +356,63 @@ impl PlayerDatabase {
                 char.last_logon = utc_dt;
             }
             char.location = row.get::<usize, i64>(6)?;
+            char.overlay = CharacterOverlay {
+                enabled: row.get::<usize, i64>(7)? != 0,
+                position: PlayerDatabase::overlay_position(row)?,
+            };
             result.push(char);
         }
         Ok(result)
+    }
+
+    /// The place stored in a `char` row (columns 8 to 13 of
+    /// [`Self::select_characters`]); `None` when any part is missing.
+    fn overlay_position(row: &rusqlite::Row) -> Result<Option<OverlayPosition>, Error> {
+        let anchor: Option<String> = row.get(8)?;
+        let offset_x: Option<i32> = row.get(9)?;
+        let offset_y: Option<i32> = row.get(10)?;
+        let width: Option<u32> = row.get(11)?;
+        let height: Option<u32> = row.get(12)?;
+        let reference_height: Option<u32> = row.get(13)?;
+        Ok(match (anchor, offset_x, offset_y, width, height) {
+            (Some(anchor), Some(offset_x), Some(offset_y), Some(width), Some(height)) => {
+                OverlayAnchor::parse(&anchor).map(|anchor| OverlayPosition {
+                    anchor,
+                    offset_x,
+                    offset_y,
+                    width,
+                    height,
+                    reference_height,
+                })
+            }
+            _ => None,
+        })
+    }
+
+    /// Stores the overlay of a character: only its overlay columns change.
+    #[tracing::instrument]
+    pub(crate) fn update_overlay(
+        conn: &Connection,
+        id: i64,
+        overlay: &CharacterOverlay,
+    ) -> Result<usize, Error> {
+        let position = overlay.position;
+        let rows = conn.execute(
+            "UPDATE char SET overlay_enabled = ?1, overlay_anchor = ?2, overlay_x = ?3, \
+             overlay_y = ?4, overlay_width = ?5, overlay_height = ?6, overlay_ref_height = ?7 \
+             WHERE id = ?8",
+            params![
+                overlay.enabled,
+                position.map(|p| p.anchor.as_str()),
+                position.map(|p| p.offset_x),
+                position.map(|p| p.offset_y),
+                position.map(|p| p.width),
+                position.map(|p| p.height),
+                position.and_then(|p| p.reference_height),
+                id,
+            ],
+        )?;
+        Ok(rows)
     }
 
     // Updated
@@ -1026,6 +1115,89 @@ mod tests {
             PlayerDatabase::ensure_schema(&conn).unwrap(),
             SchemaStatus::Newer(99)
         );
+    }
+
+    #[test]
+    fn migrating_to_5_adds_the_overlay_columns_keeping_the_characters() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        let mut character = Character::new();
+        character.id = 7;
+        character.name = String::from("Pilot");
+        PlayerDatabase::insert_character(&conn, &character).unwrap();
+
+        // Back to version 4: the columns are gone.
+        for column in [
+            "overlay_enabled",
+            "overlay_anchor",
+            "overlay_x",
+            "overlay_y",
+            "overlay_width",
+            "overlay_height",
+            "overlay_ref_height",
+        ] {
+            conn.execute_batch(&format!("ALTER TABLE char DROP COLUMN {column};"))
+                .unwrap();
+        }
+        conn.execute("UPDATE metadata SET value = '4' WHERE id = 'db'", [])
+            .unwrap();
+
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Migrated(4)
+        );
+        let characters = PlayerDatabase::select_characters(&conn, vec![]).unwrap();
+        assert_eq!(characters.len(), 1);
+        assert_eq!(characters[0].name, "Pilot");
+        assert_eq!(characters[0].overlay, CharacterOverlay::default());
+    }
+
+    #[test]
+    fn a_characters_overlay_is_stored_with_it() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        for id in [1, 2] {
+            let mut character = Character::new();
+            character.id = id;
+            character.name = format!("Pilot {id}");
+            PlayerDatabase::insert_character(&conn, &character).unwrap();
+        }
+
+        let overlay = CharacterOverlay {
+            enabled: true,
+            position: Some(OverlayPosition {
+                anchor: OverlayAnchor::BottomRight,
+                offset_x: 12,
+                offset_y: -3,
+                width: 260,
+                height: 200,
+                reference_height: Some(1080),
+            }),
+        };
+        assert_eq!(
+            PlayerDatabase::update_overlay(&conn, 1, &overlay).unwrap(),
+            1
+        );
+        let characters = PlayerDatabase::select_characters(&conn, vec![]).unwrap();
+        assert_eq!(characters[0].overlay, overlay);
+        // only that character changed
+        assert_eq!(characters[1].overlay, CharacterOverlay::default());
+
+        // turning it off keeps the place; clearing the place keeps the switch
+        let off = CharacterOverlay {
+            enabled: false,
+            ..overlay
+        };
+        PlayerDatabase::update_overlay(&conn, 1, &off).unwrap();
+        let again = PlayerDatabase::select_characters(&conn, vec![1]).unwrap();
+        assert_eq!(again[0].overlay, off);
+        let unplaced = CharacterOverlay {
+            enabled: true,
+            position: None,
+        };
+        PlayerDatabase::update_overlay(&conn, 1, &unplaced).unwrap();
+        let again = PlayerDatabase::select_characters(&conn, vec![1]).unwrap();
+        assert_eq!(again[0].overlay, unplaced);
     }
 
     #[test]

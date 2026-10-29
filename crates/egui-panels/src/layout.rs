@@ -194,6 +194,28 @@ pub fn form<R>(ui: &mut Ui, add_rows: impl FnOnce(&mut Form<'_>) -> R) -> R {
     .inner
 }
 
+/// Where a form row keeps the id of its label while its control is drawn.
+fn row_label_key() -> Id {
+    Id::unique("egui_panels::row_label")
+}
+
+/// Names `response` after the label of the [`Form`] row it is drawn in, the
+/// way an HTML `<label>` names its input: screen readers read the label for
+/// the control, and tests (e.g. `egui_kittest`) find it by that text. Outside
+/// a row, or in one without a label, it does nothing.
+///
+/// The crate's own controls ([`crate::switch`], [`crate::Slider`]) call it;
+/// call it for any other control put in a row (a combo box, a text field).
+pub fn label_with_row(ui: &Ui, response: &Response) {
+    let label = ui
+        .ctx()
+        .data(|data| data.get_temp::<Option<Id>>(row_label_key()))
+        .flatten();
+    if let Some(label) = label {
+        let _ = response.clone().labelled_by(label);
+    }
+}
+
 /// The narrowest a form's control column gets before the labels move above
 /// their controls.
 const FORM_MIN_CONTROL_WIDTH: f32 = 300.0;
@@ -240,6 +262,14 @@ impl Form<'_> {
     ) -> R {
         let theme = &self.theme;
         let width = self.ui.available_width();
+        let add_label = |ui: &mut Ui, label: WidgetText| -> Id {
+            let response = ui.add(Label::new(label).wrap());
+            let id = response.id;
+            if let Some(hint) = hint {
+                response.on_hover_text(hint);
+            }
+            id
+        };
         // Too narrow for a label column beside the control: the label goes
         // above it.
         if width < theme.label_width + FORM_MIN_CONTROL_WIDTH {
@@ -247,33 +277,25 @@ impl Form<'_> {
                 .ui
                 .vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    if let Some(label) = label {
-                        let response = ui.add(Label::new(label).wrap());
-                        if let Some(hint) = hint {
-                            response.on_hover_text(hint);
-                        }
-                    }
-                    Self::control_cell(ui, theme, add_control)
+                    let label = label.map(|label| add_label(ui, label));
+                    Self::control_cell(ui, theme, label, add_control)
                 })
                 .inner;
         }
         self.ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = theme.row_spacing.x;
-                ui.allocate_ui_with_layout(
-                    vec2(theme.label_width, theme.control_height),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        ui.set_width(theme.label_width);
-                        if let Some(label) = label {
-                            let response = ui.add(Label::new(label).wrap());
-                            if let Some(hint) = hint {
-                                response.on_hover_text(hint);
-                            }
-                        }
-                    },
-                );
-                Self::control_cell(ui, theme, add_control)
+                let label = ui
+                    .allocate_ui_with_layout(
+                        vec2(theme.label_width, theme.control_height),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            ui.set_width(theme.label_width);
+                            label.map(|label| add_label(ui, label))
+                        },
+                    )
+                    .inner;
+                Self::control_cell(ui, theme, label, add_control)
             })
             .inner
     }
@@ -281,17 +303,37 @@ impl Form<'_> {
     /// The cell holding a control: at least one line of
     /// [`Theme::control_height`] and, when its contents are wider than the
     /// cell, more lines.
-    fn control_cell<R>(ui: &mut Ui, theme: &Theme, add_control: impl FnOnce(&mut Ui) -> R) -> R {
-        ui.allocate_ui_with_layout(
-            vec2(ui.available_width(), theme.control_height),
-            Layout::left_to_right(Align::Center).with_main_wrap(true),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.spacing_mut().item_spacing.y = 6.0;
-                add_control(ui)
-            },
-        )
-        .inner
+    ///
+    /// While the control is drawn, the row's `label` is the one
+    /// [`label_with_row`] names it after.
+    fn control_cell<R>(
+        ui: &mut Ui,
+        theme: &Theme,
+        label: Option<Id>,
+        add_control: impl FnOnce(&mut Ui) -> R,
+    ) -> R {
+        let key = row_label_key();
+        let outer = ui.ctx().data(|data| data.get_temp::<Option<Id>>(key));
+        ui.ctx().data_mut(|data| data.insert_temp(key, label));
+        let inner = ui
+            .allocate_ui_with_layout(
+                vec2(ui.available_width(), theme.control_height),
+                Layout::left_to_right(Align::Center).with_main_wrap(true),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    add_control(ui)
+                },
+            )
+            .inner;
+        // back to the row this one is nested in, if any
+        ui.ctx().data_mut(|data| match outer {
+            Some(outer) => {
+                data.insert_temp(key, outer);
+            }
+            None => data.remove::<Option<Id>>(key),
+        });
+        inner
     }
 
     /// The `Ui` the rows are added to, for anything that is not a row.

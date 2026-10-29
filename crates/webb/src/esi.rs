@@ -9,7 +9,9 @@
 
 use crate::graph::RuleGraph;
 use crate::objects::AuthData;
-use crate::objects::{Alliance, AuthClaims, AuthorizeInfo, Character, CharacterPublicInfo};
+use crate::objects::{
+    Alliance, AuthClaims, AuthorizeInfo, Character, CharacterOverlay, CharacterPublicInfo,
+};
 use crate::objects::{Corporation, TokenSet};
 use esi_openapi::prelude::*;
 use http_body_util::{BodyExt, Empty};
@@ -491,6 +493,18 @@ impl<T: EsiApi> EsiManagerCore<T> {
         } else {
             PlayerDatabase::insert_character(&conn, char)?
         };
+        Ok(rows)
+    }
+
+    /// Stores the overlay of the linked character `id` (on or off, and where
+    /// it was left) and updates the character in memory.
+    #[tracing::instrument(skip(self))]
+    pub fn write_overlay(&mut self, id: i64, overlay: CharacterOverlay) -> Result<usize, Error> {
+        let conn = self.get_standard_connection()?;
+        let rows = PlayerDatabase::update_overlay(&conn, id, &overlay)?;
+        if let Some(character) = self.characters.iter_mut().find(|c| c.id == id) {
+            character.overlay = overlay;
+        }
         Ok(rows)
     }
 

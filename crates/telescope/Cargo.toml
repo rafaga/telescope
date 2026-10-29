@@ -21,9 +21,6 @@ profile = ["dep:tracing-tracy","egui-map/debug_overlay","egui-map/profile","sde/
 # most of all -- so `profile` alone stays usable for measuring frame time. See
 # the `ProfiledAllocator` comment in `src/main.rs`.
 profile-memory = ["profile"]
-# Experimental overlay window above the game (src/app/overlay.rs): a movable
-# placeholder for now. Windows, macOS and Linux (X11).
-overlay = []
 
 # Embeds assets/icon.ico in the Windows executable (see build.rs).
 [build-dependencies]
@@ -48,7 +45,7 @@ sde = { version = "0.7", features = ["builder"] }
 # on its own; see that module's docs). Cargo unifies this with the same
 # `rusqlite` version `sde`/`webb` already pull in, so this doesn't
 # duplicate the SQLite build.
-rusqlite = { version = "0.40" }
+rusqlite = { version = "0.41" }
 kdtree = { version = "0.8" }
 # egui-map = { path = "../../../egui-map/" }
 egui-map = { version = "0.15" }
@@ -60,7 +57,7 @@ open = "5.4"
 webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
 chrono = "0.4"
-tokio = { version = "1.53", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.54", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.37", features = ["all_loaders"] }
 image = { version = "0.25", features = ["jpeg","png"] }
 # The window handle eframe exposes (same version as eframe/winit), to own the
@@ -110,6 +107,7 @@ rust-i18n = "4.2"
 sys-locale = "0.3"
 semver = { version = "1.0"}
 reqwest = { version = "0.13", features=["json"] }
+egui_ltreeview = { version = "0.10" }
 
 
 # native:
@@ -139,3 +137,8 @@ sha2 = "0.11"
 # To read a sample R2Z2 killmail file in `zkillboard`'s tests (the feed's
 # files themselves are read through `reqwest`).
 serde_json = "1.0"
+# Headless GUI tests: drive a piece of the interface by its accessible
+# names (find a widget, click it, run a frame) and check the state.
+# With `snapshot` and `wgpu` it also renders and compares images (the
+# overlay, which is painted, not made of widgets).
+egui_kittest = { version = "0.37", features = ["snapshot", "wgpu"] }

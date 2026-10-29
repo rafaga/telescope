@@ -23,7 +23,10 @@ use webb::objects::Character;
 pub(crate) fn upsert_character(characters: &mut Vec<Character>, character: Character) -> bool {
     match characters.iter_mut().find(|c| c.id == character.id) {
         Some(existing) => {
+            // the overlay is the user's choice, not part of what ESI reports
+            let overlay = existing.overlay;
             *existing = character;
+            existing.overlay = overlay;
             false
         }
         None => {

@@ -44,7 +44,6 @@ mod housekeeping;
 mod intel;
 mod messages;
 mod notifications;
-#[cfg(feature = "overlay")]
 mod overlay;
 mod persistence;
 mod settings;
@@ -56,6 +55,13 @@ mod windows;
 /// Key of Noto Sans CJK in egui's font definitions (see
 /// `TelescopeApp::font_definitions`).
 const CJK_FONT: &str = "Noto Sans CJK";
+
+/// The overlay's fonts: Oxanium at weight 600 for the text and at 700 for the
+/// system name and the jumps, static instances made from the variable font in
+/// `assets` (egui draws a variable font at its lightest weight, 200). Both
+/// fall back to the interface fonts for the glyphs Oxanium lacks.
+pub(crate) const OVERLAY_FONT: &str = "Oxanium";
+pub(crate) const OVERLAY_FONT_BOLD: &str = "Oxanium Bold";
 
 /// Face of `NotoSansCJK-Medium.ttc` Telescope uses: 0 JP, 1 KR, 2 SC, 3 TC,
 /// 4 HK. Every face has every glyph; only the shape of Han characters
@@ -184,8 +190,7 @@ pub struct TelescopeApp {
     // single check here covers both cases without touching either source.
     last_notification: Option<(Type, String, String, String, std::time::Instant)>,
     /// The experimental overlay window above the game.
-    #[cfg(feature = "overlay")]
-    overlay: overlay::OverlayState,
+    overlay: overlay::Overlays,
 }
 
 impl Default for TelescopeApp {
@@ -521,8 +526,7 @@ impl TelescopeApp {
             database_updater: database_updater::DatabaseUpdater::default(),
             update_prompt: None,
             last_notification: None,
-            #[cfg(feature = "overlay")]
-            overlay: overlay::OverlayState::new(),
+            overlay: overlay::Overlays::new(),
         }
     }
 
@@ -537,7 +541,6 @@ impl eframe::App for TelescopeApp {
     /// The color every window is cleared with before egui paints. By default
     /// it is the opaque window color, which makes the overlay's transparent
     /// window look solid; the main window is covered by its panels anyway.
-    #[cfg(feature = "overlay")]
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Rgba::TRANSPARENT.to_array()
     }
@@ -623,8 +626,7 @@ impl eframe::App for TelescopeApp {
             database_updater: _,
             update_prompt: _,
             last_notification: _,
-            #[cfg(feature = "overlay")]
-                overlay: _,
+            overlay: _,
         } = self;
 
         if !self.initialized {
@@ -645,6 +647,8 @@ impl eframe::App for TelescopeApp {
             self.open_startup_regions();
 
             self.report_player_database_status();
+            self.migrate_overlay_settings();
+            self.sync_overlay();
             if !self.esi.characters.is_empty() {
                 let mut ids = vec![];
                 for char in &self.esi.characters {
@@ -677,9 +681,18 @@ impl eframe::App for TelescopeApp {
         // Over the Settings screen too: its Application page starts updates.
         self.database_updater.show(ui.ctx());
         self.show_update_prompt(ui.ctx());
-        #[cfg(feature = "overlay")]
-        self.overlay.show(ui.ctx());
-        #[cfg(feature = "overlay")]
+        if self.overlay.is_open() {
+            let views = self.overlay_views();
+            let opacity = self.settings.get_overlay_opacity();
+            let max_rows = usize::from(self.settings.get_overlay_max_rows());
+            let hide_unfocused = self.settings.get_overlay_hide_unfocused();
+            self.overlay
+                .show(ui.ctx(), &views, max_rows, opacity, hide_unfocused);
+            if !self.overlay.is_open() {
+                self.overlay_closed_by_user();
+            }
+        }
+        self.save_overlay_positions();
         if let Some(text) = self.overlay.take_warning() {
             self.update_status_with_error((
                 Type::Warning,
@@ -789,6 +802,7 @@ impl TelescopeApp {
         crate::i18n::apply_language(&self.settings.get_ui_state().language);
         self.reset_startup_flags();
         self.apply_intel_settings();
+        self.sync_overlay();
         let graph = self.intel_graph.clone();
         self.patterns_editor.reset(&graph);
         self.open[2] = false;
@@ -820,6 +834,7 @@ impl TelescopeApp {
             self.change_sde();
         }
         self.apply_node_style();
+        self.sync_overlay();
         self.apply_graph(graph);
         self.patterns_editor.mark_applied();
         // What was just applied is the new baseline for Cancel.
@@ -1097,6 +1112,30 @@ impl TelescopeApp {
                 .push(CJK_FONT.to_owned());
         }
 
+        for (name, bytes) in [
+            (
+                OVERLAY_FONT,
+                &include_bytes!("../../../assets/Oxanium-SemiBold.ttf")[..],
+            ),
+            (
+                OVERLAY_FONT_BOLD,
+                &include_bytes!("../../../assets/Oxanium-Bold.ttf")[..],
+            ),
+        ] {
+            fonts
+                .font_data
+                .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+            let mut chain = vec![name.to_owned()];
+            chain.extend(
+                fonts
+                    .families
+                    .get(&FontFamily::Proportional)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            fonts.families.insert(FontFamily::Name(name.into()), chain);
+        }
+
         fonts.font_data.insert(
             "Fira Sans Bold".to_owned(),
             Arc::new(FontData::from_static(include_bytes!(
@@ -1273,6 +1312,28 @@ mod font_tests {
     // font has. The emoji come from egui's `monochrome_emoji_fonts` feature
     // (off by default since egui 0.37).
     #[test]
+    fn the_overlay_fonts_are_registered_with_the_interface_fonts_as_fallback() {
+        let fonts = TelescopeApp::font_definitions();
+        for name in [OVERLAY_FONT, OVERLAY_FONT_BOLD] {
+            assert!(fonts.font_data.contains_key(name), "{name}");
+            let chain = &fonts.families[&egui::FontFamily::Name(name.into())];
+            assert_eq!(chain[0], name);
+            assert!(chain.len() > 1, "{name} has no fallback");
+        }
+        let ctx = context_with(fonts);
+        for family in [OVERLAY_FONT, OVERLAY_FONT_BOLD] {
+            let id = FontId::new(12.0, egui::FontFamily::Name(family.into()));
+            let width = ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap("Tama 1j".to_owned(), id, Color32::WHITE)
+                    .size()
+                    .x
+            });
+            assert!(width > 0.0, "{family}");
+        }
+    }
+
+    #[test]
     fn tooltip_icons_are_drawn() {
         let ctx = context_with(TelescopeApp::font_definitions());
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
@@ -1290,21 +1351,14 @@ mod font_tests {
     }
 
     #[test]
-    fn settings_page_icons_are_drawn() {
-        use crate::app::messages::SettingsPage;
+    fn the_emojis_of_the_settings_roots_are_drawn() {
+        use crate::app::windows::settings::root_icons;
         let ctx = context_with(TelescopeApp::font_definitions());
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
-        for page in [
-            SettingsPage::Sources,
-            SettingsPage::Rules,
-            SettingsPage::Alerts,
-            SettingsPage::Maps,
-            SettingsPage::Characters,
-            SettingsPage::Application,
-        ] {
-            let icon = glyph_uv(&ctx, page.icon());
-            assert_ne!(icon.0, icon.1, "{}", page.icon());
-            assert_ne!(icon, missing, "{}", page.icon());
+        for icon in root_icons() {
+            let uv = glyph_uv(&ctx, icon);
+            assert_ne!(uv.0, uv.1, "{icon}");
+            assert_ne!(uv, missing, "{icon}");
         }
     }
 

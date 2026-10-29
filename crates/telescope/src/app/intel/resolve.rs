@@ -391,12 +391,23 @@ pub(crate) fn nearest_origin_within(
     target: u32,
     max_jumps: u8,
 ) -> Option<u32> {
+    jumps_to_nearest_origin(systems, origins, target, max_jumps).map(|(origin, _)| origin)
+}
+
+/// Like [`nearest_origin_within`], and also says how many jumps away `target`
+/// is from that origin.
+pub(crate) fn jumps_to_nearest_origin(
+    systems: &JumpGraph,
+    origins: &[u32],
+    target: u32,
+    max_jumps: u8,
+) -> Option<(u32, u8)> {
     let mut seen: HashSet<u32> = origins.iter().copied().collect();
     // (system reached, origin it was reached from, jumps from that origin)
     let mut queue: VecDeque<(u32, u32, u8)> = origins.iter().map(|&id| (id, id, 0)).collect();
     while let Some((system, origin, jumps)) = queue.pop_front() {
         if system == target {
-            return Some(origin);
+            return Some((origin, jumps));
         }
         if jumps == max_jumps {
             continue;
@@ -415,7 +426,7 @@ pub(crate) fn nearest_origin_within(
 
 #[cfg(test)]
 mod nearest_origin_tests {
-    use super::{JumpGraph, nearest_origin_within};
+    use super::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within};
 
     /// A straight chain 1 - 2 - 3 - 4 - 5, plus 6 connected to nothing.
     fn chain() -> JumpGraph {
@@ -448,6 +459,17 @@ mod nearest_origin_tests {
     fn the_closest_origin_is_returned() {
         assert_eq!(nearest_origin_within(&chain(), &[1, 5], 4, 7), Some(5));
         assert_eq!(nearest_origin_within(&chain(), &[1, 5], 2, 7), Some(1));
+    }
+
+    #[test]
+    fn the_distance_is_counted_from_the_closest_origin() {
+        assert_eq!(jumps_to_nearest_origin(&chain(), &[1], 3, 5), Some((1, 2)));
+        assert_eq!(
+            jumps_to_nearest_origin(&chain(), &[1, 5], 4, 7),
+            Some((5, 1))
+        );
+        assert_eq!(jumps_to_nearest_origin(&chain(), &[3], 3, 0), Some((3, 0)));
+        assert_eq!(jumps_to_nearest_origin(&chain(), &[1], 4, 2), None);
     }
 
     #[test]

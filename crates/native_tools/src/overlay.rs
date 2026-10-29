@@ -28,23 +28,23 @@ mod macos;
 #[cfg(target_os = "windows")]
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, POINT, RECT},
+        Foundation::{COLORREF, HWND, LPARAM, POINT, RECT},
         Graphics::Gdi::{
             ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, RGN_OR, SetWindowRgn,
         },
         UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState},
         UI::WindowsAndMessaging::{
             EnumWindows, FindWindowW, GWL_EXSTYLE, GetClientRect, GetForegroundWindow,
-            GetWindowLongPtrW, GetWindowTextW, HWND_TOPMOST, IsWindowVisible, SWP_NOACTIVATE,
-            SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+            GetWindowLongPtrW, GetWindowTextW, HWND_TOPMOST, IsWindowVisible, LWA_ALPHA,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongPtrW,
+            SetWindowPos, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
         },
     },
     core::{BOOL, HSTRING, PCWSTR},
 };
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSView, NSWindow, NSWindowCollectionBehavior};
+use objc2_app_kit::{NSApplication, NSColor, NSView, NSWindow, NSWindowCollectionBehavior};
 #[cfg(target_os = "macos")]
 use objc2_foundation::MainThreadMarker;
 
@@ -108,6 +108,49 @@ pub struct GameWindow {
     pub focused: bool,
 }
 
+/// What a window list says about one window: enough to tell whether it covers
+/// another (macOS, whose frontmost application says nothing about a game on
+/// another screen).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct WindowFacts {
+    pub pid: i32,
+    pub layer: i64,
+    pub rect: ScreenRect,
+    pub alpha: f64,
+}
+
+/// Whether some window of `above` (the windows in front of the game, ordered
+/// or not) covers at least half of the game window, leaving out `own_pid`'s
+/// windows (Telescope's own main window and its overlay): the game is then
+/// *behind* something. A window on another screen never covers it, which is
+/// what makes "in front" mean "not covered" and not "the active application":
+/// with several screens the game can be in plain view while the focus is on
+/// another one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn game_is_covered(game: &ScreenRect, above: &[WindowFacts], own_pid: i32) -> bool {
+    const MIN_SIDE: u32 = 100;
+    let game_area = i64::from(game.width) * i64::from(game.height);
+    above.iter().any(|window| {
+        if window.layer != 0
+            || window.pid == own_pid
+            || window.rect.width < MIN_SIDE
+            || window.rect.height < MIN_SIDE
+            || window.alpha <= 0.0
+        {
+            return false;
+        }
+        let left = i64::from(game.x).max(i64::from(window.rect.x));
+        let top = i64::from(game.y).max(i64::from(window.rect.y));
+        let right = (i64::from(game.x) + i64::from(game.width))
+            .min(i64::from(window.rect.x) + i64::from(window.rect.width));
+        let bottom = (i64::from(game.y) + i64::from(game.height))
+            .min(i64::from(window.rect.y) + i64::from(window.rect.height));
+        let overlap = (right - left).max(0) * (bottom - top).max(0);
+        overlap * 2 >= game_area
+    })
+}
+
 /// Finds the game window.
 ///
 /// Only the window's position and size are read: no pixels, no process
@@ -124,9 +167,11 @@ impl GameWindowTracker {
 
     /// A tracker for windows whose title starts with `title_prefix`.
     /// Names of the game's process on macOS, where window titles are not
-    /// readable without a permission. Change them with
+    /// readable without a permission: the client's windows are owned by `EVE`
+    /// (seen on a Mac), and `EVE Online` is the name of the application. The
+    /// match is exact, so `EVE Launcher` is not the game. Change them with
     /// [`Self::with_process_names`] if the client is called something else.
-    pub const DEFAULT_PROCESS_NAMES: [&'static str; 1] = ["EVE Online"];
+    pub const DEFAULT_PROCESS_NAMES: [&'static str; 2] = ["EVE", "EVE Online"];
 
     pub fn new(title_prefix: impl Into<String>) -> Self {
         Self {
@@ -537,6 +582,24 @@ impl OverlayPlacement {
     }
 }
 
+/// Where the mouse pointer is on screen, in the units of the system's window
+/// coordinates (Windows only; elsewhere `None`). It lets the overlay react to
+/// the pointer while its window is click-through and receives no mouse events.
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+pub fn cursor_position() -> Option<(i32, i32)> {
+    let mut point = POINT::default();
+    // SAFETY: `point` is a valid out pointer for the call.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point) }.ok()?;
+    Some((point.x, point.y))
+}
+
+/// Where the mouse pointer is on screen (Windows only; elsewhere `None`).
+#[cfg(not(target_os = "windows"))]
+pub fn cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
 /// Whether a game is in *exclusive* full screen, where no other window can be
 /// drawn over it (Windows only; elsewhere the answer is always `false`).
 ///
@@ -568,6 +631,19 @@ impl FullScreenState {
     }
 }
 
+/// Who blends the overlay with what is behind it, which decides how the
+/// caller paints it (see [`OverlayWindow::blending`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blending {
+    /// The system blends the whole window by the opacity given to
+    /// [`OverlayWindow::set_opacity_by_title`]: the content is drawn opaque.
+    Window,
+    /// The alpha of the pixels drawn is used: the unpainted parts are
+    /// see-through and the painted ones as translucent as drawn. The window
+    /// has to be created transparent.
+    Pixels,
+}
+
 /// Native settings of the overlay window: above the game, click-through, out
 /// of the task switcher, and (macOS) visible over a full screen app.
 ///
@@ -576,6 +652,10 @@ impl FullScreenState {
 #[derive(Debug, Clone, Copy)]
 pub struct OverlayWindow {
     click_through: bool,
+    input_rect: Option<ScreenRect>,
+    /// The opacity (0 to 255) last given to the window, so it is not set again
+    /// while it does not change.
+    opacity_applied: Option<u8>,
 }
 
 impl OverlayWindow {
@@ -583,7 +663,29 @@ impl OverlayWindow {
     pub fn new() -> Self {
         Self {
             click_through: true,
+            input_rect: None,
+            opacity_applied: None,
         }
+    }
+
+    /// The part of a click-through window that still takes the mouse.
+    pub fn input_rect(&self) -> Option<ScreenRect> {
+        self.input_rect
+    }
+
+    /// Keeps a part of the click-through window (pixels, relative to its
+    /// top-left corner) clickable, e.g. a button, while the rest lets the
+    /// mouse through. Only the X11 backend (Shape input region) honours it;
+    /// elsewhere the window is click-through as a whole, and the caller has to
+    /// toggle [`Self::set_click_through`] instead. Takes effect on the next
+    /// apply.
+    pub fn set_input_rect(&mut self, rect: Option<ScreenRect>) {
+        self.input_rect = rect;
+    }
+
+    /// Whether [`Self::set_input_rect`] is honoured on this platform.
+    pub const fn supports_input_rect() -> bool {
+        cfg!(target_os = "linux")
     }
 
     /// Whether the overlay lets the mouse through to the game.
@@ -685,7 +787,7 @@ impl OverlayWindow {
             RawWindowHandle::Wayland(_) => return Err(OverlayError::Unsupported),
             _ => return Err(OverlayError::InvalidHandle),
         };
-        x11::X11Session::connect()?.apply(id, self.click_through)
+        x11::X11Session::connect()?.apply(id, self.click_through, self.input_rect)
     }
 
     /// Applies the native settings to the window behind `window`.
@@ -708,6 +810,138 @@ impl OverlayWindow {
         self.apply_hwnd(hwnd)
     }
 
+    /// Who blends the overlay on this platform: the system, the whole window
+    /// (Windows, X11), or the pixels it draws (macOS and anywhere else). The
+    /// caller paints accordingly, and creates the window transparent only for
+    /// [`Blending::Pixels`].
+    pub const fn blending() -> Blending {
+        if cfg!(any(target_os = "windows", target_os = "linux")) {
+            Blending::Window
+        } else {
+            Blending::Pixels
+        }
+    }
+
+    /// Makes the window titled `title` as opaque as `opacity` says, 0
+    /// (invisible) to 1 (opaque), however the platform does it (see
+    /// [`Self::blending`]). Cheap and idempotent: call it every frame, the
+    /// window is only touched when the opacity changes (or, where the toolkit
+    /// can undo it behind the scenes, always). The window may not exist yet on
+    /// the first frames: [`OverlayError::InvalidHandle`] means try again.
+    /// Where the system has no way to do it this is a quiet success, and the
+    /// window stays opaque.
+    pub fn set_opacity_by_title(&mut self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+        let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        match Self::blending() {
+            Blending::Pixels => self.make_pixels_see_through(title),
+            Blending::Window => {
+                if self.opacity_applied == Some(alpha) {
+                    return Ok(());
+                }
+                match self.blend_window(title, opacity) {
+                    Ok(()) | Err(OverlayError::Unsupported) => {
+                        self.opacity_applied = Some(alpha);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
+
+    /// Forgets what was given to the window: call it when the window is
+    /// closed, so the next one gets its opacity again.
+    pub fn window_closed(&mut self) {
+        self.opacity_applied = None;
+    }
+
+    /// Blends the whole window with what is behind it, `opacity` from 0
+    /// (invisible) to 1 (opaque). The window is drawn opaque: the system does
+    /// the blending, so this does not depend on the window having a swapchain
+    /// with an alpha channel (on Windows that needs DirectComposition and often
+    /// shows a white background).
+    #[cfg(target_os = "windows")]
+    #[allow(unsafe_code)]
+    fn blend_window(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+        // SAFETY: plain lookup by title; the result is only used if it is Ok.
+        let hwnd = unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) }
+            .map_err(|_| OverlayError::InvalidHandle)?;
+        let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+        // SAFETY: `hwnd` belongs to a live window of this process.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            if style & WS_EX_LAYERED.0 == 0 {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (style | WS_EX_LAYERED.0) as isize);
+            }
+            SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA)
+                .map_err(|error| OverlayError::Os(error.to_string()))
+        }
+    }
+
+    /// Gives the window its opacity through the compositor
+    /// (`_NET_WM_WINDOW_OPACITY`): the window is drawn opaque and the whole of
+    /// it is blended. Without a connection to an X server (a native Wayland
+    /// session) it is [`OverlayError::Unsupported`].
+    #[cfg(target_os = "linux")]
+    fn blend_window(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
+        let session = x11::X11Session::connect().map_err(|_| OverlayError::Unsupported)?;
+        session.set_opacity_by_title(title, opacity)
+    }
+
+    /// Nothing blends the whole window here.
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    fn blend_window(&self, _title: &str, _opacity: f32) -> Result<(), OverlayError> {
+        Err(OverlayError::Unsupported)
+    }
+
+    /// Lets the window blend the alpha of the pixels it draws with what is
+    /// behind it, so the unpainted parts are see-through and the painted ones
+    /// translucent. The window is created transparent by the UI toolkit, but
+    /// its surface is configured opaque unless the *main* window asked for
+    /// transparency too: this undoes that for this window alone, on its own
+    /// Core Animation layer, so the main window stays a normal one.
+    #[cfg(target_os = "macos")]
+    fn make_pixels_see_through(&self, title: &str) -> Result<(), OverlayError> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| OverlayError::Os(String::from("not on the main thread")))?;
+        let application = NSApplication::sharedApplication(mtm);
+        for window in application.windows().iter() {
+            if window.title().to_string() != title {
+                continue;
+            }
+            if window.isOpaque() {
+                window.setOpaque(false);
+            }
+            window.setBackgroundColor(Some(&NSColor::clearColor()));
+            // the shadow of a window is cut from its alpha: with only a panel
+            // painted it would draw an outline around the window's rectangle
+            window.setHasShadow(false);
+            if let Some(layer) = window.contentView().and_then(|view| view.layer()) {
+                if layer.isOpaque() {
+                    layer.setOpaque(false);
+                }
+                // SAFETY: on the main thread, and the array is only read
+                // while nothing else changes the layer tree.
+                #[allow(unsafe_code)]
+                if let Some(sublayers) = unsafe { layer.sublayers() } {
+                    for sublayer in sublayers.iter() {
+                        if sublayer.isOpaque() {
+                            sublayer.setOpaque(false);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+        Err(OverlayError::InvalidHandle)
+    }
+
+    /// Where nothing needs doing.
+    #[cfg(not(target_os = "macos"))]
+    fn make_pixels_see_through(&self, _title: &str) -> Result<(), OverlayError> {
+        Ok(())
+    }
+
     /// Applies the native settings to the window of this process whose title
     /// is `title` (see the Windows version). Must run on the main thread.
     #[cfg(target_os = "macos")]
@@ -728,7 +962,7 @@ impl OverlayWindow {
     /// (see the Windows version). X11 only.
     #[cfg(target_os = "linux")]
     pub fn apply_by_title(&self, title: &str) -> Result<(), OverlayError> {
-        x11::X11Session::connect()?.apply_by_title(title, self.click_through)
+        x11::X11Session::connect()?.apply_by_title(title, self.click_through, self.input_rect)
     }
 
     /// Applies the native settings to the window whose title is `title`.
@@ -831,8 +1065,10 @@ mod tests {
     #[test]
     fn the_process_is_recognised_by_its_name() {
         let tracker = GameWindowTracker::default();
+        assert!(tracker.matches_process("EVE"));
         assert!(tracker.matches_process("EVE Online"));
         assert!(!tracker.matches_process("EVE Launcher"));
+        assert!(!tracker.matches_process("Firefox Developer Edition"));
         assert!(!tracker.matches_process("Safari"));
         let tracker = tracker.with_process_names([String::from("exefile")]);
         assert!(tracker.matches_process("exefile"));
@@ -987,12 +1223,91 @@ mod tests {
         assert!(!FullScreenState::new().is_exclusive());
     }
 
+    fn window(pid: i32, layer: i64, x: i32, width: u32, height: u32) -> WindowFacts {
+        WindowFacts {
+            pid,
+            layer,
+            rect: ScreenRect::new(x, 0, width, height),
+            alpha: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_game_is_covered_only_by_a_window_that_hides_most_of_it() {
+        let game = ScreenRect::new(0, 0, 1920, 1080);
+        // a maximized browser over it
+        assert!(game_is_covered(&game, &[window(40, 0, 0, 1920, 1080)], 10));
+        // a small window in a corner does not
+        assert!(!game_is_covered(&game, &[window(40, 0, 0, 300, 300)], 10));
+        // nothing above it
+        assert!(!game_is_covered(&game, &[], 10));
+    }
+
+    #[test]
+    fn a_window_on_another_screen_does_not_cover_the_game() {
+        // the game on the left screen, a maximized window on the right one
+        let game = ScreenRect::new(0, 0, 1920, 1080);
+        assert!(!game_is_covered(
+            &game,
+            &[window(40, 0, 1920, 1920, 1080)],
+            10
+        ));
+    }
+
+    #[test]
+    fn menus_ghosts_and_our_own_windows_do_not_cover_it() {
+        let game = ScreenRect::new(0, 0, 1920, 1080);
+        // the menu bar and the Dock live on other layers
+        assert!(!game_is_covered(&game, &[window(1, 25, 0, 1920, 1080)], 10));
+        // Telescope's own window
+        assert!(!game_is_covered(&game, &[window(10, 0, 0, 1920, 1080)], 10));
+        // a tiny invisible one
+        assert!(!game_is_covered(&game, &[window(20, 0, 0, 1, 1)], 10));
+        // a fully transparent one
+        let mut ghost = window(50, 0, 0, 1920, 1080);
+        ghost.alpha = 0.0;
+        assert!(!game_is_covered(&game, &[ghost], 10));
+    }
+
+    #[test]
+    fn who_blends_follows_the_platform() {
+        let expected = if cfg!(any(target_os = "windows", target_os = "linux")) {
+            Blending::Window
+        } else {
+            Blending::Pixels
+        };
+        assert_eq!(OverlayWindow::blending(), expected);
+    }
+
+    #[test]
+    fn a_window_that_is_not_there_is_not_ready_yet() {
+        // nothing carries this title: the caller has to try again (on a
+        // platform with nothing to do it is a quiet success instead; on macOS
+        // a test thread is not the main one, which AppKit requires)
+        let mut overlay = OverlayWindow::new();
+        let answer = overlay.set_opacity_by_title("no such window", 0.5);
+        assert!(
+            match &answer {
+                Ok(()) | Err(OverlayError::InvalidHandle) => true,
+                Err(OverlayError::Os(message)) => message.contains("main thread"),
+                Err(_) => false,
+            },
+            "{answer:?}"
+        );
+        // closing it forgets what was applied
+        overlay.window_closed();
+        assert_eq!(overlay.opacity_applied, None);
+    }
+
     #[test]
     fn click_through_defaults_on_and_can_change() {
         let mut overlay = OverlayWindow::new();
         assert!(overlay.click_through());
         overlay.set_click_through(false);
         assert!(!overlay.click_through());
+        assert_eq!(overlay.input_rect(), None);
+        overlay.set_input_rect(Some(ScreenRect::new(1, 2, 3, 4)));
+        assert_eq!(overlay.input_rect(), Some(ScreenRect::new(1, 2, 3, 4)));
     }
 
     #[test]

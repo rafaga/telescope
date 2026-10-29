@@ -10,6 +10,19 @@ versions were written for the tag that shipped them.
 
 ## [Unreleased]
 
+### Added
+
+* Overlay: a panel over the EVE window that lists the events near the linked
+  characters, no longer behind a cargo feature. Every intel report or killmail
+  in a system within the alarm radius shows as a row (jumps, system, summary,
+  age), newest first, colored by distance. While it is being positioned it
+  shows an example, and once locked with nothing to show it paints nothing. The
+  panel is semi-transparent and drawn in Oxanium (weight 600, bold for the
+  system and the jumps). It hides while EVE is not in front (Telescope's own
+  windows still show it; an option keeps it over any window), and a locked one
+  hides when its client closes (the one of each character, where window titles
+  are readable). Turn it on and set its opacity in Settings -> Alerts.
+
 ## [1.0.6] - 2026-10-23
 
 ### Changed

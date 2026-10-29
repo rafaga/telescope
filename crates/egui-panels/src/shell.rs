@@ -56,6 +56,29 @@ impl SettingsLayout {
         selected: &mut T,
         show_page: impl FnOnce(&mut Ui, &T),
     ) -> Option<Action> {
+        self.show_with_nav(
+            ui,
+            |ui, selected| {
+                nav.show(ui, selected);
+            },
+            bar,
+            selected,
+            show_page,
+        )
+    }
+
+    /// Like [`Self::show`], with any navigation: `show_nav` draws it in the
+    /// left panel (scrollable) and updates `selected` when the user picks
+    /// another page. Use it for a navigation that is not a [`SideNav`], such
+    /// as a tree.
+    pub fn show_with_nav<T>(
+        self,
+        ui: &mut Ui,
+        show_nav: impl FnOnce(&mut Ui, &mut T),
+        bar: ActionBar<'_>,
+        selected: &mut T,
+        show_page: impl FnOnce(&mut Ui, &T),
+    ) -> Option<Action> {
         let theme = Theme::get(ui.ctx());
         let palette = theme.palette(ui.visuals());
         let side_frame = Frame::new()
@@ -72,7 +95,7 @@ impl SettingsLayout {
             .show(ui, |ui| {
                 ScrollArea::vertical()
                     .id_salt(self.id.with("nav_scroll"))
-                    .show(ui, |ui| nav.show(ui, selected));
+                    .show(ui, |ui| show_nav(ui, selected));
             });
         CentralPanel::default()
             .frame(

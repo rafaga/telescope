@@ -32,6 +32,9 @@ mod generated {
 /// The SIL Open Font License, as shipped with Noto Sans CJK.
 const OFL: &str = include_str!("../../../../../assets/NotoSansCJK-LICENSE.txt");
 
+/// The license of Oxanium, with its copyright line.
+const OXANIUM_LICENSE: &str = include_str!("../../../../../assets/Oxanium-LICENSE.txt");
+
 /// The proprietary notice CCP's Developer License Agreement (section 7.1,
 /// "Proprietary Notices") requires for EVE's game data, word for word, and
 /// where the agreement is. The notice's year is CCP's own.
@@ -92,6 +95,15 @@ impl Default for LicensesWindow {
                 text: format!(
                     "Digitized data copyright 2012-2016, The Mozilla Foundation and Telefonica S.A.\n\n{OFL}"
                 ),
+                bundled: true,
+                standard: false,
+            },
+            Entry {
+                name: String::from("Oxanium"),
+                version: String::new(),
+                license: String::from("OFL-1.1"),
+                repository: String::from("https://github.com/sevmeyer/oxanium"),
+                text: OXANIUM_LICENSE.to_owned(),
                 bundled: true,
                 standard: false,
             },
