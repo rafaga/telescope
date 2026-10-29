@@ -687,7 +687,12 @@ fn text(key: &str) -> String {
 fn overlay_page(app: TelescopeApp) -> egui_kittest::Harness<'static, TelescopeApp> {
     egui_kittest::Harness::builder()
         .with_size([900.0, 2400.0])
-        .with_context_setup(|ctx| ctx.set_fonts(TelescopeApp::font_definitions()))
+        .with_context_setup(|ctx| {
+            ctx.set_fonts(TelescopeApp::font_definitions());
+            ctx.add_font_provider(std::sync::Arc::new(
+                egui_system_font_provider::SystemFontProvider::new(),
+            ));
+        })
         .build_ui_state(
             |ui, app: &mut TelescopeApp| app.show_alerts_overlay_page(ui),
             app,
@@ -708,7 +713,12 @@ fn settings_screen(
     egui_kittest::Harness::builder()
         .with_size([1200.0, 2400.0])
         .with_accessibility_check(check)
-        .with_context_setup(|ctx| ctx.set_fonts(TelescopeApp::font_definitions()))
+        .with_context_setup(|ctx| {
+            ctx.set_fonts(TelescopeApp::font_definitions());
+            ctx.add_font_provider(std::sync::Arc::new(
+                egui_system_font_provider::SystemFontProvider::new(),
+            ));
+        })
         .build_ui_state(
             |ui, app: &mut TelescopeApp| app.show_settings_screen(ui),
             app,
@@ -805,7 +815,7 @@ fn the_groups_of_the_tree_are_always_open() {
     for group in [
         SettingsPage::Rules.title(),
         text("settings.groups.sources"),
-        text("settings.groups.alerts"),
+        SettingsPage::Alerts.title(),
         SettingsPage::Application.title(),
     ] {
         harness
@@ -825,6 +835,7 @@ fn the_intel_pages_have_no_numbered_steps_at_the_top() {
     for page in [
         SettingsPage::Sources,
         SettingsPage::Rules,
+        SettingsPage::Alerts,
         SettingsPage::AlertsVisual,
     ] {
         let (app, dir) = app("kittest-no-steps");
@@ -846,7 +857,7 @@ fn the_intel_pages_have_no_numbered_steps_at_the_top() {
 #[test]
 fn a_change_is_kept_by_apply_and_undone_by_cancel() {
     let (app, dir) = app("kittest-apply");
-    let mut harness = settings_screen(app, SettingsPage::AlertsVisual, true);
+    let mut harness = settings_screen(app, SettingsPage::Alerts, true);
     harness.run();
     let radius = harness.state().settings.get_warning_area();
     let other = if radius == 3 { 5 } else { 3 };

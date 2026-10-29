@@ -244,6 +244,39 @@ pub(crate) struct Channels {
     monitored: Arc<Vec<String>>,
 }
 
+/// How the zKillboard source behaves (see `intel::zkillboard`). The feed has
+/// no filters of its own, so the ones here are applied by Telescope to every
+/// killmail it reads, before the rules see it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ZKillboardOptions {
+    /// Read the feed while a rule asks for it. Off pauses the source without
+    /// touching the rules. `serde(default)`: on.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Killmails worth less than this many ISK are left out. 0 keeps them
+    /// all.
+    #[serde(default)]
+    pub min_isk: u64,
+    /// Leave out the killmails nobody but NPCs took part in.
+    #[serde(default)]
+    pub ignore_npc_only: bool,
+}
+
+impl Default for ZKillboardOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_isk: 0,
+            ignore_npc_only: false,
+        }
+    }
+}
+
+impl ZKillboardOptions {
+    /// Highest minimum value that can be asked for, in ISK.
+    pub(crate) const MAX_MIN_ISK: u64 = 10_000_000_000;
+}
+
 /// Layout and language of the main window, remembered between runs. The
 /// layout is saved on its own, as soon as it changes (see
 /// [`Settings::save_ui_state`]): the log panel isn't edited in the Settings
@@ -397,6 +430,9 @@ pub(crate) struct Settings {
     // `default`: `telescope.toml` files from before this section existed.
     #[serde(default)]
     log: LogOptions,
+    // `default`: `telescope.toml` files from before this section existed.
+    #[serde(default)]
+    zkillboard: ZKillboardOptions,
     #[serde(skip)]
     internal: InternalDefaults,
     #[serde(skip)]
@@ -453,6 +489,7 @@ impl Default for Settings {
             saved: false,
             ui: UiState::default(),
             log: LogOptions::default(),
+            zkillboard: ZKillboardOptions::default(),
             internal: InternalDefaults::default(),
             channels: Channels {
                 available: HashMap::new(),
@@ -797,6 +834,21 @@ impl Settings {
     pub(crate) fn set_overlay_enabled(&mut self, enabled: bool) {
         self.mapping.overlay_enabled = enabled;
         self.saved = false;
+    }
+
+    pub(crate) fn get_zkillboard(&self) -> &ZKillboardOptions {
+        &self.zkillboard
+    }
+
+    pub(crate) fn set_zkillboard(&mut self, options: ZKillboardOptions) {
+        let options = ZKillboardOptions {
+            min_isk: options.min_isk.min(ZKillboardOptions::MAX_MIN_ISK),
+            ..options
+        };
+        if self.zkillboard != options {
+            self.zkillboard = options;
+            self.saved = false;
+        }
     }
 
     pub(crate) fn get_overlay_hide_unfocused(&self) -> bool {
@@ -1424,6 +1476,41 @@ mod tests {
             old.alert_duration_secs,
             Mapping::DEFAULT_ALERT_DURATION_SECS
         );
+    }
+
+    #[test]
+    fn the_zkillboard_options_default_on_and_are_kept_within_bounds() {
+        let mut settings = saved_settings();
+        assert_eq!(*settings.get_zkillboard(), ZKillboardOptions::default());
+        assert!(settings.get_zkillboard().enabled);
+
+        // The same options are no change.
+        settings.set_zkillboard(ZKillboardOptions::default());
+        assert!(settings.its_saved());
+
+        settings.set_zkillboard(ZKillboardOptions {
+            enabled: false,
+            min_isk: u64::MAX,
+            ignore_npc_only: true,
+        });
+        assert!(!settings.its_saved());
+        assert!(!settings.get_zkillboard().enabled);
+        assert_eq!(
+            settings.get_zkillboard().min_isk,
+            ZKillboardOptions::MAX_MIN_ISK
+        );
+    }
+
+    #[test]
+    fn a_file_without_the_zkillboard_section_loads_the_defaults() {
+        let text = toml::to_string(&Settings::default()).unwrap();
+        let text: String = text
+            .split("\n[zkillboard]")
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let loaded: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(*loaded.get_zkillboard(), ZKillboardOptions::default());
     }
 
     /// Settings that count as already saved, to see which calls dirty them.

@@ -20,3 +20,9 @@ sde-build-cache
 **/tests/snapshots/**/*.new.png
 **/tests/snapshots/**/*.diff.png
 **/tests/snapshots/**/*.old.png
+
+# The log files of Telescope (see `app_log`).
+logs/
+
+# The zKillboard cache (see `kill_store`) and its write-ahead log.
+zkillboard_cache.sqlite*

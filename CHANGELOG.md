@@ -12,6 +12,29 @@ versions were written for the tag that shipped them.
 
 ### Added
 
+* Telescope writes a log file in the `logs` folder of its working directory
+  (`telescope.<date>.log`, one file a day, the last seven kept). It follows
+  `RUST_LOG` and, when that is not set, keeps the warnings of everything and
+  the information of `telescope` and `webb`.
+* zKillboard keeps what it learns in an SQLite file next to the SDE
+  (`zkillboard_cache.sqlite`, not encrypted): the killmails of the last hour,
+  the counts of the last day and where the feed walk got to. After a restart
+  the tooltips do not ask zKillboard or ESI again for what is still good, and
+  the feed reads only the files published meanwhile.
+* Default rules for zKillboard: an input, and three detections that read the
+  facts of each killmail (system, ships, pilots) into the tooltips, the log,
+  the visual alert and the sound. A killmail alerts only within the alert
+  radius. Killmails and chat reports are not matched with each other (there
+  is no reliable way to tell they are the same event): both alert. The tooltip does not take an
+  alert that comes from a killmail as a report to check the killmails against.
+  Because the default rules have the input, the live feed runs from the start
+  (the switch in Settings -> zKillboard pauses it). Player database schema 6
+  adds the chain to the rules already stored, keeping them as they are, and
+  nothing is added when the rules already have a zKillboard input.
+* An Output node takes the cables of any number of rules, with no aggregator
+  in between: the messages that reach it are one flow. An aggregator is for
+  logic inside a rule; every other node still takes a single cable per pin.
+
 * Overlay: a panel over the EVE window that lists the events near the linked
   characters, no longer behind a cargo feature. Every intel report or killmail
   in a system within the alarm radius shows as a row (jumps, system, summary,
@@ -22,6 +45,12 @@ versions were written for the tag that shipped them.
   windows still show it; an option keeps it over any window), and a locked one
   hides when its client closes (the one of each character, where window titles
   are readable). Turn it on and set its opacity in Settings -> Alerts.
+
+### Changed
+
+* The settings tree and the button that adds maps no longer use emojis: the
+  rows are plain text, and the button is a "+" of the interface font (the
+  emoji sat high in the button).
 
 ## [1.0.6] - 2026-10-23
 
@@ -47,10 +76,12 @@ versions were written for the tag that shipped them.
 
 ### Fixed
 
-* Emojis are drawn again. egui 0.37 no longer bundles its emoji fonts by
-  default, so the settings page icons, the node tooltip icons and the message
-  icons were missing. The `monochrome_emoji_fonts` feature of egui is enabled
-  to bundle them (October 2026).
+* Emojis are drawn again, with the platform's own color emoji font. egui 0.37
+  no longer bundles its emoji fonts by default, so the settings page icons,
+  the node tooltip icons and the message icons were missing. The desktop
+  build uses the emojis of the system; the web build, which can't read the
+  system's fonts, enables the `monochrome_emoji_fonts` feature of egui to
+  bundle them (October 2026).
 
 ## [1.0.5] - 2026-10-18
 

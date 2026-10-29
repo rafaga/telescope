@@ -21,13 +21,6 @@ impl TelescopeApp {
         });
     }
 
-    /// The zKillboard page: empty for now, only its title.
-    pub(super) fn show_zkillboard_page(&mut self, ui: &mut egui::Ui) {
-        egui_panels::page(ui, |ui| {
-            egui_panels::page_header(ui, &SettingsPage::Zkillboard.title(), None);
-        });
-    }
-
     fn show_folder_section(&mut self, ui: &mut egui::Ui) {
         Section::new(&t!("settings.sources.folder_title"))
             .description(&t!("settings.sources.folder_description"))

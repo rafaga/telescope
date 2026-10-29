@@ -170,7 +170,9 @@ impl TelescopeApp {
             expanded_panel,
             |ui, is_expanded| {
                 ui.horizontal(|ui| {
-                    let arrow = if is_expanded { "⏷" } else { "⏵" };
+                    // The log opens upwards. Both are in Noto Sans CJK;
+                    // egui 0.37 bundles no font with ⏷ and ⏵.
+                    let arrow = if is_expanded { "▼" } else { "▲" };
                     let title = t!("log.title", count = messages.len());
                     let header = egui::Button::new(format!("{arrow} {title}")).frame(false);
                     let hint = if is_expanded {

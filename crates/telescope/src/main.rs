@@ -69,8 +69,25 @@ fn main() -> eframe::Result {
     //     idempotent); open the Tracy desktop app to connect, it
     //     auto-discovers the running process.
 
+    // The working directory is chosen first: the log file lives in it (see
+    // `telescope::app_dirs`: installed copies keep their files in the
+    // per-user data folder).
+    telescope::app_dirs::prepare();
+
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_filter(tracing_subscriber::EnvFilter::from_default_env());
+
+    //   - The log file, with a new file every day (see `telescope::app_log`).
+    //     `RUST_LOG` filters it when set; it keeps `telescope` and `webb`
+    //     at INFO when not. Kept alive until the end of `main`, so what is
+    //     waiting is written on exit.
+    let file_log = telescope::app_log::FileLog::start(telescope::app_log::FileLogConfig::default());
+    let file_layer = file_log.as_ref().map(|log| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(log.writer())
+            .with_filter(log.filter())
+    });
 
     //   - `PanelLayer` copies WARN/ERROR events from dependencies (a portrait
     //     that fails to download, an ESI error, ...) into the on-screen log
@@ -83,6 +100,7 @@ fn main() -> eframe::Result {
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(fmt_layer)
+            .with(file_layer)
             .with(panel_layer)
             .with(tracing_tracy::TracyLayer::default()),
     )
@@ -91,13 +109,10 @@ fn main() -> eframe::Result {
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(fmt_layer)
+            .with(file_layer)
             .with(panel_layer),
     )
     .expect("setting the global tracing subscriber");
-
-    // Installed copies keep their files in the per-user data folder; see
-    // `telescope::app_dirs`.
-    telescope::app_dirs::prepare();
 
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

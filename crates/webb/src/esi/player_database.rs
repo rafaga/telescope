@@ -36,7 +36,10 @@ pub(crate) struct PlayerDatabase {}
 ///   is on (`overlay_enabled`) and where the user left it (`overlay_anchor`,
 ///   `overlay_x`, `overlay_y`, `overlay_width`, `overlay_height`,
 ///   `overlay_ref_height`; all NULL until it is placed).
-pub const SCHEMA_VERSION: i32 = 5;
+/// - 6: the default rules gained the zKillboard input and its detections
+///   (see [`RuleGraph::with_zkillboard_rules`]): they are added to the rules
+///   stored by version 5, which are otherwise left as they are.
+pub const SCHEMA_VERSION: i32 = 6;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
@@ -48,6 +51,7 @@ const MIGRATIONS: &[Migration] = &[
     PlayerDatabase::migrate_2_to_3,
     PlayerDatabase::migrate_3_to_4,
     PlayerDatabase::migrate_4_to_5,
+    PlayerDatabase::migrate_5_to_6,
 ];
 
 // One migration per version step, always.
@@ -262,6 +266,24 @@ impl PlayerDatabase {
             if present == 0 {
                 conn.execute_batch(&format!("ALTER TABLE char ADD COLUMN {name} {definition};"))?;
             }
+        }
+        Ok(())
+    }
+
+    /// 5 -> 6: adds the default zKillboard rules to the stored graph, keeping
+    /// everything the user has there. A graph that has them (a database
+    /// created from scratch) or has its own zKillboard input is not touched.
+    #[tracing::instrument]
+    fn migrate_5_to_6(conn: &Connection) -> Result<(), Error> {
+        let graph = PlayerDatabase::load_graph(conn)?;
+        // An empty graph is how a database without rules looks: the default
+        // graph is used then, and it has the zKillboard rules already.
+        if graph.nodes.is_empty() {
+            return Ok(());
+        }
+        let migrated = graph.clone().with_zkillboard_rules();
+        if migrated != graph {
+            PlayerDatabase::save_graph(conn, &migrated)?;
         }
         Ok(())
     }
@@ -1150,6 +1172,46 @@ mod tests {
         assert_eq!(characters.len(), 1);
         assert_eq!(characters[0].name, "Pilot");
         assert_eq!(characters[0].overlay, CharacterOverlay::default());
+    }
+
+    #[test]
+    fn migrating_to_6_adds_the_zkillboard_rules_keeping_the_users_graph() {
+        let conn = memory_connection();
+        PlayerDatabase::create_database(&conn).unwrap();
+        // The rules of version 5: the default ones without the zKillboard
+        // chain, and a rule of the user's.
+        let mut old = RuleGraph::default_graph();
+        old.nodes.retain(|node| !node.id.starts_with("z"));
+        old.edges
+            .retain(|edge| !edge.from.starts_with("z") && !edge.to.starts_with("z"));
+        for node in &mut old.nodes {
+            if let NodeKind::Aggregator(aggregator) = &mut node.kind {
+                match node.id.as_str() {
+                    "log_in" => aggregator.inputs = 4,
+                    "tooltip_in" => aggregator.inputs = 5,
+                    _ => {}
+                }
+            }
+        }
+        old.nodes[1].x = 12345.0;
+        PlayerDatabase::save_graph(&conn, &old).unwrap();
+        conn.execute("UPDATE metadata SET value = '5' WHERE id = 'db'", [])
+            .unwrap();
+
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Migrated(5)
+        );
+        let graph = PlayerDatabase::load_graph(&conn).unwrap();
+        assert!(graph.validate().is_empty());
+        assert!(graph.nodes.iter().any(|node| node.id == "zkillboard"));
+        // What was there is as it was.
+        assert_eq!(graph.nodes[1].x, 12345.0);
+        assert_eq!(graph.nodes[..old.nodes.len()], old.nodes[..]);
+        // Migrating again changes nothing.
+        let again =
+            PlayerDatabase::migrate_5_to_6(&conn).and_then(|()| PlayerDatabase::load_graph(&conn));
+        assert_eq!(again.unwrap(), graph);
     }
 
     #[test]

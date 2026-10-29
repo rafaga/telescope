@@ -214,7 +214,9 @@ pub fn menu_button(
     variant: Variant,
     add_contents: impl FnOnce(&mut Ui),
 ) -> Response {
-    let text = format!("{} ⏷", text.into());
+    // ▼ (Geometric Shapes, in the CJK font every app of this workspace
+    // loads), not ⏷: egui 0.37 bundles no font with the latter.
+    let text = format!("{} ▼", text.into());
     egui::containers::menu::MenuButton::from_button(styled_button(ui, text, variant))
         .ui(ui, add_contents)
         .0

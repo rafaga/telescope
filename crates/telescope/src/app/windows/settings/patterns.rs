@@ -956,11 +956,19 @@ impl TelescopeApp {
         let graph_id = egui::Id::unique("rules_graph");
         let snarl_selection = egui_snarl::ui::get_selected_nodes(graph_id, ui.ctx());
         let show_ids = self.node_ids_visible();
+        let graph_ids: HashSet<String> = self
+            .patterns_editor
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(canvas), |ui| {
             let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
             let mut viewer = RulesViewer {
                 state: &mut *state,
                 show_ids,
+                graph_ids,
             };
             SnarlWidget::new()
                 .id(graph_id)
@@ -1499,9 +1507,19 @@ struct RulesViewer<'a> {
     state: &'a mut GraphState,
     /// Show each node's internal id in its header (a Debug window option).
     show_ids: bool,
+    /// The ids of the whole working graph: the canvas shows only one rule, but
+    /// the ids of the others must not be reused.
+    graph_ids: HashSet<String>,
 }
 
 impl RulesViewer<'_> {
+    /// An id that no node of the graph or of the canvas has.
+    fn fresh_id(&self, snarl: &Snarl<Node>, prefix: &str) -> String {
+        let mut taken = collect_node_ids(snarl);
+        taken.extend(self.graph_ids.iter().cloned());
+        unique_id(&taken, prefix)
+    }
+
     /// Selects `node` when `rect` (a part of it) is clicked: the canvas only
     /// selects with Shift or a rectangle, which is not how anyone expects a
     /// click on a node to work.
@@ -1666,7 +1684,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         ui.menu_button(t!("settings.patterns.add_detection"), |ui| {
             for type_name in DETECTION_TYPES {
                 if ui.button(detection_type_label(type_name)).clicked() {
-                    let id = unique_id(&collect_node_ids(snarl), "detection");
+                    let id = self.fresh_id(snarl, "detection");
                     snarl.insert_node(
                         pos,
                         Node {
@@ -1721,7 +1739,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         });
         ui.menu_button(t!("settings.patterns.add_logic"), |ui| {
             if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
-                let id = unique_id(&collect_node_ids(snarl), "aggregator");
+                let id = self.fresh_id(snarl, "aggregator");
                 snarl.insert_node(
                     pos,
                     Node {
@@ -1737,7 +1755,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
             }
             ui.separator();
             if ui.button(t!("settings.patterns.kind_formatter")).clicked() {
-                let id = unique_id(&collect_node_ids(snarl), "formatter");
+                let id = self.fresh_id(snarl, "formatter");
                 snarl.insert_node(
                     pos,
                     Node {
@@ -1762,8 +1780,14 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
     }
 
     fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<Node>) {
-        // An input pin takes a single cable: a new one replaces the old.
-        snarl.drop_inputs(to.id);
+        // An input pin takes a single cable: a new one replaces the old. An
+        // output takes the cables of any number of rules.
+        let is_output = snarl
+            .get_node(to.id.node)
+            .is_some_and(|node| matches!(node.kind, NodeKind::Output(_)));
+        if !is_output {
+            snarl.drop_inputs(to.id);
+        }
         snarl.connect(from.id, to.id);
         self.state.dirty = true;
     }

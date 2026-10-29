@@ -424,9 +424,43 @@ pub(crate) fn jumps_to_nearest_origin(
     None
 }
 
+/// The systems at most `max_jumps` stargates from `origin`, `origin` left
+/// out, nearest first, with how many jumps away each is.
+pub(crate) fn systems_within(systems: &JumpGraph, origin: u32, max_jumps: u8) -> Vec<(u32, u8)> {
+    let mut seen = HashSet::from([origin]);
+    let mut queue = VecDeque::from([(origin, 0u8)]);
+    let mut found = Vec::new();
+    while let Some((system, jumps)) = queue.pop_front() {
+        if jumps == max_jumps {
+            continue;
+        }
+        for &next in systems.get(&system).map_or(&[][..], Vec::as_slice) {
+            if seen.insert(next) {
+                found.push((next, jumps + 1));
+                queue.push_back((next, jumps + 1));
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod nearest_origin_tests {
-    use super::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within};
+    use super::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within, systems_within};
+
+    #[test]
+    fn systems_within_lists_the_neighbours_nearest_first() {
+        let links: [(u32, &[u32]); 5] =
+            [(1, &[2]), (2, &[1, 3]), (3, &[2, 4]), (4, &[3]), (9, &[])];
+        let graph: JumpGraph = links
+            .into_iter()
+            .map(|(id, connections)| (id, connections.to_vec()))
+            .collect();
+        assert_eq!(systems_within(&graph, 2, 2), vec![(1, 1), (3, 1), (4, 2)]);
+        assert_eq!(systems_within(&graph, 1, 1), vec![(2, 1)]);
+        assert!(systems_within(&graph, 9, 2).is_empty());
+        assert!(systems_within(&graph, 77, 2).is_empty());
+    }
 
     /// A straight chain 1 - 2 - 3 - 4 - 5, plus 6 connected to nothing.
     fn chain() -> JumpGraph {

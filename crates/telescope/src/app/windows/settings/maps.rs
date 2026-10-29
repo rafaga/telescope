@@ -76,29 +76,10 @@ impl TelescopeApp {
                     let (region, name) = &regions[index];
                     let count = characters_here.get(region);
                     if let Some(data) = tile_data.get_mut(region) {
-                        // The icon after the name, so the names stay aligned, in
-                        // the "ok" green; the name keeps the check box's own color.
+                        // The icon after the name, so the names stay aligned. It is
+                        // a color emoji: it keeps its own colors.
                         let label: egui::WidgetText = match count {
-                            Some(_) => {
-                                let palette =
-                                    egui_panels::Theme::get(ui.ctx()).palette(ui.visuals());
-                                let font = egui::TextStyle::Button.resolve(ui.style());
-                                let mut job = egui::text::LayoutJob::default();
-                                job.append(
-                                    name,
-                                    0.0,
-                                    egui::TextFormat::simple(
-                                        font.clone(),
-                                        egui::Color32::PLACEHOLDER,
-                                    ),
-                                );
-                                job.append(
-                                    &format!(" {CHARACTER_ICON}"),
-                                    0.0,
-                                    egui::TextFormat::simple(font, palette.ok),
-                                );
-                                job.into()
-                            }
+                            Some(_) => format!("{name} {CHARACTER_ICON}").into(),
                             None => name.as_str().into(),
                         };
                         let response = ui.checkbox(&mut data.show_on_startup, label);

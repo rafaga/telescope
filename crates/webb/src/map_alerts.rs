@@ -204,6 +204,9 @@ pub struct IntelAlert {
     pub summary: AlertSummary,
     /// Whether the tooltip line prefixes each section with its emoji.
     pub emojis: bool,
+    /// Whether it comes from a killmail (zKillboard) and not from a report:
+    /// a killmail is a fact, not something to check the killmails against.
+    pub killmail: bool,
 }
 
 impl IntelAlert {
@@ -227,7 +230,14 @@ impl IntelAlert {
             key,
             summary,
             emojis,
+            killmail: false,
         }
+    }
+
+    /// This alert, marked as coming from a killmail.
+    pub fn from_killmail(mut self) -> Self {
+        self.killmail = true;
+        self
     }
 
     /// Whether the node pulses (and the alarm may sound): every report but a

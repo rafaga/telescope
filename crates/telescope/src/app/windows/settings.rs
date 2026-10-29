@@ -32,6 +32,7 @@ mod characters;
 mod maps;
 pub(crate) mod patterns;
 mod sources;
+mod zkillboard;
 
 /// View state of the Settings pages that is not a setting.
 #[derive(Default)]
@@ -62,7 +63,8 @@ enum NavGroupId {
     Rules,
     /// Where a line is read from; inside `Rules`.
     Sources,
-    /// The ways a reported system is alerted; inside `Rules`.
+    /// The ways a reported system is alerted, and the page of how close it
+    /// has to be to alert (a group that is a page itself); inside `Rules`.
     Alerts,
     /// The application itself, a page that is also the root of the characters
     /// and the maps.
@@ -97,7 +99,8 @@ impl NavGroupId {
         match self {
             NavGroupId::Rules => Some(SettingsPage::Rules),
             NavGroupId::Application => Some(SettingsPage::Application),
-            NavGroupId::Sources | NavGroupId::Alerts => None,
+            NavGroupId::Alerts => Some(SettingsPage::Alerts),
+            NavGroupId::Sources => None,
         }
     }
 
@@ -109,22 +112,12 @@ impl NavGroupId {
         }
     }
 
-    /// An emoji before the name of the group, for the roots of the tree only
-    /// (a glyph of egui's bundled emoji fonts).
-    fn icon(self) -> Option<&'static str> {
-        match self {
-            NavGroupId::Rules => Some("🔀"),
-            NavGroupId::Application => Some("⚙"),
-            NavGroupId::Sources | NavGroupId::Alerts => None,
-        }
-    }
-
     fn title(self) -> String {
         match self {
             NavGroupId::Rules => SettingsPage::Rules.title(),
             NavGroupId::Application => SettingsPage::Application.title(),
             NavGroupId::Sources => t!("settings.groups.sources").into_owned(),
-            NavGroupId::Alerts => t!("settings.groups.alerts").into_owned(),
+            NavGroupId::Alerts => SettingsPage::Alerts.title(),
         }
     }
 
@@ -150,15 +143,6 @@ impl NavGroupId {
             ],
         }
     }
-}
-
-/// The emojis of the roots of the navigation tree (for the font tests).
-#[cfg(test)]
-pub(crate) fn root_icons() -> Vec<&'static str> {
-    NavGroupId::ALL
-        .into_iter()
-        .filter_map(NavGroupId::icon)
-        .collect()
 }
 
 /// A node of the navigation tree: a group of pages, or a page.
@@ -234,6 +218,7 @@ impl TelescopeApp {
                     SettingsPage::Sources => self.show_sources_page(ui),
                     SettingsPage::Zkillboard => self.show_zkillboard_page(ui),
                     SettingsPage::Rules => self.show_patterns_page(ui),
+                    SettingsPage::Alerts => self.show_alerts_page(ui),
                     SettingsPage::AlertsVisual => self.show_alerts_visual_page(ui),
                     SettingsPage::AlertsSound => self.show_alerts_sound_page(ui),
                     SettingsPage::AlertsOverlay => self.show_alerts_overlay_page(ui),
@@ -319,8 +304,8 @@ impl TelescopeApp {
 
     /// A page or a group of the navigation tree. A group holds its pages and
     /// the groups inside it, and has no button to collapse it. The rows are
-    /// plain, the tree's lines connect them; only the roots have an emoji. A
-    /// group that is a page itself (the rules, the application) opens it when
+    /// plain, the tree's lines connect them. A group
+    /// that is a page itself (the rules, the application) opens it when
     /// clicked, and has the circle of changes not applied like any page; a group
     /// that is not a page (the sources, the alerts) is a disabled row.
     fn add_nav_entry(
@@ -340,27 +325,20 @@ impl TelescopeApp {
             ui.painter().circle_filled(rect.center(), 5.0, dot);
             response.on_hover_text(&tip);
         };
-        let row = |title: String, page: Option<SettingsPage>, icon: Option<&'static str>| {
+        let row = |title: String, page: Option<SettingsPage>| {
             // A row with no page behind it only groups other rows: it is
             // shown disabled, as there is nothing to open.
             let has_page = page.is_some();
             move |ui: &mut egui::Ui| {
                 ui.add_enabled_ui(has_page, |ui| {
-                    // the emoji is a label of its own: the name stays the name
-                    if let Some(icon) = icon {
-                        ui.add(egui::Label::new(icon).selectable(false));
-                    }
                     ui.add(egui::Label::new(title.clone()).selectable(false));
                 });
             }
         };
         match entry {
             NavEntry::Page(page) => {
-                let node = NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(
-                    page.title(),
-                    Some(page),
-                    None,
-                ));
+                let node =
+                    NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(page.title(), Some(page)));
                 builder.node(if changed(Some(page)) {
                     node.accessory(badge)
                 } else {
@@ -371,7 +349,7 @@ impl TelescopeApp {
                 let node = NodeBuilder::dir(group.node())
                     .default_open(true)
                     .closer(|_ui, _state| {})
-                    .label_ui(row(group.title(), group.page(), group.icon()));
+                    .label_ui(row(group.title(), group.page()));
                 builder.node(if changed(group.page()) {
                     node.accessory(badge)
                 } else {
@@ -400,11 +378,16 @@ impl TelescopeApp {
         {
             pages.push(SettingsPage::Sources);
         }
-        if now.get_warning_area() != saved.get_warning_area()
-            || now.get_alert_duration_secs() != saved.get_alert_duration_secs()
+        if now.get_warning_area() != saved.get_warning_area() {
+            pages.push(SettingsPage::Alerts);
+        }
+        if now.get_alert_duration_secs() != saved.get_alert_duration_secs()
             || now.get_center_on_alert() != saved.get_center_on_alert()
         {
             pages.push(SettingsPage::AlertsVisual);
+        }
+        if now.get_zkillboard() != saved.get_zkillboard() {
+            pages.push(SettingsPage::Zkillboard);
         }
         if now.get_alert_sound() != saved.get_alert_sound() {
             pages.push(SettingsPage::AlertsSound);
@@ -508,6 +491,7 @@ fn time_ago(when: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::settings::ZKillboardOptions;
 
     /// Every setting a page edits must mark that page as changed, or the
     /// circle in the navigation would not warn about changes to apply.
@@ -536,6 +520,24 @@ mod tests {
                 .contains(&SettingsPage::AlertsOverlay)
         );
         app.settings.set_overlay_hide_unfocused(hide);
+        assert!(app.dirty_settings_pages().is_empty());
+
+        let radius = app.settings.get_warning_area();
+        app.settings.set_warning_area(radius % 7 + 1);
+        assert!(app.dirty_settings_pages().contains(&SettingsPage::Alerts));
+        app.settings.set_warning_area(radius);
+        assert!(app.dirty_settings_pages().is_empty());
+
+        let options = app.settings.get_zkillboard().clone();
+        app.settings.set_zkillboard(ZKillboardOptions {
+            ignore_npc_only: !options.ignore_npc_only,
+            ..options.clone()
+        });
+        assert!(
+            app.dirty_settings_pages()
+                .contains(&SettingsPage::Zkillboard)
+        );
+        app.settings.set_zkillboard(options);
         assert!(app.dirty_settings_pages().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }

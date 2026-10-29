@@ -8,7 +8,7 @@ y = -375.06354
 node = "input"
 description = "chat logs"
 kind = "chat_log"
-path = ""
+path = 'C:\Users\9AWCJ\Downloads\test'
 channels = []
 exclude_motd = true
 
@@ -21,6 +21,8 @@ y = -444.18674
 [nodes.kind]
 node = "detection"
 case_insensitive = false
+source = "auto"
+mode = "require"
 
 [nodes.kind.kind]
 type = "system_report"
@@ -35,6 +37,8 @@ y = -294.3134
 [nodes.kind]
 node = "detection"
 case_insensitive = false
+source = "auto"
+mode = "require"
 
 [nodes.kind.kind]
 type = "pilot_count"
@@ -48,6 +52,8 @@ y = 204.769
 [nodes.kind]
 node = "detection"
 case_insensitive = true
+source = "auto"
+mode = "require"
 
 [nodes.kind.kind]
 type = "ship_names"
@@ -56,8 +62,8 @@ dictionaries = ["ship_report_en", "ship_report_es", "ship_report_fr", "ship_repo
 [[nodes]]
 id = "log"
 enabled = true
-x = 1211.1796
-y = -349.75037
+x = 1168.1422
+y = 31.127699
 
 [nodes.kind]
 node = "output"
@@ -72,8 +78,8 @@ use_current_time = false
 [[nodes]]
 id = "log_in"
 enabled = true
-x = 645.3671
-y = -350.42142
+x = 399.13458
+y = -185.06845
 
 [nodes.kind]
 node = "aggregator"
@@ -82,8 +88,8 @@ inputs = 4
 [[nodes]]
 id = "visual"
 enabled = true
-x = 647.3922
-y = -620.5336
+x = 1172.2085
+y = -164.01521
 
 [nodes.kind]
 node = "output"
@@ -98,8 +104,8 @@ use_current_time = false
 [[nodes]]
 id = "sound"
 enabled = true
-x = 646.8277
-y = -477.5849
+x = 1167.437
+y = -65.800865
 
 [nodes.kind]
 node = "output"
@@ -114,8 +120,8 @@ use_current_time = false
 [[nodes]]
 id = "tooltip"
 enabled = true
-x = 1311.2052
-y = -114.61004
+x = 1165.6782
+y = 177.98749
 
 [nodes.kind]
 node = "output"
@@ -130,8 +136,8 @@ use_current_time = false
 [[nodes]]
 id = "tooltip_in"
 enabled = true
-x = 508.46262
-y = 84.57867
+x = 393.4344
+y = 23.469961
 
 [nodes.kind]
 node = "aggregator"
@@ -146,6 +152,8 @@ y = -642.7141
 [nodes.kind]
 node = "detection"
 case_insensitive = true
+source = "auto"
+mode = "require"
 
 [nodes.kind.kind]
 type = "clear_report"
@@ -160,6 +168,8 @@ y = -132.86926
 [nodes.kind]
 node = "detection"
 case_insensitive = true
+source = "auto"
+mode = "require"
 
 [nodes.kind.kind]
 type = "query"
@@ -168,8 +178,8 @@ keywords = ["status"]
 [[nodes]]
 id = "suppress"
 enabled = true
-x = 614.2328
-y = -779.9688
+x = 1102.0437
+y = -511.63144
 
 [nodes.kind]
 node = "output"
@@ -190,6 +200,8 @@ y = -20.0
 [nodes.kind]
 node = "detection"
 case_insensitive = true
+source = "auto"
+mode = "require"
 
 [nodes.kind.kind]
 type = "keyword"
@@ -198,12 +210,13 @@ keywords = ["nv"]
 [[nodes]]
 id = "not_status"
 enabled = true
-x = 885.0
-y = 60.0
+x = 726.1845
+y = 179.67316
 
 [nodes.kind]
 node = "detection"
 case_insensitive = true
+source = "auto"
 mode = "exclude"
 
 [nodes.kind.kind]
@@ -213,12 +226,102 @@ keywords = ["status"]
 [[nodes]]
 id = "suppress_in"
 enabled = true
-x = 885.0
-y = -250.0
+x = 419.52744
+y = -449.08902
 
 [nodes.kind]
 node = "aggregator"
 inputs = 2
+
+[[nodes]]
+id = "zkillboard"
+enabled = true
+x = -1360.0
+y = 640.0
+
+[nodes.kind]
+node = "input"
+description = "zKillboard"
+kind = "zkillboard"
+path = ""
+channels = []
+exclude_motd = false
+
+[[nodes]]
+id = "z_system_reported"
+enabled = true
+x = -270.1893
+y = 103.0225
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+source = "facts"
+mode = "require"
+
+[nodes.kind.kind]
+type = "system_report"
+
+[[nodes]]
+id = "z_pilot_count"
+enabled = true
+x = -270.1893
+y = 219.42792
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+source = "facts"
+mode = "require"
+
+[nodes.kind.kind]
+type = "pilot_count"
+
+[[nodes]]
+id = "z_ship_names"
+enabled = true
+x = -268.39194
+y = 328.64404
+
+[nodes.kind]
+node = "detection"
+case_insensitive = true
+source = "facts"
+mode = "require"
+
+[nodes.kind.kind]
+type = "ship_names"
+dictionaries = ["ship_report_en", "ship_report_es", "ship_report_fr", "ship_report_ja", "ship_report_ko"]
+
+[[nodes]]
+id = "aggregator_1"
+enabled = true
+x = 560.59436
+y = 366.48285
+
+[nodes.kind]
+node = "aggregator"
+inputs = 3
+
+[[edges]]
+from = "aggregator_1"
+to = "log"
+to_pin = 0
+
+[[edges]]
+from = "aggregator_1"
+to = "sound"
+to_pin = 0
+
+[[edges]]
+from = "aggregator_1"
+to = "tooltip"
+to_pin = 0
+
+[[edges]]
+from = "aggregator_1"
+to = "visual"
+to_pin = 0
 
 [[edges]]
 from = "chat_logs"
@@ -227,7 +330,7 @@ to_pin = 0
 
 [[edges]]
 from = "chat_logs"
-to = "status_query"
+to = "neutral_spotted"
 to_pin = 0
 
 [[edges]]
@@ -242,13 +345,23 @@ to_pin = 0
 
 [[edges]]
 from = "chat_logs"
+to = "status_query"
+to_pin = 0
+
+[[edges]]
+from = "chat_logs"
 to = "system_reported"
 to_pin = 0
 
 [[edges]]
-from = "status_query"
-to = "log_in"
-to_pin = 2
+from = "clear_report"
+to = "suppress_in"
+to_pin = 0
+
+[[edges]]
+from = "clear_report"
+to = "tooltip_in"
+to_pin = 4
 
 [[edges]]
 from = "log_in"
@@ -256,43 +369,18 @@ to = "log"
 to_pin = 0
 
 [[edges]]
-from = "pilot_count_prefix"
-to = "log_in"
-to_pin = 1
-
-[[edges]]
-from = "pilot_count_prefix"
-to = "tooltip_in"
-to_pin = 1
-
-[[edges]]
-from = "ship_names"
-to = "log_in"
-to_pin = 0
-
-[[edges]]
-from = "ship_names"
-to = "tooltip_in"
-to_pin = 2
-
-[[edges]]
-from = "system_reported"
+from = "log_in"
 to = "sound"
 to_pin = 0
 
 [[edges]]
-from = "system_reported"
-to = "tooltip_in"
+from = "log_in"
+to = "tooltip"
 to_pin = 0
 
 [[edges]]
-from = "system_reported"
+from = "log_in"
 to = "visual"
-to_pin = 0
-
-[[edges]]
-from = "chat_logs"
-to = "neutral_spotted"
 to_pin = 0
 
 [[edges]]
@@ -301,14 +389,34 @@ to = "tooltip_in"
 to_pin = 3
 
 [[edges]]
-from = "system_reported"
-to = "log_in"
-to_pin = 3
+from = "not_status"
+to = "tooltip"
+to_pin = 0
 
 [[edges]]
-from = "clear_report"
-to = "suppress_in"
+from = "pilot_count_prefix"
+to = "log_in"
+to_pin = 1
+
+[[edges]]
+from = "pilot_count_prefix"
+to = "tooltip_in"
+to_pin = 1
+
+[[edges]]
+from = "ship_names"
+to = "log_in"
 to_pin = 0
+
+[[edges]]
+from = "ship_names"
+to = "tooltip_in"
+to_pin = 2
+
+[[edges]]
+from = "status_query"
+to = "log_in"
+to_pin = 2
 
 [[edges]]
 from = "status_query"
@@ -321,9 +429,14 @@ to = "suppress"
 to_pin = 0
 
 [[edges]]
-from = "clear_report"
+from = "system_reported"
+to = "log_in"
+to_pin = 3
+
+[[edges]]
+from = "system_reported"
 to = "tooltip_in"
-to_pin = 4
+to_pin = 0
 
 [[edges]]
 from = "tooltip_in"
@@ -331,6 +444,31 @@ to = "not_status"
 to_pin = 0
 
 [[edges]]
-from = "not_status"
-to = "tooltip"
+from = "z_pilot_count"
+to = "aggregator_1"
+to_pin = 1
+
+[[edges]]
+from = "z_ship_names"
+to = "aggregator_1"
+to_pin = 2
+
+[[edges]]
+from = "z_system_reported"
+to = "aggregator_1"
+to_pin = 0
+
+[[edges]]
+from = "zkillboard"
+to = "z_pilot_count"
+to_pin = 0
+
+[[edges]]
+from = "zkillboard"
+to = "z_ship_names"
+to_pin = 0
+
+[[edges]]
+from = "zkillboard"
+to = "z_system_reported"
 to_pin = 0

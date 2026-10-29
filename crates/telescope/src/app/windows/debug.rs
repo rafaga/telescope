@@ -57,16 +57,18 @@ enum DebugTab {
     Alerts,
     Animations,
     Characters,
+    ZKillboard,
     State,
 }
 
 impl DebugTab {
-    const ALL: [DebugTab; 6] = [
+    const ALL: [DebugTab; 7] = [
         DebugTab::Search,
         DebugTab::Intel,
         DebugTab::Alerts,
         DebugTab::Animations,
         DebugTab::Characters,
+        DebugTab::ZKillboard,
         DebugTab::State,
     ];
 
@@ -77,6 +79,7 @@ impl DebugTab {
             DebugTab::Alerts => "Alerts & log",
             DebugTab::Animations => "Animations",
             DebugTab::Characters => "Characters",
+            DebugTab::ZKillboard => "zKillboard",
             DebugTab::State => "State",
         }
     }
@@ -150,6 +153,7 @@ impl TelescopeApp {
                     DebugTab::Alerts => self.debug_alerts_ui(ui),
                     DebugTab::Animations => self.debug_animations_ui(ui, selected.as_ref()),
                     DebugTab::Characters => self.debug_move_character_ui(ui, selected.as_ref()),
+                    DebugTab::ZKillboard => self.debug_zkillboard_ui(ui),
                     DebugTab::State => self.debug_state_ui(ui),
                 });
             });
@@ -556,6 +560,77 @@ impl TelescopeApp {
                 let _ = sender.try_send(CharacterSync::Add(id));
             }
         });
+    }
+
+    /// How the zKillboard source walks the feed: where it is, how far behind
+    /// it can be, and what it has skipped. The counting works on sequence
+    /// numbers, so there is no need to know beforehand how many killmails a
+    /// round will bring: the walk reads `n`, `n + 1`, ... until a 404.
+    fn debug_zkillboard_ui(&self, ui: &mut egui::Ui) {
+        // The numbers move by themselves.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
+        let status = self.intel_zkillboard.status();
+        let walk = &status.diagnostics;
+        let number =
+            |value: Option<u64>| value.map_or_else(|| String::from("-"), |n| n.to_string());
+        // `sequence.json` is refreshed every 51 killmails: the difference is a
+        // lower bound of what is pending, not a count.
+        let behind = match (walk.next_sequence, walk.latest_sequence) {
+            (Some(next), Some(latest)) => latest.saturating_sub(next).to_string(),
+            _ => String::from("-"),
+        };
+        let wait = walk.next_delay.map_or_else(
+            || String::from("-"),
+            |d| format!("{:.1} s", d.as_secs_f32()),
+        );
+        let last_error = status
+            .last_error
+            .clone()
+            .unwrap_or_else(|| String::from("-"));
+        egui::Grid::new("debug_zkillboard")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                let row = |ui: &mut egui::Ui, label: &str, value: String| {
+                    ui.label(label);
+                    ui.label(value);
+                    ui.end_row();
+                };
+                row(ui, "State", format!("{:?}", status.state));
+                row(
+                    ui,
+                    "Asked by the rules",
+                    self.intel_zkillboard.is_wanted().to_string(),
+                );
+                row(
+                    ui,
+                    "Paused by the settings",
+                    (!self.settings.get_zkillboard().enabled).to_string(),
+                );
+                row(ui, "Next sequence to read", number(walk.next_sequence));
+                row(ui, "Latest in sequence.json", number(walk.latest_sequence));
+                row(ui, "Behind by at least", behind);
+                row(ui, "Caught up with the end", walk.caught_up.to_string());
+                row(ui, "Holes skipped", walk.holes_skipped.to_string());
+                row(ui, "Resyncs after failures", walk.resyncs.to_string());
+                row(ui, "Rounds", walk.polls.to_string());
+                row(ui, "Wait before the next round", wait);
+                row(ui, "Sent to the rules", status.announced.to_string());
+                row(ui, "Left out by the filters", status.filtered.to_string());
+                row(ui, "Last error", last_error);
+                let feed = crate::app::intel::zkillboard::FEED_URL;
+                row(ui, "Pointer endpoint", format!("{feed}/sequence.json"));
+                row(ui, "Killmail endpoint", format!("{feed}/{{sequence}}.json"));
+            });
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(
+                "sequence.json is refreshed only every 51 killmails, so \"behind by\" is a lower \
+                 bound, not a count. A round reads n, n + 1, ... until a 404.",
+            )
+            .weak(),
+        );
     }
 
     fn debug_state_ui(&self, ui: &mut egui::Ui) {

@@ -33,11 +33,18 @@
 //!   at least 6 seconds and ask again.
 //! * Up to 15 requests per second are allowed; the walk makes about 10.
 //! * A blank `User-Agent` is blocked, and a throttled or blocked client gets
-//!   a 403/429: it backs off for a long while ([`THROTTLE_PAUSE`]).
+//!   a 403/429: it backs off for a long while ([`FeedTimings::throttle_pause`]).
 //!
 //! What was already in the feed when the source starts is history, as with
 //! the chat logs: the walk starts at the end of the feed and the killmails it
 //! passes on the way are not announced (see [`FeedCursor`]).
+//!
+//! `sequence.json` is served fresh (no `cache-control`, not cached by the
+//! CDN) and the last file of the feed is only a few numbers past it, so that
+//! walk is a handful of requests. Checked against the live feed on
+//! 2026-10-28: the pointer's killmail was 41 seconds old and the last file
+//! was the pointer plus 7. The "1 day" cache the documentation lists belongs
+//! to the numbered files, not to the pointer.
 //!
 //! The source runs on its own thread, like the reader and the detection
 //! stage, and only while the graph has an enabled zKillboard Input node
@@ -45,13 +52,20 @@
 
 use super::detection::ResolverHandle;
 use super::input::InputEvent;
+use super::kill_context::{
+    Fill, KillBuffer, KillContext, KillRecord, Neighbour, NeighbourConfig, Report, Source, WINDOW,
+};
+use super::kill_day::{self, DayCache, DayLine, Detail, Fetched, ZKillApi};
+use super::kill_store::{KillStore, KillStoreConfig};
+use super::resolve::{JumpGraph, systems_within};
 use crate::app::messages::{Message, Type, try_send_app_message};
-use chrono::{DateTime, Utc};
+use crate::app::settings::ZKillboardOptions;
+use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc};
@@ -60,18 +74,18 @@ use webb::graph::{NodeKind, RuleGraph, SystemResolver};
 use webb::rules::{InputKind, IntelLine};
 
 /// Where the R2Z2 files are served from.
-const FEED_URL: &str = "https://r2z2.zkillboard.com/ephemeral";
+pub(crate) const FEED_URL: &str = "https://r2z2.zkillboard.com/ephemeral";
 
 /// The `User-Agent` of every request. zKillboard's CDN blocks a blank one;
 /// this one says who is asking.
-const USER_AGENT: &str = concat!(
+pub(super) const USER_AGENT: &str = concat!(
     "telescope/",
     env!("CARGO_PKG_VERSION"),
     " (+https://github.com/rafaga/telescope)"
 );
 
 /// How long a whole request may take before it is given up as failed.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Pause between two killmail files read back to back (about 10 requests per
 /// second, under the 15 the feed allows).
@@ -80,11 +94,25 @@ const PACE: Duration = Duration::from_millis(100);
 /// Wait after reaching the end of the feed: killmails average one every 5.5
 /// seconds, so asking sooner buys nothing, and 6 seconds is what the feed's
 /// documentation asks for after a 404.
-const POLL_WAIT: Duration = Duration::from_secs(6);
+pub(crate) const POLL_WAIT: Duration = Duration::from_secs(6);
 
-/// Pause after the feed answered 403 or 429 (throttled, or blocked for
-/// asking too fast): the ban for that lasts an hour, so keep well away.
-const THROTTLE_PAUSE: Duration = Duration::from_secs(10 * 60);
+/// How long the source waits in the cases that depend on what the services
+/// ask for. The defaults are what Telescope uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FeedTimings {
+    /// Pause after the feed or ESI answered 403 or 429 (throttled, or
+    /// blocked for asking too fast): the ban for going over the limit lasts
+    /// an hour (see the R2Z2 documentation), so keep away for that long.
+    pub throttle_pause: Duration,
+}
+
+impl Default for FeedTimings {
+    fn default() -> Self {
+        Self {
+            throttle_pause: Duration::from_secs(60 * 60),
+        }
+    }
+}
 
 /// Longest wait between two attempts while the feed can't be reached.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -92,6 +120,14 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// How long the feed may stay unreachable before the walk starts over at the
 /// end of the feed: what was published meanwhile is too old to be intel.
 const RESYNC_AFTER: Duration = Duration::from_secs(2 * 60);
+
+/// How many files of the feed hold about an hour of killmails (one every five
+/// and a half seconds on average): the ones before the walk starts are read
+/// to fill the buffer the node tooltips set the reports against.
+const BACKFILL_FILES: u64 = 700;
+
+/// Files of that hour read per round, so the live walk is not kept waiting.
+const BACKFILL_CHUNK: u64 = 20;
 
 /// How many killmail ids are remembered to announce a killmail only once
 /// (zKillboard may publish a reprocessed killmail again under a new
@@ -208,6 +244,44 @@ impl Killmail {
             author: String::from(AUTHOR),
             text,
         })
+    }
+
+    /// The killmail reduced to what the node tooltips tell, with the ships
+    /// named by `names`.
+    pub(crate) fn to_record(&self, names: &dyn NameSource) -> KillRecord {
+        let ship = |type_id: Option<u32>| type_id.and_then(|id| names.type_name(id));
+        let pilots: Vec<&Attacker> = self
+            .esi
+            .attackers
+            .iter()
+            .filter(|attacker| attacker.character_id.is_some())
+            .collect();
+        KillRecord {
+            killmail_id: self.killmail_id,
+            time: self.time().unwrap_or_else(Utc::now),
+            system_id: self.esi.solar_system_id as usize,
+            victim: ship(self.esi.victim.ship_type_id),
+            attacker_ships: pilots
+                .iter()
+                .filter_map(|attacker| ship(attacker.ship_type_id))
+                .collect(),
+            pilots: u32::try_from(pilots.len()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Whether the killmail passes the filters of the settings: it is worth
+    /// at least `min_isk` and, with `ignore_npc_only`, some pilot took part.
+    /// The feed has no filters of its own, so this is done here.
+    pub(crate) fn is_worth(&self, min_isk: u64, ignore_npc_only: bool) -> bool {
+        if self.zkb.total_value < min_isk as f64 {
+            return false;
+        }
+        !ignore_npc_only
+            || self
+                .esi
+                .attackers
+                .iter()
+                .any(|attacker| attacker.character_id.is_some())
     }
 
     /// When the ship died, if the feed's time can be parsed.
@@ -540,6 +614,16 @@ pub(crate) struct FeedCursor {
     recent: RecentIds,
     /// Pause between two files read back to back.
     pace: Duration,
+    /// The latest number `sequence.json` has given. It is refreshed only
+    /// every 51 killmails, so it can be behind the real end of the feed.
+    latest: Option<u64>,
+    /// Holes in the series skipped so far.
+    holes: u64,
+    /// Where the walk started: the pointer it began at.
+    origin: Option<u64>,
+    /// The killmails read on the way to the end of the feed, which are
+    /// history and are not announced. See [`Self::take_history`].
+    history: Vec<Killmail>,
 }
 
 impl FeedCursor {
@@ -549,13 +633,49 @@ impl FeedCursor {
             caught_up: false,
             recent: RecentIds::default(),
             pace,
+            latest: None,
+            holes: 0,
+            origin: None,
+            history: Vec::new(),
         }
+    }
+
+    /// The pointer the walk started at, once known.
+    pub(crate) fn origin(&self) -> Option<u64> {
+        self.origin
+    }
+
+    /// The killmails read on the way to the end of the feed since the last
+    /// call: not announced, but the context of the tooltips wants them.
+    pub(crate) fn take_history(&mut self) -> Vec<Killmail> {
+        std::mem::take(&mut self.history)
+    }
+
+    /// The next sequence number to read, once known.
+    pub(crate) fn next(&self) -> Option<u64> {
+        self.next
+    }
+
+    /// The latest number `sequence.json` has given.
+    pub(crate) fn latest(&self) -> Option<u64> {
+        self.latest
+    }
+
+    /// Whether the end of the feed was reached since the walk (re)started.
+    pub(crate) fn is_caught_up(&self) -> bool {
+        self.caught_up
+    }
+
+    /// Holes in the series skipped so far.
+    pub(crate) fn holes(&self) -> u64 {
+        self.holes
     }
 
     /// Starts over at the end of the feed the next time: what was published
     /// meanwhile is not announced. The ids already announced stay known.
     pub(crate) fn resync(&mut self) {
         self.next = None;
+        self.origin = None;
         self.caught_up = false;
     }
 
@@ -576,6 +696,8 @@ impl FeedCursor {
             Some(next) => next,
             None => match feed.pointer().await {
                 Ok(pointer) => {
+                    self.latest = Some(pointer);
+                    self.origin = Some(pointer);
                     self.next = Some(pointer);
                     self.caught_up = false;
                     pointer
@@ -588,9 +710,14 @@ impl FeedCursor {
                 Ok(Some(killmail)) => {
                     next += 1;
                     self.next = Some(next);
-                    if self.recent.insert(killmail.killmail_id) && self.caught_up && !emit(killmail)
-                    {
-                        return Step::Closed;
+                    if self.recent.insert(killmail.killmail_id) {
+                        if self.caught_up {
+                            if !emit(killmail) {
+                                return Step::Closed;
+                            }
+                        } else {
+                            self.history.push(killmail);
+                        }
                     }
                     if !self.pace.is_zero() {
                         tokio::time::sleep(self.pace).await;
@@ -599,10 +726,13 @@ impl FeedCursor {
                 Ok(None) => match feed.pointer().await {
                     Ok(pointer) if pointer > next => {
                         tracing::debug!(sequence = next, "zKillboard sequence hole skipped");
+                        self.latest = Some(pointer);
+                        self.holes += 1;
                         next += 1;
                         self.next = Some(next);
                     }
-                    Ok(_) => {
+                    Ok(pointer) => {
+                        self.latest = Some(pointer);
                         self.caught_up = true;
                         return Step::Waiting;
                     }
@@ -610,6 +740,66 @@ impl FeedCursor {
                 },
                 Err(error) => return Step::Failed(error),
             }
+        }
+    }
+}
+
+/// The files of the feed published before the walk started, read to fill the
+/// buffer of the node tooltips with the last hour. They are read oldest
+/// first, a chunk per round of the live walk.
+struct Backfill {
+    /// The next sequence number to read.
+    next: u64,
+    /// Where it stops: the pointer the walk started at.
+    end: u64,
+    /// Where it started, to tell how far it got.
+    first: u64,
+    /// Pause between two files.
+    pace: Duration,
+}
+
+impl Backfill {
+    /// The files before `origin`, or `None` when there are none. With
+    /// `resume`, the sequence number a previous run had got to, only the
+    /// files published since then are read (the store has the rest), as long
+    /// as that is less than the hour the backfill covers anyway.
+    fn new(origin: u64, resume: Option<u64>) -> Option<Self> {
+        let hour = origin.saturating_sub(BACKFILL_FILES).max(1);
+        let first = resume.map_or(hour, |resume| resume.clamp(hour, origin));
+        (first < origin).then_some(Self {
+            next: first,
+            end: origin,
+            first,
+            pace: PACE,
+        })
+    }
+
+    /// Reads the next chunk and hands each killmail to `sink`. `true` when
+    /// every file was read. A failed read leaves the position where it was,
+    /// to be tried again in the next round.
+    async fn step<F: Feed>(&mut self, feed: &F, sink: &mut impl FnMut(&Killmail)) -> bool {
+        for _ in 0..BACKFILL_CHUNK {
+            if self.next >= self.end {
+                break;
+            }
+            match feed.entry(self.next).await {
+                Ok(Some(killmail)) => sink(&killmail),
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+            self.next += 1;
+            if !self.pace.is_zero() {
+                tokio::time::sleep(self.pace).await;
+            }
+        }
+        self.next >= self.end
+    }
+
+    /// How much of the files was read.
+    fn progress(&self) -> Fill {
+        Fill {
+            done: self.next - self.first,
+            total: self.end - self.first,
         }
     }
 }
@@ -637,14 +827,151 @@ impl Backoff {
     }
 }
 
+/// What the source is doing, as the Settings page tells it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FeedState {
+    /// Not reading: no rule asks for the feed, or it is paused.
+    #[default]
+    Off,
+    /// Switched on, the first read is still to come.
+    Starting,
+    /// Reading the feed.
+    Live,
+    /// The last read failed; it is tried again.
+    Failing,
+}
+
+/// How the walk through the feed is going. Only the debug window shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub(crate) struct FeedDiagnostics {
+    /// The next sequence number to read.
+    pub next_sequence: Option<u64>,
+    /// The latest number `sequence.json` has given (refreshed every 51
+    /// killmails, so it can be behind the real end of the feed).
+    pub latest_sequence: Option<u64>,
+    /// Whether the end of the feed was reached since the walk (re)started.
+    pub caught_up: bool,
+    /// Holes in the series skipped.
+    pub holes_skipped: u64,
+    /// Times the walk was sent back to the end of the feed after a failure.
+    pub resyncs: u64,
+    /// Rounds of reading the feed.
+    pub polls: u64,
+    /// The wait before the next round.
+    pub next_delay: Option<Duration>,
+}
+
+/// What the source has done since it was last switched on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct FeedStatus {
+    pub diagnostics: FeedDiagnostics,
+    pub state: FeedState,
+    /// Why the last read failed, while [`FeedState::Failing`].
+    pub last_error: Option<String>,
+    /// When the last killmail was passed to the rules.
+    pub last_killmail: Option<DateTime<Utc>>,
+    /// Killmails passed to the rules.
+    pub announced: u64,
+    /// Killmails left out by the filters of the settings.
+    pub filtered: u64,
+}
+
 /// What the UI and the source thread share.
 struct Shared {
     /// Whether the graph has an enabled zKillboard Input node.
     enabled: AtomicBool,
+    /// Whether the settings pause the source.
+    paused: AtomicBool,
+    /// Killmails worth less than this many ISK are left out.
+    min_isk: AtomicU64,
+    /// Killmails with no pilot among the attackers are left out.
+    ignore_npc_only: AtomicBool,
+    /// What the source has done, for the Settings page.
+    status: Mutex<FeedStatus>,
+    /// The killmails of the last hour, for the node tooltips.
+    buffer: Mutex<KillBuffer>,
+    /// The killmails of the last day per system, asked of the query API.
+    days: Mutex<DayCache>,
+    /// The killmails of the last hour read from ESI while the feed is not
+    /// running (see [`kill_day`]).
+    api_buffer: Mutex<KillBuffer>,
+    /// Wakes the day fetcher when a system is queued.
+    day_wake: Notify,
     /// Wakes the source when it changes.
     wake: Notify,
     /// The SDE database the names come from.
     sde: Arc<RwLock<PathBuf>>,
+    /// The names the tooltips ask for (the source thread has its own).
+    names: SdeNames,
+    /// The stargates, to find the systems near the one a tooltip is about.
+    jumps: RwLock<JumpGraph>,
+    /// What was learned, kept on disk between runs.
+    store: KillStore,
+    /// Which neighbours the tooltips list.
+    neighbours: NeighbourConfig,
+    /// The waits that depend on what the services ask for.
+    timings: FeedTimings,
+}
+
+impl Shared {
+    /// Puts into `buffer` the killmails of the last hour the store kept.
+    fn load_records(&self, buffer: &mut KillBuffer) {
+        let now = Utc::now();
+        for record in self.store.records(now) {
+            buffer.insert(record, now);
+        }
+    }
+
+    /// Takes back what the store kept for the tooltips that don't have the
+    /// feed: the killmails read from ESI and the counts of the last day.
+    fn restore(&self) {
+        self.load_records(&mut self.api_buffer());
+        let counts = self.store.days(
+            Utc::now(),
+            TimeDelta::from_std(kill_day::TTL).unwrap_or(TimeDelta::hours(1)),
+        );
+        self.days
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .restore(counts, Instant::now());
+    }
+
+    /// Keeps the counts of the last day that are known.
+    fn save_days(&self) {
+        let counts = self
+            .days
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .snapshot(Instant::now());
+        self.store.save_days(&counts, Utc::now());
+    }
+
+    /// Whether the source should be reading the feed: a rule asks for it and
+    /// the settings don't pause it.
+    fn active(&self) -> bool {
+        self.enabled.load(Ordering::Acquire) && !self.paused.load(Ordering::Acquire)
+    }
+
+    /// Whether the tooltips may ask the query API and ESI: the settings
+    /// don't pause zKillboard.
+    fn fetching(&self) -> bool {
+        !self.paused.load(Ordering::Acquire)
+    }
+
+    /// The killmails read from ESI for the node tooltips.
+    fn api_buffer(&self) -> std::sync::MutexGuard<'_, KillBuffer> {
+        self.api_buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The killmails kept for the node tooltips.
+    fn buffer(&self) -> std::sync::MutexGuard<'_, KillBuffer> {
+        self.buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// The UI's handle on the zKillboard source: tells it whether anything wants
@@ -655,11 +982,63 @@ pub(crate) struct ZKillboardHandle(Arc<Shared>);
 impl ZKillboardHandle {
     /// A handle for a source that is off, reading names from the SDE at `sde`.
     pub(crate) fn new(sde: &Path) -> Self {
+        let sde = Arc::new(RwLock::new(sde.to_path_buf()));
         Self(Arc::new(Shared {
             enabled: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            min_isk: AtomicU64::new(0),
+            ignore_npc_only: AtomicBool::new(false),
+            status: Mutex::new(FeedStatus::default()),
+            buffer: Mutex::new(KillBuffer::default()),
+            days: Mutex::new(DayCache::default()),
+            api_buffer: Mutex::new(KillBuffer::default()),
+            day_wake: Notify::new(),
             wake: Notify::new(),
-            sde: Arc::new(RwLock::new(sde.to_path_buf())),
+            names: SdeNames::new(Arc::clone(&sde)),
+            jumps: RwLock::new(JumpGraph::new()),
+            store: KillStore::new(Arc::clone(&sde), KillStoreConfig::default()),
+            neighbours: NeighbourConfig::default(),
+            timings: FeedTimings::default(),
+            sde,
         }))
+    }
+
+    /// Replaces the stargate graph (see `TelescopeApp::sync_alarm_jumps`).
+    pub(crate) fn set_jumps(&self, graph: JumpGraph) {
+        *self
+            .0
+            .jumps
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = graph;
+    }
+
+    /// The killmails of the last hour in the systems within
+    /// [`NeighbourConfig::jumps`] jumps of `system_id`, in `buffer`, with names.
+    fn neighbours(
+        &self,
+        buffer: &KillBuffer,
+        system_id: usize,
+        now: DateTime<Utc>,
+    ) -> Vec<Neighbour> {
+        let Ok(origin) = u32::try_from(system_id) else {
+            return Vec::new();
+        };
+        let near = systems_within(
+            &self
+                .0
+                .jumps
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            origin,
+            self.0.neighbours.jumps,
+        );
+        let mut found = buffer.neighbours(&near, self.0.neighbours.max, now);
+        for neighbour in &mut found {
+            if let Ok(id) = u32::try_from(neighbour.system_id) {
+                neighbour.name = self.0.names.system_name(id).unwrap_or_default();
+            }
+        }
+        found
     }
 
     /// Whether `graph` has an enabled zKillboard Input node, that is, whether
@@ -682,6 +1061,88 @@ impl ZKillboardHandle {
         if self.0.enabled.swap(enabled, Ordering::AcqRel) != enabled {
             self.0.wake.notify_one();
         }
+    }
+
+    /// Applies the settings: whether the source is paused and the filters.
+    pub(crate) fn set_options(&self, options: &ZKillboardOptions) {
+        self.0.min_isk.store(options.min_isk, Ordering::Release);
+        self.0
+            .ignore_npc_only
+            .store(options.ignore_npc_only, Ordering::Release);
+        let paused = !options.enabled;
+        if self.0.paused.swap(paused, Ordering::AcqRel) != paused {
+            if paused {
+                // Nothing is asked while paused, and what was asked would be
+                // stale when it is switched on again.
+                self.0
+                    .days
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clear();
+                self.0.api_buffer().clear();
+            } else {
+                self.0.restore();
+            }
+            self.0.wake.notify_one();
+        }
+    }
+
+    /// What the source is doing and has done, for the Settings page.
+    pub(crate) fn status(&self) -> FeedStatus {
+        self.0
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// What the killmails of the last hour say about `report` in the system
+    /// `system_id`, or `None` while zKillboard is paused in the settings
+    /// (nothing is known then, and a stale answer would mislead).
+    ///
+    /// While the feed runs they come from its buffer. Without it they come
+    /// from the query API and ESI, a few at a time (see [`kill_day`]): the
+    /// context says it is still `loading` until they are in.
+    pub(crate) fn context(&self, system_id: usize, report: &Report) -> Option<KillContext> {
+        if !self.0.fetching() {
+            return None;
+        }
+        let from_feed = self.0.active();
+        let now = Utc::now();
+        let (line, queued, busy) = {
+            let mut days = self
+                .0
+                .days
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (line, queued) = days.look(system_id, Instant::now());
+            (line, queued, days.has_details(system_id))
+        };
+        if queued {
+            self.0.day_wake.notify_one();
+        }
+        let mut context = if from_feed {
+            let buffer = self.0.buffer();
+            let mut context = buffer.context(system_id, report, now);
+            context.neighbours = self.neighbours(&buffer, system_id, now);
+            context
+        } else {
+            let buffer = self.0.api_buffer();
+            let mut context = buffer.context(system_id, report, now);
+            context.neighbours = self.neighbours(&buffer, system_id, now);
+            drop(buffer);
+            context.source = Source::Api;
+            context.loading = line == DayLine::Pending || busy;
+            context
+        };
+        context.day = Some(line);
+        Some(context)
+    }
+
+    /// Whether a rule asks for the killmails (an enabled zKillboard input),
+    /// whether or not the settings pause the source.
+    pub(crate) fn is_wanted(&self) -> bool {
+        self.0.enabled.load(Ordering::Acquire)
     }
 
     /// Whether the source is on.
@@ -735,6 +1196,100 @@ impl ZKillboardHandle {
         if let Err(error) = spawned {
             tracing::error!("could not start the zKillboard thread: {error}");
         }
+        let shared = Arc::clone(&self.0);
+        let spawned = std::thread::Builder::new()
+            .name(String::from("telescope-intel-zkillboard-days"))
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("zKillboard days runtime");
+                runtime.block_on(Self::serve_days(&shared));
+            });
+        if let Err(error) = spawned {
+            tracing::error!("could not start the zKillboard days thread: {error}");
+        }
+    }
+
+    /// The day fetcher's life: asks the query API about the systems whose
+    /// tooltips were shown, one at a time, while the source is on.
+    async fn serve_days(shared: &Shared) {
+        let api = match ZKillApi::new() {
+            Ok(api) => api,
+            Err(error) => {
+                tracing::error!("could not start the zKillboard API client: {error}");
+                return;
+            }
+        };
+        let names = SdeNames::new(Arc::clone(&shared.sde));
+        shared.restore();
+        loop {
+            if !shared.fetching() {
+                shared.day_wake.notified().await;
+                continue;
+            }
+            // The killmails of a system are only read from ESI when the feed
+            // is not giving them already.
+            let details = !shared.active();
+            match DayCache::fetch_next(&shared.days, &api, details).await {
+                Fetched::Idle => {}
+                Fetched::Done => {
+                    shared.save_days();
+                    tokio::time::sleep(kill_day::PACE).await;
+                    continue;
+                }
+                Fetched::Throttled => {
+                    tokio::time::sleep(shared.timings.throttle_pause).await;
+                    continue;
+                }
+            }
+            match DayCache::fetch_detail(&shared.days, &api, |id| shared.store.record(id)).await {
+                (Detail::Idle, _) => shared.day_wake.notified().await,
+                (Detail::Known(record), system) => {
+                    // Kept by a previous run (or by the feed): no request.
+                    let now = Utc::now();
+                    let too_old = now
+                        .checked_sub_signed(WINDOW)
+                        .is_some_and(|oldest| record.time < oldest);
+                    shared.api_buffer().insert(record, now);
+                    if too_old && let Some(system) = system {
+                        shared
+                            .days
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .drop_details(system);
+                    }
+                }
+                (Detail::Skipped, _) => tokio::time::sleep(kill_day::PACE).await,
+                (Detail::Throttled, _) => {
+                    tokio::time::sleep(shared.timings.throttle_pause).await;
+                }
+                (Detail::Read(killmail), system) => {
+                    let record = killmail.to_record(&names);
+                    let too_old = Utc::now()
+                        .checked_sub_signed(WINDOW)
+                        .is_some_and(|oldest| record.time < oldest);
+                    let added = {
+                        let mut buffer = shared.api_buffer();
+                        let added = buffer.insert(record.clone(), Utc::now());
+                        buffer.prune(Utc::now());
+                        added
+                    };
+                    if added {
+                        shared.store.insert(&record, Utc::now());
+                    }
+                    if too_old && let Some(system) = system {
+                        // Newest first: the rest of this system is older.
+                        shared
+                            .days
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .drop_details(system);
+                    }
+                    tokio::time::sleep(kill_day::PACE).await;
+                }
+            }
+        }
     }
 }
 
@@ -761,31 +1316,64 @@ impl Session {
         let mut backoff = Backoff::new();
         let mut failing_since: Option<Instant> = None;
         let mut reported = false;
+        let mut resyncs = 0_u64;
+        let mut backfill: Option<Backfill> = None;
+        let mut backfilled = false;
+        let mut loaded = false;
+        let mut resume: Option<u64> = None;
         loop {
-            if !self.shared.enabled.load(Ordering::Acquire) {
+            if !self.shared.active() {
+                resyncs = 0;
+                backfill = None;
+                backfilled = false;
+                loaded = false;
+                resume = None;
+                self.shared.buffer().clear();
                 cursor.resync();
                 backoff.reset();
                 failing_since = None;
                 reported = false;
+                self.update(|status| *status = FeedStatus::default());
                 self.shared.wake.notified().await;
                 continue;
+            }
+            self.update(|status| {
+                if status.state == FeedState::Off {
+                    status.state = FeedState::Starting;
+                }
+            });
+            // Once per start: what the previous runs kept, so that the hour
+            // before the start is not read from the feed again.
+            if !loaded {
+                loaded = true;
+                self.shared.load_records(&mut self.shared.buffer());
+                resume = self.shared.store.feed_next();
             }
             let delay = match cursor.advance(&client, &mut |kill| self.emit(kill)).await {
                 Step::Waiting => {
                     backoff.reset();
                     failing_since = None;
                     reported = false;
+                    self.update(|status| {
+                        status.state = FeedState::Live;
+                        status.last_error = None;
+                    });
                     POLL_WAIT
                 }
                 Step::Closed => return,
                 Step::Failed(error) => {
                     if failing_since.get_or_insert_with(Instant::now).elapsed() > RESYNC_AFTER {
+                        resyncs += 1;
                         cursor.resync();
                     }
                     let delay = match error {
-                        FeedError::Throttled(_) => THROTTLE_PAUSE,
+                        FeedError::Throttled(_) => self.shared.timings.throttle_pause,
                         FeedError::Other(_) => backoff.next(),
                     };
+                    self.update(|status| {
+                        status.state = FeedState::Failing;
+                        status.last_error = Some(error.to_string());
+                    });
                     tracing::warn!(%error, ?delay, "zKillboard feed not read");
                     // Once per outage: the status log is not for a retry loop.
                     if !reported {
@@ -798,6 +1386,47 @@ impl Session {
                     delay
                 }
             };
+            for killmail in cursor.take_history() {
+                self.record(&killmail);
+            }
+            // Once per start, when the end of the feed is reached: the hour
+            // before it, a chunk per round.
+            if !backfilled && cursor.is_caught_up() {
+                backfilled = true;
+                backfill = cursor
+                    .origin()
+                    .and_then(|origin| Backfill::new(origin, resume));
+            }
+            if let Some(files) = backfill.as_mut() {
+                let finished = files
+                    .step(&client, &mut |killmail| self.record(killmail))
+                    .await;
+                let progress = (!finished).then(|| files.progress());
+                self.shared.buffer().set_fill(progress);
+                if finished {
+                    backfill = None;
+                }
+            }
+            self.shared.buffer().prune(Utc::now());
+            // Everything up to here is in the store only once the files
+            // before the start are read too.
+            if backfilled
+                && backfill.is_none()
+                && let Some(next) = cursor.next()
+            {
+                self.shared.store.set_feed_next(next);
+            }
+            self.update(|status| {
+                status.diagnostics = FeedDiagnostics {
+                    next_sequence: cursor.next(),
+                    latest_sequence: cursor.latest(),
+                    caught_up: cursor.is_caught_up(),
+                    holes_skipped: cursor.holes(),
+                    resyncs,
+                    polls: status.diagnostics.polls + 1,
+                    next_delay: Some(delay),
+                };
+            });
             tokio::select! {
                 () = tokio::time::sleep(delay) => {}
                 () = self.shared.wake.notified() => {}
@@ -805,9 +1434,27 @@ impl Session {
         }
     }
 
+    /// Keeps the killmail for the node tooltips, whatever the filters say.
+    fn record(&self, killmail: &Killmail) {
+        let record = killmail.to_record(&self.names);
+        let now = Utc::now();
+        if self.shared.buffer().insert(record.clone(), now) {
+            self.shared.store.insert(&record, now);
+        }
+    }
+
     /// Sends one killmail to the detection stage. `false` when it has no
     /// receiver any more.
     fn emit(&self, killmail: Killmail) -> bool {
+        self.record(&killmail);
+        let worth = killmail.is_worth(
+            self.shared.min_isk.load(Ordering::Acquire),
+            self.shared.ignore_npc_only.load(Ordering::Acquire),
+        );
+        if !worth {
+            self.update(|status| status.filtered += 1);
+            return true;
+        }
         let decoder = ZKillboardDecoder::new(&self.names, self.resolver.as_ref());
         let Some(event) = decoder.decode(&killmail) else {
             tracing::trace!(
@@ -828,7 +1475,13 @@ impl Session {
         }
         let event = InputEvent::from_event(format!("r2z2:{}", killmail.sequence_id), event);
         match self.input.try_send(event) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.update(|status| {
+                    status.announced += 1;
+                    status.last_killmail = Some(Utc::now());
+                });
+                true
+            }
             // Same policy as the chat-log reader: a lost line is better than
             // a stalled reader.
             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -840,6 +1493,16 @@ impl Session {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => false,
         }
+    }
+
+    /// Changes what the Settings page shows of the source.
+    fn update(&self, change: impl FnOnce(&mut FeedStatus)) {
+        let mut status = self
+            .shared
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        change(&mut status);
     }
 
     /// Tells the UI about trouble with the feed.
@@ -937,6 +1600,23 @@ mod tests {
     struct Fixture;
 
     impl Fixture {
+        /// The default rules without the zKillboard ones, with the chat
+        /// input taking killmails: the chat detections reading a killmail.
+        fn chat_rules_taking_killmails() -> RuleGraph {
+            let mut graph = RuleGraph::default_graph();
+            let is_zkillboard = |id: &str| id == "zkillboard" || id.starts_with("z_");
+            graph.nodes.retain(|node| !is_zkillboard(&node.id));
+            graph
+                .edges
+                .retain(|edge| !is_zkillboard(&edge.from) && !is_zkillboard(&edge.to));
+            for node in &mut graph.nodes {
+                if let NodeKind::Input(input) = &mut node.kind {
+                    input.kind = InputKind::ZKillboard;
+                }
+            }
+            graph
+        }
+
         fn sample() -> Killmail {
             serde_json::from_str(SAMPLE).unwrap()
         }
@@ -1308,12 +1988,7 @@ mod tests {
     fn the_detections_read_a_killmail_like_a_report() {
         use webb::graph::Data;
 
-        let mut graph = RuleGraph::default_graph();
-        for node in &mut graph.nodes {
-            if let NodeKind::Input(input) = &mut node.kind {
-                input.kind = InputKind::ZKillboard;
-            }
-        }
+        let graph = Fixture::chat_rules_taking_killmails();
         assert!(ZKillboardHandle::wanted_by(&graph));
         let (executor, errors) = Executor::new(graph);
         assert!(errors.is_empty(), "{errors:?}");
@@ -1361,14 +2036,8 @@ mod tests {
     fn the_detections_read_the_facts_of_a_killmail_event() {
         use webb::graph::Data;
 
-        // The default rules, taking killmails.
-        let mut graph = RuleGraph::default_graph();
-        for node in &mut graph.nodes {
-            if let NodeKind::Input(input) = &mut node.kind {
-                input.kind = InputKind::ZKillboard;
-            }
-        }
-        let (executor, errors) = Executor::new(graph);
+        // The rules of the chat, taking killmails.
+        let (executor, errors) = Executor::new(Fixture::chat_rules_taking_killmails());
         assert!(errors.is_empty(), "{errors:?}");
 
         // A big fight: a count the pilot patterns cannot read from the text
@@ -1622,9 +2291,174 @@ mod tests {
             InputKind::ChatLog,
             true
         ))));
-        // The shipped graph reads chat logs only: no request is ever made
-        // unless the user adds the node.
-        assert!(!ZKillboardHandle::wanted_by(&RuleGraph::default_graph()));
+        // The shipped graph has the zKillboard input: the feed runs from the
+        // start (the settings switch pauses it).
+        assert!(ZKillboardHandle::wanted_by(&RuleGraph::default_graph()));
+    }
+
+    #[test]
+    fn the_filters_of_the_settings_leave_killmails_out() {
+        let mut killmail = Fixture::sample();
+        killmail.zkb.total_value = 5_000_000.0;
+        assert!(killmail.is_worth(0, false));
+        assert!(killmail.is_worth(5_000_000, false));
+        assert!(!killmail.is_worth(5_000_001, false));
+
+        // Only NPCs shot: left out when asked, kept otherwise.
+        for attacker in &mut killmail.esi.attackers {
+            attacker.character_id = None;
+        }
+        assert!(killmail.is_worth(0, false));
+        assert!(!killmail.is_worth(0, true));
+        killmail.esi.attackers.clear();
+        assert!(!killmail.is_worth(0, true));
+        killmail.esi.attackers.push(Attacker {
+            character_id: Some(1),
+            ship_type_id: None,
+        });
+        assert!(killmail.is_worth(0, true));
+    }
+
+    #[test]
+    fn the_options_pause_the_source_and_set_the_filters() {
+        let handle = ZKillboardHandle::new(Path::new("sde.db"));
+        handle.set_enabled(true);
+        assert!(handle.0.active());
+        handle.set_options(&ZKillboardOptions {
+            enabled: false,
+            min_isk: 7,
+            ignore_npc_only: true,
+        });
+        // A rule still asks for the feed, but the settings pause it.
+        assert!(handle.is_wanted());
+        assert!(!handle.0.active());
+        assert_eq!(handle.0.min_isk.load(Ordering::Acquire), 7);
+        assert!(handle.0.ignore_npc_only.load(Ordering::Acquire));
+        handle.set_options(&ZKillboardOptions::default());
+        assert!(handle.0.active());
+        assert_eq!(handle.status(), FeedStatus::default());
+    }
+
+    #[test]
+    fn a_killmail_becomes_a_record_for_the_tooltips() {
+        let killmail = Fixture::sample();
+        let record = killmail.to_record(&Names);
+        assert_eq!(record.killmail_id, killmail.killmail_id);
+        assert_eq!(record.system_id, 30000142);
+        assert_eq!(record.victim.as_deref(), Some("Rifter"));
+        let pilots = killmail
+            .esi
+            .attackers
+            .iter()
+            .filter(|attacker| attacker.character_id.is_some())
+            .count();
+        assert_eq!(record.pilots as usize, pilots);
+        assert!(record.attacker_ships.len() <= pilots);
+        // 2026-10-14T05:01:05Z
+        assert_eq!(
+            record.time,
+            DateTime::from_timestamp(1_791_954_065, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_context_comes_from_the_feed_or_else_the_api_and_not_at_all_when_paused() {
+        let handle = ZKillboardHandle::new(Path::new("sde.db"));
+        // No rule asks for the feed: the API and ESI give it, still loading.
+        let context = handle.context(1, &Report::default()).unwrap();
+        assert_eq!(context.source, Source::Api);
+        assert!(context.loading);
+        assert_eq!(context.day, Some(DayLine::Pending));
+        handle.set_enabled(true);
+        let context = handle.context(1, &Report::default()).unwrap();
+        assert_eq!(context.source, Source::Feed);
+        assert!(!context.loading);
+        handle.set_options(&ZKillboardOptions {
+            enabled: false,
+            ..ZKillboardOptions::default()
+        });
+        assert!(handle.context(1, &Report::default()).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_killmails_read_on_the_way_to_the_end_are_kept_as_history() {
+        let feed = FakeFeed::with(100, 103);
+        let mut cursor = FeedCursor::new(Duration::ZERO);
+        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
+        assert!(announced.is_empty());
+        assert_eq!(cursor.origin(), Some(100));
+        let history: Vec<u64> = cursor
+            .take_history()
+            .iter()
+            .map(|killmail| killmail.sequence_id)
+            .collect();
+        assert_eq!(history, [100, 101, 102, 103]);
+        assert!(cursor.take_history().is_empty());
+        // What comes after is announced, not history.
+        feed.publish(Fixture::kill(104, 104));
+        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
+        assert_eq!(announced, [104]);
+        assert!(cursor.take_history().is_empty());
+    }
+
+    #[test]
+    fn the_backfill_covers_about_an_hour_before_the_start() {
+        let files = Backfill::new(1000, None).unwrap();
+        assert_eq!((files.first, files.end), (1000 - BACKFILL_FILES, 1000));
+        // A feed that has not got an hour of files yet.
+        let files = Backfill::new(5, None).unwrap();
+        assert_eq!((files.first, files.end), (1, 5));
+        assert!(Backfill::new(1, None).is_none());
+        // A previous run got to 900: the files before it are in the store.
+        let files = Backfill::new(1000, Some(900)).unwrap();
+        assert_eq!((files.first, files.end), (900, 1000));
+        // Too long ago to help, or nothing published since.
+        let files = Backfill::new(1000, Some(10)).unwrap();
+        assert_eq!(files.first, 1000 - BACKFILL_FILES);
+        assert!(Backfill::new(1000, Some(1000)).is_none());
+        assert!(Backfill::new(1000, Some(5000)).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_backfill_reads_in_chunks_and_retries_after_a_failure() {
+        let feed = FakeFeed::with(1, 100);
+        let mut files = Backfill {
+            next: 1,
+            end: 101,
+            first: 1,
+            pace: Duration::ZERO,
+        };
+        let mut read = Vec::new();
+        assert!(
+            !files
+                .step(&feed, &mut |killmail| read.push(killmail.sequence_id))
+                .await
+        );
+        assert_eq!(read.len() as u64, BACKFILL_CHUNK);
+        assert_eq!(
+            files.progress(),
+            Fill {
+                done: BACKFILL_CHUNK,
+                total: 100
+            }
+        );
+
+        // A failure keeps the position.
+        feed.fail_with(Some(FeedError::Other(String::from("down"))));
+        assert!(
+            !files
+                .step(&feed, &mut |killmail| read.push(killmail.sequence_id))
+                .await
+        );
+        assert_eq!(files.progress().done, BACKFILL_CHUNK);
+
+        feed.fail_with(None);
+        while !files
+            .step(&feed, &mut |killmail| read.push(killmail.sequence_id))
+            .await
+        {}
+        assert_eq!(read, (1..=100).collect::<Vec<u64>>());
+        assert_eq!(files.progress().percent(), 100);
     }
 
     #[test]
@@ -1633,16 +2467,17 @@ mod tests {
         assert!(!handle.is_enabled());
         let mut graph = RuleGraph::default_graph();
         handle.follow(&graph);
-        assert!(!handle.is_enabled());
+        assert!(handle.is_enabled());
+        // Without the input (a graph of chat logs only) it stops.
         for node in &mut graph.nodes {
-            if let NodeKind::Input(input) = &mut node.kind {
-                input.kind = InputKind::ZKillboard;
+            if node.id == "zkillboard" {
+                node.enabled = false;
             }
         }
         handle.follow(&graph);
-        assert!(handle.is_enabled());
-        handle.set_enabled(false);
         assert!(!handle.is_enabled());
+        handle.set_enabled(true);
+        assert!(handle.is_enabled());
     }
 
     #[test]

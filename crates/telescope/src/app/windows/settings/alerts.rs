@@ -51,7 +51,19 @@ impl OverlayMode {
 const RADII: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
 
 impl TelescopeApp {
-    /// The distance and the alert on the maps.
+    /// How close a reported system has to be to alert.
+    pub(crate) fn show_alerts_page(&mut self, ui: &mut egui::Ui) {
+        egui_panels::page(ui, |ui| {
+            egui_panels::page_header(
+                ui,
+                &SettingsPage::Alerts.title(),
+                Some(&t!("settings.alerts.distance_page_description")),
+            );
+            self.show_distance_section(ui);
+        });
+    }
+
+    /// The alert on the maps.
     pub(crate) fn show_alerts_visual_page(&mut self, ui: &mut egui::Ui) {
         egui_panels::page(ui, |ui| {
             egui_panels::page_header(
@@ -59,7 +71,6 @@ impl TelescopeApp {
                 &SettingsPage::AlertsVisual.title(),
                 Some(&t!("settings.alerts.visual_description")),
             );
-            self.show_distance_section(ui);
             self.show_map_alert_section(ui);
         });
     }

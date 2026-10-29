@@ -959,7 +959,10 @@ impl TelescopeApp {
         if crate::repaint::take_pending() {
             ui.ctx().request_repaint();
         }
-        tracing::info!(tracy.frame_mark = true);
+        // Its own target: only Tracy reads this event, and with the target of
+        // the module every frame would show in the console and in the log
+        // file whenever `telescope` is logged at INFO.
+        tracing::event!(target: "tracy_frame", tracing::Level::INFO, { tracy.frame_mark = true });
     }
 
     /// Lets every map pane take the `MapSync` messages waiting for it.
@@ -1036,6 +1039,7 @@ impl TelescopeApp {
             Arc::clone(&self.task_msg),
             self.settings.get_node_style(),
         );
+        pane.set_zkillboard(self.intel_zkillboard.clone());
         self.seed_player_markers(pane.as_mut());
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
         let root = self.tree.as_ref().unwrap().root.unwrap();
@@ -1197,6 +1201,7 @@ impl TelescopeApp {
             Arc::clone(&self.task_msg),
             self.settings.get_node_style(),
         );
+        pane.set_zkillboard(self.intel_zkillboard.clone());
         self.seed_player_markers(pane.as_mut());
         let id = tiles.insert_pane(pane);
         let tile_ids = vec![id];
@@ -1295,6 +1300,14 @@ mod font_tests {
         ctx
     }
 
+    /// Lets the context find the platform's fonts, as eframe does in the
+    /// app (the emojis come from there).
+    fn add_system_fonts(ctx: &egui::Context) {
+        ctx.add_font_provider(Arc::new(
+            egui_system_font_provider::SystemFontProvider::new(),
+        ));
+    }
+
     /// The atlas region (top left and bottom right corners) of the one glyph
     /// `text` is laid out with.
     fn glyph_uv(ctx: &egui::Context, text: &str) -> ([u16; 2], [u16; 2]) {
@@ -1309,8 +1322,10 @@ mod font_tests {
     // `draws` can't be used for the icon: egui reports every glyph of the font
     // holding its replacement glyph (NotoEmoji) as missing, emoji included.
     // Instead, check the icon isn't painted as the glyph of a code point no
-    // font has. The emoji come from egui's `monochrome_emoji_fonts` feature
-    // (off by default since egui 0.37).
+    // font has. The emoji come from the platform's emoji font on desktop
+    // (egui 0.37 bundles none by default) and from egui's
+    // `monochrome_emoji_fonts` feature on the web build. These tests need a
+    // system with an emoji font.
     #[test]
     fn the_overlay_fonts_are_registered_with_the_interface_fonts_as_fallback() {
         let fonts = TelescopeApp::font_definitions();
@@ -1336,6 +1351,7 @@ mod font_tests {
     #[test]
     fn tooltip_icons_are_drawn() {
         let ctx = context_with(TelescopeApp::font_definitions());
+        add_system_fonts(&ctx);
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
         for text in [
             tiles::CHARACTER_ICON,
@@ -1348,18 +1364,6 @@ mod font_tests {
         }
         // A known glyph, to show the check tells them apart.
         assert_ne!(glyph_uv(&ctx, "A"), missing);
-    }
-
-    #[test]
-    fn the_emojis_of_the_settings_roots_are_drawn() {
-        use crate::app::windows::settings::root_icons;
-        let ctx = context_with(TelescopeApp::font_definitions());
-        let missing = glyph_uv(&ctx, "\u{10FFFD}");
-        for icon in root_icons() {
-            let uv = glyph_uv(&ctx, icon);
-            assert_ne!(uv.0, uv.1, "{icon}");
-            assert_ne!(uv, missing, "{icon}");
-        }
     }
 
     #[test]

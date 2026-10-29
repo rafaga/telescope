@@ -29,10 +29,11 @@ serde_json = "1.0"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
-# Since 0.37 egui no longer bundles its emoji fonts by default (it relies on
-# the platform's); `monochrome_emoji_fonts` brings back NotoEmoji and the
-# emoji icon font so the tooltip/message icons draw the same everywhere.
-egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+# Since 0.37 egui no longer bundles its emoji fonts by default: on desktop the
+# emojis (tooltip, settings and message icons) are drawn with the platform's
+# own color emoji font. The web build can't read the platform's fonts: it
+# keeps the bundled monochrome ones (see the wasm32 dependencies below).
+egui = { version = "0.37", default-features = false }
 # `builder` pulls in reqwest/tokio/zip/etc. (see sde's own Cargo.toml) so
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
@@ -69,6 +70,8 @@ egui-snarl = { git = "https://github.com/rafaga/egui-snarl", branch = "telescope
 toml = "1.1"
 hyper = { version = "1.12", features = ["server", "http1", "client"] }
 serde = { version = "1.0", features = ["derive"] }
+# The ships of a killmail in the zKillboard cache (`kill_store`).
+serde_json = "1.0"
 hyper-util = { version = "0.1", features = ["full"] }
 # Use `notify`'s own default backend selection per platform (ReadDirectoryChangesW
 # on Windows, inotify on Linux, FSEvents on macOS) instead of overriding it. This
@@ -106,17 +109,24 @@ rust-i18n = "4.2"
 # The operating system's language, for `language = "auto"` in `[ui]`.
 sys-locale = "0.3"
 semver = { version = "1.0"}
-reqwest = { version = "0.13", features=["json"] }
+reqwest = { version = "0.13", features=["json", "gzip"] }
 egui_ltreeview = { version = "0.10" }
 
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The log file with daily rotation (`app_log`).
+tracing-appender = "0.2"
 tracing-tracy = { version = "0.12", optional = true }
+# The platform's own fonts (color emoji, and scripts the bundled fonts lack)
+# are found through this feature: without it eframe finds none.
+eframe = { version = "0.37", default-features = false, features = ["system_fonts"] }
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# A browser canvas has no platform emoji font: bundle NotoEmoji.
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
 wasm-bindgen-futures = "0.4"
 tracing-wasm = "0.2"
 # The browser's language for `language = "auto"` (see sys-locale above).
@@ -142,3 +152,6 @@ serde_json = "1.0"
 # With `snapshot` and `wgpu` it also renders and compares images (the
 # overlay, which is painted, not made of widgets).
 egui_kittest = { version = "0.37", features = ["snapshot", "wgpu"] }
+# The same provider eframe registers in the app, for the tests that draw
+# emojis (a test context has none).
+egui_system_font_provider = "0.37"

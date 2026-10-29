@@ -21,7 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 use webb::graph::{Activation, Data, FORMATTED_TAG, Mensaje};
 use webb::map_alerts::{AlertSummary, IntelAlert, leftover};
 use webb::objects::Character;
-use webb::rules::{IntelLine, OutputKind};
+use webb::rules::{InputKind, IntelLine, OutputKind};
 
 /// The settings the dispatch reads, copied out of `Settings`.
 #[derive(Debug, Clone, PartialEq)]
@@ -237,20 +237,28 @@ impl Dispatcher {
             );
         }
         let alert = fresh && !suppress;
+        // A killmail alerts only within the warning radius: the feed carries
+        // every kill of the universe. The reports of the chat are not held back.
+        let from_feed = InputKind::ZKillboard.fixed_channel() == Some(channel.as_str());
+        let alerting = if alert && from_feed {
+            self.killmail_systems(&config, &systems)
+        } else {
+            systems.clone()
+        };
         if alert {
-            self.record_nearby(&config, &line, &systems);
+            self.record_nearby(&config, &line, &alerting);
         }
         if visual && alert {
-            self.pulse(&config, &line, &systems);
+            self.pulse(&config, &line, &alerting, from_feed);
         }
         if sound && alert {
-            self.sound(&config, &systems);
+            self.sound(&config, &alerting);
         }
         for activation in activations
             .iter()
             .filter(|activation| activation.kind == OutputKind::Tooltip)
         {
-            self.tooltip(&config, &line, &systems, activation);
+            self.tooltip(&config, &line, &systems, activation, from_feed);
         }
         if let Some(activation) = activations
             .iter()
@@ -262,6 +270,19 @@ impl Dispatcher {
             elapsed_us = started.elapsed().as_micros() as u64,
             "line dispatched"
         );
+    }
+
+    /// The systems of a killmail that may alert: those within the warning
+    /// radius of a linked character.
+    fn killmail_systems(&self, config: &AlarmConfig, systems: &[usize]) -> Vec<usize> {
+        systems
+            .iter()
+            .copied()
+            .filter(|system_id| {
+                self.nearest_character_in_range(config, *system_id)
+                    .is_some()
+            })
+            .collect()
     }
 
     /// Keeps, for the overlay, every reported system that is within the
@@ -327,10 +348,10 @@ impl Dispatcher {
 
     /// Pulses the map node of every reported system (no tooltip entry). A
     /// line may name several candidates; only those that resolved count.
-    fn pulse(&self, config: &AlarmConfig, line: &IntelLine, systems: &[usize]) {
+    fn pulse(&self, config: &AlarmConfig, line: &IntelLine, systems: &[usize], killmail: bool) {
         let received = Instant::now();
         for system_id in systems {
-            let alert = IntelAlert::new(
+            let mut alert = IntelAlert::new(
                 *system_id,
                 received,
                 config.alert_duration,
@@ -338,6 +359,7 @@ impl Dispatcher {
                 AlertSummary::default(),
                 false,
             );
+            alert.killmail = killmail;
             self.send_map(MapSync::SystemAlert(alert));
         }
     }
@@ -351,6 +373,7 @@ impl Dispatcher {
         line: &IntelLine,
         systems: &[usize],
         activation: &Activation,
+        killmail: bool,
     ) {
         if systems.is_empty() {
             return;
@@ -373,7 +396,7 @@ impl Dispatcher {
         };
         let received = Instant::now();
         for system_id in systems {
-            let alert = IntelAlert::new(
+            let mut alert = IntelAlert::new(
                 *system_id,
                 received,
                 config.alert_duration,
@@ -381,6 +404,7 @@ impl Dispatcher {
                 summary.clone(),
                 activation.tooltip.emojis,
             );
+            alert.killmail = killmail;
             self.send_map(MapSync::SystemTooltip(alert));
         }
     }
@@ -625,6 +649,52 @@ mod tests {
             .nearby
             .recent(0, Instant::now(), Duration::from_secs(60));
         assert_eq!(kept.len(), 1, "only the fresh line reaches the overlay");
+    }
+
+    /// A killmail line: the same as `detected`, from the feed's channel.
+    fn killmail(activations: Vec<Activation>) -> DetectedLine {
+        let mut line = detected(activations);
+        line.channel = String::from("zkillboard");
+        line
+    }
+
+    #[test]
+    fn a_killmail_alerts_only_within_the_radius() {
+        let mut rig = rig(vec![1]);
+        rig.dispatcher.process(killmail(vec![
+            activation(OutputKind::Visual, &[3, 5]),
+            activation(OutputKind::Sound, &[3, 5]),
+        ]));
+        let sent = drain_map(&mut rig);
+        let pulsed: Vec<usize> = sent
+            .iter()
+            .filter_map(|message| match message {
+                MapSync::SystemAlert(alert) => Some(alert.system_id),
+                _ => None,
+            })
+            .collect();
+        // System 5 is four jumps away; the radius is two.
+        assert_eq!(pulsed, vec![3]);
+        assert!(
+            sent.iter()
+                .any(|message| matches!(message, MapSync::SystemAlert(alert) if alert.killmail))
+        );
+        assert!(rig.sounds.try_recv().is_ok());
+    }
+
+    #[test]
+    fn a_killmail_and_a_report_of_the_same_system_both_alert() {
+        // They are not matched with each other: there is no reliable way to
+        // tell they are about the same event.
+        let mut rig = rig(vec![1]);
+        rig.dispatcher
+            .process(killmail(vec![activation(OutputKind::Visual, &[2])]));
+        rig.dispatcher
+            .process(detected(vec![activation(OutputKind::Visual, &[2])]));
+        let sent = drain_map(&mut rig);
+        assert_eq!(sent.len(), 2);
+        assert!(matches!(&sent[0], MapSync::SystemAlert(alert) if alert.killmail));
+        assert!(matches!(&sent[1], MapSync::SystemAlert(alert) if !alert.killmail));
     }
 
     #[test]
