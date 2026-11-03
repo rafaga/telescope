@@ -931,7 +931,10 @@ impl DayApi for ZKillApi {
             .get(self.day_url(system_id))
             .send()
             .await
-            .map_err(|error| FeedError::Other(error.to_string()))?;
+            .map_err(|error| {
+                self.guard.failed(Utc::now());
+                FeedError::Other(error.to_string())
+            })?;
         match response.status() {
             status if status.is_success() => self.guard.succeeded(Utc::now()),
             status @ (StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) => {
@@ -946,7 +949,10 @@ impl DayApi for ZKillApi {
                     .throttled_for(Utc::now(), RequestGuard::retry_after(response.headers()));
                 return Err(FeedError::Throttled(status));
             }
-            status => return Err(FeedError::Other(format!("the API answered {status}"))),
+            status => {
+                self.guard.failed(Utc::now());
+                return Err(FeedError::Other(format!("the API answered {status}")));
+            }
         }
         let now = Utc::now();
         let fresh_for = Self::fresh_for(response.headers(), now);

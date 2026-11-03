@@ -606,7 +606,10 @@ impl R2z2Client {
             .get(format!("{}/{path}", self.base))
             .send()
             .await
-            .map_err(|error| FeedError::Other(error.to_string()))?;
+            .map_err(|error| {
+                self.guard.failed(Utc::now());
+                FeedError::Other(error.to_string())
+            })?;
         match response.status() {
             StatusCode::NOT_FOUND => {
                 self.guard.succeeded(Utc::now());
@@ -629,7 +632,10 @@ impl R2z2Client {
                     .throttled_for(Utc::now(), RequestGuard::retry_after(response.headers()));
                 Err(FeedError::Throttled(status))
             }
-            status => Err(FeedError::Other(format!("the feed answered {status}"))),
+            status => {
+                self.guard.failed(Utc::now());
+                Err(FeedError::Other(format!("the feed answered {status}")))
+            }
         }
     }
 }
@@ -1173,13 +1179,21 @@ impl Shared {
         client.plot(plot_name!("zkill api lane: tooltips"), api[0] as f64);
         client.plot(plot_name!("zkill api lane: background"), background as f64);
         client.plot(plot_name!("zkill r2z2 lane"), self.r2z2_lane.len() as f64);
+        let now = Utc::now();
+        let api_stats = self.guards.get(Endpoint::Api).stats();
+        let r2z2_stats = self.guards.get(Endpoint::R2z2).stats();
+        client.plot(plot_name!("zkill api requests per second"), api_stats.rate(now));
         client.plot(
-            plot_name!("zkill api requests sent"),
-            self.guards.get(Endpoint::Api).sent() as f64,
+            plot_name!("zkill r2z2 requests per second"),
+            r2z2_stats.rate(now),
         );
         client.plot(
-            plot_name!("zkill r2z2 requests sent"),
-            self.guards.get(Endpoint::R2z2).sent() as f64,
+            plot_name!("zkill api errors"),
+            f64::from(api_stats.recent(now).errors()),
+        );
+        client.plot(
+            plot_name!("zkill r2z2 errors"),
+            f64::from(r2z2_stats.recent(now).errors()),
         );
     }
 
