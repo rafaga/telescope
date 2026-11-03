@@ -73,12 +73,21 @@ fn log_entry(time: &str, message: (Type, String, String, String)) -> LayoutJob {
     job
 }
 
-/// Appends `job`, dropping the oldest entry once the log is over `cap`, so
-/// it stays bounded no matter how long the app runs. `remove(0)` shifts at
-/// most `cap` elements -- bounded by the cap itself, not by session length --
-/// so this stays cheap even though it's O(n).
-fn push_capped(log: &mut Vec<LayoutJob>, job: LayoutJob, cap: usize) {
-    log.push(job);
+/// An entry of the status log and the moment it stands for: the one of the
+/// event, or when it was received.
+pub(crate) struct LogLine {
+    pub(crate) job: LayoutJob,
+    pub(crate) at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Puts `line` in its place by moment (after the entries of the same
+/// moment), so that an event read late -- the backlog of a feed -- doesn't
+/// end up after newer ones, and drops the oldest entry once the log is over
+/// `cap`, so it stays bounded no matter how long the app runs. Both the
+/// search and `remove(0)` are bounded by the cap, not by session length.
+fn push_capped(log: &mut Vec<LogLine>, line: LogLine, cap: usize) {
+    let place = log.partition_point(|entry| entry.at <= line.at);
+    log.insert(place, line);
     if log.len() > cap {
         log.remove(0);
     }
@@ -104,8 +113,18 @@ impl TelescopeApp {
         )));
     }
 
-    #[tracing::instrument(skip(self, message))]
     pub(crate) fn update_status_with_error(&mut self, message: (Type, String, String, String)) {
+        self.update_status_stamped(message, None);
+    }
+
+    /// Like [`Self::update_status_with_error`], stamping the entry with
+    /// `stamp` instead of the current time when there is one.
+    #[tracing::instrument(skip(self, message))]
+    pub(crate) fn update_status_stamped(
+        &mut self,
+        message: (Type, String, String, String),
+        stamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
         let now = std::time::Instant::now();
         if is_duplicate_notification(
             self.last_notification.as_ref(),
@@ -134,11 +153,30 @@ impl TelescopeApp {
             return;
         }
 
-        let full_time = chrono::Local::now().time().to_string();
-        let job = log_entry(full_time.split_at(12).0, message);
+        let line = match stamp {
+            Some(at) => LogLine {
+                // Only the time, in the local zone like the other entries,
+                // with the milliseconds even when they are zeros (the events
+                // have none).
+                job: log_entry(
+                    &at.with_timezone(&chrono::Local)
+                        .format("%H:%M:%S%.3f")
+                        .to_string(),
+                    message,
+                ),
+                at,
+            },
+            None => {
+                let full_time = chrono::Local::now().time().to_string();
+                LogLine {
+                    job: log_entry(full_time.split_at(12).0, message),
+                    at: chrono::Utc::now(),
+                }
+            }
+        };
         push_capped(
             &mut self.app_messages,
-            job,
+            line,
             self.settings.get_max_app_messages(),
         );
     }
@@ -170,9 +208,34 @@ impl TelescopeApp {
             expanded_panel,
             |ui, is_expanded| {
                 ui.horizontal(|ui| {
-                    let arrow = if is_expanded { "⏷" } else { "⏵" };
+                    // The log opens upwards. Both are in Noto Sans CJK;
+                    // egui 0.37 bundles no font with ⏷ and ⏵.
+                    let arrow = if is_expanded { "▼" } else { "▲" };
                     let title = t!("log.title", count = messages.len());
-                    let header = egui::Button::new(format!("{arrow} {title}")).frame(false);
+                    // The glyph of the arrow is big in that font: it is drawn
+                    // with the small text style, centred on the line.
+                    let color = ui.visuals().text_color();
+                    let mut label = egui::text::LayoutJob::default();
+                    label.append(
+                        arrow,
+                        0.0,
+                        egui::TextFormat {
+                            font_id: egui::TextStyle::Small.resolve(ui.style()),
+                            color,
+                            valign: egui::Align::Center,
+                            ..Default::default()
+                        },
+                    );
+                    label.append(
+                        &format!(" {title}"),
+                        0.0,
+                        egui::TextFormat {
+                            font_id: egui::TextStyle::Button.resolve(ui.style()),
+                            color,
+                            ..Default::default()
+                        },
+                    );
+                    let header = egui::Button::new(label).frame(false);
                     let hint = if is_expanded {
                         t!("log.collapse")
                     } else {
@@ -183,26 +246,33 @@ impl TelescopeApp {
                     }
                     if !is_expanded && let Some(last) = messages.last() {
                         ui.separator();
-                        ui.add(egui::Label::new(last.clone()).truncate());
+                        ui.add(egui::Label::new(last.job.clone()).truncate());
                     }
                 });
                 if is_expanded {
+                    // When entries arrive the height of the content changes
+                    // and the list that sticks to the bottom takes one frame
+                    // to follow it: ask for that frame right away.
+                    let seen = egui::Id::unique("log_panel_entries");
+                    let before = ui.data_mut(|data| data.get_temp::<usize>(seen));
+                    if before != Some(messages.len()) {
+                        ui.data_mut(|data| data.insert_temp(seen, messages.len()));
+                        ui.ctx().request_repaint();
+                    }
                     egui::Frame::canvas(ui.style())
                         .inner_margin(Margin::symmetric(2, 5))
                         .show(ui, |ui| {
+                            // Every entry is laid out (the log is capped): the
+                            // long ones wrap onto several lines, and rows of
+                            // one fixed height made the list jump and flicker.
                             egui::ScrollArea::vertical()
                                 .stick_to_bottom(true)
                                 .auto_shrink(false)
-                                .show_rows(
-                                    ui,
-                                    ui.text_style_height(&egui::TextStyle::Body),
-                                    messages.len(),
-                                    |ui, row_range| {
-                                        for index in row_range {
-                                            ui.label(messages[index].clone());
-                                        }
-                                    },
-                                );
+                                .show(ui, |ui| {
+                                    for line in messages {
+                                        ui.label(line.job.clone());
+                                    }
+                                });
                         });
                 }
             },
@@ -276,13 +346,29 @@ mod log_entry_tests {
     #[test]
     fn the_log_drops_the_oldest_entry_over_the_cap() {
         let mut log = Vec::new();
+        let start = chrono::Utc::now();
         for n in 0..5 {
             let mut job = LayoutJob::default();
             job.append(&n.to_string(), 0.0, TextFormat::default());
-            push_capped(&mut log, job, 3);
+            let at = start + chrono::Duration::seconds(n);
+            push_capped(&mut log, LogLine { job, at }, 3);
         }
-        let texts: Vec<&str> = log.iter().map(|job| job.text.as_str()).collect();
+        let texts: Vec<&str> = log.iter().map(|line| line.job.text.as_str()).collect();
         assert_eq!(texts, ["2", "3", "4"]);
+    }
+
+    #[test]
+    fn an_entry_read_late_takes_its_place_by_moment() {
+        let mut log = Vec::new();
+        let start = chrono::Utc::now();
+        for (name, seconds) in [("a", 10), ("c", 30), ("b", 20), ("d", 40)] {
+            let mut job = LayoutJob::default();
+            job.append(name, 0.0, TextFormat::default());
+            let at = start + chrono::Duration::seconds(seconds);
+            push_capped(&mut log, LogLine { job, at }, 10);
+        }
+        let texts: Vec<&str> = log.iter().map(|line| line.job.text.as_str()).collect();
+        assert_eq!(texts, ["a", "b", "c", "d"]);
     }
 }
 

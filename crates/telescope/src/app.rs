@@ -13,9 +13,10 @@ use crate::app::file::IntelEventHandler;
 use crate::app::messages::{
     CharacterSync, MapSync, Message, SettingsPage, Type, send_app_message, try_send_app_message,
 };
+use crate::app::notifications::LogLine;
 use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, epaint::text::LayoutJob};
+use eframe::egui;
 use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sde::{SdeManager, objects::Universe};
@@ -40,6 +41,7 @@ mod data;
 mod database;
 mod database_updater;
 mod file;
+mod heat_layer;
 mod housekeeping;
 mod intel;
 mod messages;
@@ -108,7 +110,7 @@ pub struct TelescopeApp {
     // the ESI Manager
     esi: EsiManager,
     // Capped at `Settings::get_max_app_messages` by `update_status_with_error`.
-    app_messages: Vec<LayoutJob>,
+    app_messages: Vec<LogLine>,
     // Debug window only (not in release builds, see `windows.rs`).
     #[cfg(debug_assertions)]
     search_text: String,
@@ -434,11 +436,26 @@ impl TelescopeApp {
         // the chat lines. The source idles (it makes no request) until the
         // graph has an enabled zKillboard input.
         let intel_zkillboard = intel::zkillboard::ZKillboardHandle::new(settings.get_sde());
-        intel_zkillboard.spawn(
-            intel_input.clone(),
-            Arc::clone(&intel_resolver),
-            Arc::clone(&arc_msg_sender),
-        );
+        // Not in the tests: an app built on a temporary folder has the default
+        // rules, which ask for the feed, and every one of them would read it
+        // from the real zKillboard with a guard that remembers nothing.
+        if !isolated {
+            intel_zkillboard.spawn(
+                intel_input.clone(),
+                Arc::clone(&intel_resolver),
+                Arc::clone(&arc_msg_sender),
+                // The pause zKillboard asks for is kept in the encrypted
+                // database, so that restarting does not skip it.
+                Box::new(intel::zkill_guard::PlayerGuardStore::new(
+                    esi.clone(),
+                    intel::zkill_guard::PlayerGuardStore::R2Z2,
+                )),
+                Box::new(intel::zkill_guard::PlayerGuardStore::new(
+                    esi.clone(),
+                    intel::zkill_guard::PlayerGuardStore::API,
+                )),
+            );
+        }
         intel_zkillboard.follow(&intel_graph);
         intel::reader::spawn(
             intel::reader::ReaderShared {
@@ -675,7 +692,7 @@ impl eframe::App for TelescopeApp {
         self.event_manager();
         // Every map takes its messages each frame, drawn or not: a pane only
         // reads them in its `ui()`, which isn't called while its tab is
-        // hidden or the Settings screen is open, and the broadcast channel
+        // hidden, and the broadcast channel
         // drops the oldest ones once it is full.
         self.drain_map_messages();
         // Over the Settings screen too: its Application page starts updates.
@@ -702,13 +719,11 @@ impl eframe::App for TelescopeApp {
             ));
         }
 
-        // The Settings screen is full-window: while it is open it replaces the
-        // maps, the log panel and the menu.
-        if self.open[2] {
-            self.show_settings_screen(ui);
-            Self::finish_frame(ui);
-            return;
-        }
+        // The Settings screen has a window of its own: the maps, the log panel
+        // and the menu stay in the app's. (There is no such window on the
+        // web: its settings come from a file.)
+        #[cfg(not(target_arch = "wasm32"))]
+        self.show_settings_window(ui.ctx());
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
@@ -773,7 +788,7 @@ impl eframe::App for TelescopeApp {
 }
 
 impl TelescopeApp {
-    /// Opens the full-window Settings screen, snapshotting the settings so
+    /// Opens the Settings window, snapshotting the settings so
     /// Cancel can revert the session, and makes sure the rules editor is
     /// loaded from the live rules.
     pub(crate) fn open_settings(&mut self) {
@@ -783,6 +798,9 @@ impl TelescopeApp {
                 tracing::debug!("could not scan the chat logs: {error}");
             }
             self.settings_snapshot = Some(self.settings.clone());
+        } else {
+            // Already open: bring its window up instead.
+            self.settings_ui.bring_to_front();
         }
         let graph = self.intel_graph.clone();
         self.patterns_editor.ensure_loaded(&graph);
@@ -834,6 +852,7 @@ impl TelescopeApp {
             self.change_sde();
         }
         self.apply_node_style();
+        self.apply_heatmap();
         self.sync_overlay();
         self.apply_graph(graph);
         self.patterns_editor.mark_applied();
@@ -876,6 +895,9 @@ impl TelescopeApp {
                     self.handle_character_authenticated(*linked)
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
+                Message::TimedNotification(stamp, message) => {
+                    self.update_status_stamped(message, Some(stamp))
+                }
                 Message::NewVersionAvailable(info) => self.update_prompt = Some(info),
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
@@ -959,7 +981,10 @@ impl TelescopeApp {
         if crate::repaint::take_pending() {
             ui.ctx().request_repaint();
         }
-        tracing::info!(tracy.frame_mark = true);
+        // Its own target: only Tracy reads this event, and with the target of
+        // the module every frame would show in the console and in the log
+        // file whenever `telescope` is logged at INFO.
+        tracing::event!(target: "tracy_frame", tracing::Level::INFO, { tracy.frame_mark = true });
     }
 
     /// Lets every map pane take the `MapSync` messages waiting for it.
@@ -981,6 +1006,20 @@ impl TelescopeApp {
             for tile in tree.tiles.tiles_mut() {
                 if let Tile::Pane(pane) = tile {
                     pane.set_node_style(style);
+                }
+            }
+        }
+    }
+
+    /// Shows or hides the heat on every map as the settings say (Settings ->
+    /// Maps).
+    fn apply_heatmap(&mut self) {
+        let on = self.settings.get_heatmap();
+        self.intel_zkillboard.set_heat_wanted(on);
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.set_heatmap(on);
                 }
             }
         }
@@ -1036,6 +1075,8 @@ impl TelescopeApp {
             Arc::clone(&self.task_msg),
             self.settings.get_node_style(),
         );
+        pane.set_zkillboard(self.intel_zkillboard.clone());
+        pane.set_heatmap(self.settings.get_heatmap());
         self.seed_player_markers(pane.as_mut());
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
         let root = self.tree.as_ref().unwrap().root.unwrap();
@@ -1197,6 +1238,8 @@ impl TelescopeApp {
             Arc::clone(&self.task_msg),
             self.settings.get_node_style(),
         );
+        pane.set_zkillboard(self.intel_zkillboard.clone());
+        pane.set_heatmap(self.settings.get_heatmap());
         self.seed_player_markers(pane.as_mut());
         let id = tiles.insert_pane(pane);
         let tile_ids = vec![id];
@@ -1295,6 +1338,14 @@ mod font_tests {
         ctx
     }
 
+    /// Lets the context find the platform's fonts, as eframe does in the
+    /// app (the emojis come from there).
+    fn add_system_fonts(ctx: &egui::Context) {
+        ctx.add_font_provider(Arc::new(
+            egui_system_font_provider::SystemFontProvider::new(),
+        ));
+    }
+
     /// The atlas region (top left and bottom right corners) of the one glyph
     /// `text` is laid out with.
     fn glyph_uv(ctx: &egui::Context, text: &str) -> ([u16; 2], [u16; 2]) {
@@ -1309,8 +1360,10 @@ mod font_tests {
     // `draws` can't be used for the icon: egui reports every glyph of the font
     // holding its replacement glyph (NotoEmoji) as missing, emoji included.
     // Instead, check the icon isn't painted as the glyph of a code point no
-    // font has. The emoji come from egui's `monochrome_emoji_fonts` feature
-    // (off by default since egui 0.37).
+    // font has. The emoji come from the platform's emoji font on desktop
+    // (egui 0.37 bundles none by default) and from egui's
+    // `monochrome_emoji_fonts` feature on the web build. These tests need a
+    // system with an emoji font.
     #[test]
     fn the_overlay_fonts_are_registered_with_the_interface_fonts_as_fallback() {
         let fonts = TelescopeApp::font_definitions();
@@ -1336,6 +1389,7 @@ mod font_tests {
     #[test]
     fn tooltip_icons_are_drawn() {
         let ctx = context_with(TelescopeApp::font_definitions());
+        add_system_fonts(&ctx);
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
         for text in [
             tiles::CHARACTER_ICON,
@@ -1348,18 +1402,6 @@ mod font_tests {
         }
         // A known glyph, to show the check tells them apart.
         assert_ne!(glyph_uv(&ctx, "A"), missing);
-    }
-
-    #[test]
-    fn the_emojis_of_the_settings_roots_are_drawn() {
-        use crate::app::windows::settings::root_icons;
-        let ctx = context_with(TelescopeApp::font_definitions());
-        let missing = glyph_uv(&ctx, "\u{10FFFD}");
-        for icon in root_icons() {
-            let uv = glyph_uv(&ctx, icon);
-            assert_ne!(uv.0, uv.1, "{icon}");
-            assert_ne!(uv, missing, "{icon}");
-        }
     }
 
     #[test]

@@ -14,12 +14,16 @@ use crate::app::messages::{Message, Type};
 use notify::{RecursiveMode, Watcher};
 use webb::graph::{Executor, RuleGraph};
 
+pub(crate) mod cache_store;
 pub(crate) mod detection;
 pub(crate) mod dispatch;
 pub(crate) mod input;
+pub(crate) mod kill_context;
+pub(crate) mod kill_day;
 pub(crate) mod nearby;
 pub(crate) mod reader;
 pub(crate) mod resolve;
+pub(crate) mod zkill_guard;
 pub(crate) mod zkillboard;
 
 pub(crate) use self::input::IntelLogName;
@@ -204,11 +208,14 @@ impl TelescopeApp {
 
     /// Points what reads the SDE database at the one the settings name: the
     /// zKillboard source (it looks up system and ship names there) and the
-    /// ship index that gives the ships of chat lines their type id. Cheap and
+    /// ship index that gives the ships of chat lines their type id. It also
+    /// hands the zKillboard source its options (pause and filters). Cheap and
     /// idempotent, like [`Self::sync_alarm_shared`], which it runs next to.
     pub(crate) fn sync_sde_path(&self) {
         let path = self.settings.get_sde();
         self.intel_zkillboard.set_sde_path(path);
+        self.intel_zkillboard
+            .set_options(self.settings.get_zkillboard());
         self.intel_resolver.set_sde_path(path);
         self.intel_resolver
             .set_aliases_path(&path.with_file_name(resolve::SystemAliases::FILE));

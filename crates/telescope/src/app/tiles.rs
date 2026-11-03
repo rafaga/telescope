@@ -42,6 +42,10 @@ use std::{
 };
 use tokio::sync::broadcast::Receiver;
 
+use super::heat_layer::{HeatControl, HeatMode};
+use super::intel::kill_context::{KillContext, Source, Verdict};
+use super::intel::kill_day::DayLine;
+use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::MessageSpawner;
 
 /// Bridges a single `sde` map point (native type, as of the `objects`
@@ -124,10 +128,15 @@ pub trait TabPane {
     /// Redraws the nodes with `style` (Settings -> Maps). Maps that don't
     /// draw their nodes with it ignore it.
     fn set_node_style(&mut self, _style: NodeStyle) {}
+    /// Shows or hides the heat of the last hour (Settings -> Maps).
+    fn set_heatmap(&mut self, _on: bool) {}
     /// Loads the map's systems again from the SDE database at `path` (a
     /// rebuilt `sde.db`, or another one picked in Settings -> Application)
     /// and puts back the markers of the linked characters.
     fn reload_data(&mut self, path: &Path);
+    /// Gives the map the zKillboard source, for the killmail context of its
+    /// node tooltips. Maps that don't show it ignore it.
+    fn set_zkillboard(&mut self, _handle: ZKillboardHandle) {}
 }
 
 /// Linked characters on a map, by character id: their solar system and name.
@@ -141,18 +150,138 @@ pub(crate) const CHARACTER_ICON: &str = "👤";
 /// How often a node with a linked character repaints its glow (~30 fps).
 const GLOW_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Color of [`ALERT_ICON`] in the node tooltips.
-const ALERT_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
-/// Color of [`CLEAR_ICON`] in the node tooltips.
+/// Color of [`CLEAR_ICON`] in the node tooltips (a plain symbol, not a color
+/// emoji: the others keep the colors of the emoji font).
 const CLEAR_ICON_COLOR: Color32 = Color32::from_rgb(90, 200, 90);
-/// Emoji/color of the ships section of a tooltip line.
+/// Emoji of the ships section of a tooltip line.
 const SHIP_ICON: &str = "🚀";
-const SHIP_ICON_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
-/// Emoji/color of the pilot-count section of a tooltip line (a person
-/// silhouette, colored distinctly from [`CHARACTER_ICON`], which uses the
-/// default text color).
+/// Emoji of the pilot-count section of a tooltip line.
 const COUNT_ICON: &str = "👤";
-const COUNT_ICON_COLOR: Color32 = Color32::from_rgb(190, 130, 255);
+/// Color of the word that says a system is active in the killmail context
+/// (text, not an emoji).
+const ACTIVE_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
+/// Color of the tags of what zKillboard says about a killmail (awox, gank).
+const TAG_COLOR: Color32 = Color32::from_rgb(229, 72, 77);
+/// Colors of the dot that says where the killmails come from.
+const LIVE_COLOR: Color32 = Color32::from_rgb(90, 200, 90);
+const UPDATING_COLOR: Color32 = Color32::from_rgb(240, 146, 43);
+const API_COLOR: Color32 = Color32::from_rgb(107, 159, 214);
+
+/// How the name of the source of the node tooltips is drawn.
+struct KillTextStyle {
+    /// Its text size, as a fraction of the one of the rest of the tooltip.
+    scale: f32,
+    /// The height of its logo, as a fraction of the text size of the rest of
+    /// the tooltip.
+    logo_scale: f32,
+}
+
+impl Default for KillTextStyle {
+    fn default() -> Self {
+        Self {
+            scale: 0.95,
+            logo_scale: 0.55,
+        }
+    }
+}
+
+impl KillContext {
+    /// The size of the name of the source and of its logo, a little under the
+    /// text of the tooltip.
+    fn text_size(ui: &Ui) -> f32 {
+        TextStyle::Body.resolve(ui.style()).size * KillTextStyle::default().scale
+    }
+
+    /// `value` in the size of the name of the source.
+    fn text(ui: &Ui, value: impl Into<String>) -> RichText {
+        RichText::new(value).size(Self::text_size(ui))
+    }
+
+    /// The counts of the killmails as plain text: the last day, the last
+    /// hour and the last 15 minutes (`[24h:12 | 1h:5 | 15m:2]`). The day is
+    /// only there once zKillboard has said how many: not while it is being
+    /// asked for, and not when it can't say.
+    fn show_counts(&self, ui: &mut Ui) {
+        let mut counts: Vec<(&str, String)> = Vec::new();
+        match self.day {
+            Some(DayLine::Known(count)) if count.more => {
+                counts.push(("24h", format!("{}+", count.kills)));
+            }
+            Some(DayLine::Known(count)) => counts.push(("24h", count.kills.to_string())),
+            // Not known yet: the dots say so.
+            Some(DayLine::Pending | DayLine::Unavailable) | None => {
+                counts.push(("24h", String::from("…")));
+            }
+        }
+        counts.push(("1h", self.hour.to_string()));
+        counts.push(("15m", self.recent.to_string()));
+        // Plain text in brackets, with bars between and no space but the
+        // ones of the text: the line is as narrow as it can be.
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(RichText::new("[").weak());
+            for (index, (label, value)) in counts.into_iter().enumerate() {
+                if index > 0 {
+                    ui.label(RichText::new(" | ").weak());
+                }
+                ui.label(RichText::new(format!("{label}:")).weak());
+                ui.label(RichText::new(value));
+            }
+            ui.label(RichText::new("]").weak());
+        });
+    }
+
+    /// The block of a node tooltip with what the killmails of the last hour
+    /// say about the system, in one line: the logo and name of the source, a
+    /// dot of where they come from, the state, the tags of the last killmail
+    /// and the counts. What a killmail
+    /// says (ships, pilots, victims) is left to the output tooltips of the
+    /// rules.
+    fn show(&self, ui: &mut Ui) {
+        let color = match self.source {
+            Source::Api => API_COLOR,
+            Source::Feed if self.updating => UPDATING_COLOR,
+            Source::Feed => LIVE_COLOR,
+        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            // The logo, a little lower than the name (its proportions are
+            // 32 x 21), then the name.
+            let height =
+                TextStyle::Body.resolve(ui.style()).size * KillTextStyle::default().logo_scale;
+            ui.add(
+                egui::Image::new(egui::include_image!("../../../../assets/zkill-light.svg"))
+                    .fit_to_exact_size(vec2(height * 32.0 / 21.0, height))
+                    .tint(Color32::from_gray(140)),
+            );
+            ui.label(Self::text(ui, "Zkill").weak());
+            let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+            ui.painter().circle_filled(rect.center(), 3.0, color);
+            if self.loading && self.hour == 0 {
+                ui.label(RichText::new(t!("map.kills_loading")).weak());
+                return;
+            }
+            let (color, text) = if self.verdict == Verdict::Quiet {
+                (Color32::from_gray(206), t!("map.kills_quiet").into_owned())
+            } else {
+                (
+                    ACTIVE_COLOR,
+                    format!("{ALERT_ICON} {}", t!("map.kills_active")),
+                )
+            };
+            ui.label(RichText::new(text).color(color));
+            for (shown, name) in [
+                (self.tags.ganked, t!("map.kills_tag_gank")),
+                (self.tags.awox, t!("map.kills_tag_awox")),
+            ] {
+                if shown {
+                    ui.label(RichText::new(format!("💀 {name}")).color(TAG_COLOR));
+                }
+            }
+            self.show_counts(ui);
+        });
+    }
+}
 
 /// The tooltip of the node under the pointer, only on nodes that have
 /// something to show: the linked characters in that system, one per line
@@ -163,6 +292,7 @@ fn show_node_tooltip(
     map: &Map,
     characters: &CharactersOnMap,
     alerts: &mut AlertLog,
+    kills: Option<&ZKillboardHandle>,
 ) {
     let Some(system_id) = map.hovered_node() else {
         return;
@@ -174,28 +304,43 @@ fn show_node_tooltip(
         .collect();
     let now = Instant::now();
     let active = alerts.active(system_id, now);
-    if names.is_empty() && active.is_empty() {
+    // A system with no character and no alert still has a tooltip while the
+    // killmails are being read: it says what they know, even that there are
+    // none.
+    let standalone = names.is_empty() && active.is_empty();
+    if standalone && kills.is_none() {
         return;
     }
     names.sort_unstable();
+    // Every system that has a tooltip says what the killmails know, with a
+    // character in it, an alert or neither.
+    let context = kills.and_then(|handle| handle.context(system_id));
+    if standalone && context.is_none() {
+        return;
+    }
     response.on_hover_ui_at_pointer(|ui| {
         for name in &names {
             ui.label(format!("{CHARACTER_ICON} {name}"));
         }
-        if active.is_empty() {
-            return;
+        if !active.is_empty() {
+            if !names.is_empty() {
+                ui.separator();
+            }
+            for alert in active.iter().take(MAX_TOOLTIP_ALERTS) {
+                alert_line(ui, alert, now);
+            }
+            if active.len() > MAX_TOOLTIP_ALERTS {
+                ui.weak(t!(
+                    "map.alert_more",
+                    count = active.len() - MAX_TOOLTIP_ALERTS
+                ));
+            }
         }
-        if !names.is_empty() {
-            ui.separator();
-        }
-        for alert in active.iter().take(MAX_TOOLTIP_ALERTS) {
-            alert_line(ui, alert, now);
-        }
-        if active.len() > MAX_TOOLTIP_ALERTS {
-            ui.weak(t!(
-                "map.alert_more",
-                count = active.len() - MAX_TOOLTIP_ALERTS
-            ));
+        if let Some(context) = &context {
+            if !standalone {
+                ui.separator();
+            }
+            context.show(ui);
         }
         // The ages tick even when nothing else repaints (a clear report
         // has no animation).
@@ -208,34 +353,31 @@ fn show_node_tooltip(
 /// alert was built with `emojis` off.
 fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
     ui.horizontal(|ui| {
-        let (icon, color) = if alert.raises_visual() {
-            (ALERT_ICON, ALERT_ICON_COLOR)
+        ui.spacing_mut().item_spacing.x = 3.0;
+        if alert.raises_visual() {
+            ui.label(ALERT_ICON);
         } else {
-            (CLEAR_ICON, CLEAR_ICON_COLOR)
-        };
-        ui.label(RichText::new(icon).color(color));
+            ui.label(RichText::new(CLEAR_ICON).color(CLEAR_ICON_COLOR));
+        }
         ui.label(RichText::new(format_age(now.saturating_duration_since(alert.received))).weak());
         let parts = alert.summary.parts(|count| match count {
             1 => t!("map.alert_pilots_one").into_owned(),
             _ => t!("map.alert_pilots_other", count = count).into_owned(),
         });
-        for (index, part) in parts.into_iter().enumerate() {
-            if index > 0 {
-                ui.label(RichText::new("·").weak());
-            }
+        for part in parts {
             match part {
                 AlertPart::Clear(word) => {
                     ui.label(word);
                 }
                 AlertPart::Ships(text) => {
                     if alert.emojis {
-                        ui.label(RichText::new(SHIP_ICON).color(SHIP_ICON_COLOR));
+                        ui.label(SHIP_ICON);
                     }
                     ui.label(text);
                 }
                 AlertPart::Count(text) => {
                     if alert.emojis {
-                        ui.label(RichText::new(COUNT_ICON).color(COUNT_ICON_COLOR));
+                        ui.label(COUNT_ICON);
                     }
                     ui.label(text);
                 }
@@ -283,6 +425,10 @@ pub struct UniversePane {
     characters: CharactersOnMap,
     /// Intel alerts for the node tooltips.
     alerts: AlertLog,
+    /// Where the killmail context of the node tooltips comes from.
+    zkillboard: Option<ZKillboardHandle>,
+    /// The heat of the last hour, drawn behind the nodes.
+    heat: HeatControl,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
     factor: f64,
@@ -298,8 +444,10 @@ impl UniversePane {
         factor: f64,
         task_msg: Arc<MessageSpawner>,
     ) -> Self {
+        let mut map = Map::new();
+        let heat = HeatControl::install(&mut map, HeatMode::Halo);
         let mut object = Self {
-            map: Map::new(),
+            map,
             mapsync_reciever: receiver,
             path,
             factor,
@@ -307,6 +455,8 @@ impl UniversePane {
             has_points: false,
             characters: HashMap::new(),
             alerts: AlertLog::default(),
+            zkillboard: None,
+            heat,
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -392,11 +542,26 @@ impl TabPane for UniversePane {
         self.map.remove_marker(player_id);
     }
 
+    fn set_zkillboard(&mut self, handle: ZKillboardHandle) {
+        self.zkillboard = Some(handle);
+    }
+
+    fn set_heatmap(&mut self, on: bool) {
+        self.heat.set_enabled(&mut self.map, on);
+    }
+
     #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
         let response = ui.add(&mut self.map);
-        show_node_tooltip(response, &self.map, &self.characters, &mut self.alerts);
+        self.heat.refresh(ui, self.zkillboard.as_ref());
+        show_node_tooltip(
+            response,
+            &self.map,
+            &self.characters,
+            &mut self.alerts,
+            self.zkillboard.as_ref(),
+        );
         UiResponse::None
     }
 
@@ -493,6 +658,10 @@ pub struct RegionPane {
     characters: CharactersOnMap,
     /// Intel alerts for the node tooltips.
     alerts: AlertLog,
+    /// Where the killmail context of the node tooltips comes from.
+    zkillboard: Option<ZKillboardHandle>,
+    /// The heat of the last hour, drawn inside the node boxes.
+    heat: HeatControl,
 }
 
 impl RegionPane {
@@ -505,8 +674,10 @@ impl RegionPane {
         task_msg: Arc<MessageSpawner>,
         node_style: NodeStyle,
     ) -> Self {
+        let mut map = Map::new();
+        let heat = HeatControl::install(&mut map, HeatMode::Tint);
         let mut object = Self {
-            map: Map::new(),
+            map,
             mapsync_reciever: receiver,
             path,
             factor,
@@ -516,6 +687,8 @@ impl RegionPane {
             has_points: false,
             characters: HashMap::new(),
             alerts: AlertLog::default(),
+            zkillboard: None,
+            heat,
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -592,6 +765,14 @@ impl TabPane for RegionPane {
         self.map.remove_marker(player_id);
     }
 
+    fn set_zkillboard(&mut self, handle: ZKillboardHandle) {
+        self.zkillboard = Some(handle);
+    }
+
+    fn set_heatmap(&mut self, on: bool) {
+        self.heat.set_enabled(&mut self.map, on);
+    }
+
     fn set_node_style(&mut self, style: NodeStyle) {
         self.map.set_node_template(Rc::new(Template::new(style)));
     }
@@ -644,7 +825,14 @@ impl TabPane for RegionPane {
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
         let response = ui.add(&mut self.map);
-        show_node_tooltip(response, &self.map, &self.characters, &mut self.alerts);
+        self.heat.refresh(ui, self.zkillboard.as_ref());
+        show_node_tooltip(
+            response,
+            &self.map,
+            &self.characters,
+            &mut self.alerts,
+            self.zkillboard.as_ref(),
+        );
         UiResponse::None
     }
 
@@ -980,7 +1168,9 @@ impl Behavior<Box<dyn TabPane>> for TreeBehavior {
         // focus as soon as it was clicked. Building the menu explicitly lets us ask for
         // `CloseOnClickOutside` instead, the same behavior egui's own `SubMenuButton` uses so
         // that interactive widgets inside a popup keep working normally.
-        MenuButton::new("➕")
+        // A plain "+" of the interface font: the emoji of the platform sits
+        // high in the button.
+        MenuButton::new(egui::RichText::new("+").strong())
             .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
             .ui(ui, |ui| {
                 let mut _data: Vec<usize> = Vec::new();
@@ -1154,6 +1344,17 @@ impl NodeTemplate for Template {
             egui::StrokeKind::Outside,
         )));
         ui.painter().extend(std::mem::take(&mut shapes));
+        // The layers installed in the map for the inside of the box (the
+        // heat): over the background, under the glow and the name.
+        if !ctx.layers.is_empty() {
+            ctx.layers.paint(
+                ui.painter(),
+                &NodeOutline::RoundedRect {
+                    rect,
+                    corner_radius: self.node_style.corner_radius * ctx.zoom,
+                },
+            );
+        }
         // A linked character here (a marker, in egui-map's terms): a pulsing
         // tint over the background and under the label, faded in and out by
         // `ctx.marker` when the character arrives or leaves. Drawn over an

@@ -18,10 +18,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
-use webb::graph::{Activation, Data, FORMATTED_TAG, Mensaje};
+use webb::graph::{Activation, Data, FORMATTED_TAG, LogConfig, Mensaje};
 use webb::map_alerts::{AlertSummary, IntelAlert, leftover};
 use webb::objects::Character;
-use webb::rules::{IntelLine, OutputKind};
+use webb::rules::{InputKind, IntelLine, OutputKind};
 
 /// The settings the dispatch reads, copied out of `Settings`.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +63,10 @@ pub(crate) struct AlarmShared {
     pub config: RwLock<AlarmConfig>,
     /// Last known solar system of each linked character (only known ones).
     pub locations: RwLock<Vec<u32>>,
+    /// Woken when a linked character changes system, so that whoever plans
+    /// the background work around the characters (housekeeping) does not wait
+    /// for its next round.
+    pub moved: tokio::sync::Notify,
     /// Stargate connections of the loaded universe.
     pub jumps: RwLock<JumpGraph>,
     /// Recent events near the linked characters (read by the overlay).
@@ -112,6 +116,7 @@ impl AlarmShared {
                 .locations
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = locations;
+            self.moved.notify_one();
             changed = true;
         }
         changed
@@ -237,31 +242,52 @@ impl Dispatcher {
             );
         }
         let alert = fresh && !suppress;
+        // A killmail alerts only within the warning radius: the feed carries
+        // every kill of the universe. The reports of the chat are not held back.
+        let from_feed = InputKind::ZKillboard.fixed_channel() == Some(channel.as_str());
+        let alerting = if alert && from_feed {
+            self.killmail_systems(&config, &systems)
+        } else {
+            systems.clone()
+        };
         if alert {
-            self.record_nearby(&config, &line, &systems);
+            self.record_nearby(&config, &line, &alerting);
         }
         if visual && alert {
-            self.pulse(&config, &line, &systems);
+            self.pulse(&config, &line, &alerting, from_feed);
         }
         if sound && alert {
-            self.sound(&config, &systems);
+            self.sound(&config, &alerting);
         }
         for activation in activations
             .iter()
             .filter(|activation| activation.kind == OutputKind::Tooltip)
         {
-            self.tooltip(&config, &line, &systems, activation);
+            self.tooltip(&config, &line, &systems, activation, from_feed);
         }
         if let Some(activation) = activations
             .iter()
             .find(|activation| activation.kind == OutputKind::Log)
         {
-            self.log(&channel, &line, activation.log.use_current_time);
+            self.log(&channel, &line, &activation.log);
         }
         tracing::debug!(
             elapsed_us = started.elapsed().as_micros() as u64,
             "line dispatched"
         );
+    }
+
+    /// The systems of a killmail that may alert: those within the warning
+    /// radius of a linked character.
+    fn killmail_systems(&self, config: &AlarmConfig, systems: &[usize]) -> Vec<usize> {
+        systems
+            .iter()
+            .copied()
+            .filter(|system_id| {
+                self.nearest_character_in_range(config, *system_id)
+                    .is_some()
+            })
+            .collect()
     }
 
     /// Keeps, for the overlay, every reported system that is within the
@@ -327,10 +353,10 @@ impl Dispatcher {
 
     /// Pulses the map node of every reported system (no tooltip entry). A
     /// line may name several candidates; only those that resolved count.
-    fn pulse(&self, config: &AlarmConfig, line: &IntelLine, systems: &[usize]) {
+    fn pulse(&self, config: &AlarmConfig, line: &IntelLine, systems: &[usize], killmail: bool) {
         let received = Instant::now();
         for system_id in systems {
-            let alert = IntelAlert::new(
+            let mut alert = IntelAlert::new(
                 *system_id,
                 received,
                 config.alert_duration,
@@ -338,6 +364,7 @@ impl Dispatcher {
                 AlertSummary::default(),
                 false,
             );
+            alert.killmail = killmail;
             self.send_map(MapSync::SystemAlert(alert));
         }
     }
@@ -351,6 +378,7 @@ impl Dispatcher {
         line: &IntelLine,
         systems: &[usize],
         activation: &Activation,
+        killmail: bool,
     ) {
         if systems.is_empty() {
             return;
@@ -373,7 +401,7 @@ impl Dispatcher {
         };
         let received = Instant::now();
         for system_id in systems {
-            let alert = IntelAlert::new(
+            let mut alert = IntelAlert::new(
                 *system_id,
                 received,
                 config.alert_duration,
@@ -381,6 +409,7 @@ impl Dispatcher {
                 summary.clone(),
                 activation.tooltip.emojis,
             );
+            alert.killmail = killmail;
             self.send_map(MapSync::SystemTooltip(alert));
         }
     }
@@ -437,29 +466,28 @@ impl Dispatcher {
         nearest_origin_within(&jumps, &origins, target, config.warning_area)
     }
 
-    /// Appends the line to the status log, optionally stamped with the current
-    /// time instead of the line's own timestamp.
-    fn log(&self, channel: &str, line: &IntelLine, use_current_time: bool) {
-        let text = if use_current_time {
-            let mut stamped = line.clone();
-            stamped.timestamp = Utc::now();
-            stamped.to_string()
+    /// Appends the line to the status log. The stamp of the entry is the
+    /// moment of the line, or the current time when the node says so; the
+    /// text does not repeat it.
+    fn log(&self, channel: &str, line: &IntelLine, config: &LogConfig) {
+        let notification =
+            |text: String| (Type::Info, String::from("Intel"), channel.to_string(), text);
+        if config.use_current_time {
+            self.task_msg
+                .spawn(Message::GenericNotification(notification(line.untimed())));
         } else {
-            line.to_string()
-        };
-        self.task_msg.spawn(Message::GenericNotification((
-            Type::Info,
-            String::from("Intel"),
-            channel.to_string(),
-            text,
-        )));
+            self.task_msg.spawn(Message::TimedNotification(
+                line.timestamp,
+                notification(line.untimed()),
+            ));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webb::graph::{LogConfig, TooltipConfig};
+    use webb::graph::TooltipConfig;
 
     struct Rig {
         dispatcher: Dispatcher,
@@ -595,7 +623,7 @@ mod tests {
         assert!(sent.iter().any(|m| matches!(m, MapSync::SystemTooltip(_))));
         assert!(matches!(
             rig.app.try_recv(),
-            Ok(Message::GenericNotification((Type::Info, _, _, _)))
+            Ok(Message::TimedNotification(_, (Type::Info, _, _, _)))
         ));
     }
 
@@ -625,6 +653,52 @@ mod tests {
             .nearby
             .recent(0, Instant::now(), Duration::from_secs(60));
         assert_eq!(kept.len(), 1, "only the fresh line reaches the overlay");
+    }
+
+    /// A killmail line: the same as `detected`, from the feed's channel.
+    fn killmail(activations: Vec<Activation>) -> DetectedLine {
+        let mut line = detected(activations);
+        line.channel = String::from("zkillboard");
+        line
+    }
+
+    #[test]
+    fn a_killmail_alerts_only_within_the_radius() {
+        let mut rig = rig(vec![1]);
+        rig.dispatcher.process(killmail(vec![
+            activation(OutputKind::Visual, &[3, 5]),
+            activation(OutputKind::Sound, &[3, 5]),
+        ]));
+        let sent = drain_map(&mut rig);
+        let pulsed: Vec<usize> = sent
+            .iter()
+            .filter_map(|message| match message {
+                MapSync::SystemAlert(alert) => Some(alert.system_id),
+                _ => None,
+            })
+            .collect();
+        // System 5 is four jumps away; the radius is two.
+        assert_eq!(pulsed, vec![3]);
+        assert!(
+            sent.iter()
+                .any(|message| matches!(message, MapSync::SystemAlert(alert) if alert.killmail))
+        );
+        assert!(rig.sounds.try_recv().is_ok());
+    }
+
+    #[test]
+    fn a_killmail_and_a_report_of_the_same_system_both_alert() {
+        // They are not matched with each other: there is no reliable way to
+        // tell they are about the same event.
+        let mut rig = rig(vec![1]);
+        rig.dispatcher
+            .process(killmail(vec![activation(OutputKind::Visual, &[2])]));
+        rig.dispatcher
+            .process(detected(vec![activation(OutputKind::Visual, &[2])]));
+        let sent = drain_map(&mut rig);
+        assert_eq!(sent.len(), 2);
+        assert!(matches!(&sent[0], MapSync::SystemAlert(alert) if alert.killmail));
+        assert!(matches!(&sent[1], MapSync::SystemAlert(alert) if !alert.killmail));
     }
 
     #[test]
@@ -760,15 +834,31 @@ mod tests {
     }
 
     #[test]
-    fn a_log_output_reaches_the_status_log() {
+    fn a_log_output_reaches_the_status_log_stamped_with_the_moment_of_the_line() {
         let mut rig = rig(vec![1]);
         rig.dispatcher
             .process(detected(vec![activation(OutputKind::Log, &[])]));
         match rig.app.try_recv() {
-            Ok(Message::GenericNotification((Type::Info, source, channel, text))) => {
+            Ok(Message::TimedNotification(stamp, (Type::Info, source, channel, text))) => {
                 assert_eq!(source, "Intel");
                 assert_eq!(channel, "intel");
-                assert!(text.contains("Pilot > reported"), "{text}");
+                // The moment of the line (the test's lines are from now).
+                assert!((Utc::now() - stamp).num_seconds().abs() < 5, "{stamp}");
+                assert!(text.starts_with("Pilot > "), "{text}");
+            }
+            _ => panic!("expected a stamped Info notification"),
+        }
+    }
+
+    #[test]
+    fn the_current_time_stamps_the_entry_when_the_node_asks_for_it() {
+        let mut rig = rig(vec![1]);
+        let mut log = activation(OutputKind::Log, &[]);
+        log.log.use_current_time = true;
+        rig.dispatcher.process(detected(vec![log]));
+        match rig.app.try_recv() {
+            Ok(Message::GenericNotification((Type::Info, _, _, text))) => {
+                assert_eq!(text, "Pilot > reported");
             }
             _ => panic!("expected an Info notification"),
         }
@@ -817,6 +907,35 @@ mod tests {
         assert!(shared.update(other.clone(), vec![2]));
         assert_eq!(*shared.config.read().unwrap(), other);
         assert_eq!(*shared.locations.read().unwrap(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn a_character_changing_system_wakes_whoever_plans_around_it() {
+        let shared = AlarmShared::default();
+        let config = AlarmConfig::from_settings(&Settings::default());
+        let wait = Duration::from_millis(50);
+        shared.update(config.clone(), vec![1]);
+        assert!(
+            tokio::time::timeout(wait, shared.moved.notified())
+                .await
+                .is_ok()
+        );
+        // The same place again, or only the settings, wake nobody.
+        shared.update(config.clone(), vec![1]);
+        let mut other = config.clone();
+        other.warning_area += 1;
+        shared.update(other, vec![1]);
+        assert!(
+            tokio::time::timeout(wait, shared.moved.notified())
+                .await
+                .is_err()
+        );
+        shared.update(config, vec![2]);
+        assert!(
+            tokio::time::timeout(wait, shared.moved.notified())
+                .await
+                .is_ok()
+        );
     }
 
     #[test]

@@ -138,8 +138,10 @@ pub enum SettingsPage {
     /// The zKillboard feed (an empty page for now).
     Zkillboard,
     Rules,
-    /// How a reported system is alerted on the maps: the distance and the
-    /// visual alert.
+    /// How close a reported system has to be to one of the characters to
+    /// alert. Also the root of the other alerts pages.
+    Alerts,
+    /// How a reported system is alerted on the maps.
     AlertsVisual,
     AlertsSound,
     AlertsOverlay,
@@ -151,10 +153,11 @@ pub enum SettingsPage {
 impl SettingsPage {
     /// Every page, in the order of the navigation (for the tests).
     #[cfg(test)]
-    pub const ALL: [SettingsPage; 9] = [
+    pub const ALL: [SettingsPage; 10] = [
         SettingsPage::Sources,
         SettingsPage::Zkillboard,
         SettingsPage::Rules,
+        SettingsPage::Alerts,
         SettingsPage::AlertsVisual,
         SettingsPage::AlertsSound,
         SettingsPage::AlertsOverlay,
@@ -169,6 +172,7 @@ impl SettingsPage {
             SettingsPage::Sources => t!("settings.pages.sources"),
             SettingsPage::Zkillboard => t!("settings.pages.zkillboard"),
             SettingsPage::Rules => t!("settings.pages.rules"),
+            SettingsPage::Alerts => t!("settings.pages.alerts"),
             SettingsPage::AlertsVisual => t!("settings.pages.alerts_visual"),
             SettingsPage::AlertsSound => t!("settings.pages.alerts_sound"),
             SettingsPage::AlertsOverlay => t!("settings.pages.alerts_overlay"),
@@ -193,6 +197,13 @@ pub enum Message {
     /// SSO flow and its data was fetched from ESI and stored.
     CharacterAuthenticated(Box<LinkedCharacter>),
     GenericNotification((Type, String, String, String)),
+    /// A [`Message::GenericNotification`] whose entry in the log is stamped
+    /// with the given moment (the one of the event) instead of the current
+    /// time.
+    TimedNotification(
+        chrono::DateTime<chrono::Utc>,
+        (Type, String, String, String),
+    ),
     NewRegionalPane(usize),
     MapHidden(usize),
     MapShown(usize),
@@ -247,6 +258,7 @@ impl Message {
         match self {
             Message::CharacterAuthenticated(_) => "CharacterAuthenticated",
             Message::GenericNotification(_) => "GenericNotification",
+            Message::TimedNotification(..) => "TimedNotification",
             Message::NewRegionalPane(_) => "NewRegionalPane",
             Message::MapHidden(_) => "MapHidden",
             Message::MapShown(_) => "MapShown",

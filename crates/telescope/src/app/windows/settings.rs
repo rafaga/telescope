@@ -20,6 +20,7 @@ use eframe::egui;
 use egui_ltreeview::{Action as TreeAction, IndentHintStyle, NodeBuilder, TreeView, TreeViewState};
 use egui_panels::{Action, ActionBar, SettingsLayout, StatusKind};
 use native_tools::dialog::{Dialog, DialogResult, DialogType, FileFilter};
+use native_tools::window::OwnWindow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +33,7 @@ mod characters;
 mod maps;
 pub(crate) mod patterns;
 mod sources;
+mod zkillboard;
 
 /// View state of the Settings pages that is not a setting.
 #[derive(Default)]
@@ -48,8 +50,17 @@ pub(crate) struct SettingsUi {
     db_text: Option<String>,
     /// The same for the SDE database path (Application).
     sde_text: Option<String>,
-    /// The window file dialogs belong to (see `Dialog::set_owner`).
+    /// The app's window, which the file dialogs belong to while the Settings
+    /// window is not open (see `Dialog::set_owner`).
     window_owner: Option<isize>,
+    /// The title the Settings window was last given, which finds it natively
+    /// (see [`OwnWindow`]); `None` while it is closed.
+    window_title: Option<String>,
+    /// Where the Settings window opens, fixed when it does so that it stays
+    /// where the user puts it.
+    window_place: Option<egui::Pos2>,
+    /// The Settings window has to come to the front.
+    to_front: bool,
     /// Which groups of the navigation tree are open, and what is selected.
     nav_tree: TreeViewState<NavNode>,
 }
@@ -62,7 +73,8 @@ enum NavGroupId {
     Rules,
     /// Where a line is read from; inside `Rules`.
     Sources,
-    /// The ways a reported system is alerted; inside `Rules`.
+    /// The ways a reported system is alerted, and the page of how close it
+    /// has to be to alert (a group that is a page itself); inside `Rules`.
     Alerts,
     /// The application itself, a page that is also the root of the characters
     /// and the maps.
@@ -97,7 +109,8 @@ impl NavGroupId {
         match self {
             NavGroupId::Rules => Some(SettingsPage::Rules),
             NavGroupId::Application => Some(SettingsPage::Application),
-            NavGroupId::Sources | NavGroupId::Alerts => None,
+            NavGroupId::Alerts => Some(SettingsPage::Alerts),
+            NavGroupId::Sources => None,
         }
     }
 
@@ -109,22 +122,12 @@ impl NavGroupId {
         }
     }
 
-    /// An emoji before the name of the group, for the roots of the tree only
-    /// (a glyph of egui's bundled emoji fonts).
-    fn icon(self) -> Option<&'static str> {
-        match self {
-            NavGroupId::Rules => Some("🔀"),
-            NavGroupId::Application => Some("⚙"),
-            NavGroupId::Sources | NavGroupId::Alerts => None,
-        }
-    }
-
     fn title(self) -> String {
         match self {
             NavGroupId::Rules => SettingsPage::Rules.title(),
             NavGroupId::Application => SettingsPage::Application.title(),
             NavGroupId::Sources => t!("settings.groups.sources").into_owned(),
-            NavGroupId::Alerts => t!("settings.groups.alerts").into_owned(),
+            NavGroupId::Alerts => SettingsPage::Alerts.title(),
         }
     }
 
@@ -152,15 +155,6 @@ impl NavGroupId {
     }
 }
 
-/// The emojis of the roots of the navigation tree (for the font tests).
-#[cfg(test)]
-pub(crate) fn root_icons() -> Vec<&'static str> {
-    NavGroupId::ALL
-        .into_iter()
-        .filter_map(NavGroupId::icon)
-        .collect()
-}
-
 /// A node of the navigation tree: a group of pages, or a page.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum NavNode {
@@ -178,6 +172,28 @@ impl SettingsUi {
     /// Records the app window's native id, for the file dialogs.
     pub(crate) fn set_window_owner(&mut self, owner: Option<isize>) {
         self.window_owner = owner;
+    }
+
+    /// Asks for the Settings window to come to the front (Preferences was
+    /// chosen again while it was open).
+    pub(crate) fn bring_to_front(&mut self) {
+        self.to_front = true;
+    }
+
+    /// The window the file dialogs belong to: the Settings window while it
+    /// is open, else the app's.
+    fn dialog_owner(&self) -> Option<isize> {
+        self.window_title
+            .as_deref()
+            .and_then(OwnWindow::id_by_title)
+            .or(self.window_owner)
+    }
+
+    /// Forgets the Settings window: it was closed.
+    fn window_closed(&mut self) {
+        self.window_title = None;
+        self.window_place = None;
+        self.to_front = false;
     }
 
     /// The errors of `graph` (see [`RuleGraph::validate`]).
@@ -201,6 +217,44 @@ impl SettingsUi {
 }
 
 impl TelescopeApp {
+    /// Draws the Settings screen in a window of its own, over the app's,
+    /// while it is open. The app keeps running behind it. The window lives as
+    /// long as this is called every frame, so Accept and Cancel close it by
+    /// closing the screen (`open[2]`); its close button is Cancel. It opens
+    /// centered over the app's window and stays where the user puts it.
+    pub(crate) fn show_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.open[2] {
+            self.settings_ui.window_closed();
+            return;
+        }
+        let id = egui::ViewportId::from_hash_of("telescope.settings");
+        let title = t!("settings.title").into_owned();
+        let size = egui::vec2(960.0, 680.0);
+        let place = *self.settings_ui.window_place.get_or_insert_with(|| {
+            ctx.input(|input| input.viewport().outer_rect)
+                .map_or(egui::pos2(80.0, 80.0), |app| {
+                    let corner = app.center() - size / 2.0;
+                    egui::pos2(corner.x.max(0.0), corner.y.max(0.0))
+                })
+        });
+        self.settings_ui.window_title = Some(title.clone());
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_inner_size(size)
+            .with_min_inner_size([640.0, 420.0])
+            .with_position(place);
+        if std::mem::take(&mut self.settings_ui.to_front) {
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+        }
+        let closing = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            self.show_settings_screen(ui);
+            ui.input(|input| input.viewport().close_requested())
+        });
+        if closing && self.open[2] {
+            self.cancel_settings();
+        }
+    }
+
     /// Draws the Settings screen over the whole window.
     #[tracing::instrument(skip(self, ui))]
     pub(crate) fn show_settings_screen(&mut self, ui: &mut egui::Ui) {
@@ -234,6 +288,7 @@ impl TelescopeApp {
                     SettingsPage::Sources => self.show_sources_page(ui),
                     SettingsPage::Zkillboard => self.show_zkillboard_page(ui),
                     SettingsPage::Rules => self.show_patterns_page(ui),
+                    SettingsPage::Alerts => self.show_alerts_page(ui),
                     SettingsPage::AlertsVisual => self.show_alerts_visual_page(ui),
                     SettingsPage::AlertsSound => self.show_alerts_sound_page(ui),
                     SettingsPage::AlertsOverlay => self.show_alerts_overlay_page(ui),
@@ -319,8 +374,8 @@ impl TelescopeApp {
 
     /// A page or a group of the navigation tree. A group holds its pages and
     /// the groups inside it, and has no button to collapse it. The rows are
-    /// plain, the tree's lines connect them; only the roots have an emoji. A
-    /// group that is a page itself (the rules, the application) opens it when
+    /// plain, the tree's lines connect them. A group
+    /// that is a page itself (the rules, the application) opens it when
     /// clicked, and has the circle of changes not applied like any page; a group
     /// that is not a page (the sources, the alerts) is a disabled row.
     fn add_nav_entry(
@@ -340,27 +395,20 @@ impl TelescopeApp {
             ui.painter().circle_filled(rect.center(), 5.0, dot);
             response.on_hover_text(&tip);
         };
-        let row = |title: String, page: Option<SettingsPage>, icon: Option<&'static str>| {
+        let row = |title: String, page: Option<SettingsPage>| {
             // A row with no page behind it only groups other rows: it is
             // shown disabled, as there is nothing to open.
             let has_page = page.is_some();
             move |ui: &mut egui::Ui| {
                 ui.add_enabled_ui(has_page, |ui| {
-                    // the emoji is a label of its own: the name stays the name
-                    if let Some(icon) = icon {
-                        ui.add(egui::Label::new(icon).selectable(false));
-                    }
                     ui.add(egui::Label::new(title.clone()).selectable(false));
                 });
             }
         };
         match entry {
             NavEntry::Page(page) => {
-                let node = NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(
-                    page.title(),
-                    Some(page),
-                    None,
-                ));
+                let node =
+                    NodeBuilder::leaf(NavNode::Page(page)).label_ui(row(page.title(), Some(page)));
                 builder.node(if changed(Some(page)) {
                     node.accessory(badge)
                 } else {
@@ -371,7 +419,7 @@ impl TelescopeApp {
                 let node = NodeBuilder::dir(group.node())
                     .default_open(true)
                     .closer(|_ui, _state| {})
-                    .label_ui(row(group.title(), group.page(), group.icon()));
+                    .label_ui(row(group.title(), group.page()));
                 builder.node(if changed(group.page()) {
                     node.accessory(badge)
                 } else {
@@ -400,11 +448,16 @@ impl TelescopeApp {
         {
             pages.push(SettingsPage::Sources);
         }
-        if now.get_warning_area() != saved.get_warning_area()
-            || now.get_alert_duration_secs() != saved.get_alert_duration_secs()
+        if now.get_warning_area() != saved.get_warning_area() {
+            pages.push(SettingsPage::Alerts);
+        }
+        if now.get_alert_duration_secs() != saved.get_alert_duration_secs()
             || now.get_center_on_alert() != saved.get_center_on_alert()
         {
             pages.push(SettingsPage::AlertsVisual);
+        }
+        if now.get_zkillboard() != saved.get_zkillboard() {
+            pages.push(SettingsPage::Zkillboard);
         }
         if now.get_alert_sound() != saved.get_alert_sound() {
             pages.push(SettingsPage::AlertsSound);
@@ -455,7 +508,7 @@ impl TelescopeApp {
         if let Some(directory) = directory {
             dialog.set_directory(directory);
         }
-        if let Some(owner) = self.settings_ui.window_owner {
+        if let Some(owner) = self.settings_ui.dialog_owner() {
             dialog.set_owner(owner);
         }
         let task_msg = Arc::clone(&self.task_msg);
@@ -508,6 +561,7 @@ fn time_ago(when: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::settings::ZKillboardOptions;
 
     /// Every setting a page edits must mark that page as changed, or the
     /// circle in the navigation would not warn about changes to apply.
@@ -536,6 +590,24 @@ mod tests {
                 .contains(&SettingsPage::AlertsOverlay)
         );
         app.settings.set_overlay_hide_unfocused(hide);
+        assert!(app.dirty_settings_pages().is_empty());
+
+        let radius = app.settings.get_warning_area();
+        app.settings.set_warning_area(radius % 7 + 1);
+        assert!(app.dirty_settings_pages().contains(&SettingsPage::Alerts));
+        app.settings.set_warning_area(radius);
+        assert!(app.dirty_settings_pages().is_empty());
+
+        let options = app.settings.get_zkillboard().clone();
+        app.settings.set_zkillboard(ZKillboardOptions {
+            ignore_npc_only: !options.ignore_npc_only,
+            ..options.clone()
+        });
+        assert!(
+            app.dirty_settings_pages()
+                .contains(&SettingsPage::Zkillboard)
+        );
+        app.settings.set_zkillboard(options);
         assert!(app.dirty_settings_pages().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }

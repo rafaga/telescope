@@ -1,0 +1,21 @@
+[package]
+name = "zkill"
+authors = ["Rafael Amador <rafaga@duck.com>"]
+description = "Requests to zKillboard (the R2Z2 feed and the query API) kept under its rate limits"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = "0.4"
+reqwest = { version = "0.13", features = ["json", "gzip"] }
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
+tokio = { version = "1.54", features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.54", features = ["rt", "macros", "test-util", "time", "sync"] }

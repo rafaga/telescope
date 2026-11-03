@@ -956,11 +956,19 @@ impl TelescopeApp {
         let graph_id = egui::Id::unique("rules_graph");
         let snarl_selection = egui_snarl::ui::get_selected_nodes(graph_id, ui.ctx());
         let show_ids = self.node_ids_visible();
+        let graph_ids: HashSet<String> = self
+            .patterns_editor
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(canvas), |ui| {
             let PatternsEditor { snarl, state, .. } = &mut self.patterns_editor;
             let mut viewer = RulesViewer {
                 state: &mut *state,
                 show_ids,
+                graph_ids,
             };
             SnarlWidget::new()
                 .id(graph_id)
@@ -1266,7 +1274,7 @@ fn detection_summary(kind: &DetectionRuleKind) -> String {
         DetectionRuleKind::ClearReport { keywords }
         | DetectionRuleKind::Query { keywords }
         | DetectionRuleKind::Keyword { keywords } => keywords.join(" · "),
-        DetectionRuleKind::ShipNames { dictionaries } => dictionaries.join(" · "),
+        DetectionRuleKind::ShipNames { dictionaries, .. } => dictionaries.join(" · "),
         DetectionRuleKind::Custom { pattern, words, .. } => {
             pattern.clone().unwrap_or_else(|| words.join(" · "))
         }
@@ -1499,9 +1507,19 @@ struct RulesViewer<'a> {
     state: &'a mut GraphState,
     /// Show each node's internal id in its header (a Debug window option).
     show_ids: bool,
+    /// The ids of the whole working graph: the canvas shows only one rule, but
+    /// the ids of the others must not be reused.
+    graph_ids: HashSet<String>,
 }
 
 impl RulesViewer<'_> {
+    /// An id that no node of the graph or of the canvas has.
+    fn fresh_id(&self, snarl: &Snarl<Node>, prefix: &str) -> String {
+        let mut taken = collect_node_ids(snarl);
+        taken.extend(self.graph_ids.iter().cloned());
+        unique_id(&taken, prefix)
+    }
+
     /// Selects `node` when `rect` (a part of it) is clicked: the canvas only
     /// selects with Shift or a rectangle, which is not how anyone expects a
     /// click on a node to work.
@@ -1666,7 +1684,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         ui.menu_button(t!("settings.patterns.add_detection"), |ui| {
             for type_name in DETECTION_TYPES {
                 if ui.button(detection_type_label(type_name)).clicked() {
-                    let id = unique_id(&collect_node_ids(snarl), "detection");
+                    let id = self.fresh_id(snarl, "detection");
                     snarl.insert_node(
                         pos,
                         Node {
@@ -1721,7 +1739,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
         });
         ui.menu_button(t!("settings.patterns.add_logic"), |ui| {
             if ui.button(t!("settings.patterns.kind_aggregator")).clicked() {
-                let id = unique_id(&collect_node_ids(snarl), "aggregator");
+                let id = self.fresh_id(snarl, "aggregator");
                 snarl.insert_node(
                     pos,
                     Node {
@@ -1737,7 +1755,7 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
             }
             ui.separator();
             if ui.button(t!("settings.patterns.kind_formatter")).clicked() {
-                let id = unique_id(&collect_node_ids(snarl), "formatter");
+                let id = self.fresh_id(snarl, "formatter");
                 snarl.insert_node(
                     pos,
                     Node {
@@ -1762,8 +1780,14 @@ impl SnarlViewer<Node> for RulesViewer<'_> {
     }
 
     fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<Node>) {
-        // An input pin takes a single cable: a new one replaces the old.
-        snarl.drop_inputs(to.id);
+        // An input pin takes a single cable: a new one replaces the old. An
+        // output takes the cables of any number of rules.
+        let is_output = snarl
+            .get_node(to.id.node)
+            .is_some_and(|node| matches!(node.kind, NodeKind::Output(_)));
+        if !is_output {
+            snarl.drop_inputs(to.id);
+        }
         snarl.connect(from.id, to.id);
         self.state.dirty = true;
     }
@@ -2000,12 +2024,20 @@ fn detection_params_editor(ui: &mut Ui, kind: &mut DetectionRuleKind) -> bool {
                 string_list_editor(ui, keywords)
             });
         }
-        DetectionRuleKind::ShipNames { dictionaries } => {
+        DetectionRuleKind::ShipNames {
+            dictionaries,
+            sum_quantities,
+        } => {
             changed |= field_row(ui, &t!("settings.patterns.field_dictionaries"), |ui| {
                 for name in dictionaries.iter() {
                     ui.weak(name);
                 }
                 false
+            });
+            changed |= field_row(ui, &t!("settings.patterns.field_sum_quantities"), |ui| {
+                ui.checkbox(sum_quantities, "")
+                    .on_hover_text(t!("settings.patterns.sum_quantities_hint"))
+                    .changed()
             });
         }
         DetectionRuleKind::Custom {
@@ -2126,6 +2158,7 @@ fn default_detection_kind(name: &str) -> DetectionRuleKind {
         },
         "ship_names" => DetectionRuleKind::ShipNames {
             dictionaries: Dictionaries::defaults().names(),
+            sum_quantities: false,
         },
         "pilot_count" => DetectionRuleKind::PilotCount,
         "keyword" => DetectionRuleKind::Keyword {
@@ -2314,7 +2347,7 @@ mod tests {
     #[test]
     fn default_ship_names_use_every_built_in_dictionary() {
         match default_detection_kind("ship_names") {
-            DetectionRuleKind::ShipNames { dictionaries } => {
+            DetectionRuleKind::ShipNames { dictionaries, .. } => {
                 assert_eq!(dictionaries, Dictionaries::defaults().names());
             }
             other => panic!("unexpected {other:?}"),

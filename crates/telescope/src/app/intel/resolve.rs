@@ -577,6 +577,9 @@ mod real_line_tests {
         /// Reported systems that resolved, in order of appearance.
         systems: Vec<&'static str>,
         kinds: Vec<OutputKind>,
+        /// Whether a visual output carries a system: the only kind of visual
+        /// alert that has somewhere to be painted (there is no global alert).
+        paints_a_system: bool,
         /// What no detection recognised, as the Tooltip output sees it.
         leftover: Option<String>,
         /// What the tooltip shows (the leftover only when nothing else is).
@@ -633,8 +636,14 @@ mod real_line_tests {
             }
             None => (None, Vec::new(), Vec::new()),
         };
+        let paints_a_system = activations
+            .iter()
+            .filter(|activation| activation.kind == OutputKind::Visual)
+            .flat_map(|activation| &activation.messages)
+            .any(|message| matches!(&message.data, Data::Systems(ids) if !ids.is_empty()));
         Outcome {
             systems,
+            paints_a_system,
             kinds: activations
                 .iter()
                 .map(|activation| activation.kind)
@@ -816,8 +825,8 @@ mod real_line_tests {
                 outcome.systems
             );
             assert!(
-                !outcome.kinds.contains(&OutputKind::Visual),
-                "{text:?} raised a visual alert"
+                !outcome.paints_a_system,
+                "{text:?} raised a visual alert on a system"
             );
         }
     }
@@ -912,18 +921,27 @@ mod real_line_tests {
 
     #[test]
     fn the_leftover_is_hidden_once_there_are_ships() {
-        // "gate camp 5" was not recognised either, but the tooltip has
+        // "gate camp" was not recognised either, but the tooltip has
         // something better to show, so it is not shown.
-        let outcome = outcome("1DQ1-A gate camp 5 Rifter");
-        assert_eq!(outcome.leftover.as_deref(), Some("gate camp 5"));
+        let outcome = outcome("1DQ1-A gate camp Rifter");
+        assert_eq!(outcome.leftover.as_deref(), Some("gate camp"));
         assert_eq!(outcome.parts, [AlertPart::Ships(String::from("Rifter"))]);
+    }
+
+    #[test]
+    fn a_quantity_written_before_a_ship_is_summed_in_the_default_rules() {
+        // The `ship_names` rule of the chat logs sums the quantities written
+        // next to a ship (`sum_quantities` is on in `rules.toml`).
+        let outcome = outcome("1DQ1-A gate camp 5 Rifter");
+        assert_eq!(outcome.parts, [AlertPart::Ships(String::from("Rifter ×5"))]);
     }
 
     #[test]
     fn a_question_about_a_system_is_suppressed_and_has_no_tooltip() {
         let outcome = outcome("H-5GUI status?");
         assert!(outcome.kinds.contains(&OutputKind::Suppress));
-        assert_eq!(outcome.leftover, None);
+        // The tooltip may be activated, but it has nothing to show.
+        assert_eq!(outcome.leftover.as_deref().unwrap_or(""), "");
     }
 
     // ---- The limits ----

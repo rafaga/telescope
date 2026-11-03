@@ -52,7 +52,7 @@ pub(crate) const UNDATED_LINE_PATTERN: &str =
     r"^(?:\[[^\]]*\]\s)?(?P<author>[^\[>]+?)\s>\s(?P<text>.+)$";
 
 /// Timestamp format used by EVE Online chat logs (UTC).
-pub(crate) const LINE_TIMESTAMP_FORMAT: &str = "%Y.%m.%d %H:%M:%S";
+pub const LINE_TIMESTAMP_FORMAT: &str = "%Y.%m.%d %H:%M:%S";
 
 /// What a detection's match tells the map tooltip about its line. Built-in
 /// detection types imply their own; a `custom` detection chooses one.
@@ -92,6 +92,17 @@ pub struct IntelLine {
     pub author: String,
     /// Message payload; the rules are evaluated against this text.
     pub text: String,
+}
+
+impl IntelLine {
+    /// The line without its moment: `Some Pilot > 1DQ1-A clear`.
+    pub fn untimed(&self) -> String {
+        format!(
+            "{} > {}",
+            sanitize_display(&self.author),
+            sanitize_display(&self.text)
+        )
+    }
 }
 
 impl Display for IntelLine {

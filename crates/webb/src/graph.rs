@@ -238,6 +238,8 @@ impl Default for TooltipConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LogConfig {
     /// Stamp each entry with the current time instead of the line's own.
+    /// The text of the entry never repeats the moment: only the stamp shows
+    /// one.
     #[serde(default)]
     pub use_current_time: bool,
 }
@@ -418,7 +420,8 @@ pub fn has_output_pin(kind: &NodeKind) -> bool {
 
 impl RuleGraph {
     /// Validates the graph: unique/valid ids, per-kind parameters, one cable
-    /// per input, exactly one Output per kind, valid pins and no cycles.
+    /// per input (an Output takes any number), exactly one Output per kind,
+    /// valid pins and no cycles.
     pub fn validate(&self) -> Vec<PatternError> {
         let mut errors = Vec::new();
         let dictionaries = Dictionaries::shared();
@@ -454,7 +457,10 @@ impl RuleGraph {
                         });
                     }
                     *incoming.entry(edge.to.as_str()).or_default() += 1;
-                    if !cabled_pins.insert((edge.to.as_str(), edge.to_pin)) {
+                    // An output takes the cables of any number of rules.
+                    if !cabled_pins.insert((edge.to.as_str(), edge.to_pin))
+                        && !matches!(to.kind, NodeKind::Output(_))
+                    {
                         errors.push(PatternError::MultipleCables(to.id.clone()));
                     }
                 }
@@ -604,6 +610,80 @@ impl RuleGraph {
             }
         }
         graph
+    }
+
+    /// The ids of the nodes that make the zKillboard rules: every node a
+    /// zKillboard input reaches, up to the outputs (which are not part of
+    /// them). The ids are whatever the graph says, so the rules can be renamed
+    /// without touching the code.
+    pub fn zkillboard_chain(&self) -> HashSet<String> {
+        let is_output = |id: &str| {
+            self.nodes
+                .iter()
+                .any(|node| node.id == id && matches!(node.kind, NodeKind::Output(_)))
+        };
+        let mut chain: HashSet<String> = self
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(&node.kind, NodeKind::Input(input) if input.kind == InputKind::ZKillboard)
+            })
+            .map(|node| node.id.clone())
+            .collect();
+        let mut pending: Vec<String> = chain.iter().cloned().collect();
+        while let Some(from) = pending.pop() {
+            for edge in self.edges.iter().filter(|edge| edge.from == from) {
+                if !is_output(&edge.to) && chain.insert(edge.to.clone()) {
+                    pending.push(edge.to.clone());
+                }
+            }
+        }
+        chain
+    }
+
+    /// This graph with the default zKillboard rules added: the input, the
+    /// detections that read the facts of its killmails and their cables to
+    /// the outputs (see `rules.toml`). What the graph already has is kept as
+    /// it is.
+    ///
+    /// Nothing is added when the graph has a zKillboard input already (the
+    /// user has their own rules for it) or a node with one of the ids the
+    /// rules use. An output takes the cables of any number of rules, so the
+    /// new ones go straight to it; an output the graph lacks gets none.
+    pub fn with_zkillboard_rules(mut self) -> Self {
+        let template = Self::default_graph();
+        let chain = template.zkillboard_chain();
+        let has_input = self.nodes.iter().any(|node| {
+            matches!(&node.kind, NodeKind::Input(input) if input.kind == InputKind::ZKillboard)
+        });
+        let id_taken = self.nodes.iter().any(|node| chain.contains(&node.id));
+        if has_input || id_taken {
+            return self;
+        }
+        let in_chain = |id: &str| chain.contains(id);
+        let has_output = |graph: &Self, id: &str| {
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == id && matches!(node.kind, NodeKind::Output(_)))
+        };
+        let edges: Vec<Edge> = template
+            .edges
+            .iter()
+            .filter(|edge| {
+                in_chain(&edge.from) && (in_chain(&edge.to) || has_output(&self, &edge.to))
+            })
+            .cloned()
+            .collect();
+        self.nodes.extend(
+            template
+                .nodes
+                .iter()
+                .filter(|node| in_chain(&node.id))
+                .cloned(),
+        );
+        self.edges.extend(edges);
+        self
     }
 }
 
@@ -853,7 +933,7 @@ impl CompiledDetection {
                 FromFacts::Nothing | FromFacts::NotGiven => None,
             },
             DetectionSource::Auto => self.evaluate(text, &event.facts, resolver),
-            DetectionSource::Text => self.process(&self.matches(text, resolver), resolver),
+            DetectionSource::Text => self.process(text, &self.matches(text, resolver), resolver),
         }
     }
 
@@ -869,7 +949,7 @@ impl CompiledDetection {
         match self.read_facts(facts, resolver) {
             FromFacts::Found(message) => Some(message),
             FromFacts::Nothing => None,
-            FromFacts::NotGiven => self.process(&self.matches(text, resolver), resolver),
+            FromFacts::NotGiven => self.process(text, &self.matches(text, resolver), resolver),
         }
     }
 
@@ -967,6 +1047,32 @@ impl CompiledDetection {
         })
     }
 
+    /// The quantity written next to a ship name: `Hurricane x3` / `Hurricane
+    /// ×3` (after) or `3x Hurricane` / `3 Hurricane` (before). One when none
+    /// is written. A number glued to another word (`x3 Rifter` after a ship)
+    /// belongs to the previous ship, not to this one.
+    fn written_quantity(text: &str, span: &Range<usize>) -> u32 {
+        static AFTER: OnceLock<Regex> = OnceLock::new();
+        static BEFORE: OnceLock<Regex> = OnceLock::new();
+        let after = AFTER.get_or_init(|| {
+            Regex::new(r"^\s*[x×]\s*(\d{1,3})\b").expect("hardcoded quantity regex must compile")
+        });
+        let before = BEFORE.get_or_init(|| {
+            Regex::new(r"(?:^|[^\w])(\d{1,3})\s*[x×]?\s*$")
+                .expect("hardcoded quantity regex must compile")
+        });
+        let quantity = |captures: Option<regex::Captures<'_>>| {
+            captures
+                .and_then(|found| found.get(1)?.as_str().parse::<u32>().ok())
+                .filter(|quantity| *quantity > 0)
+        };
+        let following = text.get(span.end..).unwrap_or_default();
+        let preceding = text.get(..span.start).unwrap_or_default();
+        quantity(after.captures(following))
+            .or_else(|| quantity(before.captures(preceding)))
+            .unwrap_or(1)
+    }
+
     /// `ship` with its type id, when it has none and the resolver knows the
     /// name.
     fn identify(mut ship: ShipCount, resolver: &dyn SystemResolver) -> ShipCount {
@@ -978,8 +1084,13 @@ impl CompiledDetection {
         ship
     }
 
-    fn process(&self, matches: &[MatchData], resolver: &dyn SystemResolver) -> Option<Mensaje> {
-        let mut message = self.process_matches(matches, resolver)?;
+    fn process(
+        &self,
+        text: &str,
+        matches: &[MatchData],
+        resolver: &dyn SystemResolver,
+    ) -> Option<Mensaje> {
+        let mut message = self.process_matches(text, matches, resolver)?;
         if !matches!(message.data, Data::Systems(_)) {
             message.category = self.kind.category();
         }
@@ -993,6 +1104,7 @@ impl CompiledDetection {
 
     fn process_matches(
         &self,
+        text: &str,
         matches: &[MatchData],
         resolver: &dyn SystemResolver,
     ) -> Option<Mensaje> {
@@ -1012,10 +1124,16 @@ impl CompiledDetection {
             }),
             Some(IntelCategory::Ship) => {
                 let mut ships: Vec<ShipCount> = Vec::new();
+                let sums = self.kind.sums_quantities();
                 for found in matches {
+                    let times = if sums {
+                        Self::written_quantity(text, &found.span)
+                    } else {
+                        1
+                    };
                     ShipCount::tally(
                         &mut ships,
-                        Self::identify(ShipCount::new(found.matched.clone(), 1), resolver),
+                        Self::identify(ShipCount::new(found.matched.clone(), times), resolver),
                     );
                 }
                 (!ships.is_empty()).then(|| Mensaje {
@@ -1489,7 +1607,12 @@ impl Executor {
         incoming: &mut HashMap<(String, u8), Vec<Mensaje>>,
     ) {
         for edge in self.edges_out.get(from).into_iter().flatten() {
-            incoming.insert((edge.to.clone(), edge.to_pin), found.clone());
+            // Only an Output has several cables on a pin (see `validate`):
+            // what they bring is one flow.
+            incoming
+                .entry((edge.to.clone(), edge.to_pin))
+                .and_modify(|flow| *flow = Self::merge(vec![std::mem::take(flow), found.clone()]))
+                .or_insert_with(|| found.clone());
         }
     }
 }
@@ -1675,6 +1798,26 @@ mod tests {
                 .collect()
         }
 
+        /// The systems the visual outputs were given: the only alerts that
+        /// have somewhere to be painted (there is no global alert).
+        fn visual_systems(activations: &[Activation]) -> Vec<usize> {
+            let mut ids = Vec::new();
+            for message in activations
+                .iter()
+                .filter(|activation| activation.kind == OutputKind::Visual)
+                .flat_map(|activation| &activation.messages)
+            {
+                if let Data::Systems(found) = &message.data {
+                    for id in found {
+                        if !ids.contains(id) {
+                            ids.push(*id);
+                        }
+                    }
+                }
+            }
+            ids
+        }
+
         /// The systems the outputs were given.
         fn systems(activations: &[Activation]) -> Vec<usize> {
             let mut ids = Vec::new();
@@ -1706,7 +1849,7 @@ mod tests {
         let alone = channel
             .executor
             .run(&Channel::event("intel", 10, "+4"), &TwoSystems);
-        assert!(!Channel::kinds(&alone).contains(&OutputKind::Visual));
+        assert!(Channel::visual_systems(&alone).is_empty());
     }
 
     #[test]
@@ -1744,7 +1887,7 @@ mod tests {
         let mut channel = Channel::new();
         channel.says("intel", 0, "Jita*  Some Pilot");
         let late = channel.says("intel", ChannelMemory::DEFAULT_WINDOW_SECS + 1, "+4");
-        assert!(!Channel::kinds(&late).contains(&OutputKind::Visual));
+        assert!(Channel::visual_systems(&late).is_empty());
         assert!(Channel::systems(&late).is_empty());
     }
 
@@ -1763,7 +1906,7 @@ mod tests {
         for text in ["gj", "who is that?", "Rifter", "Kill: Someone (Capsule)"] {
             let activations = channel.says("intel", 5, text);
             assert!(
-                !Channel::kinds(&activations).contains(&OutputKind::Visual),
+                Channel::visual_systems(&activations).is_empty(),
                 "{text:?} alerted"
             );
         }
@@ -1779,7 +1922,7 @@ mod tests {
         // One it does not know: not the last report either.
         let unknown = channel.says("intel", 6, "HE-4V4 +4");
         assert!(Channel::systems(&unknown).is_empty());
-        assert!(!Channel::kinds(&unknown).contains(&OutputKind::Visual));
+        assert!(Channel::visual_systems(&unknown).is_empty());
     }
 
     #[test]
@@ -2075,8 +2218,14 @@ mod tests {
 
     /// The ships a line reports with the dictionaries `names`, ignoring case.
     fn ships_in(text: &str, names: &[&str]) -> Vec<(String, u32)> {
+        ships_counting(text, names, false)
+    }
+
+    /// Like `ships_in`, with the `sum_quantities` option chosen.
+    fn ships_counting(text: &str, names: &[&str], sum_quantities: bool) -> Vec<(String, u32)> {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: names.iter().map(|name| name.to_string()).collect(),
+            sum_quantities,
         };
         let mut graph = graph(kind);
         for node in &mut graph.nodes {
@@ -2096,6 +2245,30 @@ mod tests {
             },
             None => Vec::new(),
         }
+    }
+
+    #[test]
+    fn quantities_written_next_to_a_ship_are_not_added_up_by_default() {
+        assert_eq!(
+            ships_in("3x rifter, rifter x2", &["ship_report_en"]),
+            [(String::from("rifter"), 2)]
+        );
+    }
+
+    #[test]
+    fn quantities_written_next_to_a_ship_are_added_up_when_asked() {
+        let sum = |text: &str| ships_counting(text, &["ship_report_en"], true);
+        let rifter = |times| vec![(String::from("rifter"), times)];
+        assert_eq!(sum("3x rifter"), rifter(3));
+        assert_eq!(sum("3 rifter"), rifter(3));
+        assert_eq!(sum("rifter x3"), rifter(3));
+        assert_eq!(sum("rifter ×3"), rifter(3));
+        // The same ship named twice is one entry with both quantities.
+        assert_eq!(sum("rifter x2 and 3 rifter"), rifter(5));
+        // No number, no change.
+        assert_eq!(sum("rifter"), rifter(1));
+        // The number after a ship is not the quantity of the next one.
+        assert_eq!(sum("rifter x3 rifter"), rifter(4));
     }
 
     #[test]
@@ -2140,6 +2313,7 @@ mod tests {
 
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let mut graph = graph(kind);
         for node in &mut graph.nodes {
@@ -2163,6 +2337,7 @@ mod tests {
     fn ship_names_are_grouped() {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let (executor, _) = Executor::new(graph(kind));
         let activations = executor.run(&line("Rifter Rifter Merlin"), &FixedResolver);
@@ -2798,6 +2973,7 @@ mod tests {
     fn ship_names_read_the_ships_the_source_gave_that_its_dictionaries_know() {
         let ships = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let event = killmail_event(
             "no ships written here",
@@ -2829,6 +3005,7 @@ mod tests {
     fn ship_names_report_nothing_when_no_ship_of_the_source_is_in_the_dictionaries() {
         let ships = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let event = killmail_event(
             "Rifter",
@@ -2866,6 +3043,7 @@ mod tests {
     fn ships_data(event: &IntelEvent, resolver: &dyn SystemResolver) -> Vec<ShipCount> {
         let (executor, errors) = Executor::new(graph(DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         }));
         assert!(errors.is_empty(), "{errors:?}");
         match executor.run(event, resolver).first() {
@@ -2910,6 +3088,7 @@ mod tests {
         );
         let ships = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let message = message_with(ships, &event, &WithShips).unwrap();
         assert_eq!(
@@ -3049,6 +3228,7 @@ mod tests {
             "ship",
             DetectionRuleKind::ShipNames {
                 dictionaries: vec![String::from("ship_report_en")],
+                sum_quantities: false,
             },
         ));
         graph.nodes.push(Node {
@@ -3225,6 +3405,7 @@ mod tests {
         let message = only_message(
             DetectionRuleKind::ShipNames {
                 dictionaries: Vec::new(),
+                sum_quantities: false,
             },
             "破坏级 在 Jita",
         );
@@ -3232,6 +3413,7 @@ mod tests {
         assert_eq!(message.category, Some(IntelCategory::Ship));
         let (executor, _) = Executor::new(graph(DetectionRuleKind::ShipNames {
             dictionaries: Vec::new(),
+            sum_quantities: false,
         }));
         // Han characters without the suffix are not a ship.
         assert!(
@@ -3318,6 +3500,210 @@ mod tests {
         )
     }
 
+    /// The default graph as it was before the zKillboard rules: the same
+    /// without their nodes and cables.
+    fn graph_without_zkillboard_rules() -> RuleGraph {
+        let mut graph = RuleGraph::default_graph();
+        let chain = graph.zkillboard_chain();
+        graph.nodes.retain(|node| !chain.contains(&node.id));
+        graph
+            .edges
+            .retain(|edge| !chain.contains(&edge.from) && !chain.contains(&edge.to));
+        graph
+    }
+
+    #[test]
+    fn the_zkillboard_chain_ends_at_the_outputs() {
+        let graph = RuleGraph::default_graph();
+        let chain = graph.zkillboard_chain();
+        assert!(chain.contains("zkillboard"));
+        assert!(chain.contains("z_ship_names"));
+        // The aggregator that gathers the detections is in it, whatever its id.
+        assert!(graph.nodes.iter().any(|node| {
+            chain.contains(&node.id) && matches!(node.kind, NodeKind::Aggregator(_))
+        }));
+        assert!(graph.nodes.iter().all(|node| {
+            !matches!(node.kind, NodeKind::Output(_)) || !chain.contains(&node.id)
+        }));
+        // The chat rules are not part of it.
+        assert!(!chain.contains("log_in"));
+    }
+
+    #[test]
+    fn the_default_graph_reads_zkillboard_and_is_left_alone_by_the_rules_for_it() {
+        let graph = RuleGraph::default_graph();
+        assert!(graph.nodes.iter().any(|node| {
+            node.enabled
+                && matches!(&node.kind, NodeKind::Input(input) if input.kind == InputKind::ZKillboard)
+        }));
+        assert_eq!(graph.clone().with_zkillboard_rules(), graph);
+    }
+
+    #[test]
+    fn the_zkillboard_rules_are_added_to_a_graph_that_lacks_them() {
+        let old = graph_without_zkillboard_rules();
+        assert!(old.validate().is_empty());
+        let migrated = old.clone().with_zkillboard_rules();
+        assert!(migrated.validate().is_empty());
+        // The same rules; the cables of the new ones come after the user's.
+        let default = RuleGraph::default_graph();
+        assert_eq!(migrated.nodes, default.nodes);
+        assert_eq!(migrated.edges.len(), default.edges.len());
+        assert!(
+            default
+                .edges
+                .iter()
+                .all(|edge| migrated.edges.contains(edge))
+        );
+        // What the user had is as it was: only nodes and cables were added.
+        assert_eq!(migrated.nodes[..old.nodes.len()], old.nodes[..]);
+        assert_eq!(migrated.edges[..old.edges.len()], old.edges[..]);
+    }
+
+    #[test]
+    fn the_zkillboard_cables_go_to_the_outputs_the_graph_has() {
+        let mut old = graph_without_zkillboard_rules();
+        old.nodes.retain(|node| node.id != "visual");
+        old.edges.retain(|edge| edge.to != "visual");
+        let migrated = old.with_zkillboard_rules();
+        assert!(migrated.validate().is_empty());
+        assert!(migrated.edges.iter().all(|edge| edge.to != "visual"));
+        let chain = RuleGraph::default_graph().zkillboard_chain();
+        assert!(
+            migrated
+                .edges
+                .iter()
+                .any(|edge| chain.contains(&edge.from) && edge.to == "sound")
+        );
+    }
+
+    #[test]
+    fn the_zkillboard_rules_are_not_added_over_the_users_own() {
+        let mut graph = graph_without_zkillboard_rules();
+        let mut input = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "chat_logs")
+            .cloned()
+            .unwrap();
+        input.id = String::from("mine");
+        if let NodeKind::Input(node) = &mut input.kind {
+            node.kind = InputKind::ZKillboard;
+        }
+        graph.nodes.push(input);
+        assert_eq!(graph.clone().with_zkillboard_rules(), graph);
+        // Nor over a node that already has one of their ids.
+        let mut graph = graph_without_zkillboard_rules();
+        let mut taken = graph.nodes[0].clone();
+        taken.id = String::from("z_pilot_count");
+        graph.nodes.push(taken);
+        assert_eq!(graph.clone().with_zkillboard_rules(), graph);
+    }
+
+    #[test]
+    fn an_output_takes_the_cables_of_several_rules_and_nothing_else_does() {
+        let graph = RuleGraph::default_graph();
+        let to_visual = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.to == "visual")
+            .count();
+        assert_eq!(to_visual, 2);
+        assert!(graph.validate().is_empty());
+        // A detection still takes a single cable.
+        let mut crossed = graph.clone();
+        crossed.edges.push(Edge {
+            from: String::from("zkillboard"),
+            to: String::from("system_reported"),
+            to_pin: 0,
+        });
+        assert!(
+            crossed
+                .validate()
+                .contains(&PatternError::MultipleCables(String::from(
+                    "system_reported"
+                )))
+        );
+    }
+
+    #[test]
+    fn what_the_cables_of_an_output_bring_is_one_activation() {
+        let (executor, errors) = Executor::new(RuleGraph::default_graph());
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut event = line("Jita");
+        event.kind = InputKind::ZKillboard;
+        event.facts = Facts {
+            systems: Some(vec![SystemFact {
+                id: 30000142,
+                name: String::from("Jita"),
+                span: None,
+            }]),
+            ships: Some(vec![ShipCount {
+                type_id: Some(587),
+                name: String::from("Rifter"),
+                times: 2,
+            }]),
+            pilots: Some(3),
+        };
+        let activations = executor.run(&event, &FixedResolver);
+        // The three detections of the killmail rule meet in an aggregator that
+        // reaches the log once, with what each found.
+        let log: Vec<_> = activations
+            .iter()
+            .filter(|activation| activation.kind == OutputKind::Log)
+            .collect();
+        assert_eq!(log.len(), 1);
+        let mut tags: Vec<&str> = log[0]
+            .messages
+            .iter()
+            .map(|message| message.tag.as_str())
+            .collect();
+        tags.sort_unstable();
+        assert_eq!(tags, vec!["pilot_count", "ship_names", "system_report"]);
+        // The visual alert and the sound are reached once too, by the same
+        // aggregator.
+        for kind in [OutputKind::Visual, OutputKind::Sound] {
+            let reached: Vec<_> = activations
+                .iter()
+                .filter(|activation| activation.kind == kind)
+                .collect();
+            assert_eq!(reached.len(), 1, "{kind:?}");
+            let mut tags: Vec<&str> = reached[0]
+                .messages
+                .iter()
+                .map(|message| message.tag.as_str())
+                .collect();
+            tags.sort_unstable();
+            assert_eq!(
+                tags,
+                vec!["pilot_count", "ship_names", "system_report"],
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_zkillboard_rules_read_the_facts_of_the_killmails() {
+        let graph = RuleGraph::default_graph();
+        let input = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "zkillboard")
+            .unwrap();
+        let NodeKind::Input(input) = &input.kind else {
+            panic!("not an input")
+        };
+        assert_eq!(input.kind, InputKind::ZKillboard);
+        for id in ["z_system_reported", "z_pilot_count", "z_ship_names"] {
+            let node = graph.nodes.iter().find(|node| node.id == id).unwrap();
+            let NodeKind::Detection(detection) = &node.kind else {
+                panic!("not a detection")
+            };
+            assert_eq!(detection.source, DetectionSource::Facts, "{id}");
+            assert!(detection.case_insensitive, "{id}");
+        }
+    }
+
     #[test]
     fn the_default_graph_is_valid() {
         assert!(RuleGraph::default_graph().validate().is_empty());
@@ -3337,7 +3723,8 @@ mod tests {
     fn a_default_status_question_is_suppressed_and_not_listed() {
         let (kinds, tooltip) = default_outputs("H-5GUI status?");
         assert!(kinds.contains(&OutputKind::Suppress), "{kinds:?}");
-        assert_eq!(tooltip, None);
+        // The tooltip may be activated, but it has nothing to show.
+        assert_eq!(tooltip.as_deref().unwrap_or(""), "");
     }
 
     #[test]
