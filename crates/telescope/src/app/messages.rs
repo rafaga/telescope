@@ -197,6 +197,13 @@ pub enum Message {
     /// SSO flow and its data was fetched from ESI and stored.
     CharacterAuthenticated(Box<LinkedCharacter>),
     GenericNotification((Type, String, String, String)),
+    /// A [`Message::GenericNotification`] whose entry in the log is stamped
+    /// with the given moment (the one of the event) instead of the current
+    /// time.
+    TimedNotification(
+        chrono::DateTime<chrono::Utc>,
+        (Type, String, String, String),
+    ),
     NewRegionalPane(usize),
     MapHidden(usize),
     MapShown(usize),
@@ -251,6 +258,7 @@ impl Message {
         match self {
             Message::CharacterAuthenticated(_) => "CharacterAuthenticated",
             Message::GenericNotification(_) => "GenericNotification",
+            Message::TimedNotification(..) => "TimedNotification",
             Message::NewRegionalPane(_) => "NewRegionalPane",
             Message::MapHidden(_) => "MapHidden",
             Message::MapShown(_) => "MapShown",

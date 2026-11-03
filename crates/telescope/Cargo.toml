@@ -49,7 +49,7 @@ sde = { version = "0.7", features = ["builder"] }
 rusqlite = { version = "0.41" }
 kdtree = { version = "0.8" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.15" }
+egui-map = { version = "0.16" }
 open = "5.4"
 # `crypted-db` explicitly: with `default-features = false` alone the player
 # database was encrypted or not depending on whether the build also selected
@@ -57,6 +57,7 @@ open = "5.4"
 # root vs `cargo build -p telescope`.
 webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
+zkill = { path = "../zkill/" }
 chrono = "0.4"
 tokio = { version = "1.54", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.37", features = ["all_loaders"] }
@@ -70,8 +71,10 @@ egui-snarl = { git = "https://github.com/rafaga/egui-snarl", branch = "telescope
 toml = "1.1"
 hyper = { version = "1.12", features = ["server", "http1", "client"] }
 serde = { version = "1.0", features = ["derive"] }
-# The ships of a killmail in the zKillboard cache (`kill_store`).
+# The ships of a killmail in the zKillboard cache (`cache_store`).
 serde_json = "1.0"
+# The killmails the cache keeps whole are compressed (`cache_store`).
+flate2 = "1.1"
 hyper-util = { version = "0.1", features = ["full"] }
 # Use `notify`'s own default backend selection per platform (ReadDirectoryChangesW
 # on Windows, inotify on Linux, FSEvents on macOS) instead of overriding it. This

@@ -81,8 +81,22 @@ impl TelescopeApp {
         }
     }
 
+    /// A dot of `color` and `text`: the state of one of the sources of
+    /// killmails.
+    fn show_source_state(ui: &mut egui::Ui, color: egui::Color32, text: &str) {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 3.0, color);
+            ui.label(text);
+        });
+    }
+
     fn show_zkillboard_feed_section(&mut self, ui: &mut egui::Ui) {
         let mut options = self.settings.get_zkillboard().clone();
+        let fill = self.intel_zkillboard.fill();
+        let state = self.intel_zkillboard.status().state;
+        let api = self.intel_zkillboard.api_in_use();
+        let wanted = self.intel_zkillboard.is_wanted();
         Section::new(&t!("settings.zkillboard.feed_title"))
             .description(&t!("settings.zkillboard.feed_description"))
             .show(ui, |ui| {
@@ -92,6 +106,61 @@ impl TelescopeApp {
                         &t!("settings.zkillboard.enabled_hint"),
                         |ui| {
                             egui_panels::switch(ui, &mut options.enabled);
+                        },
+                    );
+                    if let Some(fill) = fill {
+                        let percent = fill.percent();
+                        form.row_hint(
+                            t!("settings.zkillboard.backfill"),
+                            &t!("settings.zkillboard.backfill_hint"),
+                            |ui| {
+                                ui.add(egui::ProgressBar::new(percent as f32 / 100.0).text(t!(
+                                    "settings.zkillboard.backfill_percent",
+                                    percent = percent
+                                )));
+                            },
+                        );
+                    }
+                    form.row_hint(
+                        t!("settings.zkillboard.source_feed"),
+                        &t!("settings.zkillboard.source_feed_hint"),
+                        |ui| {
+                            let (color, text) = match (wanted, state) {
+                                (false, _) | (_, FeedState::Off) => {
+                                    (egui::Color32::GRAY, t!("settings.zkillboard.source_off"))
+                                }
+                                (_, FeedState::Starting) => (
+                                    egui::Color32::from_rgb(240, 146, 43),
+                                    t!("settings.zkillboard.source_starting"),
+                                ),
+                                (_, FeedState::Live) => (
+                                    egui::Color32::from_rgb(90, 200, 90),
+                                    t!("settings.zkillboard.source_active"),
+                                ),
+                                (_, FeedState::Failing) => (
+                                    egui::Color32::from_rgb(229, 72, 77),
+                                    t!("settings.zkillboard.source_failing"),
+                                ),
+                            };
+                            Self::show_source_state(ui, color, &text);
+                        },
+                    );
+                    form.row_hint(
+                        t!("settings.zkillboard.source_api"),
+                        &t!("settings.zkillboard.source_api_hint"),
+                        |ui| {
+                            let (color, text) = if api {
+                                (
+                                    egui::Color32::from_rgb(107, 159, 214),
+                                    t!("settings.zkillboard.source_active"),
+                                )
+                            } else {
+                                (
+                                    egui::Color32::GRAY,
+                                    t!("settings.zkillboard.source_standby"),
+                                )
+                            };
+                            Self::show_source_state(ui, color, &text);
                         },
                     );
                     // For reference only: the addresses are not editable.

@@ -13,9 +13,10 @@ use crate::app::file::IntelEventHandler;
 use crate::app::messages::{
     CharacterSync, MapSync, Message, SettingsPage, Type, send_app_message, try_send_app_message,
 };
+use crate::app::notifications::LogLine;
 use crate::app::tiles::{TabPane, TreeBehavior, UniversePane};
 use data::AppData;
-use eframe::egui::{self, epaint::text::LayoutJob};
+use eframe::egui;
 use egui_tiles::{Tile, Tiles, Tree};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use sde::{SdeManager, objects::Universe};
@@ -40,6 +41,7 @@ mod data;
 mod database;
 mod database_updater;
 mod file;
+mod heat_layer;
 mod housekeeping;
 mod intel;
 mod messages;
@@ -108,7 +110,7 @@ pub struct TelescopeApp {
     // the ESI Manager
     esi: EsiManager,
     // Capped at `Settings::get_max_app_messages` by `update_status_with_error`.
-    app_messages: Vec<LayoutJob>,
+    app_messages: Vec<LogLine>,
     // Debug window only (not in release builds, see `windows.rs`).
     #[cfg(debug_assertions)]
     search_text: String,
@@ -434,11 +436,26 @@ impl TelescopeApp {
         // the chat lines. The source idles (it makes no request) until the
         // graph has an enabled zKillboard input.
         let intel_zkillboard = intel::zkillboard::ZKillboardHandle::new(settings.get_sde());
-        intel_zkillboard.spawn(
-            intel_input.clone(),
-            Arc::clone(&intel_resolver),
-            Arc::clone(&arc_msg_sender),
-        );
+        // Not in the tests: an app built on a temporary folder has the default
+        // rules, which ask for the feed, and every one of them would read it
+        // from the real zKillboard with a guard that remembers nothing.
+        if !isolated {
+            intel_zkillboard.spawn(
+                intel_input.clone(),
+                Arc::clone(&intel_resolver),
+                Arc::clone(&arc_msg_sender),
+                // The pause zKillboard asks for is kept in the encrypted
+                // database, so that restarting does not skip it.
+                Box::new(intel::zkill_guard::PlayerGuardStore::new(
+                    esi.clone(),
+                    intel::zkill_guard::PlayerGuardStore::R2Z2,
+                )),
+                Box::new(intel::zkill_guard::PlayerGuardStore::new(
+                    esi.clone(),
+                    intel::zkill_guard::PlayerGuardStore::API,
+                )),
+            );
+        }
         intel_zkillboard.follow(&intel_graph);
         intel::reader::spawn(
             intel::reader::ReaderShared {
@@ -675,7 +692,7 @@ impl eframe::App for TelescopeApp {
         self.event_manager();
         // Every map takes its messages each frame, drawn or not: a pane only
         // reads them in its `ui()`, which isn't called while its tab is
-        // hidden or the Settings screen is open, and the broadcast channel
+        // hidden, and the broadcast channel
         // drops the oldest ones once it is full.
         self.drain_map_messages();
         // Over the Settings screen too: its Application page starts updates.
@@ -702,13 +719,11 @@ impl eframe::App for TelescopeApp {
             ));
         }
 
-        // The Settings screen is full-window: while it is open it replaces the
-        // maps, the log panel and the menu.
-        if self.open[2] {
-            self.show_settings_screen(ui);
-            Self::finish_frame(ui);
-            return;
-        }
+        // The Settings screen has a window of its own: the maps, the log panel
+        // and the menu stay in the app's. (There is no such window on the
+        // web: its settings come from a file.)
+        #[cfg(not(target_arch = "wasm32"))]
+        self.show_settings_window(ui.ctx());
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
@@ -773,7 +788,7 @@ impl eframe::App for TelescopeApp {
 }
 
 impl TelescopeApp {
-    /// Opens the full-window Settings screen, snapshotting the settings so
+    /// Opens the Settings window, snapshotting the settings so
     /// Cancel can revert the session, and makes sure the rules editor is
     /// loaded from the live rules.
     pub(crate) fn open_settings(&mut self) {
@@ -783,6 +798,9 @@ impl TelescopeApp {
                 tracing::debug!("could not scan the chat logs: {error}");
             }
             self.settings_snapshot = Some(self.settings.clone());
+        } else {
+            // Already open: bring its window up instead.
+            self.settings_ui.bring_to_front();
         }
         let graph = self.intel_graph.clone();
         self.patterns_editor.ensure_loaded(&graph);
@@ -834,6 +852,7 @@ impl TelescopeApp {
             self.change_sde();
         }
         self.apply_node_style();
+        self.apply_heatmap();
         self.sync_overlay();
         self.apply_graph(graph);
         self.patterns_editor.mark_applied();
@@ -876,6 +895,9 @@ impl TelescopeApp {
                     self.handle_character_authenticated(*linked)
                 }
                 Message::GenericNotification(message) => self.update_status_with_error(message),
+                Message::TimedNotification(stamp, message) => {
+                    self.update_status_stamped(message, Some(stamp))
+                }
                 Message::NewVersionAvailable(info) => self.update_prompt = Some(info),
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
@@ -989,6 +1011,20 @@ impl TelescopeApp {
         }
     }
 
+    /// Shows or hides the heat on every map as the settings say (Settings ->
+    /// Maps).
+    fn apply_heatmap(&mut self) {
+        let on = self.settings.get_heatmap();
+        self.intel_zkillboard.set_heat_wanted(on);
+        if let Some(tree) = self.tree.as_mut() {
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Pane(pane) = tile {
+                    pane.set_heatmap(on);
+                }
+            }
+        }
+    }
+
     /// Marks the regions whose map opens at start-up as the settings say,
     /// dropping the choices made in Settings -> Maps and not applied.
     fn reset_startup_flags(&mut self) {
@@ -1040,6 +1076,7 @@ impl TelescopeApp {
             self.settings.get_node_style(),
         );
         pane.set_zkillboard(self.intel_zkillboard.clone());
+        pane.set_heatmap(self.settings.get_heatmap());
         self.seed_player_markers(pane.as_mut());
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
         let root = self.tree.as_ref().unwrap().root.unwrap();
@@ -1202,6 +1239,7 @@ impl TelescopeApp {
             self.settings.get_node_style(),
         );
         pane.set_zkillboard(self.intel_zkillboard.clone());
+        pane.set_heatmap(self.settings.get_heatmap());
         self.seed_player_markers(pane.as_mut());
         let id = tiles.insert_pane(pane);
         let tile_ids = vec![id];

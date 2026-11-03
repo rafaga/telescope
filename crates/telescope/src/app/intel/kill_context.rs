@@ -1,11 +1,10 @@
 //! What the killmails the zKillboard source has read say about a system,
 //! for the node tooltips.
 //!
-//! A chat report ("Tama +3 Sabre Rifter") is a human's word. The killmails
-//! of the last hour are facts: [`KillBuffer`] keeps them by system, and
-//! [`KillBuffer::context`] sets a report against them: is something being
-//! shot in that system right now, and do the ships of the killers match the
-//! ones reported?
+//! The killmails of the last hour are facts: [`KillBuffer`] keeps them by
+//! system, and [`KillBuffer::context`] says whether something is being shot
+//! in that system right now. (A killmail can't be matched to a chat report:
+//! the reports are not set against them.)
 //!
 //! The buffer only holds the last [`WINDOW`]: the feed is read live, and the
 //! hour before the source started is read backwards from the feed's files
@@ -14,16 +13,24 @@
 use super::kill_day::DayLine;
 use chrono::{DateTime, TimeDelta, Utc};
 use std::collections::HashMap;
-use webb::map_alerts::AlertSummary;
 
 /// How far back the killmails are kept.
 pub(crate) const WINDOW: TimeDelta = TimeDelta::seconds(60 * 60);
 
-/// Killmails this recent can confirm a report.
+/// How recent the killmails of the shortest count are.
 pub(crate) const RECENT: TimeDelta = TimeDelta::seconds(15 * 60);
 
 /// The most victim ships listed.
 const MAX_VICTIMS: usize = 3;
+
+/// What zKillboard says about how a killmail came about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct KillTags {
+    /// The attackers shot a ship of their own side (zKillboard's `awox`).
+    pub awox: bool,
+    /// The kill is a gank (zKillboard's `ganked` label).
+    pub ganked: bool,
+}
 
 /// One killmail, reduced to what the tooltips tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +45,12 @@ pub(crate) struct KillRecord {
     pub attacker_ships: Vec<String>,
     /// How many of the attackers were pilots.
     pub pilots: u32,
+    pub tags: KillTags,
+    /// The killmail's hash, which with its id names it in ESI. Empty when
+    /// unknown.
+    pub hash: String,
+    /// The station or structure it happened at, when zKillboard says.
+    pub location_id: Option<u64>,
 }
 
 /// How far the buffer got reading the hour before the source started.
@@ -57,49 +70,10 @@ impl Fill {
     }
 }
 
-/// What a report names, to set against the killmails.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Report {
-    /// Ship names, lowercase.
-    pub ships: Vec<String>,
-    /// How many pilots it names.
-    pub pilots: Option<u32>,
-}
-
-impl Report {
-    /// What the summary of an intel alert names.
-    pub(crate) fn from_summary(summary: &AlertSummary) -> Self {
-        Self {
-            ships: summary
-                .ships
-                .iter()
-                .map(|(name, _)| name.to_lowercase())
-                .collect(),
-            pilots: summary.count,
-        }
-    }
-
-    /// Whether `record` agrees with the report: one of the ships the
-    /// attackers flew is named, or, when the report names no ship, the
-    /// number of pilots is the same.
-    fn matches(&self, record: &KillRecord) -> bool {
-        if self.ships.is_empty() {
-            return self.pilots.is_some_and(|pilots| pilots == record.pilots);
-        }
-        record
-            .attacker_ships
-            .iter()
-            .any(|ship| self.ships.contains(&ship.to_lowercase()))
-    }
-}
-
-/// What the killmails say about a report.
+/// What the killmails say about a system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// A killmail of the last [`RECENT`] agrees with the report.
-    Corroborated,
-    /// Ships have died in the system in the last [`WINDOW`], none that
-    /// agrees with the report.
+    /// Ships have died in the system in the last [`WINDOW`].
     Active,
     /// No killmail in the last [`WINDOW`]. Not that it is safe: nobody has
     /// died.
@@ -115,36 +89,7 @@ pub(crate) enum Source {
     Api,
 }
 
-/// Which neighbours a tooltip lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NeighbourConfig {
-    /// How far from a system the neighbours are looked at, in jumps.
-    pub jumps: u8,
-    /// The most neighbours listed.
-    pub max: usize,
-}
-
-impl Default for NeighbourConfig {
-    fn default() -> Self {
-        Self { jumps: 2, max: 3 }
-    }
-}
-
-/// A system close to the one the context is about, with its killmails of the
-/// last [`WINDOW`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Neighbour {
-    pub system_id: usize,
-    /// Its name, set by the source handle (empty when unknown).
-    pub name: String,
-    /// Stargate jumps from the system.
-    pub jumps: u8,
-    pub kills: usize,
-    /// How long ago the last one was.
-    pub last_age: TimeDelta,
-}
-
-/// The killmails of a system, set against a report.
+/// The killmails of a system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KillContext {
     pub verdict: Verdict,
@@ -154,21 +99,21 @@ pub(crate) struct KillContext {
     pub hour: usize,
     /// How long ago the last one was.
     pub last_age: Option<TimeDelta>,
-    /// The ships of the attackers of the killmail that agrees with the
-    /// report, or else of the last one, with how many flew each.
+    /// The ships of the attackers of the last killmail, with how many flew
+    /// each.
     pub ships: Vec<(String, usize)>,
     /// How many pilots that killmail had.
     pub pilots: u32,
     /// The ships that died, newest first, without repeats.
     pub victims: Vec<String>,
-    /// While the hour before the source started is still being read.
-    pub fill: Option<Fill>,
+    /// What zKillboard says about the killmail shown.
+    pub tags: KillTags,
+    /// While the hour before the source started is still being read, so the
+    /// counts may be short.
+    pub updating: bool,
     /// The killmails of the last day, from the query API. Set by the source
     /// handle, not by the buffer.
     pub day: Option<DayLine>,
-    /// Systems within [`NeighbourConfig::jumps`] jumps with killmails in the last
-    /// [`WINDOW`], nearest first. Set by the source handle, not by the buffer.
-    pub neighbours: Vec<Neighbour>,
     pub source: Source,
     /// Whether killmails are still being read, so none yet is not "none".
     pub loading: bool,
@@ -228,54 +173,59 @@ impl KillBuffer {
         self.fill = fill;
     }
 
+    /// How far the reading of the hour before the start got (`None` once it
+    /// is done).
+    pub(crate) fn fill(&self) -> Option<Fill> {
+        self.fill
+    }
+
     /// How many killmails are kept.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.by_system.values().map(Vec::len).sum()
     }
 
-    /// Which of the systems `near` (id, jumps from the system of interest)
-    /// have killmails as of `now`: nearest first, then the busiest, at most
-    /// [`NeighbourConfig::max`]. The names are left empty.
-    pub(crate) fn neighbours(
-        &self,
-        near: &[(u32, u8)],
-        max: usize,
-        now: DateTime<Utc>,
-    ) -> Vec<Neighbour> {
+    /// How many killmails each system has in the window as of `now`, for the
+    /// heat of the maps. Systems with none are left out.
+    pub(crate) fn counts(&self, now: DateTime<Utc>) -> Vec<(usize, usize)> {
         let oldest = now.checked_sub_signed(WINDOW);
-        let mut found: Vec<Neighbour> = near
+        self.by_system
             .iter()
-            .filter_map(|&(id, jumps)| {
-                let system_id = usize::try_from(id).ok()?;
-                let records: Vec<&KillRecord> = self
-                    .by_system
-                    .get(&system_id)?
+            .filter_map(|(system, records)| {
+                let kept = records
                     .iter()
                     .filter(|record| oldest.is_none_or(|oldest| record.time >= oldest))
-                    .collect();
-                let last = records.last()?;
-                Some(Neighbour {
-                    system_id,
-                    name: String::new(),
-                    jumps,
-                    kills: records.len(),
-                    last_age: (now - last.time).max(TimeDelta::zero()),
-                })
+                    .count();
+                (kept > 0).then_some((*system, kept))
             })
-            .collect();
-        found.sort_by(|a, b| a.jumps.cmp(&b.jumps).then(b.kills.cmp(&a.kills)));
-        found.truncate(max);
-        found
+            .collect()
     }
 
-    /// The killmails of `system_id` as of `now`, set against `report`.
-    pub(crate) fn context(
+    /// How many killmails each system has that happened after `since` and
+    /// are still in the window as of `now`: what the buffer adds to the
+    /// answer of ESI computed at `since`.
+    pub(crate) fn counts_since(
         &self,
-        system_id: usize,
-        report: &Report,
+        since: DateTime<Utc>,
         now: DateTime<Utc>,
-    ) -> KillContext {
+    ) -> Vec<(usize, usize)> {
+        let oldest = now.checked_sub_signed(WINDOW);
+        self.by_system
+            .iter()
+            .filter_map(|(system, records)| {
+                let kept = records
+                    .iter()
+                    .filter(|record| {
+                        record.time > since && oldest.is_none_or(|oldest| record.time >= oldest)
+                    })
+                    .count();
+                (kept > 0).then_some((*system, kept))
+            })
+            .collect()
+    }
+
+    /// The killmails of `system_id` as of `now`.
+    pub(crate) fn context(&self, system_id: usize, now: DateTime<Utc>) -> KillContext {
         let oldest = now.checked_sub_signed(WINDOW);
         let recent_from = now.checked_sub_signed(RECENT);
         let records: Vec<&KillRecord> = self
@@ -290,16 +240,12 @@ impl KillBuffer {
             .unwrap_or_default();
         let is_recent = |record: &KillRecord| recent_from.is_none_or(|from| record.time >= from);
         let recent = records.iter().filter(|record| is_recent(record)).count();
-        let confirming = records
-            .iter()
-            .rev()
-            .find(|record| is_recent(record) && report.matches(record));
-        let verdict = match (confirming, records.is_empty()) {
-            (Some(_), _) => Verdict::Corroborated,
-            (None, false) => Verdict::Active,
-            (None, true) => Verdict::Quiet,
+        let verdict = if records.is_empty() {
+            Verdict::Quiet
+        } else {
+            Verdict::Active
         };
-        let shown = confirming.or_else(|| records.last());
+        let shown = records.last();
         let mut ships: Vec<(String, usize)> = Vec::new();
         if let Some(record) = shown {
             for ship in &record.attacker_ships {
@@ -328,9 +274,9 @@ impl KillBuffer {
             ships,
             pilots: shown.map_or(0, |record| record.pilots),
             victims,
-            fill: self.fill,
+            tags: shown.map_or_else(KillTags::default, |record| record.tags),
+            updating: self.fill.is_some(),
             day: None,
-            neighbours: Vec::new(),
             source: Source::Feed,
             loading: false,
         }
@@ -355,20 +301,51 @@ mod tests {
             victim: Some(victim.to_string()),
             attacker_ships: ships.iter().map(|ship| ship.to_string()).collect(),
             pilots: u32::try_from(ships.len()).unwrap(),
+            tags: KillTags::default(),
+            hash: String::new(),
+            location_id: None,
         }
     }
 
-    fn report(ships: &[&str], pilots: Option<u32>) -> Report {
-        Report {
-            ships: ships.iter().map(|ship| ship.to_string()).collect(),
-            pilots,
-        }
+    #[test]
+    fn counts_give_the_killmails_of_the_hour_per_system() {
+        let now = Utc::now();
+        let mut buffer = KillBuffer::default();
+        assert!(buffer.counts(now).is_empty());
+        buffer.insert(kill(1, at(now, 5), &["Sabre"], "Catalyst"), now);
+        buffer.insert(kill(2, at(now, 40), &["Sabre"], "Catalyst"), now);
+        let mut other = kill(3, at(now, 10), &["Sabre"], "Catalyst");
+        other.system_id = SYSTEM + 1;
+        buffer.insert(other, now);
+        let mut counts = buffer.counts(now);
+        counts.sort_unstable();
+        assert_eq!(counts, [(SYSTEM, 2), (SYSTEM + 1, 1)]);
+        // Seen from later, the oldest one has left the hour.
+        let later = now + TimeDelta::minutes(30);
+        let mut counts = buffer.counts(later);
+        counts.sort_unstable();
+        assert_eq!(counts, [(SYSTEM, 1), (SYSTEM + 1, 1)]);
+    }
+
+    #[test]
+    fn counts_since_leave_out_what_an_hourly_answer_already_has() {
+        let now = Utc::now();
+        let mut buffer = KillBuffer::default();
+        buffer.insert(kill(1, at(now, 50), &["Sabre"], "Catalyst"), now);
+        buffer.insert(kill(2, at(now, 20), &["Sabre"], "Catalyst"), now);
+        buffer.insert(kill(3, at(now, 5), &["Sabre"], "Catalyst"), now);
+        // An answer computed 10 minutes ago has the first two.
+        let since = now - TimeDelta::minutes(10);
+        assert_eq!(buffer.counts_since(since, now), [(SYSTEM, 1)]);
+        // An answer older than the buffer's hour adds the whole hour.
+        let since = now - TimeDelta::hours(3);
+        assert_eq!(buffer.counts_since(since, now), [(SYSTEM, 3)]);
     }
 
     #[test]
     fn a_system_without_killmails_is_quiet() {
         let now = Utc::now();
-        let context = KillBuffer::default().context(SYSTEM, &report(&["sabre"], None), now);
+        let context = KillBuffer::default().context(SYSTEM, now);
         assert_eq!(context.verdict, Verdict::Quiet);
         assert_eq!((context.recent, context.hour), (0, 0));
         assert_eq!(context.last_age, None);
@@ -376,65 +353,11 @@ mod tests {
     }
 
     #[test]
-    fn a_recent_killmail_with_the_reported_ship_corroborates_the_report() {
-        let now = Utc::now();
-        let mut buffer = KillBuffer::default();
-        buffer.insert(
-            kill(1, at(now, 3), &["Sabre", "Rifter", "Rifter"], "Catalyst"),
-            now,
-        );
-        let context = buffer.context(SYSTEM, &report(&["sabre"], Some(3)), now);
-        assert_eq!(context.verdict, Verdict::Corroborated);
-        assert_eq!((context.recent, context.hour), (1, 1));
-        assert_eq!(
-            context.ships,
-            [(String::from("Sabre"), 1), (String::from("Rifter"), 2)]
-        );
-        assert_eq!(context.pilots, 3);
-        assert_eq!(context.victims, ["Catalyst"]);
-        assert_eq!(context.last_age, Some(TimeDelta::seconds(180)));
-    }
-
-    #[test]
-    fn other_ships_make_the_system_active_but_do_not_corroborate() {
-        let now = Utc::now();
-        let mut buffer = KillBuffer::default();
-        buffer.insert(kill(1, at(now, 3), &["Merlin", "Merlin"], "Venture"), now);
-        let context = buffer.context(SYSTEM, &report(&["sabre"], Some(2)), now);
-        assert_eq!(context.verdict, Verdict::Active);
-        // The last killmail is shown instead.
-        assert_eq!(context.ships, [(String::from("Merlin"), 2)]);
-    }
-
-    #[test]
-    fn without_ships_the_number_of_pilots_decides() {
-        let now = Utc::now();
-        let mut buffer = KillBuffer::default();
-        buffer.insert(
-            kill(1, at(now, 2), &["Merlin", "Merlin", "Merlin"], "Venture"),
-            now,
-        );
-        assert_eq!(
-            buffer.context(SYSTEM, &report(&[], Some(3)), now).verdict,
-            Verdict::Corroborated
-        );
-        assert_eq!(
-            buffer.context(SYSTEM, &report(&[], Some(2)), now).verdict,
-            Verdict::Active
-        );
-        // A report that names nothing can't be corroborated.
-        assert_eq!(
-            buffer.context(SYSTEM, &report(&[], None), now).verdict,
-            Verdict::Active
-        );
-    }
-
-    #[test]
     fn an_old_killmail_does_not_corroborate_but_still_counts_in_the_hour() {
         let now = Utc::now();
         let mut buffer = KillBuffer::default();
         buffer.insert(kill(1, at(now, 40), &["Sabre"], "Catalyst"), now);
-        let context = buffer.context(SYSTEM, &report(&["sabre"], None), now);
+        let context = buffer.context(SYSTEM, now);
         assert_eq!(context.verdict, Verdict::Active);
         assert_eq!((context.recent, context.hour), (0, 1));
     }
@@ -459,7 +382,7 @@ mod tests {
         assert!(!buffer.insert(kill(2, at(now, 5), &["Sabre"], "B"), now));
         // Read afterwards but older (the hour before the start).
         assert!(buffer.insert(kill(1, at(now, 20), &["Rifter"], "A"), now));
-        let context = buffer.context(SYSTEM, &report(&[], None), now);
+        let context = buffer.context(SYSTEM, now);
         assert_eq!(context.hour, 2);
         // Newest first.
         assert_eq!(context.victims, ["B", "A"]);
@@ -474,47 +397,39 @@ mod tests {
             let id = u64::try_from(id).unwrap() + 1;
             buffer.insert(kill(id, at(now, 30 - id), &["Sabre"], victim), now);
         }
-        let context = buffer.context(SYSTEM, &report(&[], None), now);
+        let context = buffer.context(SYSTEM, now);
         assert_eq!(context.victims, ["D", "C", "A"]);
     }
 
     #[test]
-    fn the_fill_is_passed_on_and_cleared_with_the_buffer() {
+    fn the_tags_of_the_killmail_shown_are_passed_on() {
+        let now = Utc::now();
+        let mut buffer = KillBuffer::default();
+        let mut tagged = kill(1, at(now, 5), &["Sabre"], "A");
+        tagged.tags = KillTags {
+            awox: true,
+            ganked: false,
+        };
+        buffer.insert(tagged.clone(), now);
+        let context = buffer.context(SYSTEM, now);
+        assert_eq!(context.tags, tagged.tags);
+        let plain = KillBuffer::default().context(SYSTEM, now);
+        assert_eq!(plain.tags, KillTags::default());
+    }
+
+    #[test]
+    fn the_fill_is_kept_and_cleared_with_the_buffer() {
         let now = Utc::now();
         let mut buffer = KillBuffer::default();
         buffer.set_fill(Some(Fill {
             done: 62,
             total: 100,
         }));
-        let context = buffer.context(SYSTEM, &report(&[], None), now);
-        assert_eq!(context.fill.map(Fill::percent), Some(62));
+        assert_eq!(buffer.fill().map(Fill::percent), Some(62));
+        assert!(buffer.context(SYSTEM, now).updating);
         buffer.clear();
-        assert_eq!(buffer.context(SYSTEM, &report(&[], None), now).fill, None);
+        assert_eq!(buffer.fill(), None);
+        assert!(!buffer.context(SYSTEM, now).updating);
         assert_eq!(Fill::default().percent(), 100);
-    }
-
-    #[test]
-    fn neighbours_are_the_near_systems_with_kills() {
-        let now = Utc::now();
-        let mut buffer = KillBuffer::default();
-        let mut other = |id: u64, system: usize, minutes: u64| {
-            let mut record = kill(id, at(now, minutes), &["Rifter"], "Merlin");
-            record.system_id = system;
-            assert!(buffer.insert(record, now));
-        };
-        other(1, 100, 30);
-        other(2, 100, 10);
-        other(3, 200, 5);
-        other(4, 300, 1);
-        let found = buffer.neighbours(&[(100, 2), (200, 1), (300, 2), (400, 1)], 3, now);
-        let ids: Vec<usize> = found.iter().map(|n| n.system_id).collect();
-        assert_eq!(ids, vec![200, 100, 300]);
-        assert_eq!(found[1].kills, 2);
-        assert_eq!(found[1].last_age, TimeDelta::seconds(10 * 60));
-        assert!(buffer.neighbours(&[], 3, now).is_empty());
-        // Only as many as asked for, the nearest first.
-        let one = buffer.neighbours(&[(100, 2), (200, 1), (300, 2)], 1, now);
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].system_id, 200);
     }
 }

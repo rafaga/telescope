@@ -424,43 +424,9 @@ pub(crate) fn jumps_to_nearest_origin(
     None
 }
 
-/// The systems at most `max_jumps` stargates from `origin`, `origin` left
-/// out, nearest first, with how many jumps away each is.
-pub(crate) fn systems_within(systems: &JumpGraph, origin: u32, max_jumps: u8) -> Vec<(u32, u8)> {
-    let mut seen = HashSet::from([origin]);
-    let mut queue = VecDeque::from([(origin, 0u8)]);
-    let mut found = Vec::new();
-    while let Some((system, jumps)) = queue.pop_front() {
-        if jumps == max_jumps {
-            continue;
-        }
-        for &next in systems.get(&system).map_or(&[][..], Vec::as_slice) {
-            if seen.insert(next) {
-                found.push((next, jumps + 1));
-                queue.push_back((next, jumps + 1));
-            }
-        }
-    }
-    found
-}
-
 #[cfg(test)]
 mod nearest_origin_tests {
-    use super::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within, systems_within};
-
-    #[test]
-    fn systems_within_lists_the_neighbours_nearest_first() {
-        let links: [(u32, &[u32]); 5] =
-            [(1, &[2]), (2, &[1, 3]), (3, &[2, 4]), (4, &[3]), (9, &[])];
-        let graph: JumpGraph = links
-            .into_iter()
-            .map(|(id, connections)| (id, connections.to_vec()))
-            .collect();
-        assert_eq!(systems_within(&graph, 2, 2), vec![(1, 1), (3, 1), (4, 2)]);
-        assert_eq!(systems_within(&graph, 1, 1), vec![(2, 1)]);
-        assert!(systems_within(&graph, 9, 2).is_empty());
-        assert!(systems_within(&graph, 77, 2).is_empty());
-    }
+    use super::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within};
 
     /// A straight chain 1 - 2 - 3 - 4 - 5, plus 6 connected to nothing.
     fn chain() -> JumpGraph {
@@ -611,6 +577,9 @@ mod real_line_tests {
         /// Reported systems that resolved, in order of appearance.
         systems: Vec<&'static str>,
         kinds: Vec<OutputKind>,
+        /// Whether a visual output carries a system: the only kind of visual
+        /// alert that has somewhere to be painted (there is no global alert).
+        paints_a_system: bool,
         /// What no detection recognised, as the Tooltip output sees it.
         leftover: Option<String>,
         /// What the tooltip shows (the leftover only when nothing else is).
@@ -667,8 +636,14 @@ mod real_line_tests {
             }
             None => (None, Vec::new(), Vec::new()),
         };
+        let paints_a_system = activations
+            .iter()
+            .filter(|activation| activation.kind == OutputKind::Visual)
+            .flat_map(|activation| &activation.messages)
+            .any(|message| matches!(&message.data, Data::Systems(ids) if !ids.is_empty()));
         Outcome {
             systems,
+            paints_a_system,
             kinds: activations
                 .iter()
                 .map(|activation| activation.kind)
@@ -850,8 +825,8 @@ mod real_line_tests {
                 outcome.systems
             );
             assert!(
-                !outcome.kinds.contains(&OutputKind::Visual),
-                "{text:?} raised a visual alert"
+                !outcome.paints_a_system,
+                "{text:?} raised a visual alert on a system"
             );
         }
     }
@@ -946,18 +921,27 @@ mod real_line_tests {
 
     #[test]
     fn the_leftover_is_hidden_once_there_are_ships() {
-        // "gate camp 5" was not recognised either, but the tooltip has
+        // "gate camp" was not recognised either, but the tooltip has
         // something better to show, so it is not shown.
-        let outcome = outcome("1DQ1-A gate camp 5 Rifter");
-        assert_eq!(outcome.leftover.as_deref(), Some("gate camp 5"));
+        let outcome = outcome("1DQ1-A gate camp Rifter");
+        assert_eq!(outcome.leftover.as_deref(), Some("gate camp"));
         assert_eq!(outcome.parts, [AlertPart::Ships(String::from("Rifter"))]);
+    }
+
+    #[test]
+    fn a_quantity_written_before_a_ship_is_summed_in_the_default_rules() {
+        // The `ship_names` rule of the chat logs sums the quantities written
+        // next to a ship (`sum_quantities` is on in `rules.toml`).
+        let outcome = outcome("1DQ1-A gate camp 5 Rifter");
+        assert_eq!(outcome.parts, [AlertPart::Ships(String::from("Rifter ×5"))]);
     }
 
     #[test]
     fn a_question_about_a_system_is_suppressed_and_has_no_tooltip() {
         let outcome = outcome("H-5GUI status?");
         assert!(outcome.kinds.contains(&OutputKind::Suppress));
-        assert_eq!(outcome.leftover, None);
+        // The tooltip may be activated, but it has nothing to show.
+        assert_eq!(outcome.leftover.as_deref().unwrap_or(""), "");
     }
 
     // ---- The limits ----

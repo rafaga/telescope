@@ -14,15 +14,16 @@ use crate::app::messages::{Message, Type};
 use notify::{RecursiveMode, Watcher};
 use webb::graph::{Executor, RuleGraph};
 
+pub(crate) mod cache_store;
 pub(crate) mod detection;
 pub(crate) mod dispatch;
 pub(crate) mod input;
 pub(crate) mod kill_context;
 pub(crate) mod kill_day;
-pub(crate) mod kill_store;
 pub(crate) mod nearby;
 pub(crate) mod reader;
 pub(crate) mod resolve;
+pub(crate) mod zkill_guard;
 pub(crate) mod zkillboard;
 
 pub(crate) use self::input::IntelLogName;
@@ -225,7 +226,6 @@ impl TelescopeApp {
     pub(crate) fn sync_alarm_jumps(&self) {
         let graph = resolve::jump_graph(&self.universe);
         tracing::debug!(systems = graph.len(), "alarm jump graph rebuilt");
-        self.intel_zkillboard.set_jumps(graph.clone());
         self.alarm_shared.set_jumps(graph);
     }
 }

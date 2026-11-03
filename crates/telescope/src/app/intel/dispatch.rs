@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
-use webb::graph::{Activation, Data, FORMATTED_TAG, Mensaje};
+use webb::graph::{Activation, Data, FORMATTED_TAG, LogConfig, Mensaje};
 use webb::map_alerts::{AlertSummary, IntelAlert, leftover};
 use webb::objects::Character;
 use webb::rules::{InputKind, IntelLine, OutputKind};
@@ -63,6 +63,10 @@ pub(crate) struct AlarmShared {
     pub config: RwLock<AlarmConfig>,
     /// Last known solar system of each linked character (only known ones).
     pub locations: RwLock<Vec<u32>>,
+    /// Woken when a linked character changes system, so that whoever plans
+    /// the background work around the characters (housekeeping) does not wait
+    /// for its next round.
+    pub moved: tokio::sync::Notify,
     /// Stargate connections of the loaded universe.
     pub jumps: RwLock<JumpGraph>,
     /// Recent events near the linked characters (read by the overlay).
@@ -112,6 +116,7 @@ impl AlarmShared {
                 .locations
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = locations;
+            self.moved.notify_one();
             changed = true;
         }
         changed
@@ -264,7 +269,7 @@ impl Dispatcher {
             .iter()
             .find(|activation| activation.kind == OutputKind::Log)
         {
-            self.log(&channel, &line, activation.log.use_current_time);
+            self.log(&channel, &line, &activation.log);
         }
         tracing::debug!(
             elapsed_us = started.elapsed().as_micros() as u64,
@@ -461,29 +466,28 @@ impl Dispatcher {
         nearest_origin_within(&jumps, &origins, target, config.warning_area)
     }
 
-    /// Appends the line to the status log, optionally stamped with the current
-    /// time instead of the line's own timestamp.
-    fn log(&self, channel: &str, line: &IntelLine, use_current_time: bool) {
-        let text = if use_current_time {
-            let mut stamped = line.clone();
-            stamped.timestamp = Utc::now();
-            stamped.to_string()
+    /// Appends the line to the status log. The stamp of the entry is the
+    /// moment of the line, or the current time when the node says so; the
+    /// text does not repeat it.
+    fn log(&self, channel: &str, line: &IntelLine, config: &LogConfig) {
+        let notification =
+            |text: String| (Type::Info, String::from("Intel"), channel.to_string(), text);
+        if config.use_current_time {
+            self.task_msg
+                .spawn(Message::GenericNotification(notification(line.untimed())));
         } else {
-            line.to_string()
-        };
-        self.task_msg.spawn(Message::GenericNotification((
-            Type::Info,
-            String::from("Intel"),
-            channel.to_string(),
-            text,
-        )));
+            self.task_msg.spawn(Message::TimedNotification(
+                line.timestamp,
+                notification(line.untimed()),
+            ));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use webb::graph::{LogConfig, TooltipConfig};
+    use webb::graph::TooltipConfig;
 
     struct Rig {
         dispatcher: Dispatcher,
@@ -619,7 +623,7 @@ mod tests {
         assert!(sent.iter().any(|m| matches!(m, MapSync::SystemTooltip(_))));
         assert!(matches!(
             rig.app.try_recv(),
-            Ok(Message::GenericNotification((Type::Info, _, _, _)))
+            Ok(Message::TimedNotification(_, (Type::Info, _, _, _)))
         ));
     }
 
@@ -830,15 +834,31 @@ mod tests {
     }
 
     #[test]
-    fn a_log_output_reaches_the_status_log() {
+    fn a_log_output_reaches_the_status_log_stamped_with_the_moment_of_the_line() {
         let mut rig = rig(vec![1]);
         rig.dispatcher
             .process(detected(vec![activation(OutputKind::Log, &[])]));
         match rig.app.try_recv() {
-            Ok(Message::GenericNotification((Type::Info, source, channel, text))) => {
+            Ok(Message::TimedNotification(stamp, (Type::Info, source, channel, text))) => {
                 assert_eq!(source, "Intel");
                 assert_eq!(channel, "intel");
-                assert!(text.contains("Pilot > reported"), "{text}");
+                // The moment of the line (the test's lines are from now).
+                assert!((Utc::now() - stamp).num_seconds().abs() < 5, "{stamp}");
+                assert!(text.starts_with("Pilot > "), "{text}");
+            }
+            _ => panic!("expected a stamped Info notification"),
+        }
+    }
+
+    #[test]
+    fn the_current_time_stamps_the_entry_when_the_node_asks_for_it() {
+        let mut rig = rig(vec![1]);
+        let mut log = activation(OutputKind::Log, &[]);
+        log.log.use_current_time = true;
+        rig.dispatcher.process(detected(vec![log]));
+        match rig.app.try_recv() {
+            Ok(Message::GenericNotification((Type::Info, _, _, text))) => {
+                assert_eq!(text, "Pilot > reported");
             }
             _ => panic!("expected an Info notification"),
         }
@@ -887,6 +907,35 @@ mod tests {
         assert!(shared.update(other.clone(), vec![2]));
         assert_eq!(*shared.config.read().unwrap(), other);
         assert_eq!(*shared.locations.read().unwrap(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn a_character_changing_system_wakes_whoever_plans_around_it() {
+        let shared = AlarmShared::default();
+        let config = AlarmConfig::from_settings(&Settings::default());
+        let wait = Duration::from_millis(50);
+        shared.update(config.clone(), vec![1]);
+        assert!(
+            tokio::time::timeout(wait, shared.moved.notified())
+                .await
+                .is_ok()
+        );
+        // The same place again, or only the settings, wake nobody.
+        shared.update(config.clone(), vec![1]);
+        let mut other = config.clone();
+        other.warning_area += 1;
+        shared.update(other, vec![1]);
+        assert!(
+            tokio::time::timeout(wait, shared.moved.notified())
+                .await
+                .is_err()
+        );
+        shared.update(config, vec![2]);
+        assert!(
+            tokio::time::timeout(wait, shared.moved.notified())
+                .await
+                .is_ok()
+        );
     }
 
     #[test]

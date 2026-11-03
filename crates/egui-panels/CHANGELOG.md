@@ -20,6 +20,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+* `SettingsLayout::show_tabs`: the navigation and the selected page without
+  an action bar, for screens with nothing to apply (a debug window).
 * `divider` and `toggle_button` (a button that stays pressed, with an
   optional tag, for picking several items from a `tile_grid`).
 

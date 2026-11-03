@@ -30,6 +30,41 @@ pub use self::player_database::{SCHEMA_VERSION, SchemaStatus};
 pub(crate) mod cipher;
 pub mod player_database;
 
+/// What ESI reports a system had in one hour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SystemHourKills {
+    pub system_id: i64,
+    /// Ships of players destroyed.
+    pub ship_kills: i64,
+    /// Capsules destroyed.
+    pub pod_kills: i64,
+    /// NPCs destroyed (ratting).
+    pub npc_kills: i64,
+}
+
+/// The kills per system of the last hour, as ESI computed them. ESI lists
+/// only the systems that had kills, and leaves the wormhole ones out.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HourKills {
+    /// When ESI computed the answer (`Last-Modified`): the hour ends then.
+    /// `None` when ESI did not say, or the date could not be read.
+    pub modified: Option<chrono::DateTime<chrono::Utc>>,
+    pub systems: Vec<SystemHourKills>,
+}
+
+impl HourKills {
+    /// Builds the answer from the `Last-Modified` header as ESI sent it (an
+    /// HTTP date, such as `Wed, 21 Oct 2026 07:28:00 GMT`) and the systems.
+    pub fn new(modified: Option<&str>, systems: Vec<SystemHourKills>) -> Self {
+        Self {
+            modified: modified
+                .and_then(|text| chrono::DateTime::parse_from_rfc2822(text).ok())
+                .map(|time| time.with_timezone(&chrono::Utc)),
+            systems,
+        }
+    }
+}
+
 /// Network boundary towards the CCP servers (SSO + ESI).
 ///
 /// Every operation that talks to CCP goes through this trait so the
@@ -81,6 +116,9 @@ pub trait EsiApi: Send {
         &mut self,
         character_id: i64,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String>;
+    /// Fetches the kills per system of the last hour from ESI, with the
+    /// moment ESI computed them. Public: no token is needed.
+    async fn get_system_kills(&mut self) -> Result<HourKills, String>;
 }
 
 /// ESI endpoints Telescope uses, as `(operationId, path)`. The ids must be
@@ -113,6 +151,7 @@ const ESI_ENDPOINTS: &[(&str, &str)] = &[
         "/corporations/{corporation_id}",
     ),
     ("GetAlliancesAllianceId", "/alliances/{alliance_id}"),
+    ("GetUniverseSystemKills", "/universe/system_kills"),
 ];
 
 /// Builds the minimal Swagger-shaped spec (`{"paths": {path: {"get":
@@ -295,6 +334,27 @@ impl EsiApi for LiveEsiApi {
             })
             .map_err(|t_error| t_error.to_string())
     }
+
+    #[tracing::instrument(skip(self))]
+    async fn get_system_kills(&mut self) -> Result<HourKills, String> {
+        let snapshot = self
+            .esi
+            .group_universe()
+            .get_system_kills_snapshot()
+            .await
+            .map_err(|t_error| t_error.to_string())?;
+        let systems = snapshot
+            .data
+            .iter()
+            .map(|system| SystemHourKills {
+                system_id: system.system_id,
+                ship_kills: system.ship_kills,
+                pod_kills: system.pod_kills,
+                npc_kills: system.npc_kills,
+            })
+            .collect();
+        Ok(HourKills::new(snapshot.last_modified.as_deref(), systems))
+    }
 }
 
 /// ESI manager: orchestrates authentication state, ESI calls and the local
@@ -345,6 +405,33 @@ impl<T: EsiApi> EsiManagerCore<T> {
     pub fn load_graph(&self) -> Result<RuleGraph, Error> {
         let connection = self.get_standard_connection()?;
         PlayerDatabase::load_graph(&connection)
+    }
+
+    /// A short text kept under `id` in the player database (the `metadata`
+    /// table, encrypted with the rest of it), or `None` if there is none.
+    #[tracing::instrument(skip(self))]
+    pub fn read_metadata(&self, id: &str) -> Result<Option<String>, Error> {
+        let connection = self.get_standard_connection()?;
+        let value = connection.query_row("SELECT value FROM metadata WHERE id = ?1", [id], |row| {
+            row.get::<_, String>(0)
+        });
+        match value {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Keeps `value` under `id` in the player database (see
+    /// [`Self::read_metadata`]), replacing what was there.
+    #[tracing::instrument(skip(self, value))]
+    pub fn write_metadata(&self, id: &str, value: &str) -> Result<(), Error> {
+        let connection = self.get_standard_connection()?;
+        connection.execute(
+            "INSERT OR REPLACE INTO metadata (id, value) VALUES (?1, ?2)",
+            [id, value],
+        )?;
+        Ok(())
     }
 
     /// Replaces the intel node graph stored in the player database, atomically.
@@ -682,6 +769,13 @@ impl<T: EsiApi> EsiManagerCore<T> {
             expiration: auth.expiration,
         });
         self.api.get_last_login(player_id).await
+    }
+
+    /// The kills per system of the last hour, with the moment ESI computed
+    /// them. Public data: it needs no linked character.
+    #[tracing::instrument(skip(self))]
+    pub async fn get_system_kills(&mut self) -> Result<HourKills, String> {
+        self.api.get_system_kills().await
     }
 
     /// Whether the character has a token set that is still valid for at
@@ -1223,6 +1317,38 @@ mod tests {
             name: String::from("Test Pilot"),
             sub: String::from("CHARACTER:EVE:90000001"),
         }
+    }
+
+    #[test]
+    fn the_last_modified_of_esi_is_read_as_utc() {
+        let hour = HourKills::new(Some("Wed, 21 Oct 2026 07:28:00 GMT"), Vec::new());
+        assert_eq!(
+            hour.modified,
+            chrono::DateTime::from_timestamp(1_792_567_680, 0)
+        );
+        assert_eq!(HourKills::new(None, Vec::new()).modified, None);
+        assert_eq!(HourKills::new(Some("yesterday"), Vec::new()).modified, None);
+    }
+
+    #[tokio::test]
+    async fn the_system_kills_need_no_linked_character() {
+        let mut mock = MockEsiApi::new();
+        mock.expect_get_system_kills().times(1).returning(|| {
+            Ok(HourKills {
+                modified: None,
+                systems: vec![SystemHourKills {
+                    system_id: 30000142,
+                    ship_kills: 2,
+                    pod_kills: 1,
+                    npc_kills: 0,
+                }],
+            })
+        });
+        let (mut manager, path) = mock_manager("system_kills", mock);
+        let hour = manager.get_system_kills().await.unwrap();
+        assert_eq!(hour.systems.len(), 1);
+        assert_eq!(hour.systems[0].ship_kills, 2);
+        cleanup(&path);
     }
 
     #[tokio::test]

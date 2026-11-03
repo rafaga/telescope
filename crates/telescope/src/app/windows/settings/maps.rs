@@ -18,6 +18,7 @@ impl TelescopeApp {
             );
             self.show_startup_regions_section(ui);
             self.show_marker_section(ui);
+            self.show_heatmap_section(ui);
         });
     }
 
@@ -111,6 +112,24 @@ impl TelescopeApp {
                 form.note(|ui| {
                     ui.weak(t!("settings.maps.glow_hint"));
                 });
+            });
+        });
+    }
+
+    fn show_heatmap_section(&mut self, ui: &mut egui::Ui) {
+        Section::new(&t!("settings.maps.heatmap_title")).show(ui, |ui| {
+            egui_panels::form(ui, |form| {
+                form.row_hint(
+                    t!("settings.maps.heatmap"),
+                    &t!("settings.maps.heatmap_hint"),
+                    |ui| {
+                        let mut on = self.settings.get_heatmap();
+                        if egui_panels::switch(ui, &mut on).changed() {
+                            self.settings.set_heatmap(on);
+                        }
+                        ui.weak(t!("settings.maps.heatmap_hint"));
+                    },
+                );
             });
         });
     }

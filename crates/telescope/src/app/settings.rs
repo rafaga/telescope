@@ -105,6 +105,11 @@ pub(crate) struct Mapping {
     /// before this option existed get the default.
     #[serde(default = "default_glow_intensity")]
     pub glow_intensity: f32,
+    /// Whether the maps show the heat of the last hour (the kills per
+    /// system). `serde(default)`: off, and settings files written before this
+    /// option existed get it off.
+    #[serde(default)]
+    pub heatmap: bool,
     /// Opacity of the overlay's events panel, 0.3 to 1 (1 is opaque).
     /// `serde(default)`: settings files written before this option existed
     /// get the default.
@@ -199,6 +204,7 @@ impl Default for Mapping {
             center_on_alert: false,
             alert_duration_secs: Mapping::DEFAULT_ALERT_DURATION_SECS,
             glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
+            heatmap: false,
             overlay_opacity: Mapping::DEFAULT_OVERLAY_OPACITY,
             overlay_enabled: false,
             overlay_hide_unfocused: true,
@@ -1022,6 +1028,18 @@ impl Settings {
         }
     }
 
+    /// Whether the maps show the heat of the last hour.
+    pub(crate) fn get_heatmap(&self) -> bool {
+        self.mapping.heatmap
+    }
+
+    pub(crate) fn set_heatmap(&mut self, value: bool) {
+        if self.mapping.heatmap != value {
+            self.mapping.heatmap = value;
+            self.saved = false;
+        }
+    }
+
     /// Opacity of the character glow, 0 (off) to 1.
     pub(crate) fn get_glow_intensity(&self) -> f32 {
         self.mapping.glow_intensity
@@ -1546,6 +1564,17 @@ mod tests {
         assert!(settings.its_saved());
 
         settings.set_available_channels(HashMap::from([(String::from("Intel"), true)]));
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn the_heatmap_is_off_by_default_and_a_change_is_unsaved() {
+        let mut settings = saved_settings();
+        assert!(!settings.get_heatmap());
+        settings.set_heatmap(false);
+        assert!(settings.its_saved(), "no change, nothing to save");
+        settings.set_heatmap(true);
+        assert!(settings.get_heatmap());
         assert!(!settings.its_saved());
     }
 

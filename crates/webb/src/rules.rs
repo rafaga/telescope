@@ -150,6 +150,11 @@ pub enum DetectionRuleKind {
         /// Names of the dictionaries (in `dictionaries.toml`) to match.
         #[serde(default)]
         dictionaries: Vec<String>,
+        /// Adds up the quantity written next to a ship (`3x Hurricane`,
+        /// `Hurricane x3`, `3 Hurricane`) instead of counting one per
+        /// mention, so a ship appears once with its total. Off by default.
+        #[serde(default)]
+        sum_quantities: bool,
     },
     /// Reports how many pilots a line is about. Uses the built-in count
     /// patterns.
@@ -257,6 +262,19 @@ pub trait DetectionType {
     fn validate(&self, id: &str, dictionaries: &Dictionaries) -> Result<(), PatternError>;
 }
 
+impl DetectionRuleKind {
+    /// Whether a ship's written quantity is added up (`ship_names` only).
+    pub(crate) fn sums_quantities(&self) -> bool {
+        matches!(
+            self,
+            Self::ShipNames {
+                sum_quantities: true,
+                ..
+            }
+        )
+    }
+}
+
 impl DetectionType for DetectionRuleKind {
     fn matcher(&self, dictionaries: &Dictionaries) -> DetectionMatcher {
         match self {
@@ -274,6 +292,7 @@ impl DetectionType for DetectionRuleKind {
             | Self::Query { keywords } => DetectionMatcher::Dictionary(keywords.clone()),
             Self::ShipNames {
                 dictionaries: names,
+                ..
             } => {
                 let mut words = Vec::new();
                 for name in names {
@@ -343,6 +362,7 @@ impl DetectionType for DetectionRuleKind {
             | Self::Query { keywords } => validate_words(id, keywords)?,
             Self::ShipNames {
                 dictionaries: names,
+                ..
             } => {
                 // No dictionary is fine: the Chinese class names need none.
                 for name in names {
@@ -522,6 +542,7 @@ mod tests {
     fn detection_rule_round_trips_through_toml() {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let text = toml::to_string(&kind).unwrap();
         let back: DetectionRuleKind = toml::from_str(&text).unwrap();
@@ -668,6 +689,7 @@ mod tests {
             },
             DetectionRuleKind::ShipNames {
                 dictionaries: words(&["ship_report_en"]),
+                sum_quantities: false,
             },
             DetectionRuleKind::PilotCount,
             DetectionRuleKind::Keyword {
@@ -742,7 +764,8 @@ mod tests {
         );
         assert_eq!(
             DetectionRuleKind::ShipNames {
-                dictionaries: Vec::new()
+                dictionaries: Vec::new(),
+                sum_quantities: false,
             }
             .category(),
             Some(IntelCategory::Ship)
@@ -903,6 +926,7 @@ mod tests {
     fn ship_names_match_dictionaries_and_the_chinese_shape() {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: words(&["ship_report_en"]),
+            sum_quantities: false,
         };
         match kind.matcher(&Dictionaries::defaults()) {
             DetectionMatcher::Mixed { patterns, words } => {
@@ -919,7 +943,8 @@ mod tests {
         assert_eq!(
             kind,
             DetectionRuleKind::ShipNames {
-                dictionaries: Vec::new()
+                dictionaries: Vec::new(),
+                sum_quantities: false,
             }
         );
         let text = toml::to_string(&kind).unwrap();
@@ -953,6 +978,7 @@ mod tests {
         let es = dictionaries.words("ship_report_es").unwrap().len();
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: words(&["ship_report_en", "missing", "ship_report_es"]),
+            sum_quantities: false,
         };
         match kind.matcher(&dictionaries) {
             DetectionMatcher::Mixed { words, .. } => assert_eq!(words.len(), en + es),
@@ -1040,10 +1066,12 @@ mod tests {
         // The Chinese class names need no dictionary.
         let none = DetectionRuleKind::ShipNames {
             dictionaries: Vec::new(),
+            sum_quantities: false,
         };
         assert_eq!(validate(&none), Ok(()));
         let unknown = DetectionRuleKind::ShipNames {
             dictionaries: words(&["ship_report_en", "nope"]),
+            sum_quantities: false,
         };
         assert_eq!(
             validate(&unknown),
@@ -1054,6 +1082,7 @@ mod tests {
         );
         let known = DetectionRuleKind::ShipNames {
             dictionaries: words(&["ship_report_en"]),
+            sum_quantities: false,
         };
         assert_eq!(validate(&known), Ok(()));
     }

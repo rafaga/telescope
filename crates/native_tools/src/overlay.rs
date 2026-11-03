@@ -15,6 +15,8 @@
 //! windows and a program cannot see other programs' windows. Run Telescope with
 //! X11 there (`WINIT_UNIX_BACKEND=x11`).
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use crate::window::OwnWindow;
 use raw_window_handle::HasWindowHandle;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use raw_window_handle::RawWindowHandle;
@@ -34,19 +36,17 @@ use windows::{
         },
         UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState},
         UI::WindowsAndMessaging::{
-            EnumWindows, FindWindowW, GWL_EXSTYLE, GetClientRect, GetForegroundWindow,
-            GetWindowLongPtrW, GetWindowTextW, HWND_TOPMOST, IsWindowVisible, LWA_ALPHA,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongPtrW,
-            SetWindowPos, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+            EnumWindows, GWL_EXSTYLE, GetClientRect, GetForegroundWindow, GetWindowLongPtrW,
+            GetWindowTextW, HWND_TOPMOST, IsWindowVisible, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, WS_EX_LAYERED,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
         },
     },
-    core::{BOOL, HSTRING, PCWSTR},
+    core::BOOL,
 };
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSColor, NSView, NSWindow, NSWindowCollectionBehavior};
-#[cfg(target_os = "macos")]
-use objc2_foundation::MainThreadMarker;
+use objc2_app_kit::{NSColor, NSView, NSWindow, NSWindowCollectionBehavior};
 
 /// Why the overlay could not be set up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -803,10 +803,7 @@ impl OverlayWindow {
     /// succeeds.
     #[cfg(target_os = "windows")]
     pub fn apply_by_title(&self, title: &str) -> Result<(), OverlayError> {
-        // SAFETY: plain lookup by title; the result is only used if it is Ok.
-        #[allow(unsafe_code)]
-        let hwnd = unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) }
-            .map_err(|_| OverlayError::InvalidHandle)?;
+        let hwnd = OwnWindow::hwnd_by_title(title).ok_or(OverlayError::InvalidHandle)?;
         self.apply_hwnd(hwnd)
     }
 
@@ -863,9 +860,7 @@ impl OverlayWindow {
     #[cfg(target_os = "windows")]
     #[allow(unsafe_code)]
     fn blend_window(&self, title: &str, opacity: f32) -> Result<(), OverlayError> {
-        // SAFETY: plain lookup by title; the result is only used if it is Ok.
-        let hwnd = unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) }
-            .map_err(|_| OverlayError::InvalidHandle)?;
+        let hwnd = OwnWindow::hwnd_by_title(title).ok_or(OverlayError::InvalidHandle)?;
         let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
         // SAFETY: `hwnd` belongs to a live window of this process.
         unsafe {
@@ -902,13 +897,7 @@ impl OverlayWindow {
     /// Core Animation layer, so the main window stays a normal one.
     #[cfg(target_os = "macos")]
     fn make_pixels_see_through(&self, title: &str) -> Result<(), OverlayError> {
-        let mtm = MainThreadMarker::new()
-            .ok_or_else(|| OverlayError::Os(String::from("not on the main thread")))?;
-        let application = NSApplication::sharedApplication(mtm);
-        for window in application.windows().iter() {
-            if window.title().to_string() != title {
-                continue;
-            }
+        OwnWindow::with_ns_window(title, |window| {
             if window.isOpaque() {
                 window.setOpaque(false);
             }
@@ -931,9 +920,7 @@ impl OverlayWindow {
                     }
                 }
             }
-            return Ok(());
-        }
-        Err(OverlayError::InvalidHandle)
+        })
     }
 
     /// Where nothing needs doing.
@@ -946,16 +933,7 @@ impl OverlayWindow {
     /// is `title` (see the Windows version). Must run on the main thread.
     #[cfg(target_os = "macos")]
     pub fn apply_by_title(&self, title: &str) -> Result<(), OverlayError> {
-        let mtm = MainThreadMarker::new()
-            .ok_or_else(|| OverlayError::Os(String::from("not on the main thread")))?;
-        let application = NSApplication::sharedApplication(mtm);
-        for window in application.windows().iter() {
-            if window.title().to_string() == title {
-                self.apply_ns_window(&window);
-                return Ok(());
-            }
-        }
-        Err(OverlayError::InvalidHandle)
+        OwnWindow::with_ns_window(title, |window| self.apply_ns_window(window))
     }
 
     /// Applies the native settings to the window whose title is `title`
@@ -985,9 +963,7 @@ impl OverlayWindow {
         title: &str,
         rects: &[ScreenRect],
     ) -> Result<(), OverlayError> {
-        // SAFETY: plain lookup by title; the result is only used if it is Ok.
-        let hwnd = unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) }
-            .map_err(|_| OverlayError::InvalidHandle)?;
+        let hwnd = OwnWindow::hwnd_by_title(title).ok_or(OverlayError::InvalidHandle)?;
         // SAFETY: the regions are created here; the system owns `region`
         // once `SetWindowRgn` accepts it, the pieces are freed right away.
         unsafe {

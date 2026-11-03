@@ -238,6 +238,8 @@ impl Default for TooltipConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LogConfig {
     /// Stamp each entry with the current time instead of the line's own.
+    /// The text of the entry never repeats the moment: only the stamp shows
+    /// one.
     #[serde(default)]
     pub use_current_time: bool,
 }
@@ -931,7 +933,7 @@ impl CompiledDetection {
                 FromFacts::Nothing | FromFacts::NotGiven => None,
             },
             DetectionSource::Auto => self.evaluate(text, &event.facts, resolver),
-            DetectionSource::Text => self.process(&self.matches(text, resolver), resolver),
+            DetectionSource::Text => self.process(text, &self.matches(text, resolver), resolver),
         }
     }
 
@@ -947,7 +949,7 @@ impl CompiledDetection {
         match self.read_facts(facts, resolver) {
             FromFacts::Found(message) => Some(message),
             FromFacts::Nothing => None,
-            FromFacts::NotGiven => self.process(&self.matches(text, resolver), resolver),
+            FromFacts::NotGiven => self.process(text, &self.matches(text, resolver), resolver),
         }
     }
 
@@ -1045,6 +1047,32 @@ impl CompiledDetection {
         })
     }
 
+    /// The quantity written next to a ship name: `Hurricane x3` / `Hurricane
+    /// ×3` (after) or `3x Hurricane` / `3 Hurricane` (before). One when none
+    /// is written. A number glued to another word (`x3 Rifter` after a ship)
+    /// belongs to the previous ship, not to this one.
+    fn written_quantity(text: &str, span: &Range<usize>) -> u32 {
+        static AFTER: OnceLock<Regex> = OnceLock::new();
+        static BEFORE: OnceLock<Regex> = OnceLock::new();
+        let after = AFTER.get_or_init(|| {
+            Regex::new(r"^\s*[x×]\s*(\d{1,3})\b").expect("hardcoded quantity regex must compile")
+        });
+        let before = BEFORE.get_or_init(|| {
+            Regex::new(r"(?:^|[^\w])(\d{1,3})\s*[x×]?\s*$")
+                .expect("hardcoded quantity regex must compile")
+        });
+        let quantity = |captures: Option<regex::Captures<'_>>| {
+            captures
+                .and_then(|found| found.get(1)?.as_str().parse::<u32>().ok())
+                .filter(|quantity| *quantity > 0)
+        };
+        let following = text.get(span.end..).unwrap_or_default();
+        let preceding = text.get(..span.start).unwrap_or_default();
+        quantity(after.captures(following))
+            .or_else(|| quantity(before.captures(preceding)))
+            .unwrap_or(1)
+    }
+
     /// `ship` with its type id, when it has none and the resolver knows the
     /// name.
     fn identify(mut ship: ShipCount, resolver: &dyn SystemResolver) -> ShipCount {
@@ -1056,8 +1084,13 @@ impl CompiledDetection {
         ship
     }
 
-    fn process(&self, matches: &[MatchData], resolver: &dyn SystemResolver) -> Option<Mensaje> {
-        let mut message = self.process_matches(matches, resolver)?;
+    fn process(
+        &self,
+        text: &str,
+        matches: &[MatchData],
+        resolver: &dyn SystemResolver,
+    ) -> Option<Mensaje> {
+        let mut message = self.process_matches(text, matches, resolver)?;
         if !matches!(message.data, Data::Systems(_)) {
             message.category = self.kind.category();
         }
@@ -1071,6 +1104,7 @@ impl CompiledDetection {
 
     fn process_matches(
         &self,
+        text: &str,
         matches: &[MatchData],
         resolver: &dyn SystemResolver,
     ) -> Option<Mensaje> {
@@ -1090,10 +1124,16 @@ impl CompiledDetection {
             }),
             Some(IntelCategory::Ship) => {
                 let mut ships: Vec<ShipCount> = Vec::new();
+                let sums = self.kind.sums_quantities();
                 for found in matches {
+                    let times = if sums {
+                        Self::written_quantity(text, &found.span)
+                    } else {
+                        1
+                    };
                     ShipCount::tally(
                         &mut ships,
-                        Self::identify(ShipCount::new(found.matched.clone(), 1), resolver),
+                        Self::identify(ShipCount::new(found.matched.clone(), times), resolver),
                     );
                 }
                 (!ships.is_empty()).then(|| Mensaje {
@@ -1758,6 +1798,26 @@ mod tests {
                 .collect()
         }
 
+        /// The systems the visual outputs were given: the only alerts that
+        /// have somewhere to be painted (there is no global alert).
+        fn visual_systems(activations: &[Activation]) -> Vec<usize> {
+            let mut ids = Vec::new();
+            for message in activations
+                .iter()
+                .filter(|activation| activation.kind == OutputKind::Visual)
+                .flat_map(|activation| &activation.messages)
+            {
+                if let Data::Systems(found) = &message.data {
+                    for id in found {
+                        if !ids.contains(id) {
+                            ids.push(*id);
+                        }
+                    }
+                }
+            }
+            ids
+        }
+
         /// The systems the outputs were given.
         fn systems(activations: &[Activation]) -> Vec<usize> {
             let mut ids = Vec::new();
@@ -1789,7 +1849,7 @@ mod tests {
         let alone = channel
             .executor
             .run(&Channel::event("intel", 10, "+4"), &TwoSystems);
-        assert!(!Channel::kinds(&alone).contains(&OutputKind::Visual));
+        assert!(Channel::visual_systems(&alone).is_empty());
     }
 
     #[test]
@@ -1827,7 +1887,7 @@ mod tests {
         let mut channel = Channel::new();
         channel.says("intel", 0, "Jita*  Some Pilot");
         let late = channel.says("intel", ChannelMemory::DEFAULT_WINDOW_SECS + 1, "+4");
-        assert!(!Channel::kinds(&late).contains(&OutputKind::Visual));
+        assert!(Channel::visual_systems(&late).is_empty());
         assert!(Channel::systems(&late).is_empty());
     }
 
@@ -1846,7 +1906,7 @@ mod tests {
         for text in ["gj", "who is that?", "Rifter", "Kill: Someone (Capsule)"] {
             let activations = channel.says("intel", 5, text);
             assert!(
-                !Channel::kinds(&activations).contains(&OutputKind::Visual),
+                Channel::visual_systems(&activations).is_empty(),
                 "{text:?} alerted"
             );
         }
@@ -1862,7 +1922,7 @@ mod tests {
         // One it does not know: not the last report either.
         let unknown = channel.says("intel", 6, "HE-4V4 +4");
         assert!(Channel::systems(&unknown).is_empty());
-        assert!(!Channel::kinds(&unknown).contains(&OutputKind::Visual));
+        assert!(Channel::visual_systems(&unknown).is_empty());
     }
 
     #[test]
@@ -2158,8 +2218,14 @@ mod tests {
 
     /// The ships a line reports with the dictionaries `names`, ignoring case.
     fn ships_in(text: &str, names: &[&str]) -> Vec<(String, u32)> {
+        ships_counting(text, names, false)
+    }
+
+    /// Like `ships_in`, with the `sum_quantities` option chosen.
+    fn ships_counting(text: &str, names: &[&str], sum_quantities: bool) -> Vec<(String, u32)> {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: names.iter().map(|name| name.to_string()).collect(),
+            sum_quantities,
         };
         let mut graph = graph(kind);
         for node in &mut graph.nodes {
@@ -2179,6 +2245,30 @@ mod tests {
             },
             None => Vec::new(),
         }
+    }
+
+    #[test]
+    fn quantities_written_next_to_a_ship_are_not_added_up_by_default() {
+        assert_eq!(
+            ships_in("3x rifter, rifter x2", &["ship_report_en"]),
+            [(String::from("rifter"), 2)]
+        );
+    }
+
+    #[test]
+    fn quantities_written_next_to_a_ship_are_added_up_when_asked() {
+        let sum = |text: &str| ships_counting(text, &["ship_report_en"], true);
+        let rifter = |times| vec![(String::from("rifter"), times)];
+        assert_eq!(sum("3x rifter"), rifter(3));
+        assert_eq!(sum("3 rifter"), rifter(3));
+        assert_eq!(sum("rifter x3"), rifter(3));
+        assert_eq!(sum("rifter ×3"), rifter(3));
+        // The same ship named twice is one entry with both quantities.
+        assert_eq!(sum("rifter x2 and 3 rifter"), rifter(5));
+        // No number, no change.
+        assert_eq!(sum("rifter"), rifter(1));
+        // The number after a ship is not the quantity of the next one.
+        assert_eq!(sum("rifter x3 rifter"), rifter(4));
     }
 
     #[test]
@@ -2223,6 +2313,7 @@ mod tests {
 
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let mut graph = graph(kind);
         for node in &mut graph.nodes {
@@ -2246,6 +2337,7 @@ mod tests {
     fn ship_names_are_grouped() {
         let kind = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let (executor, _) = Executor::new(graph(kind));
         let activations = executor.run(&line("Rifter Rifter Merlin"), &FixedResolver);
@@ -2881,6 +2973,7 @@ mod tests {
     fn ship_names_read_the_ships_the_source_gave_that_its_dictionaries_know() {
         let ships = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let event = killmail_event(
             "no ships written here",
@@ -2912,6 +3005,7 @@ mod tests {
     fn ship_names_report_nothing_when_no_ship_of_the_source_is_in_the_dictionaries() {
         let ships = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let event = killmail_event(
             "Rifter",
@@ -2949,6 +3043,7 @@ mod tests {
     fn ships_data(event: &IntelEvent, resolver: &dyn SystemResolver) -> Vec<ShipCount> {
         let (executor, errors) = Executor::new(graph(DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         }));
         assert!(errors.is_empty(), "{errors:?}");
         match executor.run(event, resolver).first() {
@@ -2993,6 +3088,7 @@ mod tests {
         );
         let ships = DetectionRuleKind::ShipNames {
             dictionaries: vec![String::from("ship_report_en")],
+            sum_quantities: false,
         };
         let message = message_with(ships, &event, &WithShips).unwrap();
         assert_eq!(
@@ -3132,6 +3228,7 @@ mod tests {
             "ship",
             DetectionRuleKind::ShipNames {
                 dictionaries: vec![String::from("ship_report_en")],
+                sum_quantities: false,
             },
         ));
         graph.nodes.push(Node {
@@ -3308,6 +3405,7 @@ mod tests {
         let message = only_message(
             DetectionRuleKind::ShipNames {
                 dictionaries: Vec::new(),
+                sum_quantities: false,
             },
             "破坏级 在 Jita",
         );
@@ -3315,6 +3413,7 @@ mod tests {
         assert_eq!(message.category, Some(IntelCategory::Ship));
         let (executor, _) = Executor::new(graph(DetectionRuleKind::ShipNames {
             dictionaries: Vec::new(),
+            sum_quantities: false,
         }));
         // Han characters without the suffix are not a ship.
         assert!(
@@ -3446,7 +3545,16 @@ mod tests {
         assert!(old.validate().is_empty());
         let migrated = old.clone().with_zkillboard_rules();
         assert!(migrated.validate().is_empty());
-        assert_eq!(migrated, RuleGraph::default_graph());
+        // The same rules; the cables of the new ones come after the user's.
+        let default = RuleGraph::default_graph();
+        assert_eq!(migrated.nodes, default.nodes);
+        assert_eq!(migrated.edges.len(), default.edges.len());
+        assert!(
+            default
+                .edges
+                .iter()
+                .all(|edge| migrated.edges.contains(edge))
+        );
         // What the user had is as it was: only nodes and cables were added.
         assert_eq!(migrated.nodes[..old.nodes.len()], old.nodes[..]);
         assert_eq!(migrated.edges[..old.edges.len()], old.edges[..]);
@@ -3615,7 +3723,8 @@ mod tests {
     fn a_default_status_question_is_suppressed_and_not_listed() {
         let (kinds, tooltip) = default_outputs("H-5GUI status?");
         assert!(kinds.contains(&OutputKind::Suppress), "{kinds:?}");
-        assert_eq!(tooltip, None);
+        // The tooltip may be activated, but it has nothing to show.
+        assert_eq!(tooltip.as_deref().unwrap_or(""), "");
     }
 
     #[test]

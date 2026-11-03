@@ -48,6 +48,24 @@ versions were written for the tag that shipped them.
 
 ### Changed
 
+* Every request to zKillboard now goes through the `zkill` crate, which
+  keeps the two endpoints apart: the R2Z2 feed and the query API each have
+  their own queue, rate (8 requests a second at most) and ban guard. The
+  background fill of the day counts is held to 2 requests a second, so the
+  rest of the rate is free for the tooltips; a tooltip waits a moment
+  before asking, so a pointer only crossing a node asks for nothing. The
+  hour read back when the feed starts waits behind the live walk.
+* The day counts come from the killmails the query API already returns, so
+  ESI is no longer asked for them; a count is asked again when zKillboard's
+  `Expires` header says it may have changed (an hour at most). The Debug
+  window shows the queue of the API and how many requests wait in each lane.
+* The count of the last day is kept up by the feed: the killmails the query
+  API lists are remembered with their time and the feed adds the ones it
+  announces, so while the feed has watched without a gap since before the
+  answer's data (its `Last-Modified`) the count follows it and the API is
+  asked again only after six hours. A gap in the feed ends that and the API
+  is asked again. The counts kept on disk now remember how long they stay
+  good (the cache file of an older version is rebuilt).
 * The settings tree and the button that adds maps no longer use emojis: the
   rows are plain text, and the button is a "+" of the interface font (the
   emoji sat high in the button).

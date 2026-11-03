@@ -162,13 +162,11 @@ mod tests {
 
     #[test]
     fn an_unusable_folder_gives_no_log() {
-        let folder = Folder::new();
-        // A file where the folder should be.
-        std::fs::create_dir_all(&folder.0).unwrap();
-        let blocker = folder.0.join("logs");
-        std::fs::write(&blocker, b"not a folder").unwrap();
+        // A name no file system takes (a NUL in it), the same on Windows and
+        // elsewhere: a file in the place of the folder is not an error on
+        // every system.
         let config = FileLogConfig {
-            dir: blocker.join("inner"),
+            dir: PathBuf::from("telescope\0logs"),
             ..FileLogConfig::default()
         };
         assert!(FileLog::start(config).is_none());

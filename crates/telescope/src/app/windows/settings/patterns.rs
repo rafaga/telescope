@@ -1274,7 +1274,7 @@ fn detection_summary(kind: &DetectionRuleKind) -> String {
         DetectionRuleKind::ClearReport { keywords }
         | DetectionRuleKind::Query { keywords }
         | DetectionRuleKind::Keyword { keywords } => keywords.join(" · "),
-        DetectionRuleKind::ShipNames { dictionaries } => dictionaries.join(" · "),
+        DetectionRuleKind::ShipNames { dictionaries, .. } => dictionaries.join(" · "),
         DetectionRuleKind::Custom { pattern, words, .. } => {
             pattern.clone().unwrap_or_else(|| words.join(" · "))
         }
@@ -2024,12 +2024,20 @@ fn detection_params_editor(ui: &mut Ui, kind: &mut DetectionRuleKind) -> bool {
                 string_list_editor(ui, keywords)
             });
         }
-        DetectionRuleKind::ShipNames { dictionaries } => {
+        DetectionRuleKind::ShipNames {
+            dictionaries,
+            sum_quantities,
+        } => {
             changed |= field_row(ui, &t!("settings.patterns.field_dictionaries"), |ui| {
                 for name in dictionaries.iter() {
                     ui.weak(name);
                 }
                 false
+            });
+            changed |= field_row(ui, &t!("settings.patterns.field_sum_quantities"), |ui| {
+                ui.checkbox(sum_quantities, "")
+                    .on_hover_text(t!("settings.patterns.sum_quantities_hint"))
+                    .changed()
             });
         }
         DetectionRuleKind::Custom {
@@ -2150,6 +2158,7 @@ fn default_detection_kind(name: &str) -> DetectionRuleKind {
         },
         "ship_names" => DetectionRuleKind::ShipNames {
             dictionaries: Dictionaries::defaults().names(),
+            sum_quantities: false,
         },
         "pilot_count" => DetectionRuleKind::PilotCount,
         "keyword" => DetectionRuleKind::Keyword {
@@ -2338,7 +2347,7 @@ mod tests {
     #[test]
     fn default_ship_names_use_every_built_in_dictionary() {
         match default_detection_kind("ship_names") {
-            DetectionRuleKind::ShipNames { dictionaries } => {
+            DetectionRuleKind::ShipNames { dictionaries, .. } => {
                 assert_eq!(dictionaries, Dictionaries::defaults().names());
             }
             other => panic!("unexpected {other:?}"),

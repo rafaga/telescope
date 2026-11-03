@@ -114,6 +114,26 @@ fn main() -> eframe::Result {
     )
     .expect("setting the global tracing subscriber");
 
+    // One copy at a time: each copy asks zKillboard on its own, and two of
+    // them can go over the 15 requests a second that earn a ban. A copy that
+    // restarts itself after a GPU failure waits a few seconds for the old one
+    // to leave. The lock goes away with the process, so it never outlives a
+    // crash. If it cannot be used at all, Telescope starts anyway.
+    let _instance = match native_tools::instance::SingleInstance::acquire(
+        std::path::Path::new("telescope.lock"),
+        native_tools::instance::InstanceConfig::default(),
+    ) {
+        Ok(instance) => Some(instance),
+        Err(native_tools::instance::InstanceError::AlreadyRunning) => {
+            tracing::warn!("Telescope is already running: this copy ends");
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not tell whether Telescope is already running");
+            None
+        }
+    };
+
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])

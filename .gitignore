@@ -2,12 +2,11 @@
 /dist
 /.vscode
 *.code-workspace
-*.db
+*.db*
 .DS_Store
 src/app/data.rs
 /.cargo
 /.cargo-packager
-*.db.old
 telescope.toml
 /crates/webb/target/
 /crates/sde/target/
@@ -24,5 +23,5 @@ sde-build-cache
 # The log files of Telescope (see `app_log`).
 logs/
 
-# The zKillboard cache (see `kill_store`) and its write-ahead log.
-zkillboard_cache.sqlite*
+# The lock that keeps a second copy from starting (see `native_tools::instance`).
+telescope.lock

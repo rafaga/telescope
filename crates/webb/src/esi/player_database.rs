@@ -1181,9 +1181,10 @@ mod tests {
         // The rules of version 5: the default ones without the zKillboard
         // chain, and a rule of the user's.
         let mut old = RuleGraph::default_graph();
-        old.nodes.retain(|node| !node.id.starts_with("z"));
+        let chain = old.zkillboard_chain();
+        old.nodes.retain(|node| !chain.contains(&node.id));
         old.edges
-            .retain(|edge| !edge.from.starts_with("z") && !edge.to.starts_with("z"));
+            .retain(|edge| !chain.contains(&edge.from) && !chain.contains(&edge.to));
         for node in &mut old.nodes {
             if let NodeKind::Aggregator(aggregator) = &mut node.kind {
                 match node.id.as_str() {

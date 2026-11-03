@@ -7,6 +7,24 @@
 //!   at startup, as soon as a character is linked, and then every hour. The
 //!   UI hears about it with [`Message::PlayerLastLogon`], only when the value
 //!   changed.
+//! * **Day counts**: hands the zKillboard source the order in which to fill
+//!   in the kills of the last day of every system, in the background: first
+//!   the systems around the linked characters (at most five jumps), the
+//!   nearest first, then the rest of the region they are in, and last the
+//!   regions next to it, with the requests the rest leaves free. The other
+//!   systems are asked about when a tooltip shows them. The source does the
+//!   paced requests; this only makes the plan: at startup, as soon as a
+//!   character changes system (the new surroundings are the next thing
+//!   asked), when the first count of the plan comes due (the ones around the
+//!   characters last an hour) and, at the latest, every few minutes.
+//! * **System kills**: the first reading of the heat of the maps. ESI's
+//!   `universe/system_kills` gives the kills of the last hour of the whole
+//!   universe in one public request, so it is asked for as soon as a map
+//!   shows the heat, and then an hour after the answer it got (ESI refreshes
+//!   it once an hour). The feed and the query API make up for it as their
+//!   killmails come in (see `ZKillboardHandle::hour_kills`). Nothing is
+//!   asked while no map shows the heat, nor while the feed covers the whole
+//!   hour by itself; see [`SystemKillsPolicy`].
 //! * **Update check**: looks for a newer Telescope release at startup and then
 //!   every few hours. The update dialog opens only when a release that was
 //!   not announced before is found (see `UpdateChecker::announce`).
@@ -18,9 +36,11 @@
 //! valid yet.
 
 use super::TelescopeApp;
+use super::intel::dispatch::AlarmShared;
+use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::{CharacterSync, Message, Type, send_app_message};
 use super::update_checker::UpdateChecker;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
@@ -43,6 +63,68 @@ const UPDATE_RETRY: Duration = Duration::from_secs(30 * 60);
 enum Job {
     LastLogon(i64),
     UpdateCheck,
+    DayCounts,
+    SystemKills,
+}
+
+/// When the hourly answer of ESI's `system_kills` is asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SystemKillsPolicy {
+    /// How often ESI refreshes the answer.
+    every: TimeDelta,
+    /// How long after it is due the answer is asked for, so that ESI has it.
+    margin: TimeDelta,
+    /// How often to look whether a map shows the heat, while none does.
+    idle: Duration,
+    /// Delay before asking again when the answer is still the old one.
+    retry: Duration,
+    /// How many times in a row the old answer is asked for again before
+    /// waiting `slow_retry`.
+    retries: u32,
+    /// Delay after a failure, or after `retries` old answers.
+    slow_retry: Duration,
+}
+
+impl Default for SystemKillsPolicy {
+    fn default() -> Self {
+        Self {
+            every: TimeDelta::hours(1),
+            margin: TimeDelta::seconds(90),
+            idle: Duration::from_secs(15),
+            retry: Duration::from_secs(60),
+            retries: 5,
+            slow_retry: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
+impl SystemKillsPolicy {
+    /// How long until the answer after the one computed at `modified` is
+    /// ready, or `None` when it already is.
+    fn wait(&self, modified: DateTime<Utc>, now: DateTime<Utc>) -> Option<Duration> {
+        (modified + self.every + self.margin - now)
+            .to_std()
+            .ok()
+            .filter(|wait| !wait.is_zero())
+    }
+
+    /// When to ask again after an answer computed at `modified` (if ESI
+    /// said), when it was the old answer `stale` times in a row.
+    fn after_answer(
+        &self,
+        modified: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+        stale: u32,
+    ) -> Duration {
+        let Some(modified) = modified else {
+            return self.slow_retry;
+        };
+        self.wait(modified, now).unwrap_or(if stale < self.retries {
+            self.retry
+        } else {
+            self.slow_retry
+        })
+    }
 }
 
 /// What runs when: every job with the moment it is due.
@@ -51,9 +133,14 @@ struct Schedule {
 }
 
 impl Schedule {
-    /// The update check and the last login of every `ids`, all due `now`.
+    /// The update check, the day counts, the system kills and the last login
+    /// of every `ids`, all due `now`.
     fn new(ids: &[i64], now: Instant) -> Self {
-        let mut jobs = vec![(Job::UpdateCheck, now)];
+        let mut jobs = vec![
+            (Job::UpdateCheck, now),
+            (Job::DayCounts, now),
+            (Job::SystemKills, now),
+        ];
         jobs.extend(ids.iter().map(|id| (Job::LastLogon(*id), now)));
         Self { jobs }
     }
@@ -105,16 +192,29 @@ struct Housekeeping {
     announced: Option<String>,
     /// The last update check failed (so a streak of failures warns once).
     update_failing: bool,
+    /// The source that fills in the day counts and keeps the hourly kills.
+    zkillboard: ZKillboardHandle,
+    /// When the hourly kills are asked for.
+    kills_policy: SystemKillsPolicy,
+    /// How many times in a row ESI answered with the hour already known.
+    kills_stale: u32,
+    /// The last read of the hourly kills failed (so a streak warns once).
+    kills_failing: bool,
+    /// The characters' locations and the stargates, for the plan.
+    alarm: Arc<AlarmShared>,
 }
 
 impl Housekeeping {
     /// Runs the schedule until every sender of `receiver` is gone.
     async fn run(mut self, mut receiver: mpsc::Receiver<CharacterSync>) {
+        let alarm = Arc::clone(&self.alarm);
         loop {
             for job in self.schedule.due(Instant::now()) {
                 let delay = match job {
                     Job::LastLogon(id) => self.check_last_logon(id).await,
                     Job::UpdateCheck => self.check_update().await,
+                    Job::DayCounts => self.plan_day_counts(),
+                    Job::SystemKills => self.check_system_kills().await,
                 };
                 self.schedule.reschedule(job, Instant::now() + delay);
             }
@@ -132,6 +232,11 @@ impl Housekeeping {
                     if !self.schedule.apply_sync(message, Instant::now()) {
                         return;
                     }
+                }
+                () = alarm.moved.notified() => {
+                    // A character changed system: its new surroundings are
+                    // planned now, not at the next round.
+                    self.schedule.reschedule(Job::DayCounts, Instant::now());
                 }
                 () = sleep_until(wake) => {}
             }
@@ -162,6 +267,79 @@ impl Housekeeping {
             }
         }
         LAST_LOGON_INTERVAL
+    }
+
+    /// Tells the zKillboard source which systems to fill in the kills of the
+    /// last day of, and in which order. Returns when to do it again: soon
+    /// when the stargates are not loaded yet, otherwise when the first count
+    /// of the plan comes due (or in a few minutes, if that is later).
+    fn plan_day_counts(&self) -> Duration {
+        let settings = self.zkillboard.prefetch_settings();
+        let origins = self
+            .alarm
+            .locations
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let jumps = self
+            .alarm
+            .jumps
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if jumps.is_empty() {
+            return settings.retry_every;
+        }
+        self.zkillboard.prefetch_days(&jumps, &origins);
+        self.zkillboard.day_replan_in()
+    }
+
+    /// Reads the kills of the last hour of every system from ESI and hands
+    /// them to the zKillboard source, which shows them in the heat until its
+    /// own killmails make up for them. Nothing is asked while no map shows
+    /// the heat, nor while the answer kept is still the current hour.
+    /// Returns when to look again.
+    async fn check_system_kills(&mut self) -> Duration {
+        // The feed gives the whole hour by itself: ESI is asked only for what
+        // is lagging, that is, when it does not (it starts, fails or is off).
+        if !self.zkillboard.heat_wanted() || self.zkillboard.covers_the_hour() {
+            return self.kills_policy.idle;
+        }
+        let now = Utc::now();
+        if let Some(wait) = self
+            .zkillboard
+            .hour_modified()
+            .and_then(|modified| self.kills_policy.wait(modified, now))
+        {
+            // The heat may be switched off and on again meanwhile: look at
+            // least that often.
+            return wait.min(self.kills_policy.slow_retry);
+        }
+        match self.esi.get_system_kills().await {
+            Ok(hour) => {
+                let fresh = self.zkillboard.record_hour(&hour);
+                self.kills_stale = if fresh {
+                    0
+                } else {
+                    self.kills_stale.saturating_add(1)
+                };
+                self.kills_failing = false;
+                tracing::debug!(
+                    fresh,
+                    systems = hour.systems.len(),
+                    "hourly kills read from ESI"
+                );
+                self.kills_policy
+                    .after_answer(hour.modified, Utc::now(), self.kills_stale)
+                    .min(self.kills_policy.slow_retry.max(self.kills_policy.retry))
+            }
+            Err(error) => {
+                if !self.kills_failing {
+                    tracing::warn!(%error, "could not read the kills of the last hour from ESI");
+                }
+                self.kills_failing = true;
+                self.kills_policy.slow_retry
+            }
+        }
     }
 
     /// Looks for a new Telescope release. Returns when to check again.
@@ -217,6 +395,11 @@ impl TelescopeApp {
             reported: HashMap::new(),
             announced: None,
             update_failing: false,
+            zkillboard: self.intel_zkillboard.clone(),
+            kills_policy: SystemKillsPolicy::default(),
+            kills_stale: 0,
+            kills_failing: false,
+            alarm: Arc::clone(&self.alarm_shared),
         };
         let spawned = thread::Builder::new()
             .name(String::from("housekeeping"))
@@ -293,7 +476,13 @@ mod tests {
         let schedule = Schedule::new(&[1, 2], now);
         assert_eq!(
             jobs(&schedule, now),
-            vec![Job::UpdateCheck, Job::LastLogon(1), Job::LastLogon(2)]
+            vec![
+                Job::UpdateCheck,
+                Job::DayCounts,
+                Job::SystemKills,
+                Job::LastLogon(1),
+                Job::LastLogon(2)
+            ]
         );
     }
 
@@ -302,10 +491,18 @@ mod tests {
         let now = Instant::now();
         let mut schedule = Schedule::new(&[1], now);
         schedule.reschedule(Job::LastLogon(1), now + LAST_LOGON_INTERVAL);
-        assert_eq!(jobs(&schedule, now), vec![Job::UpdateCheck]);
+        assert_eq!(
+            jobs(&schedule, now),
+            vec![Job::UpdateCheck, Job::DayCounts, Job::SystemKills]
+        );
         assert_eq!(
             jobs(&schedule, now + LAST_LOGON_INTERVAL),
-            vec![Job::UpdateCheck, Job::LastLogon(1)]
+            vec![
+                Job::UpdateCheck,
+                Job::DayCounts,
+                Job::SystemKills,
+                Job::LastLogon(1)
+            ]
         );
     }
 
@@ -314,6 +511,8 @@ mod tests {
         let now = Instant::now();
         let mut schedule = Schedule::new(&[1], now);
         schedule.reschedule(Job::UpdateCheck, now + UPDATE_INTERVAL);
+        schedule.reschedule(Job::DayCounts, now + UPDATE_INTERVAL);
+        schedule.reschedule(Job::SystemKills, now + UPDATE_INTERVAL);
         schedule.reschedule(Job::LastLogon(1), now + TOKEN_RETRY);
         assert_eq!(schedule.next_due(), Some(now + TOKEN_RETRY));
     }
@@ -337,8 +536,43 @@ mod tests {
         assert!(schedule.apply_sync(Some(CharacterSync::Remove(1)), now));
         assert_eq!(
             jobs(&schedule, now),
-            vec![Job::UpdateCheck, Job::LastLogon(2)]
+            vec![
+                Job::UpdateCheck,
+                Job::DayCounts,
+                Job::SystemKills,
+                Job::LastLogon(2)
+            ]
         );
+    }
+
+    #[test]
+    fn the_next_hourly_answer_is_asked_an_hour_and_a_margin_after_the_last() {
+        let policy = SystemKillsPolicy::default();
+        let now = Utc::now();
+        assert_eq!(
+            policy.wait(now - TimeDelta::minutes(10), now),
+            Some(Duration::from_secs(50 * 60 + 90))
+        );
+        // An answer older than that has a successor waiting.
+        assert_eq!(policy.wait(now - TimeDelta::minutes(62), now), None);
+    }
+
+    #[test]
+    fn an_old_answer_is_asked_again_soon_and_then_slowly() {
+        let policy = SystemKillsPolicy::default();
+        let now = Utc::now();
+        let old = Some(now - TimeDelta::hours(2));
+        assert_eq!(policy.after_answer(old, now, 0), policy.retry);
+        assert_eq!(
+            policy.after_answer(old, now, policy.retries - 1),
+            policy.retry
+        );
+        assert_eq!(
+            policy.after_answer(old, now, policy.retries),
+            policy.slow_retry
+        );
+        // Without a date there is nothing to count from.
+        assert_eq!(policy.after_answer(None, now, 0), policy.slow_retry);
     }
 
     #[test]

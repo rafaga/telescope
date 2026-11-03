@@ -93,7 +93,9 @@ fn pump(app: &mut TelescopeApp) {
 }
 
 fn logged(app: &TelescopeApp, needle: &str) -> bool {
-    app.app_messages.iter().any(|job| job.text.contains(needle))
+    app.app_messages
+        .iter()
+        .any(|line| line.job.text.contains(needle))
 }
 
 fn character(id: i64, name: &str) -> webb::objects::Character {

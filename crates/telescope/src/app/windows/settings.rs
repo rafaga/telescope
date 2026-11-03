@@ -20,6 +20,7 @@ use eframe::egui;
 use egui_ltreeview::{Action as TreeAction, IndentHintStyle, NodeBuilder, TreeView, TreeViewState};
 use egui_panels::{Action, ActionBar, SettingsLayout, StatusKind};
 use native_tools::dialog::{Dialog, DialogResult, DialogType, FileFilter};
+use native_tools::window::OwnWindow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,8 +50,17 @@ pub(crate) struct SettingsUi {
     db_text: Option<String>,
     /// The same for the SDE database path (Application).
     sde_text: Option<String>,
-    /// The window file dialogs belong to (see `Dialog::set_owner`).
+    /// The app's window, which the file dialogs belong to while the Settings
+    /// window is not open (see `Dialog::set_owner`).
     window_owner: Option<isize>,
+    /// The title the Settings window was last given, which finds it natively
+    /// (see [`OwnWindow`]); `None` while it is closed.
+    window_title: Option<String>,
+    /// Where the Settings window opens, fixed when it does so that it stays
+    /// where the user puts it.
+    window_place: Option<egui::Pos2>,
+    /// The Settings window has to come to the front.
+    to_front: bool,
     /// Which groups of the navigation tree are open, and what is selected.
     nav_tree: TreeViewState<NavNode>,
 }
@@ -164,6 +174,28 @@ impl SettingsUi {
         self.window_owner = owner;
     }
 
+    /// Asks for the Settings window to come to the front (Preferences was
+    /// chosen again while it was open).
+    pub(crate) fn bring_to_front(&mut self) {
+        self.to_front = true;
+    }
+
+    /// The window the file dialogs belong to: the Settings window while it
+    /// is open, else the app's.
+    fn dialog_owner(&self) -> Option<isize> {
+        self.window_title
+            .as_deref()
+            .and_then(OwnWindow::id_by_title)
+            .or(self.window_owner)
+    }
+
+    /// Forgets the Settings window: it was closed.
+    fn window_closed(&mut self) {
+        self.window_title = None;
+        self.window_place = None;
+        self.to_front = false;
+    }
+
     /// The errors of `graph` (see [`RuleGraph::validate`]).
     fn validation_errors(&mut self, graph: &RuleGraph) -> &[String] {
         let stale = self
@@ -185,6 +217,44 @@ impl SettingsUi {
 }
 
 impl TelescopeApp {
+    /// Draws the Settings screen in a window of its own, over the app's,
+    /// while it is open. The app keeps running behind it. The window lives as
+    /// long as this is called every frame, so Accept and Cancel close it by
+    /// closing the screen (`open[2]`); its close button is Cancel. It opens
+    /// centered over the app's window and stays where the user puts it.
+    pub(crate) fn show_settings_window(&mut self, ctx: &egui::Context) {
+        if !self.open[2] {
+            self.settings_ui.window_closed();
+            return;
+        }
+        let id = egui::ViewportId::from_hash_of("telescope.settings");
+        let title = t!("settings.title").into_owned();
+        let size = egui::vec2(960.0, 680.0);
+        let place = *self.settings_ui.window_place.get_or_insert_with(|| {
+            ctx.input(|input| input.viewport().outer_rect)
+                .map_or(egui::pos2(80.0, 80.0), |app| {
+                    let corner = app.center() - size / 2.0;
+                    egui::pos2(corner.x.max(0.0), corner.y.max(0.0))
+                })
+        });
+        self.settings_ui.window_title = Some(title.clone());
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_inner_size(size)
+            .with_min_inner_size([640.0, 420.0])
+            .with_position(place);
+        if std::mem::take(&mut self.settings_ui.to_front) {
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+        }
+        let closing = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            self.show_settings_screen(ui);
+            ui.input(|input| input.viewport().close_requested())
+        });
+        if closing && self.open[2] {
+            self.cancel_settings();
+        }
+    }
+
     /// Draws the Settings screen over the whole window.
     #[tracing::instrument(skip(self, ui))]
     pub(crate) fn show_settings_screen(&mut self, ui: &mut egui::Ui) {
@@ -438,7 +508,7 @@ impl TelescopeApp {
         if let Some(directory) = directory {
             dialog.set_directory(directory);
         }
-        if let Some(owner) = self.settings_ui.window_owner {
+        if let Some(owner) = self.settings_ui.dialog_owner() {
             dialog.set_owner(owner);
         }
         let task_msg = Arc::clone(&self.task_msg);

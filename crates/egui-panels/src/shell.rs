@@ -79,15 +79,49 @@ impl SettingsLayout {
         selected: &mut T,
         show_page: impl FnOnce(&mut Ui, &T),
     ) -> Option<Action> {
+        self.draw(ui, show_nav, Some(bar), selected, show_page)
+    }
+
+    /// Like [`Self::show`] for a screen with nothing to apply (a debug
+    /// window, a viewer): the navigation at the left and the selected page
+    /// in the rest of `ui`, without an action bar.
+    pub fn show_tabs<T: PartialEq + Clone>(
+        self,
+        ui: &mut Ui,
+        nav: SideNav<'_, T>,
+        selected: &mut T,
+        show_page: impl FnOnce(&mut Ui, &T),
+    ) {
+        self.draw(
+            ui,
+            |ui, selected| {
+                nav.show(ui, selected);
+            },
+            None,
+            selected,
+            show_page,
+        );
+    }
+
+    fn draw<T>(
+        self,
+        ui: &mut Ui,
+        show_nav: impl FnOnce(&mut Ui, &mut T),
+        bar: Option<ActionBar<'_>>,
+        selected: &mut T,
+        show_page: impl FnOnce(&mut Ui, &T),
+    ) -> Option<Action> {
         let theme = Theme::get(ui.ctx());
         let palette = theme.palette(ui.visuals());
         let side_frame = Frame::new()
             .fill(palette.nav_fill)
             .inner_margin(Margin::symmetric(10, 16));
-        let action = Panel::bottom(self.id.with("bar"))
-            .frame(side_frame.inner_margin(Margin::symmetric(20, 6)))
-            .show(ui, |ui| bar.show(ui))
-            .inner;
+        let action = bar.and_then(|bar| {
+            Panel::bottom(self.id.with("bar"))
+                .frame(side_frame.inner_margin(Margin::symmetric(20, 6)))
+                .show(ui, |ui| bar.show(ui))
+                .inner
+        });
         Panel::left(self.id.with("nav"))
             .resizable(false)
             .exact_size(theme.nav_width.min((ui.available_width() * 0.3).max(140.0)))

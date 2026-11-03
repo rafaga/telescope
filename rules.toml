@@ -58,6 +58,7 @@ mode = "require"
 [nodes.kind.kind]
 type = "ship_names"
 dictionaries = ["ship_report_en", "ship_report_es", "ship_report_fr", "ship_report_ja", "ship_report_ko"]
+sum_quantities = true
 
 [[nodes]]
 id = "log"
@@ -73,7 +74,7 @@ kind = "log"
 emojis = true
 
 [nodes.kind.log]
-use_current_time = false
+use_current_time = true
 
 [[nodes]]
 id = "log_in"
@@ -120,8 +121,8 @@ use_current_time = false
 [[nodes]]
 id = "tooltip"
 enabled = true
-x = 1165.6782
-y = 177.98749
+x = 1164.3561
+y = 152.2009
 
 [nodes.kind]
 node = "output"
@@ -292,6 +293,7 @@ mode = "require"
 [nodes.kind.kind]
 type = "ship_names"
 dictionaries = ["ship_report_en", "ship_report_es", "ship_report_fr", "ship_report_ja", "ship_report_ko"]
+sum_quantities = false
 
 [[nodes]]
 id = "aggregator_1"
