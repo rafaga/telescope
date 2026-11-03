@@ -21,8 +21,8 @@
 //! A guard without a store works the same, only forgetting at the end of the
 //! run.
 
-use chrono::{DateTime, TimeDelta, Utc};
 use crate::stats::{LaneStats, StatsConfig};
+use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

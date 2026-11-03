@@ -36,7 +36,7 @@
 //!   before the hour read back at the start). The query API has a lane and a
 //!   guard of its own ([`kill_day`]).
 //! * A blank `User-Agent` is blocked, and a throttled or blocked client gets
-//!   a 403/429: it backs off for a long while ([`RequestGuard`]), and
+//!   a 403/429: it backs off for a long while ([`zkill::guard::RequestGuard`]), and
 //!   remembers it across restarts.
 //!
 //! What was already in the feed when the source starts is history, as with
@@ -60,13 +60,12 @@ use super::input::InputEvent;
 use super::kill_context::{Fill, KillBuffer, KillContext, KillRecord, KillTags, Source, WINDOW};
 use super::kill_day::{self, DayCache, DayLine, Fetched, Prefetch, ZKillApi};
 use super::resolve::JumpGraph;
-use super::zkill_guard::{GuardConfig, GuardStore, RequestGuard};
+use super::zkill_guard::GuardStore;
 use crate::app::messages::{Message, Type, try_send_app_message};
 use crate::app::settings::ZKillboardOptions;
 use chrono::{DateTime, TimeDelta, Utc};
-use reqwest::{Client, Response, StatusCode};
-use serde::Deserialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use sde::SdeManager;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -77,47 +76,8 @@ use webb::event::{EventSource, Facts, IntelEvent, ShipCount, SystemFact, TimeOri
 use webb::graph::{NodeKind, RuleGraph, SystemResolver};
 use webb::rules::{InputKind, IntelLine};
 use zkill::guard::{Endpoint, Guards};
-use zkill::lane::{Job, LaneConfig, Priority};
+use zkill::lane::{LaneConfig, Priority};
 use zkill::queue::LaneQueue;
-
-/// Where the R2Z2 files are served from.
-pub(crate) const FEED_URL: &str = "https://r2z2.zkillboard.com/ephemeral";
-
-/// The `User-Agent` of every request. zKillboard's CDN blocks a blank one;
-/// this one says who is asking.
-pub(super) const USER_AGENT: &str = concat!(
-    "telescope/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/rafaga/telescope)"
-);
-
-/// How long a whole request may take before it is given up as failed.
-pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Wait after reaching the end of the feed: killmails average one every 5.5
-/// seconds, so asking sooner buys nothing, and 6 seconds is what the feed's
-/// documentation asks for after a 404.
-pub(crate) const POLL_WAIT: Duration = Duration::from_secs(6);
-
-/// Longest wait between two attempts while the feed can't be reached.
-const MAX_BACKOFF: Duration = Duration::from_secs(60);
-
-/// How long the feed may stay unreachable before the walk starts over at the
-/// end of the feed: what was published meanwhile is too old to be intel.
-const RESYNC_AFTER: Duration = Duration::from_secs(2 * 60);
-
-/// How many files of the feed hold about an hour of killmails (one every five
-/// and a half seconds on average): the ones before the walk starts are read
-/// to fill the buffer the node tooltips set the reports against.
-const BACKFILL_FILES: u64 = 700;
-
-/// Files of that hour read per round, so the live walk is not kept waiting.
-const BACKFILL_CHUNK: u64 = 20;
-
-/// How many killmail ids are remembered to announce a killmail only once
-/// (zKillboard may publish a reprocessed killmail again under a new
-/// sequence number).
-const RECENT_IDS: usize = 4096;
 
 /// The most attackers whose ship is named in a line.
 const MAX_LISTED_ATTACKERS: usize = 8;
@@ -125,6 +85,9 @@ const MAX_LISTED_ATTACKERS: usize = 8;
 /// Author of the lines made from killmails.
 const AUTHOR: &str = "zKillboard";
 
+pub(crate) use zkill::feed::{
+    Backfill, Backoff, FeedConfig, FeedCursor, FeedSlots, R2z2Client, Step,
+};
 pub(crate) use zkill::types::{Attacker, FeedError, Killmail};
 
 /// What Telescope makes of a [`Killmail`]: lines for the detections, records
@@ -337,8 +300,8 @@ pub(crate) trait NameSource {
     fn type_name(&self, id: u32) -> Option<String>;
 }
 
-/// [`NameSource`] backed by the SDE database (`mapSolarSystems` and
-/// `invTypes`), read lazily and kept in memory.
+/// [`NameSource`] backed by the SDE database (system and type names, asked
+/// of the `sde` crate), read lazily and kept in memory.
 ///
 /// The database is opened only for a name that isn't known yet and closed
 /// right after: the SDE updater replaces the file while Telescope runs, and
@@ -358,10 +321,6 @@ struct NameCache {
 }
 
 impl SdeNames {
-    const SYSTEM_SQL: &'static str =
-        "SELECT solarSystemName FROM mapSolarSystems WHERE solarSystemId = ?1";
-    const TYPE_SQL: &'static str = "SELECT typeName FROM invTypes WHERE typeId = ?1";
-
     fn new(path: Arc<RwLock<PathBuf>>) -> Self {
         Self {
             path,
@@ -369,25 +328,25 @@ impl SdeNames {
         }
     }
 
-    /// Runs `sql` (one `?1` parameter, one text column) on the database at
-    /// `path`, opened read-only. `None` if it can't be opened, has no such
-    /// table or has no such row.
-    fn query(path: &Path, sql: &str, id: u32) -> Option<String> {
-        let connection = rusqlite::Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .ok()?;
-        connection.query_row(sql, [id], |row| row.get(0)).ok()
+    /// Asks the `sde` crate, through the database at `path`, what `read`
+    /// asks of it. `None` if the database can't be opened, has no such table
+    /// or has no such row.
+    fn query(
+        path: &Path,
+        id: u32,
+        read: impl Fn(&SdeManager<'_>, u32) -> Option<String>,
+    ) -> Option<String> {
+        let manager = SdeManager::new(path, 1.0).ok()?;
+        read(&manager, id)
     }
 
-    /// The cached name for `id`, looked up with `sql` when it isn't there.
-    /// `table` picks the cache table of the [`NameCache`].
+    /// The cached name for `id`, asked of the SDE with `read` when it isn't
+    /// there. `table` picks the cache table of the [`NameCache`].
     fn lookup(
         &self,
         id: u32,
-        sql: &str,
         table: impl Fn(&mut NameCache) -> &mut HashMap<u32, String>,
+        read: impl Fn(&SdeManager<'_>, u32) -> Option<String>,
     ) -> Option<String> {
         let path = self
             .path
@@ -408,7 +367,7 @@ impl SdeNames {
         if let Some(name) = table(&mut cache).get(&id) {
             return Some(name.clone());
         }
-        let name = Self::query(&path, sql, id)?;
+        let name = Self::query(&path, id, read)?;
         table(&mut cache).insert(id, name.clone());
         Some(name)
     }
@@ -419,514 +378,44 @@ struct SdeRegions;
 
 impl SdeRegions {
     /// The systems that share a region with any of `systems`, `systems`
-    /// included. Empty if the database can't be read.
-    fn systems_with(path: &Path, systems: &[u32]) -> HashSet<u32> {
-        if systems.is_empty() {
-            return HashSet::new();
-        }
-        let marks = vec!["?"; systems.len()].join(",");
-        let sql = format!(
-            "SELECT s.solarSystemId FROM mapSolarSystems s \
-             JOIN mapConstellations c USING (constellationId) \
-             WHERE c.regionId IN (SELECT c2.regionId FROM mapSolarSystems s2 \
-             JOIN mapConstellations c2 USING (constellationId) \
-             WHERE s2.solarSystemId IN ({marks}))"
-        );
-        let Ok(connection) = rusqlite::Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) else {
-            return HashSet::new();
-        };
-        let Ok(mut statement) = connection.prepare(&sql) else {
-            return HashSet::new();
-        };
-        let Ok(rows) = statement.query_map(rusqlite::params_from_iter(systems), |row| {
-            row.get::<_, u32>(0)
-        }) else {
-            return HashSet::new();
-        };
-        rows.flatten().collect()
+    /// included, given the region of every system (see [`Self::layout`]).
+    fn systems_with(layout: &HashMap<u32, u32>, systems: &[u32]) -> HashSet<u32> {
+        let regions: HashSet<u32> = systems
+            .iter()
+            .filter_map(|system| layout.get(system).copied())
+            .collect();
+        layout
+            .iter()
+            .filter(|(_, region)| regions.contains(region))
+            .map(|(&system, _)| system)
+            .collect()
     }
 
-    /// The region of every system. Empty if the database can't be read.
+    /// The region of every system, from the `sde` crate. Empty if the
+    /// database can't be read.
     fn layout(path: &Path) -> HashMap<u32, u32> {
-        let Ok(connection) = rusqlite::Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) else {
-            return HashMap::new();
-        };
-        let Ok(mut statement) = connection.prepare(
-            "SELECT s.solarSystemId, c.regionId FROM mapSolarSystems s \
-             JOIN mapConstellations c USING (constellationId)",
-        ) else {
-            return HashMap::new();
-        };
-        let Ok(rows) =
-            statement.query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)))
-        else {
-            return HashMap::new();
-        };
-        rows.flatten().collect()
+        SdeManager::new(path, 1.0)
+            .ok()
+            .and_then(|manager| manager.get_system_regions().ok())
+            .unwrap_or_default()
     }
 }
 
 impl NameSource for SdeNames {
     fn system_name(&self, id: u32) -> Option<String> {
-        self.lookup(id, Self::SYSTEM_SQL, |cache| &mut cache.systems)
+        self.lookup(
+            id,
+            |cache| &mut cache.systems,
+            |manager, id| manager.get_system_names(vec![id]).ok()?.remove(&id),
+        )
     }
 
     fn type_name(&self, id: u32) -> Option<String> {
-        self.lookup(id, Self::TYPE_SQL, |cache| &mut cache.types)
-    }
-}
-
-/// The two reads the walk needs from the feed.
-pub(crate) trait Feed {
-    /// The latest sequence number published (`sequence.json`).
-    async fn pointer(&self) -> Result<u64, FeedError>;
-    /// The killmail with this sequence number; `None` when there isn't one
-    /// (yet).
-    async fn entry(&self, sequence: u64) -> Result<Option<Killmail>, FeedError>;
-}
-
-/// Where the requests to the feed wait for their turn: the R2Z2 lane, which
-/// is the only thing that spaces them.
-#[derive(Clone)]
-pub(crate) struct FeedSlots {
-    lane: Arc<LaneQueue<()>>,
-    /// How much the requests made through these slots matter.
-    priority: Priority,
-    /// Tells the requests apart (the lane merges the ones with the same key).
-    next_key: Arc<AtomicU64>,
-}
-
-impl FeedSlots {
-    /// Slots in `lane`, for the requests somebody is waiting for.
-    pub(crate) fn new(lane: Arc<LaneQueue<()>>) -> Self {
-        Self {
-            lane,
-            priority: Priority::Interactive,
-            next_key: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    /// The same lane for requests of `priority`.
-    pub(crate) fn with_priority(&self, priority: Priority) -> Self {
-        Self {
-            priority,
-            ..self.clone()
-        }
-    }
-
-    /// Waits for the turn of a request.
-    async fn wait(&self) {
-        let key = self.next_key.fetch_add(1, Ordering::Relaxed);
-        self.lane.submit(Job::new(key, (), self.priority));
-        self.lane.next().await;
-    }
-}
-
-impl Default for FeedSlots {
-    /// A lane with no pace at all.
-    fn default() -> Self {
-        Self::new(Arc::new(LaneQueue::new(LaneConfig {
-            min_interval: Duration::ZERO,
-            background_interval: Duration::ZERO,
-            reserve_every: 1,
-            low_every: 0,
-        })))
-    }
-}
-
-/// The R2Z2 feed over HTTPS.
-pub(crate) struct R2z2Client {
-    client: Client,
-    base: String,
-    /// Keeps the requests away from zKillboard while it asked for it.
-    guard: Arc<RequestGuard>,
-    /// Where each request waits for its turn.
-    slots: FeedSlots,
-}
-
-impl R2z2Client {
-    pub(crate) fn new() -> Result<Self, reqwest::Error> {
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
-        Ok(Self {
-            client,
-            base: String::from(FEED_URL),
-            guard: Arc::new(RequestGuard::new(GuardConfig::default())),
-            slots: FeedSlots::default(),
-        })
-    }
-
-    /// The same client, taking its turns in `slots`.
-    pub(crate) fn with_slots(mut self, slots: FeedSlots) -> Self {
-        self.slots = slots;
-        self
-    }
-
-    /// The same client for requests of `priority`: the live walk is
-    /// interactive, the hour read back when the feed starts is not.
-    pub(crate) fn with_priority(&self, priority: Priority) -> Self {
-        Self {
-            client: self.client.clone(),
-            base: self.base.clone(),
-            guard: Arc::clone(&self.guard),
-            slots: self.slots.with_priority(priority),
-        }
-    }
-
-    /// The same client, asking only when `guard` lets it (the one every
-    /// request to zKillboard shares).
-    pub(crate) fn with_guard(mut self, guard: Arc<RequestGuard>) -> Self {
-        self.guard = guard;
-        self
-    }
-
-    /// `path` of the feed, or `None` for a 404.
-    async fn get(&self, path: &str) -> Result<Option<Response>, FeedError> {
-        // The lane sets the pace between requests, and what the others (the
-        // hour read back) leave free is for the live walk.
-        self.slots.wait().await;
-        // Never closer to the previous request, whoever made it, than the
-        // guard says: the limit is per address, not per source.
-        tokio::time::sleep(self.guard.pace(Utc::now())).await;
-        // While zKillboard asked to be left alone, nothing is sent.
-        if let Some(error) = FeedError::kept_away(&self.guard) {
-            return Err(error);
-        }
-        self.guard.requested(Utc::now());
-        let response = self
-            .client
-            .get(format!("{}/{path}", self.base))
-            .send()
-            .await
-            .map_err(|error| {
-                self.guard.failed(Utc::now());
-                FeedError::Other(error.to_string())
-            })?;
-        match response.status() {
-            StatusCode::NOT_FOUND => {
-                self.guard.succeeded(Utc::now());
-                Ok(None)
-            }
-            status if status.is_success() => {
-                self.guard.succeeded(Utc::now());
-                Ok(Some(response))
-            }
-            status @ (StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) => {
-                tracing::warn!(
-                    %status,
-                    base = %self.base,
-                    path,
-                    retry_after = ?response.headers().get(reqwest::header::RETRY_AFTER),
-                    sent = self.guard.sent(),
-                    "zKillboard refused a feed request"
-                );
-                self.guard
-                    .throttled_for(Utc::now(), RequestGuard::retry_after(response.headers()));
-                Err(FeedError::Throttled(status))
-            }
-            status => {
-                self.guard.failed(Utc::now());
-                Err(FeedError::Other(format!("the feed answered {status}")))
-            }
-        }
-    }
-}
-
-impl Feed for R2z2Client {
-    async fn pointer(&self) -> Result<u64, FeedError> {
-        #[derive(Deserialize)]
-        struct Pointer {
-            sequence: u64,
-        }
-        let response = self
-            .get("sequence.json")
-            .await?
-            .ok_or_else(|| FeedError::Other(String::from("sequence.json is missing")))?;
-        let pointer: Pointer = response
-            .json()
-            .await
-            .map_err(|error| FeedError::Other(format!("unreadable sequence.json: {error}")))?;
-        Ok(pointer.sequence)
-    }
-
-    async fn entry(&self, sequence: u64) -> Result<Option<Killmail>, FeedError> {
-        let Some(response) = self.get(&format!("{sequence}.json")).await? else {
-            return Ok(None);
-        };
-        let unreadable = |error: &dyn std::fmt::Display| {
-            FeedError::Other(format!("unreadable killmail {sequence}: {error}"))
-        };
-        let text = response.text().await.map_err(|error| unreadable(&error))?;
-        let mut killmail: Killmail =
-            serde_json::from_str(&text).map_err(|error| unreadable(&error))?;
-        killmail.raw = Some(text);
-        Ok(Some(killmail))
-    }
-}
-
-/// The killmail ids announced lately, oldest forgotten first.
-#[derive(Default)]
-struct RecentIds {
-    order: VecDeque<u64>,
-    known: HashSet<u64>,
-}
-
-impl RecentIds {
-    /// Remembers `id`; `false` if it was already remembered.
-    fn insert(&mut self, id: u64) -> bool {
-        if !self.known.insert(id) {
-            return false;
-        }
-        self.order.push_back(id);
-        if self.order.len() > RECENT_IDS
-            && let Some(oldest) = self.order.pop_front()
-        {
-            self.known.remove(&oldest);
-        }
-        true
-    }
-}
-
-/// How a round of [`FeedCursor::advance`] ended.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Step {
-    /// Everything published so far was read; ask again after a while.
-    Waiting,
-    /// The feed could not be read; the same position is tried again later.
-    Failed(FeedError),
-    /// Whoever listens to the killmails is gone: stop.
-    Closed,
-}
-
-/// Where the walk through the feed is.
-pub(crate) struct FeedCursor {
-    /// The next sequence number to read; `None` until the first read of
-    /// `sequence.json` (and again after [`Self::resync`]).
-    next: Option<u64>,
-    /// Whether the end of the feed was reached since the walk (re)started.
-    /// Until then the killmails read are history: remembered, not announced.
-    caught_up: bool,
-    recent: RecentIds,
-    /// Pause between two files read back to back.
-    pace: Duration,
-    /// The latest number `sequence.json` has given. It is refreshed only
-    /// every 51 killmails, so it can be behind the real end of the feed.
-    latest: Option<u64>,
-    /// Holes in the series skipped so far.
-    holes: u64,
-    /// Where the walk started: the pointer it began at.
-    origin: Option<u64>,
-    /// The killmails read on the way to the end of the feed, which are
-    /// history and are not announced. See [`Self::take_history`].
-    history: Vec<Killmail>,
-}
-
-impl FeedCursor {
-    pub(crate) fn new(pace: Duration) -> Self {
-        Self {
-            next: None,
-            caught_up: false,
-            recent: RecentIds::default(),
-            pace,
-            latest: None,
-            holes: 0,
-            origin: None,
-            history: Vec::new(),
-        }
-    }
-
-    /// The pointer the walk started at, once known.
-    pub(crate) fn origin(&self) -> Option<u64> {
-        self.origin
-    }
-
-    /// The killmails read on the way to the end of the feed since the last
-    /// call: not announced, but the context of the tooltips wants them.
-    pub(crate) fn take_history(&mut self) -> Vec<Killmail> {
-        std::mem::take(&mut self.history)
-    }
-
-    /// The next sequence number to read, once known.
-    pub(crate) fn next(&self) -> Option<u64> {
-        self.next
-    }
-
-    /// The latest number `sequence.json` has given.
-    pub(crate) fn latest(&self) -> Option<u64> {
-        self.latest
-    }
-
-    /// Whether the end of the feed was reached since the walk (re)started.
-    pub(crate) fn is_caught_up(&self) -> bool {
-        self.caught_up
-    }
-
-    /// Holes in the series skipped so far.
-    pub(crate) fn holes(&self) -> u64 {
-        self.holes
-    }
-
-    /// Starts over at the end of the feed the next time: what was published
-    /// meanwhile is not announced. The ids already announced stay known.
-    pub(crate) fn resync(&mut self) {
-        self.next = None;
-        self.origin = None;
-        self.caught_up = false;
-    }
-
-    /// Reads every killmail available now, one after the other, and hands
-    /// the new ones to `emit` (which returns `false` when nobody listens
-    /// any more).
-    ///
-    /// A missing file ends the round, unless `sequence.json` says the feed
-    /// is already past it: then it is a hole in the series and the walk goes
-    /// on with the next number. A killmail that was announced before (the
-    /// feed republishes the ones it reprocesses) is skipped.
-    pub(crate) async fn advance<F: Feed>(
-        &mut self,
-        feed: &F,
-        emit: &mut impl FnMut(Killmail) -> bool,
-    ) -> Step {
-        let mut next = match self.next {
-            Some(next) => next,
-            None => match feed.pointer().await {
-                Ok(pointer) => {
-                    self.latest = Some(pointer);
-                    self.origin = Some(pointer);
-                    self.next = Some(pointer);
-                    self.caught_up = false;
-                    pointer
-                }
-                Err(error) => return Step::Failed(error),
-            },
-        };
-        loop {
-            match feed.entry(next).await {
-                Ok(Some(killmail)) => {
-                    next += 1;
-                    self.next = Some(next);
-                    if self.recent.insert(killmail.killmail_id) {
-                        if self.caught_up {
-                            if !emit(killmail) {
-                                return Step::Closed;
-                            }
-                        } else {
-                            self.history.push(killmail);
-                        }
-                    }
-                    if !self.pace.is_zero() {
-                        tokio::time::sleep(self.pace).await;
-                    }
-                }
-                Ok(None) => match feed.pointer().await {
-                    Ok(pointer) if pointer > next => {
-                        tracing::debug!(sequence = next, "zKillboard sequence hole skipped");
-                        self.latest = Some(pointer);
-                        self.holes += 1;
-                        next += 1;
-                        self.next = Some(next);
-                    }
-                    Ok(pointer) => {
-                        self.latest = Some(pointer);
-                        self.caught_up = true;
-                        return Step::Waiting;
-                    }
-                    Err(error) => return Step::Failed(error),
-                },
-                Err(error) => return Step::Failed(error),
-            }
-        }
-    }
-}
-
-/// The files of the feed published before the walk started, read to fill the
-/// buffer of the node tooltips with the last hour. They are read oldest
-/// first, a chunk per round of the live walk.
-struct Backfill {
-    /// The next sequence number to read.
-    next: u64,
-    /// Where it stops: the pointer the walk started at.
-    end: u64,
-    /// Where it started, to tell how far it got.
-    first: u64,
-    /// Pause between two files.
-    pace: Duration,
-}
-
-impl Backfill {
-    /// The files before `origin`, or `None` when there are none. With
-    /// `resume`, the sequence number a previous run had got to, only the
-    /// files published since then are read (the store has the rest), as long
-    /// as that is less than the hour the backfill covers anyway.
-    fn new(origin: u64, resume: Option<u64>) -> Option<Self> {
-        let hour = origin.saturating_sub(BACKFILL_FILES).max(1);
-        let first = resume.map_or(hour, |resume| resume.clamp(hour, origin));
-        (first < origin).then_some(Self {
-            next: first,
-            end: origin,
-            first,
-            pace: Duration::ZERO,
-        })
-    }
-
-    /// Reads the next chunk and hands each killmail to `sink`. `true` when
-    /// every file was read. A failed read leaves the position where it was,
-    /// to be tried again in the next round.
-    async fn step<F: Feed>(&mut self, feed: &F, sink: &mut impl FnMut(&Killmail)) -> bool {
-        for _ in 0..BACKFILL_CHUNK {
-            if self.next >= self.end {
-                break;
-            }
-            match feed.entry(self.next).await {
-                Ok(Some(killmail)) => sink(&killmail),
-                Ok(None) => {}
-                Err(_) => return false,
-            }
-            self.next += 1;
-            if !self.pace.is_zero() {
-                tokio::time::sleep(self.pace).await;
-            }
-        }
-        self.next >= self.end
-    }
-
-    /// How much of the files was read.
-    fn progress(&self) -> Fill {
-        Fill {
-            done: self.next - self.first,
-            total: self.end - self.first,
-        }
-    }
-}
-
-/// Waits between two attempts while the feed can't be reached: 6 seconds,
-/// doubling up to a minute.
-struct Backoff {
-    delay: Duration,
-}
-
-impl Backoff {
-    fn new() -> Self {
-        Self { delay: POLL_WAIT }
-    }
-
-    /// The wait before the next attempt, longer than the last one.
-    fn next(&mut self) -> Duration {
-        let delay = self.delay;
-        self.delay = (self.delay * 2).min(MAX_BACKOFF);
-        delay
-    }
-
-    fn reset(&mut self) {
-        self.delay = POLL_WAIT;
+        self.lookup(
+            id,
+            |cache| &mut cache.types,
+            |manager, id| manager.get_type_names(vec![id]).ok()?.remove(&id),
+        )
     }
 }
 
@@ -1182,7 +671,10 @@ impl Shared {
         let now = Utc::now();
         let api_stats = self.guards.get(Endpoint::Api).stats();
         let r2z2_stats = self.guards.get(Endpoint::R2z2).stats();
-        client.plot(plot_name!("zkill api requests per second"), api_stats.rate(now));
+        client.plot(
+            plot_name!("zkill api requests per second"),
+            api_stats.rate(now),
+        );
         client.plot(
             plot_name!("zkill r2z2 requests per second"),
             r2z2_stats.rate(now),
@@ -1498,8 +990,9 @@ impl ZKillboardHandle {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let region = SdeRegions::systems_with(&path, origins);
-        let neighbors = Prefetch::neighbor_systems(jumps, &SdeRegions::layout(&path), &region);
+        let layout = SdeRegions::layout(&path);
+        let region = SdeRegions::systems_with(&layout, origins);
+        let neighbors = Prefetch::neighbor_systems(jumps, &layout, &region);
         let plan = self.0.prefetch.plan(jumps, origins, &region, &neighbors);
         let jobs = self
             .0
@@ -1845,7 +1338,8 @@ struct Session {
 impl Session {
     /// The source's life: idle while switched off, walking the feed while on.
     async fn run(self) {
-        let client = match R2z2Client::new() {
+        let feed = FeedConfig::default();
+        let client = match R2z2Client::new(&feed) {
             Ok(client) => client.with_guard(Arc::clone(self.shared.guards.get(Endpoint::R2z2))),
             Err(error) => {
                 self.report(Type::Error, &format!("could not start: {error}"));
@@ -1855,8 +1349,8 @@ impl Session {
         let client = client.with_slots(FeedSlots::new(Arc::clone(&self.shared.r2z2_lane)));
         // The hour read back when the feed starts waits behind the live walk.
         let history_client = client.with_priority(Priority::Normal);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        let mut backoff = Backoff::new();
+        let mut cursor = FeedCursor::new(Duration::ZERO, &feed);
+        let mut backoff = Backoff::new(&feed);
         let mut failing_since: Option<Instant> = None;
         let mut reported = false;
         let mut resyncs = 0_u64;
@@ -1915,11 +1409,12 @@ impl Session {
                         status.state = FeedState::Live;
                         status.last_error = None;
                     });
-                    POLL_WAIT
+                    feed.poll_wait
                 }
                 Step::Closed => return,
                 Step::Failed(error) => {
-                    if failing_since.get_or_insert_with(Instant::now).elapsed() > RESYNC_AFTER {
+                    if failing_since.get_or_insert_with(Instant::now).elapsed() > feed.resync_after
+                    {
                         resyncs += 1;
                         cursor.resync();
                     }
@@ -1927,7 +1422,7 @@ impl Session {
                         FeedError::Throttled(_) | FeedError::Paused => {
                             self.shared.pause_after_throttle(Endpoint::R2z2)
                         }
-                        FeedError::Other(_) => backoff.next(),
+                        FeedError::Other(_) => backoff.next_wait(),
                     };
                     self.update(|status| {
                         status.state = FeedState::Failing;
@@ -1960,13 +1455,19 @@ impl Session {
                 backfilled = true;
                 backfill = cursor
                     .origin()
-                    .and_then(|origin| Backfill::new(origin, resume));
+                    .and_then(|origin| Backfill::new(origin, resume, &feed));
             }
             if let Some(files) = backfill.as_mut() {
                 let finished = files
                     .step(&history_client, &mut |killmail| self.record(killmail))
                     .await;
-                let progress = (!finished).then(|| files.progress());
+                let progress = (!finished).then(|| {
+                    let read = files.progress();
+                    Fill {
+                        done: read.done,
+                        total: read.total,
+                    }
+                });
                 self.shared.buffer().set_fill(progress);
                 if finished {
                     backfill = None;
@@ -2102,13 +1603,10 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
     use webb::esi::SystemHourKills;
     use webb::graph::Executor;
     use webb::rules::parse_line;
-    use zkill::types::{EsiKillmail, Victim, Zkb};
+    use zkill::types::Zkb;
 
     /// Samples for the heat tests.
     struct Sample;
@@ -2311,91 +1809,6 @@ mod tests {
 
         fn sample() -> Killmail {
             serde_json::from_str(SAMPLE).unwrap()
-        }
-
-        /// A killmail with this id and sequence, in system 30000142.
-        fn kill(sequence: u64, id: u64) -> Killmail {
-            Killmail {
-                killmail_id: id,
-                sequence_id: sequence,
-                esi: EsiKillmail {
-                    killmail_time: String::from("2026-10-14T05:01:05Z"),
-                    solar_system_id: 30000142,
-                    victim: Victim {
-                        ship_type_id: Some(587),
-                    },
-                    attackers: Vec::new(),
-                },
-                zkb: Zkb::default(),
-                raw: None,
-            }
-        }
-
-        /// The sequences announced by one round of the cursor.
-        async fn announced(cursor: &mut FeedCursor, feed: &FakeFeed) -> (Vec<u64>, Step) {
-            let mut sequences = Vec::new();
-            let step = cursor
-                .advance(feed, &mut |kill| {
-                    sequences.push(kill.sequence_id);
-                    true
-                })
-                .await;
-            (sequences, step)
-        }
-    }
-
-    /// A feed in memory: the killmails by sequence, the published pointer and
-    /// an error to fail with.
-    struct FakeFeed {
-        pointer: Mutex<u64>,
-        entries: Mutex<BTreeMap<u64, Killmail>>,
-        failure: Mutex<Option<FeedError>>,
-    }
-
-    impl FakeFeed {
-        /// Entries `from..=to`, each with the id of its sequence, and the
-        /// pointer at `from`.
-        fn with(from: u64, to: u64) -> Self {
-            let feed = Self {
-                pointer: Mutex::new(from),
-                entries: Mutex::new(BTreeMap::new()),
-                failure: Mutex::new(None),
-            };
-            for sequence in from..=to {
-                feed.publish(Fixture::kill(sequence, sequence));
-            }
-            feed
-        }
-
-        fn publish(&self, killmail: Killmail) {
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(killmail.sequence_id, killmail);
-        }
-
-        fn fail_with(&self, error: Option<FeedError>) {
-            *self.failure.lock().unwrap() = error;
-        }
-
-        fn failure(&self) -> Option<FeedError> {
-            self.failure.lock().unwrap().clone()
-        }
-    }
-
-    impl Feed for FakeFeed {
-        async fn pointer(&self) -> Result<u64, FeedError> {
-            match self.failure() {
-                Some(error) => Err(error),
-                None => Ok(*self.pointer.lock().unwrap()),
-            }
-        }
-
-        async fn entry(&self, sequence: u64) -> Result<Option<Killmail>, FeedError> {
-            match self.failure() {
-                Some(error) => Err(error),
-                None => Ok(self.entries.lock().unwrap().get(&sequence).cloned()),
-            }
         }
     }
 
@@ -2803,161 +2216,6 @@ mod tests {
     }
 
     #[test]
-    fn recent_ids_forget_the_oldest_first() {
-        let mut recent = RecentIds::default();
-        assert!(recent.insert(1));
-        assert!(!recent.insert(1));
-        for id in 2..=RECENT_IDS as u64 + 1 {
-            assert!(recent.insert(id));
-        }
-        // 1 fell out of the window, the newest ones are still known.
-        assert!(recent.insert(1));
-        assert!(!recent.insert(RECENT_IDS as u64 + 1));
-    }
-
-    #[test]
-    fn the_backoff_doubles_up_to_a_minute_and_resets() {
-        let mut backoff = Backoff::new();
-        let waits: Vec<u64> = (0..6).map(|_| backoff.next().as_secs()).collect();
-        assert_eq!(waits, [6, 12, 24, 48, 60, 60]);
-        backoff.reset();
-        assert_eq!(backoff.next().as_secs(), 6);
-    }
-
-    #[tokio::test]
-    async fn a_new_walk_starts_at_the_end_and_announces_only_what_comes_after() {
-        let feed = FakeFeed::with(100, 130);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-
-        // The 31 killmails already in the feed are history.
-        let (announced, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-        assert_eq!(step, Step::Waiting);
-
-        // Nothing new: nothing announced.
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-
-        // New ones are announced once, in order.
-        feed.publish(Fixture::kill(131, 131));
-        feed.publish(Fixture::kill(132, 132));
-        let (announced, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [131, 132]);
-        assert_eq!(step, Step::Waiting);
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_hole_in_the_series_is_skipped_when_the_feed_is_past_it() {
-        let feed = FakeFeed::with(100, 100);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        Fixture::announced(&mut cursor, &feed).await;
-
-        // 101 never existed; 102 and 103 did, and the pointer moved past.
-        feed.publish(Fixture::kill(102, 102));
-        feed.publish(Fixture::kill(103, 103));
-        *feed.pointer.lock().unwrap() = 103;
-        let (announced, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [102, 103]);
-        assert_eq!(step, Step::Waiting);
-    }
-
-    #[tokio::test]
-    async fn a_missing_file_the_feed_is_not_past_is_just_the_end() {
-        let feed = FakeFeed::with(100, 100);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        Fixture::announced(&mut cursor, &feed).await;
-        // The pointer is behind (it only moves every 51 killmails): 101 is
-        // simply not published yet.
-        let (announced, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-        assert_eq!(step, Step::Waiting);
-        feed.publish(Fixture::kill(101, 101));
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [101]);
-    }
-
-    #[tokio::test]
-    async fn a_republished_killmail_is_announced_once() {
-        let feed = FakeFeed::with(100, 100);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        Fixture::announced(&mut cursor, &feed).await;
-
-        feed.publish(Fixture::kill(101, 500));
-        feed.publish(Fixture::kill(102, 501));
-        // The feed reprocessed killmail 500 and published it again.
-        feed.publish(Fixture::kill(103, 500));
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [101, 102]);
-    }
-
-    #[tokio::test]
-    async fn a_failure_keeps_the_position_and_the_walk_goes_on_after_it() {
-        let feed = FakeFeed::with(100, 100);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        Fixture::announced(&mut cursor, &feed).await;
-        feed.publish(Fixture::kill(101, 101));
-
-        let throttled = FeedError::Throttled(StatusCode::TOO_MANY_REQUESTS);
-        feed.fail_with(Some(throttled.clone()));
-        let (announced, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-        assert_eq!(step, Step::Failed(throttled));
-
-        feed.fail_with(None);
-        feed.publish(Fixture::kill(102, 102));
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [101, 102]);
-    }
-
-    #[tokio::test]
-    async fn a_failure_before_the_first_read_is_reported_and_retried() {
-        let feed = FakeFeed::with(100, 100);
-        feed.fail_with(Some(FeedError::Other(String::from("offline"))));
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        let (_, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(
-            step,
-            Step::Failed(FeedError::Other(String::from("offline")))
-        );
-        feed.fail_with(None);
-        let (announced, step) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-        assert_eq!(step, Step::Waiting);
-    }
-
-    #[tokio::test]
-    async fn resyncing_skips_what_was_published_meanwhile() {
-        let feed = FakeFeed::with(100, 100);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        Fixture::announced(&mut cursor, &feed).await;
-
-        // An outage long enough for the walk to start over: what came out
-        // meanwhile is too old to alert about.
-        cursor.resync();
-        for sequence in 101..=120 {
-            feed.publish(Fixture::kill(sequence, sequence));
-        }
-        *feed.pointer.lock().unwrap() = 120;
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-        feed.publish(Fixture::kill(121, 121));
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [121]);
-    }
-
-    #[tokio::test]
-    async fn the_walk_stops_when_nobody_listens() {
-        let feed = FakeFeed::with(100, 100);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        Fixture::announced(&mut cursor, &feed).await;
-        feed.publish(Fixture::kill(101, 101));
-        let step = cursor.advance(&feed, &mut |_| false).await;
-        assert_eq!(step, Step::Closed);
-    }
-
-    #[test]
     fn the_source_is_wanted_only_by_an_enabled_zkillboard_input() {
         use webb::graph::{InputNode, Node};
 
@@ -3172,87 +2430,6 @@ mod tests {
         assert_eq!(handle.0.buffer().len(), 1);
     }
 
-    #[tokio::test]
-    async fn the_killmails_read_on_the_way_to_the_end_are_kept_as_history() {
-        let feed = FakeFeed::with(100, 103);
-        let mut cursor = FeedCursor::new(Duration::ZERO);
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert!(announced.is_empty());
-        assert_eq!(cursor.origin(), Some(100));
-        let history: Vec<u64> = cursor
-            .take_history()
-            .iter()
-            .map(|killmail| killmail.sequence_id)
-            .collect();
-        assert_eq!(history, [100, 101, 102, 103]);
-        assert!(cursor.take_history().is_empty());
-        // What comes after is announced, not history.
-        feed.publish(Fixture::kill(104, 104));
-        let (announced, _) = Fixture::announced(&mut cursor, &feed).await;
-        assert_eq!(announced, [104]);
-        assert!(cursor.take_history().is_empty());
-    }
-
-    #[test]
-    fn the_backfill_covers_about_an_hour_before_the_start() {
-        let files = Backfill::new(1000, None).unwrap();
-        assert_eq!((files.first, files.end), (1000 - BACKFILL_FILES, 1000));
-        // A feed that has not got an hour of files yet.
-        let files = Backfill::new(5, None).unwrap();
-        assert_eq!((files.first, files.end), (1, 5));
-        assert!(Backfill::new(1, None).is_none());
-        // A previous run got to 900: the files before it are in the store.
-        let files = Backfill::new(1000, Some(900)).unwrap();
-        assert_eq!((files.first, files.end), (900, 1000));
-        // Too long ago to help, or nothing published since.
-        let files = Backfill::new(1000, Some(10)).unwrap();
-        assert_eq!(files.first, 1000 - BACKFILL_FILES);
-        assert!(Backfill::new(1000, Some(1000)).is_none());
-        assert!(Backfill::new(1000, Some(5000)).is_none());
-    }
-
-    #[tokio::test]
-    async fn the_backfill_reads_in_chunks_and_retries_after_a_failure() {
-        let feed = FakeFeed::with(1, 100);
-        let mut files = Backfill {
-            next: 1,
-            end: 101,
-            first: 1,
-            pace: Duration::ZERO,
-        };
-        let mut read = Vec::new();
-        assert!(
-            !files
-                .step(&feed, &mut |killmail| read.push(killmail.sequence_id))
-                .await
-        );
-        assert_eq!(read.len() as u64, BACKFILL_CHUNK);
-        assert_eq!(
-            files.progress(),
-            Fill {
-                done: BACKFILL_CHUNK,
-                total: 100
-            }
-        );
-
-        // A failure keeps the position.
-        feed.fail_with(Some(FeedError::Other(String::from("down"))));
-        assert!(
-            !files
-                .step(&feed, &mut |killmail| read.push(killmail.sequence_id))
-                .await
-        );
-        assert_eq!(files.progress().done, BACKFILL_CHUNK);
-
-        feed.fail_with(None);
-        while !files
-            .step(&feed, &mut |killmail| read.push(killmail.sequence_id))
-            .await
-        {}
-        assert_eq!(read, (1..=100).collect::<Vec<u64>>());
-        assert_eq!(files.progress().percent(), 100);
-    }
-
     #[test]
     fn the_handle_follows_the_graph() {
         let handle = ZKillboardHandle::new(Path::new("sde.db"));
@@ -3313,193 +2490,5 @@ mod tests {
         assert_eq!(names.system_name(30000142), None);
         assert_eq!(names.type_name(587), None);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A one-thread HTTP server answering canned responses, to try the real
-    /// client on.
-    struct StubServer {
-        base: String,
-        requests: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl StubServer {
-        /// Serves `routes` (path, status, body) and ends after `requests`
-        /// requests.
-        fn start(routes: Vec<(&'static str, u16, &'static str)>, requests: usize) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let base = format!("http://{}", listener.local_addr().unwrap());
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let log = Arc::clone(&seen);
-            std::thread::spawn(move || {
-                for _ in 0..requests {
-                    let Ok((mut stream, _)) = listener.accept() else {
-                        return;
-                    };
-                    let mut request = Vec::new();
-                    let mut buffer = [0u8; 1024];
-                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        match stream.read(&mut buffer) {
-                            Ok(0) | Err(_) => break,
-                            Ok(read) => request.extend_from_slice(&buffer[..read]),
-                        }
-                    }
-                    let request = String::from_utf8_lossy(&request).into_owned();
-                    let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
-                    log.lock().unwrap().push(request);
-                    let (status, body) = routes
-                        .iter()
-                        .find(|(route, _, _)| *route == path)
-                        .map_or((404, ""), |(_, status, body)| (*status, *body));
-                    let _ = write!(
-                        stream,
-                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                }
-            });
-            Self {
-                base,
-                requests: seen,
-            }
-        }
-
-        fn client(&self) -> R2z2Client {
-            R2z2Client {
-                // No proxy: the server is on this machine.
-                client: Client::builder()
-                    .user_agent(USER_AGENT)
-                    .no_proxy()
-                    .build()
-                    .unwrap(),
-                base: self.base.clone(),
-                slots: FeedSlots::default(),
-                // Open: a refusal must not stop the next request of a test.
-                guard: Arc::new(RequestGuard::new(GuardConfig {
-                    block: TimeDelta::zero(),
-                    restart_gap: TimeDelta::zero(),
-                    ..GuardConfig::default()
-                })),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn the_client_reads_the_pointer_and_the_killmails() {
-        let server = StubServer::start(
-            vec![
-                ("/sequence.json", 200, r#"{"sequence":100023300}"#),
-                ("/100023300.json", 200, SAMPLE),
-            ],
-            3,
-        );
-        let client = server.client();
-        assert_eq!(client.pointer().await, Ok(100023300));
-        let killmail = client.entry(100023300).await.unwrap().unwrap();
-        assert_eq!(killmail.killmail_id, 139148857);
-        // The hash and the location are read, and the file is kept as it came.
-        assert_eq!(killmail.zkb.hash, "abc");
-        assert_eq!(killmail.zkb.location_id, Some(60003760));
-        assert_eq!(killmail.raw.as_deref(), Some(SAMPLE));
-        // Nothing published yet at the next sequence number.
-        assert_eq!(client.entry(100023301).await, Ok(None));
-
-        let requests = server.requests.lock().unwrap();
-        assert!(
-            requests[0].starts_with("GET /sequence.json "),
-            "{requests:?}"
-        );
-        // zKillboard blocks a blank User-Agent.
-        for request in requests.iter() {
-            assert!(
-                request.to_lowercase().contains("user-agent: telescope/"),
-                "{request}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn the_client_tells_a_throttle_from_other_failures() {
-        let server = StubServer::start(
-            vec![
-                ("/1.json", 403, ""),
-                ("/2.json", 429, ""),
-                ("/3.json", 500, ""),
-                ("/4.json", 200, "not json"),
-                ("/sequence.json", 200, r#"{"unexpected":1}"#),
-            ],
-            5,
-        );
-        let client = server.client();
-        assert_eq!(
-            client.entry(1).await,
-            Err(FeedError::Throttled(StatusCode::FORBIDDEN))
-        );
-        assert_eq!(
-            client.entry(2).await,
-            Err(FeedError::Throttled(StatusCode::TOO_MANY_REQUESTS))
-        );
-        assert!(matches!(client.entry(3).await, Err(FeedError::Other(_))));
-        assert!(matches!(client.entry(4).await, Err(FeedError::Other(_))));
-        assert!(matches!(client.pointer().await, Err(FeedError::Other(_))));
-    }
-
-    #[tokio::test]
-    async fn after_a_refusal_nothing_is_sent_until_the_block_is_over() {
-        // Only one request is expected: the second must not be sent.
-        let server = StubServer::start(vec![("/1.json", 429, "")], 1);
-        let mut client = server.client();
-        client.guard = Arc::new(RequestGuard::new(GuardConfig::default()));
-        assert_eq!(
-            client.entry(1).await,
-            Err(FeedError::Throttled(StatusCode::TOO_MANY_REQUESTS))
-        );
-        assert_eq!(
-            client.entry(2).await,
-            Err(FeedError::Throttled(StatusCode::TOO_MANY_REQUESTS))
-        );
-        assert!(client.guard.wait(Utc::now()).is_some());
-    }
-
-    #[tokio::test]
-    async fn an_unreachable_feed_is_a_plain_failure() {
-        // Nothing listens on a port that was just released.
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let client = R2z2Client {
-            client: Client::builder().no_proxy().build().unwrap(),
-            base: format!("http://127.0.0.1:{port}"),
-            guard: Arc::new(RequestGuard::new(GuardConfig::default())),
-            slots: FeedSlots::default(),
-        };
-        assert!(matches!(client.pointer().await, Err(FeedError::Other(_))));
-    }
-
-    #[tokio::test]
-    async fn the_slots_of_the_feed_keep_the_pace_of_their_lane() {
-        let lane = Arc::new(LaneQueue::new(LaneConfig {
-            min_interval: Duration::from_millis(40),
-            background_interval: Duration::from_millis(80),
-            reserve_every: 1,
-            low_every: 0,
-        }));
-        let live = FeedSlots::new(Arc::clone(&lane));
-        let history = live.with_priority(Priority::Normal);
-        // Three live requests: two gaps of the least time between requests.
-        let started = Instant::now();
-        for _ in 0..3 {
-            live.wait().await;
-        }
-        assert!(started.elapsed() >= Duration::from_millis(80));
-        // The hour read back is held to the slower pace of the background.
-        let started = Instant::now();
-        for _ in 0..3 {
-            history.wait().await;
-        }
-        assert!(started.elapsed() >= Duration::from_millis(160));
-        assert!(lane.is_empty());
     }
 }

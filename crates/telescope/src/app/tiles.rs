@@ -47,6 +47,7 @@ use super::intel::kill_context::{KillContext, Source, Verdict};
 use super::intel::kill_day::DayLine;
 use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::MessageSpawner;
+use super::system_header::SystemHeaders;
 
 /// Bridges a single `sde` map point (native type, as of the `objects`
 /// rewrite `sde` no longer depends on `egui-map` at all) into `egui-map`'s
@@ -144,8 +145,84 @@ pub trait TabPane {
 /// knows the markers' ids).
 type CharactersOnMap = HashMap<usize, (usize, String)>;
 
-/// Icon shown to the left of each character name in the node tooltips.
+/// Icon of a linked character in the Settings pages.
 pub(crate) const CHARACTER_ICON: &str = "👤";
+
+/// Icon shown to the left of each character name in the node tooltips: where
+/// the character is. It is not [`COUNT_ICON`], which counts the pilots of a
+/// report.
+pub(crate) const LOCATION_ICON: &str = "📍";
+
+/// Color of the names of the characters in the node tooltips.
+const CHARACTER_COLOR: Color32 = Color32::from_rgb(107, 159, 214);
+
+/// How the node tooltips are laid out.
+struct NodeTooltipStyle {
+    /// How many characters are listed; the rest are counted.
+    characters: usize,
+    /// The widest a character name gets before it ends in dots.
+    name_width: f32,
+    /// The widest the list of ships of an intel line gets before it ends in
+    /// dots.
+    ships_width: f32,
+    /// The space between the groups of the tooltip (characters, intel, the
+    /// killmail footer).
+    group_gap: f32,
+    /// The space above and below the killmail footer.
+    footer_padding: i8,
+}
+
+impl Default for NodeTooltipStyle {
+    fn default() -> Self {
+        Self {
+            characters: 4,
+            name_width: 220.0,
+            ships_width: 220.0,
+            group_gap: 6.0,
+            footer_padding: 4,
+        }
+    }
+}
+
+impl NodeTooltipStyle {
+    /// `add_contents` on a strip along the bottom edge of the tooltip, from
+    /// side to side, a little lighter than the rest: the killmail block,
+    /// which needs no line to tell it from the intel above.
+    fn footer(&self, ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+        let menu = ui.style().spacing.menu_margin;
+        let radius = ui.visuals().menu_corner_radius;
+        let fill = if ui.visuals().dark_mode {
+            Color32::from_white_alpha(10)
+        } else {
+            Color32::from_black_alpha(10)
+        };
+        let width = ui.min_rect().width();
+        egui::Frame::new()
+            .fill(fill)
+            .corner_radius(CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: radius.sw,
+                se: radius.se,
+            })
+            .inner_margin(egui::Margin {
+                left: menu.left,
+                right: menu.right,
+                top: self.footer_padding,
+                bottom: self.footer_padding,
+            })
+            .outer_margin(egui::Margin {
+                left: -menu.left,
+                right: -menu.right,
+                top: 0,
+                bottom: -menu.bottom,
+            })
+            .show(ui, |ui| {
+                ui.set_min_width(width);
+                add_contents(ui);
+            });
+    }
+}
 
 /// How often a node with a linked character repaints its glow (~30 fps).
 const GLOW_FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -156,7 +233,7 @@ const CLEAR_ICON_COLOR: Color32 = Color32::from_rgb(90, 200, 90);
 /// Emoji of the ships section of a tooltip line.
 const SHIP_ICON: &str = "🚀";
 /// Emoji of the pilot-count section of a tooltip line.
-const COUNT_ICON: &str = "👤";
+const COUNT_ICON: &str = "👥";
 /// Color of the word that says a system is active in the killmail context
 /// (text, not an emoji).
 const ACTIVE_COLOR: Color32 = Color32::from_rgb(235, 70, 40);
@@ -283,16 +360,21 @@ impl KillContext {
     }
 }
 
-/// The tooltip of the node under the pointer, only on nodes that have
-/// something to show: the linked characters in that system, one per line
-/// with [`CHARACTER_ICON`] as a marker (no header, to keep it short), then
-/// its active intel alerts, newest first (see `map_alerts`).
+/// The tooltip of the node under the pointer. With `headers` (the universe
+/// map, which does not write the names of its nodes) every node has one,
+/// led by the name of the system, its security status and its region.
+/// Without them only the nodes that have something to show do. Under the
+/// header, with no lines between the groups: the linked characters in that
+/// system, one per line with [`LOCATION_ICON`] as a marker, then its active
+/// intel alerts, newest first (see `map_alerts`), and, in a strip along the
+/// bottom, what the killmails know.
 fn show_node_tooltip(
     response: Response,
     map: &Map,
     characters: &CharactersOnMap,
     alerts: &mut AlertLog,
     kills: Option<&ZKillboardHandle>,
+    headers: Option<&SystemHeaders>,
 ) {
     let Some(system_id) = map.hovered_node() else {
         return;
@@ -308,26 +390,46 @@ fn show_node_tooltip(
     // killmails are being read: it says what they know, even that there are
     // none.
     let standalone = names.is_empty() && active.is_empty();
-    if standalone && kills.is_none() {
+    let header = headers.and_then(|headers| headers.get(system_id));
+    if header.is_none() && standalone && kills.is_none() {
         return;
     }
     names.sort_unstable();
     // Every system that has a tooltip says what the killmails know, with a
     // character in it, an alert or neither.
     let context = kills.and_then(|handle| handle.context(system_id));
-    if standalone && context.is_none() {
+    if header.is_none() && standalone && context.is_none() {
         return;
     }
+    let style = NodeTooltipStyle::default();
     response.on_hover_ui_at_pointer(|ui| {
-        for name in &names {
-            ui.label(format!("{CHARACTER_ICON} {name}"));
+        if let Some(header) = header {
+            header.show(ui);
+        }
+        for name in names.iter().take(style.characters) {
+            ui.scope(|ui| {
+                // A long name ends in dots instead of widening the tooltip.
+                ui.set_max_width(style.name_width);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{LOCATION_ICON} {name}")).color(CHARACTER_COLOR),
+                    )
+                    .truncate(),
+                );
+            });
+        }
+        if names.len() > style.characters {
+            ui.weak(t!(
+                "map.characters_more",
+                count = names.len() - style.characters
+            ));
         }
         if !active.is_empty() {
-            if !names.is_empty() {
-                ui.separator();
+            if header.is_some() || !names.is_empty() {
+                ui.add_space(style.group_gap);
             }
             for alert in active.iter().take(MAX_TOOLTIP_ALERTS) {
-                alert_line(ui, alert, now);
+                alert_line(ui, alert, now, style.ships_width);
             }
             if active.len() > MAX_TOOLTIP_ALERTS {
                 ui.weak(t!(
@@ -337,10 +439,10 @@ fn show_node_tooltip(
             }
         }
         if let Some(context) = &context {
-            if !standalone {
-                ui.separator();
+            if header.is_some() || !standalone {
+                ui.add_space(style.group_gap);
             }
-            context.show(ui);
+            style.footer(ui, |ui| context.show(ui));
         }
         // The ages tick even when nothing else repaints (a clear report
         // has no animation).
@@ -350,8 +452,9 @@ fn show_node_tooltip(
 
 /// One intel alert in a node tooltip: icon, age and summary. Each section of
 /// the summary is prefixed with its own emoji (ships, pilot count) unless the
-/// alert was built with `emojis` off.
-fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
+/// alert was built with `emojis` off. A list of ships longer than
+/// `ships_width` ends in dots, so a big fleet does not stretch the tooltip.
+fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant, ships_width: f32) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
         if alert.raises_visual() {
@@ -373,7 +476,10 @@ fn alert_line(ui: &mut Ui, alert: &IntelAlert, now: Instant) {
                     if alert.emojis {
                         ui.label(SHIP_ICON);
                     }
-                    ui.label(text);
+                    ui.scope(|ui| {
+                        ui.set_max_width(ships_width);
+                        ui.add(egui::Label::new(text).truncate());
+                    });
                 }
                 AlertPart::Count(text) => {
                     if alert.emojis {
@@ -429,6 +535,8 @@ pub struct UniversePane {
     zkillboard: Option<ZKillboardHandle>,
     /// The heat of the last hour, drawn behind the nodes.
     heat: HeatControl,
+    /// Name, security and region of every system, for the node tooltips.
+    headers: SystemHeaders,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
     factor: f64,
@@ -457,13 +565,15 @@ impl UniversePane {
             alerts: AlertLog::default(),
             zkillboard: None,
             heat,
+            headers: SystemHeaders::default(),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.region_label_alpha = 0.25;
         object.map.settings.style.region_label_font =
             FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
-        object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        // The tooltip says the name of the node (see `SystemHeaders`).
+        object.map.settings.node_text_visibility = VisibilitySetting::Hidden;
         object.map.settings.minimap = MinimapSettings::default();
         object.map.settings.minimap.anchor = Corner::BottomRight;
         object.map.settings.minimap.scale = 0.35;
@@ -475,6 +585,7 @@ impl UniversePane {
 
     #[tracing::instrument(skip(self))]
     fn generate_data(&mut self) {
+        self.headers = SystemHeaders::load(&self.path);
         if let Ok(t_sde) = SdeManager::new(&self.path, self.factor) {
             if let Ok(points) = t_sde.get_systems() {
                 self.map.add_hashmap_points(sde_points_to_map(points));
@@ -561,6 +672,7 @@ impl TabPane for UniversePane {
             &self.characters,
             &mut self.alerts,
             self.zkillboard.as_ref(),
+            Some(&self.headers),
         );
         UiResponse::None
     }
@@ -832,6 +944,7 @@ impl TabPane for RegionPane {
             &self.characters,
             &mut self.alerts,
             self.zkillboard.as_ref(),
+            None,
         );
         UiResponse::None
     }

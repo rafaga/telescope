@@ -284,6 +284,7 @@ alert_pilots_one = "1 neutral"
 alert_pilots_other = "%{count} neutrales"
 # Intel alerts a node tooltip has no room for.
 alert_more = "+%{count} más"
+characters_more = "+%{count} más"
 # Contexto de bajas (zKillboard) en los tooltips de los nodos.
 kills_active = "Zona activa"
 kills_quiet = "Sin bajas recientes"

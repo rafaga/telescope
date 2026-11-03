@@ -5676,8 +5676,6 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sde"
 version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efe9359afa74f9d827ed0ad248f417ef79ebad84aba0f15c1165d77db38de716"
 dependencies = [
  "anyhow",
  "clap",
@@ -8325,6 +8323,7 @@ dependencies = [
  "chrono",
  "reqwest",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

@@ -49,6 +49,7 @@ mod notifications;
 mod overlay;
 mod persistence;
 mod settings;
+mod system_header;
 mod tiles;
 mod update_checker;
 mod watchdog;
@@ -1393,6 +1394,7 @@ mod font_tests {
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
         for text in [
             tiles::CHARACTER_ICON,
+            tiles::LOCATION_ICON,
             webb::map_alerts::ALERT_ICON,
             webb::map_alerts::CLEAR_ICON,
         ] {

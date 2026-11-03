@@ -3,11 +3,12 @@
 
 use super::time_ago;
 use crate::app::TelescopeApp;
-use crate::app::intel::zkillboard::{FEED_URL, FeedState};
+use crate::app::intel::zkillboard::FeedState;
 use crate::app::messages::SettingsPage;
 use eframe::egui::{self, RichText};
 use egui_panels::{Section, StatusKind};
 use std::time::Duration;
+use zkill::feed::FeedConfig;
 
 /// The minimum values the filter offers, in ISK, with their labels.
 const MIN_ISK_STEPS: [(u64, &str); 4] = [
@@ -164,12 +165,13 @@ impl TelescopeApp {
                         },
                     );
                     // For reference only: the addresses are not editable.
+                    let feed_url = FeedConfig::default().url;
                     form.row(t!("settings.zkillboard.endpoint_pointer"), |ui| {
-                        ui.label(RichText::new(format!("{FEED_URL}/sequence.json")).monospace());
+                        ui.label(RichText::new(format!("{feed_url}/sequence.json")).monospace());
                     });
                     form.row(t!("settings.zkillboard.endpoint_killmail"), |ui| {
                         ui.label(
-                            RichText::new(format!("{FEED_URL}/{{sequence}}.json")).monospace(),
+                            RichText::new(format!("{feed_url}/{{sequence}}.json")).monospace(),
                         );
                     });
                 });

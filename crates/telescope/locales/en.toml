@@ -283,6 +283,7 @@ alert_pilots_one = "1 neutral"
 alert_pilots_other = "%{count} neutrals"
 # Intel alerts a node tooltip has no room for.
 alert_more = "+%{count} more"
+characters_more = "+%{count} more"
 # Killmail context (zKillboard) in the node tooltips.
 kills_active = "Active area"
 kills_quiet = "No recent kills"

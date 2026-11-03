@@ -211,28 +211,27 @@ impl TelescopeApp {
 
     /// The tabs of the Debug window and the page of the one on show.
     fn show_debug_screen(&mut self, ui: &mut egui::Ui) {
-                let selected = self.debug_selected_system();
-                let mut behavior = DebugBehavior::default();
-                self.debug.tree.ui(&mut behavior, ui);
-                // The page of the tab on show, inside the room of its pane.
-                if let Some((tab, rect)) = behavior.shown {
-                    let mut page = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                    page.set_clip_rect(rect);
-                    egui::ScrollArea::vertical().auto_shrink(false).show(
-                        &mut page,
-                        |ui| match tab {
-                            DebugTab::Search => self.debug_search_ui(ui, selected.as_ref()),
-                            DebugTab::Intel => self.debug_intel_ui(ui, selected.as_ref()),
-                            DebugTab::Alerts => self.debug_alerts_ui(ui),
-                            DebugTab::Animations => self.debug_animations_ui(ui, selected.as_ref()),
-                            DebugTab::Characters => {
-                                self.debug_move_character_ui(ui, selected.as_ref());
-                            }
-                            DebugTab::ZKillboard => self.debug_zkillboard_ui(ui),
-                            DebugTab::State => self.debug_state_ui(ui),
-                        },
-                    );
-                }
+        let selected = self.debug_selected_system();
+        let mut behavior = DebugBehavior::default();
+        self.debug.tree.ui(&mut behavior, ui);
+        // The page of the tab on show, inside the room of its pane.
+        if let Some((tab, rect)) = behavior.shown {
+            let mut page = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            page.set_clip_rect(rect);
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(&mut page, |ui| match tab {
+                    DebugTab::Search => self.debug_search_ui(ui, selected.as_ref()),
+                    DebugTab::Intel => self.debug_intel_ui(ui, selected.as_ref()),
+                    DebugTab::Alerts => self.debug_alerts_ui(ui),
+                    DebugTab::Animations => self.debug_animations_ui(ui, selected.as_ref()),
+                    DebugTab::Characters => {
+                        self.debug_move_character_ui(ui, selected.as_ref());
+                    }
+                    DebugTab::ZKillboard => self.debug_zkillboard_ui(ui),
+                    DebugTab::State => self.debug_state_ui(ui),
+                });
+        }
     }
 
     /// System picked in the search results, as `(id, name)`.
@@ -779,7 +778,7 @@ impl TelescopeApp {
             .last_error
             .clone()
             .unwrap_or_else(|| String::from("-"));
-        let feed = crate::app::intel::zkillboard::FEED_URL;
+        let feed = zkill::feed::FeedConfig::default().url;
         ui.label(RichText::new("How the source walks the R2Z2 feed: where it is, how far behind and what it skipped.").weak());
         egui::CollapsingHeader::new("Source")
             .default_open(true)

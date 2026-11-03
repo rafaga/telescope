@@ -44,7 +44,7 @@
 
 use super::resolve::JumpGraph;
 use super::zkill_guard::{GuardConfig, RequestGuard};
-use super::zkillboard::{FeedError, REQUEST_TIMEOUT, USER_AGENT};
+use super::zkillboard::FeedError;
 use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::header::HeaderMap;
 use reqwest::{Client, StatusCode};
@@ -52,6 +52,7 @@ use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use zkill::feed::FeedConfig;
 use zkill::lane::{Job, Priority};
 use zkill::queue::LaneQueue;
 use zkill::types::{EsiKillmail, Killmail, Zkb};
@@ -821,9 +822,12 @@ pub(crate) struct ZKillApi {
 
 impl ZKillApi {
     pub(crate) fn new() -> Result<Self, reqwest::Error> {
+        // The query API is asked in the same name and with the same patience
+        // as the feed.
+        let feed = FeedConfig::default();
         let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(REQUEST_TIMEOUT)
+            .user_agent(feed.user_agent)
+            .timeout(feed.request_timeout)
             .build()?;
         Ok(Self {
             client,

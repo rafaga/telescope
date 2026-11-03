@@ -39,7 +39,7 @@
 //! There used to be a stub here that called a nonexistent
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
-use eframe::egui::{self, Align2, Margin, RichText, Stroke, Vec2};
+use eframe::egui::{self, Margin, RichText, Stroke, Vec2};
 use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
 use sde::builder::pipeline::{self, Workspace};
 use sde::builder::update::{self, FullReason, UpdateOptions, UpdatePlan};
@@ -153,11 +153,11 @@ impl SdePhase {
 /// Width of the update window.
 const WINDOW_WIDTH: f32 = 568.0;
 
-/// Room left at each side of the window on a small screen.
-const WINDOW_MARGIN: f32 = 24.0;
+/// Height of the update window.
+const WINDOW_HEIGHT: f32 = 400.0;
 
-/// Height of the window's own title bar.
-const TITLE_BAR_HEIGHT: f32 = 34.0;
+/// The least width the update window can be given.
+const WINDOW_MIN_WIDTH: f32 = 420.0;
 
 /// Height of the log area.
 const LOG_HEIGHT: f32 = 92.0;
@@ -208,26 +208,33 @@ fn clock(elapsed: std::time::Duration) -> String {
 
 impl DatabaseUpdater {
     /// Paints the progress window if an update is currently running (see
-    /// `Self::set_phase`/`Self::hide`) -- a no-op otherwise. It is drawn
-    /// like a dialog of the Settings screen (`egui_panels`): a title bar
-    /// with a close button, a progress bar, the three
-    /// phases as steps, a log of what began and when, and a Cancel button
-    /// that takes effect at the end of the running phase (not during the
-    /// rebuild, which can't be interrupted).
+    /// `Self::set_phase`/`Self::hide`) -- a no-op otherwise. It is a window
+    /// of its own, like Settings, drawn with the style of `egui_panels`: a
+    /// progress bar, the phases as steps, a log of what began and when, and
+    /// a Cancel button that takes effect at the end of the running phase
+    /// (not during the rebuild, which can't be interrupted). The window's
+    /// close button cancels a running update or accepts a finished one.
     #[tracing::instrument(skip(self, ctx))]
     pub fn show(&mut self, ctx: &egui::Context) {
         let Some(phase) = self.phase else {
             return;
         };
         let mut accepted = false;
-        egui::Window::new(t!("sde_update.title"))
-            .id(egui::Id::unique("sde_update_window"))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .frame(egui_panels::dialog_frame(ctx).inner_margin(Margin::ZERO))
-            .show(ctx, |ui| {
+        let id = egui::ViewportId::from_hash_of("telescope.sde_update");
+        let builder = egui::ViewportBuilder::default()
+            .with_title(t!("sde_update.title").into_owned())
+            .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
+            .with_min_inner_size([WINDOW_MIN_WIDTH, WINDOW_HEIGHT]);
+        let frame = egui_panels::dialog_frame(ctx).inner_margin(Margin::ZERO);
+        let close_requested = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            let close_requested = ui.input(|input| input.viewport().close_requested());
+            if close_requested {
+                // The window closes only by accepting the result: the close
+                // button cancels a running update, or accepts a finished one.
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                 let theme = egui_panels::Theme::get(ui.ctx());
                 let palette = theme.palette(ui.visuals());
                 let cancelling = CANCEL_REQUESTED.load(Ordering::SeqCst);
@@ -237,45 +244,8 @@ impl DatabaseUpdater {
                     SdePhase::Checking | SdePhase::Downloading | SdePhase::Extracting
                 ) && !cancelling
                     && !finished;
-                // Narrower than usual when the application window is.
-                let window_width = WINDOW_WIDTH
-                    .min(ui.ctx().content_rect().width() - 2.0 * WINDOW_MARGIN)
-                    .max(280.0);
-                ui.set_width(window_width);
+                let window_width = ui.available_width();
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-
-                // Title bar.
-                ui.allocate_ui_with_layout(
-                    Vec2::new(window_width, TITLE_BAR_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.add_space(14.0);
-                        ui.label(
-                            RichText::new(t!("sde_update.title"))
-                                .size(theme.section_title_size)
-                                .color(palette.strong_text),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(8.0);
-                            let hover = if finished {
-                                t!("common.accept")
-                            } else {
-                                t!("common.cancel")
-                            };
-                            if close_button(ui, can_cancel || finished)
-                                .on_hover_text(hover)
-                                .clicked()
-                            {
-                                if finished {
-                                    accepted = true;
-                                } else {
-                                    Self::request_cancel();
-                                }
-                            }
-                        });
-                    },
-                );
-                egui_panels::divider(ui);
 
                 egui::Frame::NONE
                     .inner_margin(Margin {
@@ -441,6 +411,18 @@ impl DatabaseUpdater {
                         });
                     });
             });
+            close_requested
+        });
+        if close_requested {
+            if self.finished {
+                accepted = true;
+            } else if matches!(
+                phase,
+                SdePhase::Checking | SdePhase::Downloading | SdePhase::Extracting
+            ) {
+                Self::request_cancel();
+            }
+        }
         if accepted {
             self.hide();
             return;
@@ -1118,41 +1100,6 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.0} KB", bytes as f64 / 1024.0)
     }
-}
-
-/// The title bar's close button: a 22 px square with a drawn cross, the same
-/// hover as a side navigation item. Disabled it is dimmed and inert.
-fn close_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
-    let theme = egui_panels::Theme::get(ui.ctx());
-    let palette = theme.palette(ui.visuals());
-    let sense = if enabled {
-        egui::Sense::click()
-    } else {
-        egui::Sense::hover()
-    };
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), sense);
-    if ui.is_rect_visible(rect) {
-        if enabled && response.hovered() {
-            ui.painter().rect_filled(rect, 3.0, palette.hover_fill);
-        }
-        let color = if enabled {
-            palette.muted_text
-        } else {
-            palette.muted_text.gamma_multiply(0.4)
-        };
-        let arm = 4.0;
-        let center = rect.center();
-        let stroke = Stroke::new(1.4, color);
-        ui.painter().line_segment(
-            [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [center + Vec2::new(-arm, arm), center + Vec2::new(arm, -arm)],
-            stroke,
-        );
-    }
-    response
 }
 
 /// The SDE build recorded in `sde.db`'s fingerprint, when it has an intact
@@ -2070,15 +2017,17 @@ mod updater_run_tests {
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         let ctx = egui::Context::default();
         let mut updater = DatabaseUpdater::default();
-        let id = egui::Id::unique("sde_update_window");
+        // Without a native backend the viewport is embedded: drawn as a
+        // layer of the root, which is what is counted.
+        let layers = |ctx: &egui::Context| ctx.memory(|memory| memory.layer_ids().count());
 
         frame(&ctx, |ctx| updater.show(ctx));
-        assert!(ctx.memory(|memory| memory.area_rect(id)).is_none());
+        let without_window = layers(&ctx);
 
         updater.set_phase(SdePhase::Checking);
         frame(&ctx, |ctx| updater.show(ctx));
         frame(&ctx, |ctx| updater.show(ctx));
-        assert!(ctx.memory(|memory| memory.area_rect(id)).is_some());
+        assert!(layers(&ctx) > without_window);
 
         updater.hide();
         frame(&ctx, |ctx| updater.show(ctx));
@@ -2093,6 +2042,8 @@ mod updater_run_tests {
             for phase in SdePhase::ALL {
                 for finished in [false, true] {
                     let ctx = egui::Context::default();
+                    frame(&ctx, |ctx| DatabaseUpdater::default().show(ctx));
+                    let without_window = ctx.memory(|memory| memory.layer_ids().count());
                     let mut updater = DatabaseUpdater::default();
                     updater.set_phase(phase);
                     updater.set_info(SdeInfo::Versions {
@@ -2107,40 +2058,12 @@ mod updater_run_tests {
                     frame(&ctx, |ctx| updater.show(ctx));
                     frame(&ctx, |ctx| updater.show(ctx));
                     assert!(
-                        ctx.memory(|memory| memory.area_rect(egui::Id::unique("sde_update_window")))
-                            .is_some(),
+                        ctx.memory(|memory| memory.layer_ids().count()) > without_window,
                         "{phase:?} finished={finished} cancelling={cancelling}"
                     );
                 }
             }
         }
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn the_close_button_is_a_small_square_that_only_clicks_when_enabled() {
-        let ctx = egui::Context::default();
-        let (mut enabled_size, mut disabled_size) = (Vec2::ZERO, Vec2::ZERO);
-        let (mut enabled_click, mut disabled_click) = (false, true);
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                Vec2::new(1000.0, 700.0),
-            )),
-            ..egui::RawInput::default()
-        };
-        let mut output = ctx.run_ui(input, |ui| {
-            let enabled = close_button(ui, true);
-            let disabled = close_button(ui, false);
-            enabled_size = enabled.rect.size();
-            disabled_size = disabled.rect.size();
-            enabled_click = enabled.sense.senses_click();
-            disabled_click = disabled.sense.senses_click();
-        });
-        output.textures_delta.clear();
-        assert_eq!(enabled_size, Vec2::splat(22.0));
-        assert_eq!(disabled_size, Vec2::splat(22.0));
-        assert!(enabled_click);
-        assert!(!disabled_click);
     }
 }
