@@ -44,5 +44,7 @@ opt-level = 0
 # egui-map = { path = "../egui-map" }
 # `get_system_kills_snapshot` (0.2.2) is not on crates.io yet: same as above.
 # esi-openapi = { path = "../esi-openapi" }
+# `SolarSystem::security` (sde 0.7.5) is not on crates.io yet: the sibling
+# checkout until it is published, then drop this line.
 # sde = { path = "../sde" }
 # sde = { git = "https://github.com/rafaga/sde", branch = "test" }

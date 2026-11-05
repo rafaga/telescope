@@ -1552,9 +1552,9 @@ dependencies = [
 
 [[package]]
 name = "egui-map"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed608d67430d1d5cb2d6227951492a4d673ba685c1bb30a43a585e82ae7e551"
+checksum = "362ffa772605cffdf31853999bd6daeb34ddebf39706fd85835a5e457443fb49"
 dependencies = [
  "egui",
  "kdtree",
@@ -5675,7 +5675,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sde"
-version = "0.7.4"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd4bee4bd03a183c4277080434ef61b38988b79f794f1ddbba891cf7f3d93652"
 dependencies = [
  "anyhow",
  "clap",

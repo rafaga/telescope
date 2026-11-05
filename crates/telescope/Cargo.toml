@@ -49,7 +49,7 @@ sde = { version = "0.7", features = ["builder"] }
 rusqlite = { version = "0.41" }
 kdtree = { version = "0.8" }
 # egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.16" }
+egui-map = { version = "0.17" }
 open = "5.4"
 # `crypted-db` explicitly: with `default-features = false` alone the player
 # database was encrypted or not depending on whether the build also selected
