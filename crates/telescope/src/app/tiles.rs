@@ -572,8 +572,9 @@ impl UniversePane {
         object.map.settings.region_label_alpha = 0.25;
         object.map.settings.style.region_label_font =
             FontId::new(96.0, egui::FontFamily::Name("Custom".into()));
-        // The tooltip says the name of the node (see `SystemHeaders`).
-        object.map.settings.node_text_visibility = VisibilitySetting::Hidden;
+        // `Hover` also makes the map ring the node nearest to the pointer
+        // (`NodeTemplate::selection_ui`), the visual guide before the tooltip.
+        object.map.settings.node_text_visibility = VisibilitySetting::Hover;
         object.map.settings.minimap = MinimapSettings::default();
         object.map.settings.minimap.anchor = Corner::BottomRight;
         object.map.settings.minimap.scale = 0.35;
@@ -774,6 +775,9 @@ pub struct RegionPane {
     zkillboard: Option<ZKillboardHandle>,
     /// The heat of the last hour, drawn inside the node boxes.
     heat: HeatControl,
+    /// The security status of every system, shared with the [`Template`] that
+    /// writes it beside the name of each node.
+    headers: Rc<RefCell<SystemHeaders>>,
 }
 
 impl RegionPane {
@@ -801,6 +805,7 @@ impl RegionPane {
             alerts: AlertLog::default(),
             zkillboard: None,
             heat,
+            headers: Rc::new(RefCell::new(SystemHeaders::default())),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -810,9 +815,10 @@ impl RegionPane {
         // 40.0) -- otherwise it covers the neighbouring systems on the
         // tighter regional view.
         object.map.settings.animation.pulse.spread = 12.0;
-        object
-            .map
-            .set_node_template(Rc::new(Template::new(node_style)));
+        object.map.set_node_template(Rc::new(Template::new(
+            node_style,
+            Rc::clone(&object.headers),
+        )));
         object.map.settings.line_visible_zoom = 0.10;
         object
     }
@@ -832,6 +838,7 @@ impl RegionPane {
             }
         };
 
+        *self.headers.borrow_mut() = SystemHeaders::load(&self.path);
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
             Ok(points) => {
                 self.map.add_hashmap_points(sde_points_to_map(points));
@@ -886,7 +893,8 @@ impl TabPane for RegionPane {
     }
 
     fn set_node_style(&mut self, style: NodeStyle) {
-        self.map.set_node_template(Rc::new(Template::new(style)));
+        self.map
+            .set_node_template(Rc::new(Template::new(style, Rc::clone(&self.headers))));
     }
 
     #[tracing::instrument(skip(self))]
@@ -1378,6 +1386,9 @@ struct Template {
     // actively zoomed, renamed, or re-themed.
     label_cache: RefCell<HashMap<usize, CachedLabel>>,
     node_style: NodeStyle,
+    /// The security status of every system, written beside its name. Shared
+    /// with the pane, which fills it when it loads its data.
+    headers: Rc<RefCell<SystemHeaders>>,
 }
 
 /// One entry in [`Template::label_cache`]: the inputs that produced
@@ -1393,14 +1404,19 @@ struct CachedLabel {
     color: Color32,
     font_size: f32,
     galley: Arc<Galley>,
+    /// The security status `security_galley` was laid out for (compared as
+    /// the raw number, so a lookup allocates nothing), and that galley.
+    security: Option<f64>,
+    security_galley: Option<Arc<Galley>>,
 }
 
 impl Template {
-    #[tracing::instrument(skip(node_style))]
-    fn new(node_style: NodeStyle) -> Self {
+    #[tracing::instrument(skip(node_style, headers))]
+    fn new(node_style: NodeStyle, headers: Rc<RefCell<SystemHeaders>>) -> Self {
         Self {
             label_cache: RefCell::new(HashMap::new()),
             node_style,
+            headers,
         }
     }
 }
@@ -1523,24 +1539,46 @@ impl NodeTemplate for Template {
         // warns "pixels_per_point ... have changed between text layout and
         // tessellation" for each, and draws them at the old resolution).
         let pixels_per_point = ui.ctx().pixels_per_point();
+        let security = self
+            .headers
+            .borrow()
+            .get(ctx.point.id)
+            .map(|header| header.security);
         let mut label_cache = self.label_cache.borrow_mut();
-        let galley = match label_cache.get(&ctx.point.id) {
+        let (galley, security_galley) = match label_cache.get(&ctx.point.id) {
             Some(cached)
                 if cached.name == ctx.point.name
                     && cached.color == text_color
                     && cached.font_size == font_size
+                    && cached.security == security
                     && cached.galley.pixels_per_point == pixels_per_point =>
             {
-                Arc::clone(&cached.galley)
+                (
+                    Arc::clone(&cached.galley),
+                    cached.security_galley.as_ref().map(Arc::clone),
+                )
             }
             _ => {
                 let name = ctx.point.name.clone();
-                let galley = ui.ctx().fonts_mut(|fonts| {
-                    fonts.layout_no_wrap(
+                // The security status beside the name, to one decimal and in
+                // the color the game gives it (see `SystemHeader`).
+                let security_text = self
+                    .headers
+                    .borrow()
+                    .get(ctx.point.id)
+                    .map(|header| (header.security_text(), header.security_color()));
+                let security_size =
+                    ((font_size * self.node_style.security_scale) * 2.0).round() / 2.0;
+                let (galley, security_galley) = ui.ctx().fonts_mut(|fonts| {
+                    let galley = fonts.layout_no_wrap(
                         name.clone().unwrap_or_default(),
                         FontId::proportional(font_size),
                         text_color,
-                    )
+                    );
+                    let security_galley = security_text.map(|(text, color)| {
+                        fonts.layout_no_wrap(text, FontId::proportional(security_size), color)
+                    });
+                    (galley, security_galley)
                 });
                 label_cache.insert(
                     ctx.point.id,
@@ -1549,18 +1587,47 @@ impl NodeTemplate for Template {
                         color: text_color,
                         font_size,
                         galley: Arc::clone(&galley),
+                        security,
+                        security_galley: security_galley.as_ref().map(Arc::clone),
                     },
                 );
-                galley
+                (galley, security_galley)
             }
         };
         drop(label_cache);
         // Same anchoring `Shape::text` does internally (`Align2::anchor_size`
         // then `Shape::galley`) -- we can't call `Shape::text` itself here
         // since it always lays the text out fresh; this is the equivalent
-        // that accepts an already-built `Galley` instead.
-        let text_rect = Align2::CENTER_CENTER.anchor_size(ctx.position, galley.size());
+        // that accepts an already-built `Galley` instead. With a security
+        // status, the name and the status sit side by side, centered as one
+        // block.
+        let gap = self.node_style.security_gap * ctx.zoom;
+        let name_width = galley.size().x;
+        let block_width = name_width
+            + security_galley
+                .as_ref()
+                .map_or(0.0, |galley| gap + galley.size().x);
+        let name_center = Pos2::new(
+            ctx.position.x - block_width / 2.0 + name_width / 2.0,
+            ctx.position.y,
+        );
+        let text_rect = Align2::CENTER_CENTER.anchor_size(name_center, galley.size());
         shapes.push(Shape::galley(text_rect.min, galley, text_color));
+        if let Some(security_galley) = security_galley {
+            let security_center = Pos2::new(
+                ctx.position.x + block_width / 2.0 - security_galley.size().x / 2.0,
+                ctx.position.y,
+            );
+            let security_rect =
+                Align2::CENTER_CENTER.anchor_size(security_center, security_galley.size());
+            // The galley carries its own color; the fallback is only for
+            // glyphs that have none.
+            shapes.push(Shape::galley(
+                security_rect.min,
+                security_galley,
+                text_color,
+            ));
+        }
         ui.painter().extend(shapes);
     }
 

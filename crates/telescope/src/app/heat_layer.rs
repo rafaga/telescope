@@ -49,6 +49,10 @@ pub(crate) struct HeatStyle {
     /// A disc never shrinks below this many screen points, so it shows with
     /// the map zoomed out.
     pub min_screen_radius: f32,
+    /// Where the tint of a node box meets the edge of the box, it fades to
+    /// nothing over this fraction of the way from the middle to the edge
+    /// (0.0 to 1.0: 0.0 is a hard edge).
+    pub edge_fade: f32,
     /// How often the counts of the last hour are read again.
     pub refresh: Duration,
 }
@@ -62,6 +66,7 @@ impl Default for HeatStyle {
             smallest: 0.25,
             faintest: 0.2,
             min_screen_radius: 5.0,
+            edge_fade: 0.5,
             refresh: Duration::from_secs(15),
         }
     }
@@ -179,7 +184,8 @@ impl HeatLayer {
     /// Adds to `mesh` a disc of `radius` around `centre`: `color` at the
     /// centre, fading to nothing at the edge.
     fn add_disc(mesh: &mut Mesh, centre: Pos2, radius: f32, color: Color32) {
-        let rim = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 0);
+        // Premultiplied colors: the rim fades the rgb out with the alpha.
+        let rim = Color32::TRANSPARENT;
         let first = mesh.vertices.len() as u32;
         mesh.colored_vertex(centre, color);
         for step in 0..Self::SEGMENTS {
@@ -192,6 +198,83 @@ impl HeatLayer {
                 first + 1 + step,
                 first + 1 + (step + 1) % Self::SEGMENTS,
             );
+        }
+    }
+
+    /// Rays of the fan that makes a disc cut by an outline.
+    const CUT_SEGMENTS: u32 = 64;
+
+    /// How far from `centre` the ray `direction` (a unit vector) travels
+    /// before it leaves the closed convex polygon `outline`, if it does.
+    fn distance_to_outline(outline: &[Pos2], centre: Pos2, direction: egui::Vec2) -> Option<f32> {
+        let cross = |a: egui::Vec2, b: egui::Vec2| a.x * b.y - a.y * b.x;
+        let mut nearest: Option<f32> = None;
+        for (index, start) in outline.iter().enumerate() {
+            let end = outline[(index + 1) % outline.len()];
+            let side = end - *start;
+            let denominator = cross(direction, side);
+            if denominator.abs() < 1e-6 {
+                continue;
+            }
+            let from_centre = *start - centre;
+            let along_ray = cross(from_centre, side) / denominator;
+            let along_side = cross(from_centre, direction) / denominator;
+            if along_ray > 0.0 && (0.0..=1.0).contains(&along_side) {
+                nearest = Some(nearest.map_or(along_ray, |best| best.min(along_ray)));
+            }
+        }
+        nearest
+    }
+
+    /// Adds to `mesh` the same disc as [`Self::add_disc`], cut by the closed
+    /// convex polygon `outline` (which surrounds `centre`): along every ray
+    /// the alpha fades with the distance to `centre`, reaching nothing at
+    /// `radius`, and the ray ends where it meets the outline. There the tint
+    /// is not cut: over the last `edge_fade` (0.0 to 1.0) of the way to the
+    /// outline it fades to nothing, so it has no hard edge. Two rings of
+    /// vertices make it: the first where the fade starts, with the alpha of
+    /// the disc there, and the second at the end of the ray, transparent.
+    fn add_disc_within(
+        mesh: &mut Mesh,
+        outline: &[Pos2],
+        centre: Pos2,
+        radius: f32,
+        color: Color32,
+        edge_fade: f32,
+    ) {
+        if outline.len() < 3 || radius <= 0.0 {
+            return;
+        }
+        let fade = edge_fade.clamp(0.0, 1.0);
+        let rays = Self::CUT_SEGMENTS;
+        let first = mesh.vertices.len() as u32;
+        mesh.colored_vertex(centre, color);
+        // The colors of a mesh are premultiplied: a fade has to scale the rgb
+        // with the alpha. Keeping the rgb of the centre while only the alpha
+        // falls adds that color to what is behind, and the rim of the disc
+        // shows as a hard edge.
+        let faded = |distance: f32| color.gamma_multiply(1.0 - distance / radius);
+        // The inner ring, then the outer one.
+        let mut ends: Vec<Pos2> = Vec::with_capacity(rays as usize);
+        for step in 0..rays {
+            let angle = std::f32::consts::TAU * step as f32 / rays as f32;
+            let direction = vec2(angle.cos(), angle.sin());
+            let reach = Self::distance_to_outline(outline, centre, direction)
+                .map_or(radius, |distance| distance.min(radius));
+            let start = reach * (1.0 - fade);
+            mesh.colored_vertex(centre + direction * start, faded(start));
+            ends.push(centre + direction * reach);
+        }
+        for position in ends {
+            mesh.colored_vertex(position, Color32::TRANSPARENT);
+        }
+        for step in 0..rays {
+            let next = (step + 1) % rays;
+            let (inner, inner_next) = (first + 1 + step, first + 1 + next);
+            let (outer, outer_next) = (first + 1 + rays + step, first + 1 + rays + next);
+            mesh.add_triangle(first, inner, inner_next);
+            mesh.add_triangle(inner, outer, outer_next);
+            mesh.add_triangle(inner, outer_next, inner_next);
         }
     }
 }
@@ -230,19 +313,20 @@ impl LayerTemplate for HeatLayer {
         }
         let level = self.style.level(kills);
         // The mark grows from the middle of the box until it reaches the
-        // corners; the box clips it.
+        // corners; the box's own outline limits it, so it never paints over
+        // the rounded corners or the border (a rectangular clip did).
         let bounds = ctx.outline.bounding_rect();
         let reach = bounds.size().length() * 0.5;
         let mut mesh = Mesh::default();
-        Self::add_disc(
+        Self::add_disc_within(
             &mut mesh,
+            &ctx.outline.perimeter(),
             bounds.center(),
             reach * self.style.size_at(kills),
             self.style.color_at(level),
+            self.style.edge_fade,
         );
-        painter
-            .with_clip_rect(bounds.intersect(painter.clip_rect()))
-            .add(Shape::mesh(mesh));
+        painter.add(Shape::mesh(mesh));
     }
 }
 
@@ -319,6 +403,59 @@ impl HeatControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tint_never_leaves_the_outline_and_fades_to_nothing() {
+        // A square outline, the middle at the origin, and a disc that reaches
+        // beyond its corners.
+        let outline = [
+            Pos2::new(-10.0, -10.0),
+            Pos2::new(10.0, -10.0),
+            Pos2::new(10.0, 10.0),
+            Pos2::new(-10.0, 10.0),
+        ];
+        let mut mesh = Mesh::default();
+        HeatLayer::add_disc_within(
+            &mut mesh,
+            &outline,
+            Pos2::ZERO,
+            50.0,
+            Color32::from_rgba_premultiplied(200, 0, 0, 100),
+            0.5,
+        );
+        // The middle, a ring where the fade starts and a ring at the edge,
+        // three triangles per ray.
+        let rays = HeatLayer::CUT_SEGMENTS as usize;
+        assert_eq!(mesh.vertices.len(), 2 * rays + 1);
+        assert_eq!(mesh.indices.len(), rays * 9);
+        assert_eq!(mesh.vertices[0].color.a(), 100);
+        for vertex in &mesh.vertices {
+            // Never outside the square.
+            assert!(vertex.pos.x.abs() <= 10.001 && vertex.pos.y.abs() <= 10.001);
+        }
+        // The first ray goes along +x and meets the side at 10. The fade
+        // starts halfway, at 5, where the disc keeps nine tenths of its
+        // alpha; at the edge there is nothing: no hard edge.
+        assert!((mesh.vertices[1].pos.x - 5.0).abs() < 1e-3);
+        assert_eq!(mesh.vertices[1].color.a(), 90);
+        let edge = &mesh.vertices[1 + rays];
+        assert!((edge.pos.x - 10.0).abs() < 1e-3);
+        assert_eq!(edge.color.a(), 0);
+        assert!(
+            mesh.vertices[rays + 1..]
+                .iter()
+                .all(|vertex| vertex.color.a() == 0)
+        );
+        // A disc smaller than the outline ends transparent, inside it.
+        let mut small = Mesh::default();
+        HeatLayer::add_disc_within(&mut small, &outline, Pos2::ZERO, 5.0, Color32::RED, 0.5);
+        assert!(small.vertices[1 + rays..].iter().all(|v| v.color.a() == 0));
+        assert!(
+            small.vertices[1..]
+                .iter()
+                .all(|v| v.pos.to_vec2().length() <= 5.001)
+        );
+    }
 
     #[test]
     fn the_size_follows_the_square_root_and_is_the_base_one_at_saturation() {

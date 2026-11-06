@@ -152,6 +152,7 @@ impl TelescopeApp {
             Arc::clone(&self.app_msg.0),
             false,
             self.settings.get_data_source_urls().clone(),
+            self.settings.get_factor(),
         );
     }
 

@@ -369,6 +369,12 @@ pub(crate) struct NodeStyle {
     /// Strongest opacity of the character glow over the node background,
     /// so the label on top of it stays readable.
     pub(crate) glow_max_alpha: f32,
+    /// Size of the security status written beside the name of the system, as
+    /// a fraction of the size of the name.
+    pub(crate) security_scale: f32,
+    /// Space between the name and the security status, before the map's
+    /// `zoom` multiplier.
+    pub(crate) security_gap: f32,
 }
 
 impl Default for NodeStyle {
@@ -379,6 +385,8 @@ impl Default for NodeStyle {
             corner_radius: 10.0,
             border: 2.0,
             glow_max_alpha: 0.6,
+            security_scale: 0.8,
+            security_gap: 3.0,
         }
     }
 }

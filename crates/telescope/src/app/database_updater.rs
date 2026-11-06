@@ -1,24 +1,20 @@
 //! A small window showing progress while the local EVE Online SDE
 //! database (`sde.db`) is checked for updates and, if needed, rebuilt.
 //!
-//! `Self::run` first asks [`update::prepare`] whether sde-deltas'
-//! build-to-build deltas can bring `sde.db` up to date: they're applied to
-//! the mirror of the SDE the previous full build left behind (one zip),
-//! and `sde.db` then only has its recorded build moved or is rebuilt from
-//! that mirror, unpacked for the occasion, without downloading CCP's
-//! export. When they can't, it runs the same pieces `sde-builder`'s own
-//! CLI (`sde::builder::pipeline`) calls in sequence:
-//! [`sde_index::update_as_needed`] (check CCP's SDE index) ->
-//! [`extract::prepare_sde_directory`] (decompress the zip) ->
-//! [`schema::create_schema`] (create the tables) ->
-//! [`Parser::build_database`] (parse the SDE into them) ->
-//! [`update::create_mirror`] (keep what the next delta update needs) ->
-//! [`pipeline::clean_downloads`] (remove what was downloaded), so what
-//! stays on disk is the database, the mirror's zip and dotlan's maps. It
-//! intentionally goes no further than that -- no SDE parsing, downloading,
-//! or database logic is reimplemented here, only this crate's usual
-//! background-thread-plus-message-channel wiring around calls into
-//! `sde::builder`.
+//! `Self::run` hands the whole update to [`pipeline::update`], the same
+//! entry point `sde-builder`'s CLI uses, and only reports what it does: it
+//! tries sde-deltas' build-to-build deltas first (applied to the mirror of
+//! the SDE the previous full build left behind, as one zip, so `sde.db` only
+//! has its recorded build moved or is rebuilt from that mirror without
+//! downloading CCP's export), and otherwise builds from CCP's full export
+//! and keeps a new mirror. What stays on disk is the database, the mirror's
+//! zip and dotlan's maps. The projection patch (the universe map's
+//! overlapping systems moved apart) runs at the end, whatever the update did.
+//! No SDE parsing, downloading, or database logic is reimplemented here,
+//! only this crate's usual background-thread-plus-message-channel wiring
+//! around [`pipeline::update`], its [`pipeline::Event`]s turned into the
+//! window's phases and the log (`Self::report`), and the Cancel button wired
+//! to the pipeline's own cancel flag.
 //!
 //! This module's actual job -- the reason it exists as more than a
 //! function call -- is the window: [`DatabaseUpdater`] holds the
@@ -40,16 +36,17 @@
 //! `eframe::run_ui_native` and never actually checked or built anything.
 
 use eframe::egui::{self, Margin, RichText, Stroke, Vec2};
-use sde::builder::parser::{Parser, ParserConfig, Position2DMode, ProjectedAxis};
-use sde::builder::pipeline::{self, Workspace};
-use sde::builder::update::{self, FullReason, UpdateOptions, UpdatePlan};
-use sde::builder::{BuildUrls, extract, http, schema, sde_index};
+use sde::builder::parser::{ParserConfig, Position2DMode, ProjectedAxis};
+use sde::builder::pipeline::{self, Pipeline, Workspace};
+use sde::builder::update::{FullReason, UpdateOptions};
+use sde::builder::{BuildUrls, http};
+use sde::projection_patch::ProjectionPatch;
 use sde::{Error, SdeManager};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 use std::time::Instant;
 use tokio::sync::mpsc::Sender;
@@ -63,10 +60,11 @@ use super::messages::{Message, Type, send_app_message, try_send_app_message};
 /// rather than letting two pipelines fight over the same `sde.db` file.
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-/// Set by the window's Cancel button, read by `DatabaseUpdater::run` at the
-/// end of each phase: the phase that is running finishes, the next one does
-/// not start.
-static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Set by the window's Cancel button. It is the pipeline's own cancel flag
+/// ([`Pipeline::cancel`]), checked at the end of each phase: the phase that is
+/// running finishes, the next one does not start.
+static CANCEL_REQUESTED: LazyLock<Arc<AtomicBool>> =
+    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
 /// The phases of an SDE update, in the order they run; each is sent to the
 /// window as [`Message::DatabaseUpdateProgress`].
@@ -174,6 +172,9 @@ enum Outcome {
     Bumped,
     /// The user cancelled before the rebuild started.
     Cancelled,
+    /// The database was up to date, but the projection patch moved systems
+    /// apart in it: the maps reload.
+    Patched,
 }
 
 /// UI state for the "updating the SDE database" window, owned by
@@ -554,6 +555,7 @@ impl DatabaseUpdater {
         app_msg: Arc<Sender<Message>>,
         with_third_party: bool,
         urls: BuildUrls,
+        factor: f64,
     ) {
         // It detetcs if the database has a valid format.
         // Its checks the file typoe against the SQlite Magic header
@@ -621,6 +623,7 @@ impl DatabaseUpdater {
                     &sde_dir,
                     with_third_party,
                     &urls,
+                    factor,
                     &app_msg,
                 )
                 .await;
@@ -651,12 +654,23 @@ impl DatabaseUpdater {
                                 )
                                 .await;
                             }
+                            Outcome::Patched => {
+                                Self::notify(
+                                    &app_msg,
+                                    Type::Info,
+                                    "Systems of the universe map that overlapped were moved apart.",
+                                )
+                                .await;
+                            }
                             Outcome::Cancelled => {
                                 Self::notify(&app_msg, Type::Info, "SDE update cancelled.").await;
                             }
                         }
-                        let rebuilt = outcome == Outcome::Rebuilt;
-                        let _ = send_app_message(&app_msg, Message::DatabaseUpdated(rebuilt)).await;
+                        // The maps reload when the database was rebuilt, and
+                        // also when the projection patch moved systems on
+                        // one that was not.
+                        let reload = matches!(outcome, Outcome::Rebuilt | Outcome::Patched);
+                        let _ = send_app_message(&app_msg, Message::DatabaseUpdated(reload)).await;
                     }
                     Err(err) => {
                         let _ = send_app_message(
@@ -722,6 +736,7 @@ impl DatabaseUpdater {
         sde_dir: &std::path::Path,
         with_third_party: bool,
         urls: &BuildUrls,
+        factor: f64,
         app_msg: &Sender<Message>,
     ) -> Result<Outcome, Error> {
         send_app_message(app_msg, Message::DatabaseUpdateProgress(SdePhase::Checking))
@@ -757,200 +772,114 @@ impl DatabaseUpdater {
             .ok();
         }
 
-        let db_exists = is_sqlite(sde_path);
-        let parser_config = Self::parser_config(with_third_party);
-        let workspace = Workspace::new(
-            sde_path.to_path_buf(),
-            data_dir.to_path_buf(),
-            sde_dir.to_path_buf(),
-        );
-        let archive = workspace.mirror_archive();
-
-        let plan = update::prepare(
-            &client,
-            urls,
-            sde_path,
-            sde_dir,
-            &archive,
-            &parser_config,
-            UpdateOptions::default(),
-            |progress| {
-                if progress.done == 0 && progress.total > 0 {
-                    try_send_app_message(
-                        app_msg,
-                        Message::DatabaseUpdateProgress(SdePhase::Downloading),
-                    )
-                    .ok();
-                    try_send_app_message(
-                        app_msg,
-                        Message::DatabaseUpdateInfo(SdeInfo::Deltas(progress.total)),
-                    )
-                    .ok();
-                }
+        // Every decision -- deltas or the full export, what to keep, what to
+        // remove -- is `sde`'s: this only reports what it does.
+        let pipeline = Pipeline {
+            workspace: Workspace::new(
+                sde_path.to_path_buf(),
+                data_dir.to_path_buf(),
+                sde_dir.to_path_buf(),
+            ),
+            urls: urls.clone(),
+            parser: Self::parser_config(with_third_party),
+            keep_source: false,
+            // A database at CCP's latest build that has no mirror stays as
+            // it is (it gets its mirror with the next build it needs anyway),
+            // and says it is up to date with CCP out of reach: a startup
+            // without a connection must not fail, nor rebuild everything.
+            updates: UpdateOptions {
+                build_missing_mirror: false,
+                ..UpdateOptions::default()
             },
-        )
-        .await;
-        match plan {
-            UpdatePlan::UpToDate { .. } => return Ok(Outcome::UpToDate),
-            UpdatePlan::Bump { to, .. } => {
-                update::set_sde_build(sde_path, &to)?;
+            cancel: Some(Arc::clone(&CANCEL_REQUESTED)),
+            projection_patch: Some(ProjectionPatch::default()),
+            // The patch distance is in the units of the factor the map is read with.
+            factor,
+        };
+        let mut moved = 0;
+        let outcome = pipeline::update(&client, &pipeline, |event| {
+            Self::report(&event, app_msg);
+            if let pipeline::Event::ProjectionPatch(patch) = &event {
+                moved = patch.moved;
+            }
+        })
+        .await?;
+        // The maps reload when the database was rebuilt, and also when the
+        // projection patch moved systems on one that was not.
+        Ok(match outcome {
+            pipeline::Outcome::Cancelled => Outcome::Cancelled,
+            pipeline::Outcome::UpToDate { .. } if moved > 0 => Outcome::Patched,
+            pipeline::Outcome::UpToDate { .. } => Outcome::UpToDate,
+            pipeline::Outcome::Bumped { to, .. } => {
                 send_app_message(app_msg, Message::DatabaseUpdateInfo(SdeInfo::Bumped(to)))
                     .await
                     .ok();
-                return Ok(Outcome::Bumped);
-            }
-            UpdatePlan::Rebuild { to, mirror_dir, .. } => {
-                // `prepare` unpacked the mirror into the SDE directory for
-                // this rebuild; it goes whatever happens next, the archive
-                // keeps it.
-                if Self::cancelled(data_dir, urls) {
-                    let _ = update::release_working_copy(&mirror_dir);
-                    return Ok(Outcome::Cancelled);
+                if moved > 0 {
+                    Outcome::Patched
+                } else {
+                    Outcome::Bumped
                 }
-                let rebuilt = Self::rebuild(
-                    sde_path,
-                    &mirror_dir,
-                    parser_config,
-                    urls,
-                    Some(&to),
-                    app_msg,
-                )
-                .await;
-                let released = update::release_working_copy(&mirror_dir);
-                rebuilt?;
-                released?;
-                return Ok(Outcome::Rebuilt);
             }
-            UpdatePlan::Full { reason } => {
+            _ => Outcome::Rebuilt,
+        })
+    }
+
+    /// Tells the window and the log what `sde`'s pipeline is doing.
+    fn report(event: &pipeline::Event, app_msg: &Sender<Message>) {
+        use pipeline::Event;
+        let progress = |phase| {
+            try_send_app_message(app_msg, Message::DatabaseUpdateProgress(phase)).ok();
+        };
+        let info = |info| {
+            try_send_app_message(app_msg, Message::DatabaseUpdateInfo(info)).ok();
+        };
+        let warn = |text: String| {
+            try_send_app_message(
+                app_msg,
+                Message::GenericNotification((
+                    Type::Warning,
+                    String::from("DatabaseUpdater"),
+                    String::from("run"),
+                    text,
+                )),
+            )
+            .ok();
+        };
+        match event {
+            Event::ApplyingDelta(delta) if delta.done == 0 && delta.total > 0 => {
+                progress(SdePhase::Downloading);
+                info(SdeInfo::Deltas(delta.total));
+            }
+            Event::FullBuild {
+                reason: Some(reason),
+            } => {
                 if matches!(reason, FullReason::SchemaChanged(_)) {
-                    Self::notify(
-                        app_msg,
-                        Type::Warning,
-                        &format!("SDE schema change: {reason}"),
-                    )
-                    .await;
-                }
-                // A mirror is there but sde-deltas is out of reach: a database
-                // already at CCP's latest build needs no full download.
-                let deltas_out_of_reach = matches!(
-                    reason,
-                    FullReason::Unavailable(_) | FullReason::Lagging { .. }
-                );
-                if deltas_out_of_reach && db_exists && installed.is_some() && installed == available
-                {
-                    return Ok(Outcome::UpToDate);
+                    warn(format!("SDE schema change: {reason}"));
                 }
                 // A first run has no mirror yet: nothing worth telling.
-                if reason != FullReason::NoMirror {
-                    send_app_message(
-                        app_msg,
-                        Message::DatabaseUpdateInfo(SdeInfo::FullBuild(reason.to_string())),
-                    )
-                    .await
-                    .ok();
+                if *reason != FullReason::NoMirror {
+                    info(SdeInfo::FullBuild(reason.to_string()));
                 }
             }
+            Event::Downloading { .. } => progress(SdePhase::Downloading),
+            Event::Downloaded { bytes } => info(SdeInfo::Downloaded(*bytes)),
+            Event::Extracting => progress(SdePhase::Extracting),
+            Event::Building => progress(SdePhase::Rebuilding),
+            Event::Verifying => progress(SdePhase::Verifying),
+            Event::Verified => info(SdeInfo::Verified),
+            Event::MirrorFailed { error } => warn(format!(
+                "Couldn't keep a mirror of the SDE for delta updates: {error}"
+            )),
+            Event::CleanupFailed { error } => warn(format!(
+                "Couldn't remove the downloaded SDE export: {error}"
+            )),
+            // The database is fine without it: the nodes just stay where the
+            // projection put them.
+            Event::ProjectionPatchFailed { error } => warn(format!(
+                "Couldn't move apart the overlapping systems of the universe map: {error}"
+            )),
+            _ => {}
         }
-
-        let zip_path = data_dir.join(format!("sde-{}.zip", urls.sde_variant));
-        let expect_download = !db_exists
-            || !zip_path.exists()
-            || available
-                .as_ref()
-                .is_none_or(|available| installed.as_ref() != Some(available));
-        if expect_download {
-            send_app_message(
-                app_msg,
-                Message::DatabaseUpdateProgress(SdePhase::Downloading),
-            )
-            .await
-            .ok();
-        }
-        let changed =
-            sde_index::update_as_needed(&client, data_dir, &urls.sde_url, &urls.sde_variant)
-                .await?;
-        if !changed && db_exists {
-            return Ok(Outcome::UpToDate);
-        }
-        if let Ok(zip) = std::fs::metadata(&zip_path) {
-            send_app_message(
-                app_msg,
-                Message::DatabaseUpdateInfo(SdeInfo::Downloaded(zip.len())),
-            )
-            .await
-            .ok();
-        }
-        if Self::cancelled(data_dir, urls) {
-            return Ok(Outcome::Cancelled);
-        }
-
-        send_app_message(
-            app_msg,
-            Message::DatabaseUpdateProgress(SdePhase::Extracting),
-        )
-        .await
-        .ok();
-
-        extract::prepare_sde_directory(&zip_path, sde_dir)?;
-        if Self::cancelled(data_dir, urls) {
-            return Ok(Outcome::Cancelled);
-        }
-
-        // Read back the build number `sde_index::update_as_needed` just
-        // wrote (or confirmed unchanged) to `sde-{sde_variant}.build`, to
-        // record it in `sdeFingerprint` and the mirror below -- mirrors
-        // `sde-builder`'s own CLI. `Ok` on read failure rather than
-        // propagating it: a database with no recorded build number
-        // (`sdeFingerprint.sdeBuild = NULL`) is still valid, so this
-        // shouldn't abort the whole build.
-        let build_number =
-            std::fs::read_to_string(data_dir.join(format!("sde-{}.build", urls.sde_variant)))
-                .ok()
-                .map(|s| s.trim().to_string());
-
-        let sde_parser = Self::rebuild(
-            sde_path,
-            sde_dir,
-            parser_config,
-            urls,
-            build_number.as_deref(),
-            app_msg,
-        )
-        .await?;
-
-        // Keep only what the parser read, as one zip, so the next update can
-        // use deltas instead of this download, and remove everything
-        // downloaded or decompressed from CCP: what stays on disk is the
-        // database, that zip and dotlan's maps. The database is already in
-        // place: a failure here only costs the next update a full download
-        // again.
-        if let Some(build) = &build_number {
-            match update::create_mirror(sde_dir, &archive, &sde_parser, build) {
-                Ok(_) => {
-                    if let Err(error) = pipeline::clean_downloads(&workspace, &urls.sde_variant) {
-                        Self::notify(
-                            app_msg,
-                            Type::Warning,
-                            &format!("Couldn't remove the downloaded SDE export: {error}"),
-                        )
-                        .await;
-                    }
-                }
-                Err(error) => {
-                    // A half-reduced SDE directory is of no use: empty it
-                    // (the zip stays, so a retry doesn't download it again).
-                    let _ = update::release_working_copy(sde_dir);
-                    Self::notify(
-                        app_msg,
-                        Type::Warning,
-                        &format!("Couldn't keep a mirror of the SDE for delta updates: {error}"),
-                    )
-                    .await;
-                }
-            }
-        }
-
-        Ok(Outcome::Rebuilt)
     }
 
     /// The parser settings Telescope builds `sde.db` with.
@@ -977,100 +906,6 @@ impl DatabaseUpdater {
             verbose: false,
             with_third_party,
         }
-    }
-
-    /// Builds a new `sde.db` from the SDE files in `sde_dir` (CCP's export
-    /// or the mirror), recording `build` in its fingerprint, and returns the
-    /// parser that read them (it knows which fields it read, see
-    /// [`update::create_mirror`]).
-    ///
-    /// Built next to the database and moved over it only once complete
-    /// and verified: a failed build keeps the database there was.
-    async fn rebuild(
-        sde_path: &std::path::Path,
-        sde_dir: &std::path::Path,
-        parser_config: ParserConfig,
-        urls: &BuildUrls,
-        build: Option<&str>,
-        app_msg: &Sender<Message>,
-    ) -> Result<Parser, Error> {
-        let client = http::build_client()?;
-        send_app_message(
-            app_msg,
-            Message::DatabaseUpdateProgress(SdePhase::Rebuilding),
-        )
-        .await
-        .ok();
-
-        if let Some(parent) = sde_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        let building = building_path(sde_path);
-        if building.exists() {
-            std::fs::remove_file(&building)?;
-        }
-        let mut connection = rusqlite::Connection::open(&building)?;
-        schema::create_schema(&connection)?;
-
-        let sde_parser = Parser::new(sde_dir, parser_config);
-        let built = sde_parser
-            .build_database(&mut connection, &client, &urls.maps_url, build)
-            .await;
-        let verified = match built {
-            Ok(_) => {
-                send_app_message(
-                    app_msg,
-                    Message::DatabaseUpdateProgress(SdePhase::Verifying),
-                )
-                .await
-                .ok();
-                Self::verify(&connection)
-            }
-            Err(error) => Err(error),
-        };
-        // Closed before the file is moved or removed.
-        drop(connection);
-        if let Err(error) = verified {
-            let _ = std::fs::remove_file(&building);
-            return Err(error);
-        }
-        send_app_message(app_msg, Message::DatabaseUpdateInfo(SdeInfo::Verified))
-            .await
-            .ok();
-        // One step on every platform: the old database stays whole until
-        // the new one replaces it.
-        std::fs::rename(&building, sde_path)?;
-
-        Ok(sde_parser)
-    }
-
-    /// SQLite's own quick integrity check of the database just built.
-    fn verify(connection: &rusqlite::Connection) -> Result<(), Error> {
-        let result: String =
-            connection.pragma_query_value(None, "quick_check", |row| row.get(0))?;
-        if result == "ok" {
-            return Ok(());
-        }
-        Err(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
-            Some(format!(
-                "the new SDE database failed its integrity check: {result}"
-            )),
-        )
-        .into())
-    }
-
-    /// Whether the user asked to stop. A cancelled run forgets the build
-    /// number it recorded, so the next check still sees the export as new
-    /// instead of taking the old database for up to date.
-    fn cancelled(data_dir: &std::path::Path, urls: &BuildUrls) -> bool {
-        let cancelled = CANCEL_REQUESTED.load(Ordering::SeqCst);
-        if cancelled {
-            let _ = std::fs::remove_file(data_dir.join(format!("sde-{}.build", urls.sde_variant)));
-        }
-        cancelled
     }
 }
 
@@ -1121,8 +956,10 @@ pub(crate) fn is_sqlite(path: &std::path::Path) -> bool {
         .is_ok_and(|()| &header == b"SQLite format 3\0")
 }
 
-/// Where a new SDE database is built before it replaces `sde_path`
-/// (`sde.db` -> `sde.db.building`).
+/// Where `sde` builds a new SDE database before it replaces `sde_path`
+/// (`sde.db` -> `sde.db.building`): the tests look there for what a failed
+/// build must not leave behind.
+#[cfg(test)]
 fn building_path(sde_path: &std::path::Path) -> std::path::PathBuf {
     let mut name = sde_path.as_os_str().to_owned();
     name.push(".building");
@@ -1308,30 +1145,12 @@ mod updater_state_tests {
     }
 
     #[test]
-    fn a_fresh_database_passes_its_integrity_check() {
-        let connection = rusqlite::Connection::open_in_memory().unwrap();
-        assert!(DatabaseUpdater::verify(&connection).is_ok());
-    }
-
-    #[test]
-    fn a_cancelled_run_forgets_the_recorded_build_number() {
-        let dir = std::env::temp_dir().join(format!("telescope-cancel-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let urls = BuildUrls::default();
-        let build_file = dir.join(format!("sde-{}.build", urls.sde_variant));
-        std::fs::write(&build_file, "100").unwrap();
-
+    fn the_cancel_button_raises_the_flag_the_pipeline_watches() {
         let _guard = super::serial();
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
-        assert!(!DatabaseUpdater::cancelled(&dir, &urls));
-        assert!(build_file.exists());
-
         DatabaseUpdater::request_cancel();
-        assert!(DatabaseUpdater::cancelled(&dir, &urls));
-        assert!(!build_file.exists());
-
+        assert!(CANCEL_REQUESTED.load(Ordering::SeqCst));
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -1340,6 +1159,7 @@ mod updater_state_tests {
 #[cfg(test)]
 mod updater_run_tests {
     use super::*;
+    use sde::builder::{schema, update};
     use std::io::Write;
     use std::net::TcpListener;
     use std::path::Path;
@@ -1409,10 +1229,58 @@ mod updater_run_tests {
     }
 
     /// A file with the SQLite header, standing for the installed `sde.db`.
+    /// A database as a build leaves it: the schema and the fingerprint of
+    /// build 100, made with the parser settings Telescope builds with. One
+    /// without a fingerprint is not trusted, and is built again.
     fn installed_database(dir: &Path) -> PathBuf {
+        installed_database_at(dir, "100")
+    }
+
+    /// [`installed_database`] at another build.
+    fn installed_database_at(dir: &Path, build: &str) -> PathBuf {
+        let config = DatabaseUpdater::parser_config(false);
         let path = dir.join("sde.db");
         let connection = rusqlite::Connection::open(&path).unwrap();
-        connection.execute("CREATE TABLE marker (x)", []).unwrap();
+        schema::create_schema(&connection).unwrap();
+        let fingerprint = sde::objects::SdeFingerprint {
+            sde_build: Some(build.to_string()),
+            language: config.language.clone(),
+            position_2d: config.position_2d,
+            map_kspace: config.map_kspace,
+            map_wspace: config.map_wspace,
+            map_abyssal: config.map_abyssal,
+            map_void: config.map_void,
+            with_gates: config.with_gates,
+            with_moons: config.with_moons,
+            with_third_party: config.with_third_party,
+            with_icebelts: None,
+            with_triglavian_status: None,
+            with_jove_observatories: None,
+            with_special_ore: None,
+        };
+        let (force, axis) = fingerprint.position_2d.fingerprint_columns();
+        connection
+            .execute(
+                "INSERT INTO sdeFingerprint (id, sdeBuild, language, forceIsometricPosition2d, \
+                 isometricProjectedAxis, mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, \
+                 withMoons, withThirdParty, hash) \
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                rusqlite::params![
+                    build,
+                    fingerprint.language,
+                    force,
+                    axis,
+                    fingerprint.map_kspace,
+                    fingerprint.map_wspace,
+                    fingerprint.map_abyssal,
+                    fingerprint.map_void,
+                    fingerprint.with_gates,
+                    fingerprint.with_moons,
+                    fingerprint.with_third_party,
+                    fingerprint.hash(),
+                ],
+            )
+            .unwrap();
         path
     }
 
@@ -1458,6 +1326,7 @@ mod updater_run_tests {
             &data_dir.join("sde"),
             false,
             urls,
+            50_000_000_000_000.0,
             &sender,
         ));
         (result, drain(&mut receiver))
@@ -1509,7 +1378,7 @@ mod updater_run_tests {
     fn a_new_build_is_downloaded_and_a_cancel_stops_before_extracting() {
         let _guard = serial();
         let dir = temp_dir("cancel");
-        let database = installed_database(&dir);
+        let database = installed_database_at(&dir, "99");
         std::fs::write(build_file(&dir), "99").unwrap();
         std::fs::write(zip_file(&dir), "old zip").unwrap();
         let payload = b"not really a zip".to_vec();
@@ -1545,7 +1414,7 @@ mod updater_run_tests {
         let _guard = serial();
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         let dir = temp_dir("badzip");
-        let database = installed_database(&dir);
+        let database = installed_database_at(&dir, "99");
         let before = std::fs::read(&database).unwrap();
         std::fs::write(build_file(&dir), "99").unwrap();
         let base = serve(vec![
@@ -1568,7 +1437,7 @@ mod updater_run_tests {
         let _guard = serial();
         CANCEL_REQUESTED.store(false, Ordering::SeqCst);
         let dir = temp_dir("nodownload");
-        let database = installed_database(&dir);
+        let database = installed_database_at(&dir, "99");
         std::fs::write(build_file(&dir), "99").unwrap();
         // The index is there, the zip is not (404).
         let base = serve(vec![("/latest.jsonl", INDEX.as_bytes().to_vec())]);
@@ -1591,8 +1460,10 @@ mod updater_run_tests {
 
         let (result, messages) = run_update(&database, &dir, &urls(&dead_server()));
 
+        // Nothing to download: the pipeline knows the database is at the
+        // build it has, and CCP can't say otherwise.
         assert_eq!(result.unwrap(), Outcome::UpToDate);
-        assert_eq!(messages, ["progress:Checking", "progress:Downloading"]);
+        assert_eq!(messages, ["progress:Checking"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1605,8 +1476,11 @@ mod updater_run_tests {
 
         let (result, messages) = run_update(&database, &dir, &urls(&dead_server()));
 
+        // It tried to get the export and says it could not: it does not go on
+        // to decompress what it never got.
         assert!(result.is_err());
-        assert!(messages.contains(&String::from("progress:Extracting")));
+        assert!(messages.contains(&String::from("progress:Downloading")));
+        assert!(!messages.contains(&String::from("progress:Extracting")));
         assert!(!database.exists());
         assert!(!building_path(&database).exists());
         let _ = std::fs::remove_dir_all(dir);
@@ -1668,48 +1542,7 @@ mod updater_run_tests {
         mirror.pack(&mirror_archive(dir)).unwrap();
         update::release_working_copy(&sde_dir).unwrap();
 
-        let path = dir.join("sde.db");
-        let connection = rusqlite::Connection::open(&path).unwrap();
-        schema::create_schema(&connection).unwrap();
-        let fingerprint = sde::objects::SdeFingerprint {
-            sde_build: Some(String::from("100")),
-            language: config.language.clone(),
-            position_2d: config.position_2d,
-            map_kspace: config.map_kspace,
-            map_wspace: config.map_wspace,
-            map_abyssal: config.map_abyssal,
-            map_void: config.map_void,
-            with_gates: config.with_gates,
-            with_moons: config.with_moons,
-            with_third_party: config.with_third_party,
-            with_icebelts: None,
-            with_triglavian_status: None,
-            with_jove_observatories: None,
-            with_special_ore: None,
-        };
-        let (force, axis) = fingerprint.position_2d.fingerprint_columns();
-        connection
-            .execute(
-                "INSERT INTO sdeFingerprint (id, sdeBuild, language, forceIsometricPosition2d, \
-                 isometricProjectedAxis, mapKspace, mapWspace, mapAbyssal, mapVoid, withGates, \
-                 withMoons, withThirdParty, hash) \
-                 VALUES (1, '100', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                rusqlite::params![
-                    fingerprint.language,
-                    force,
-                    axis,
-                    fingerprint.map_kspace,
-                    fingerprint.map_wspace,
-                    fingerprint.map_abyssal,
-                    fingerprint.map_void,
-                    fingerprint.with_gates,
-                    fingerprint.with_moons,
-                    fingerprint.with_third_party,
-                    fingerprint.hash(),
-                ],
-            )
-            .unwrap();
-        path
+        installed_database(dir)
     }
 
     /// sde-deltas publishing build 101 (from 100), whose manifest lists
@@ -1889,6 +1722,7 @@ mod updater_run_tests {
             Arc::new(sender),
             false,
             urls(&dead_server()),
+            50_000_000_000_000.0,
         );
 
         let messages = drain(&mut receiver);
@@ -1914,6 +1748,7 @@ mod updater_run_tests {
             Arc::new(sender),
             false,
             urls(&dead_server()),
+            50_000_000_000_000.0,
         );
         UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
 
@@ -1938,6 +1773,7 @@ mod updater_run_tests {
             Arc::new(sender),
             false,
             urls(base),
+            50_000_000_000_000.0,
         );
         wait_until_idle();
         drain(&mut receiver)

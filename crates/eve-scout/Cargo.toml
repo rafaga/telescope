@@ -1,0 +1,25 @@
+[package]
+name = "eve-scout"
+authors = ["Rafael Amador <rafaga@duck.com>"]
+description = "Client of the public EvE-Scout API (Thera and Turnur wormholes, storms, routes)"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.13", features = ["json", "gzip", "query"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# `sync` for the turn of a request (the Mutex of `guard`).
+tokio = { version = "1.54", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.54", features = ["rt", "macros", "time"] }
+# Only for `tests/live.rs`, which compares the wormhole classes of the API
+# with the ones of a real `sde.db`.
+rusqlite = { version = "0.41", features = ["bundled"] }

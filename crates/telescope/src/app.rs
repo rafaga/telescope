@@ -310,6 +310,7 @@ impl TelescopeApp {
                 Arc::clone(&arc_msg_sender),
                 true,
                 settings.get_data_source_urls().clone(),
+                settings.get_factor(),
             );
         }
         let arc_map_sender = Arc::new(mtx);
