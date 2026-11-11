@@ -21,7 +21,7 @@ use egui_map::map::{
     minimap::MinimapSettings,
     objects::{
         HitContext, MapPoint, MapSegment, MapSettings, MarkerContext, NodeContext, NodeOutline,
-        NodeTemplate, RegionLabel, VisibilitySetting,
+        NodeTemplate, RegionLabel, TextScaling, VisibilitySetting,
     },
     overlay::Corner,
 };
@@ -47,7 +47,10 @@ use super::intel::kill_context::{KillContext, Source, Verdict};
 use super::intel::kill_day::DayLine;
 use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::MessageSpawner;
-use super::system_header::SystemHeaders;
+use super::system_header::{SystemHeader, SystemHeaders};
+use super::wormhole_links::{
+    Hub, LabelSpace, NodeSize, WormholeLayer, WormholeMarkerStyle, WormholeShared,
+};
 
 /// Bridges a single `sde` map point (native type, as of the `objects`
 /// rewrite `sde` no longer depends on `egui-map` at all) into `egui-map`'s
@@ -138,6 +141,9 @@ pub trait TabPane {
     /// Gives the map the zKillboard source, for the killmail context of its
     /// node tooltips. Maps that don't show it ignore it.
     fn set_zkillboard(&mut self, _handle: ZKillboardHandle) {}
+    /// Gives the map the wormholes of Thera and Turnur, to draw next to the
+    /// systems they leave from. Maps that don't show them ignore it.
+    fn set_wormholes(&mut self, _wormholes: Arc<WormholeShared>) {}
 }
 
 /// Linked characters on a map, by character id: their solar system and name.
@@ -145,11 +151,9 @@ pub trait TabPane {
 /// knows the markers' ids).
 type CharactersOnMap = HashMap<usize, (usize, String)>;
 
-/// Icon of a linked character in the Settings pages.
-pub(crate) const CHARACTER_ICON: &str = "👤";
-
-/// Icon shown to the left of each character name in the node tooltips: where
-/// the character is. It is not [`COUNT_ICON`], which counts the pilots of a
+/// Icon of a linked character: shown to the left of each character name in
+/// the node tooltips, and beside the regions that have one in the Settings.
+/// It marks where the character is. It is not [`COUNT_ICON`], which counts the pilots of a
 /// report.
 pub(crate) const LOCATION_ICON: &str = "📍";
 
@@ -360,21 +364,68 @@ impl KillContext {
     }
 }
 
-/// The tooltip of the node under the pointer. With `headers` (the universe
-/// map, which does not write the names of its nodes) every node has one,
-/// led by the name of the system, its security status and its region.
-/// Without them only the nodes that have something to show do. Under the
+/// Which nodes of a map have the header in their tooltip.
+enum HeaderScope<'a> {
+    /// All of them (the universe map, which does not write the names of its
+    /// nodes), the nodes of the wormholes of Thera among them.
+    Everywhere(&'a SystemHeaders),
+    /// Only the nodes of the wormholes, whose ids start at `first_id`: the
+    /// systems of a region map write their names, but a wormhole leads to a
+    /// system that may be far from it, so its tooltip says which.
+    Markers {
+        headers: &'a SystemHeaders,
+        first_id: usize,
+    },
+}
+
+impl<'a> HeaderScope<'a> {
+    /// The header of the node `id`, if the scope covers it.
+    fn header(&self, id: usize) -> Option<&'a SystemHeader> {
+        match *self {
+            Self::Everywhere(headers) => headers.get(id),
+            Self::Markers { headers, first_id } => {
+                if id >= first_id {
+                    headers.get(id)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// The system that the node `id` stands for: the one the wormhole leads to
+    /// for the node of a wormhole, and the node itself for the others.
+    fn system_of(&self, id: usize) -> usize {
+        match *self {
+            Self::Everywhere(headers) => headers.system_of(id),
+            Self::Markers { headers, first_id } => {
+                if id >= first_id {
+                    headers.system_of(id)
+                } else {
+                    id
+                }
+            }
+        }
+    }
+}
+
+/// The tooltip of the node under the pointer. With a header (see
+/// [`HeaderScope`]) the node has one, led by the name of the system, its
+/// security status (or class, in wormhole space) and its region; the node of
+/// a wormhole gets it so that the region of the system it leads to is known.
+/// Without a header only the nodes that have something to show have a tooltip. Under the
 /// header, with no lines between the groups: the linked characters in that
 /// system, one per line with [`LOCATION_ICON`] as a marker, then its active
 /// intel alerts, newest first (see `map_alerts`), and, in a strip along the
 /// bottom, what the killmails know.
+#[tracing::instrument(skip_all)]
 fn show_node_tooltip(
     response: Response,
     map: &Map,
     characters: &CharactersOnMap,
     alerts: &mut AlertLog,
     kills: Option<&ZKillboardHandle>,
-    headers: Option<&SystemHeaders>,
+    headers: HeaderScope,
 ) {
     let Some(system_id) = map.hovered_node() else {
         return;
@@ -390,19 +441,21 @@ fn show_node_tooltip(
     // killmails are being read: it says what they know, even that there are
     // none.
     let standalone = names.is_empty() && active.is_empty();
-    let header = headers.and_then(|headers| headers.get(system_id));
+    let header = headers.header(system_id);
     if header.is_none() && standalone && kills.is_none() {
         return;
     }
     names.sort_unstable();
     // Every system that has a tooltip says what the killmails know, with a
     // character in it, an alert or neither.
-    let context = kills.and_then(|handle| handle.context(system_id));
+    // The node of a wormhole says what the killmails know of the system it leads to.
+    let context = kills.and_then(|handle| handle.context(headers.system_of(system_id)));
     if header.is_none() && standalone && context.is_none() {
         return;
     }
     let style = NodeTooltipStyle::default();
     response.on_hover_ui_at_pointer(|ui| {
+        let _span = tracing::info_span!("node tooltip ui").entered();
         if let Some(header) = header {
             header.show(ui);
         }
@@ -537,6 +590,12 @@ pub struct UniversePane {
     heat: HeatControl,
     /// Name, security and region of every system, for the node tooltips.
     headers: SystemHeaders,
+    /// Where every system of the map is, for the wormholes drawn next to them.
+    positions: HashMap<usize, [f32; 2]>,
+    /// The wormholes of Thera and Turnur, once the app gives them.
+    wormholes: Option<Arc<WormholeShared>>,
+    /// What of them is drawn on the map: the ones of Thera.
+    wormhole_layer: WormholeLayer,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
     factor: f64,
@@ -566,6 +625,9 @@ impl UniversePane {
             zkillboard: None,
             heat,
             headers: SystemHeaders::default(),
+            positions: HashMap::new(),
+            wormholes: None,
+            wormhole_layer: WormholeLayer::new(WormholeMarkerStyle::universe()),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
@@ -589,10 +651,16 @@ impl UniversePane {
         self.headers = SystemHeaders::load(&self.path);
         if let Ok(t_sde) = SdeManager::new(&self.path, self.factor) {
             if let Ok(points) = t_sde.get_systems() {
-                self.map.add_hashmap_points(sde_points_to_map(points));
+                let points = sde_points_to_map(points);
+                self.positions = points
+                    .iter()
+                    .map(|(id, point)| (*id, point.coords))
+                    .collect();
+                self.map.add_hashmap_points(points);
                 self.has_points = true;
             }
             if let Ok(hash_conns) = t_sde.get_connections() {
+                self.wormhole_layer.set_gates(hash_conns.keys().copied());
                 self.map.add_hashmap_lines(sde_segments_to_map(hash_conns));
             }
         }
@@ -628,11 +696,58 @@ impl UniversePane {
     }
 }
 
+/// The size of the node a system has on the map of the universe, in map units:
+/// the built-in circle of `egui-map` has a radius of 4.
+const UNIVERSE_NODE_SIZE: f64 = 8.0;
+
+impl UniversePane {
+    /// Draws a node next to every system that has a wormhole to Thera, joined
+    /// to it by a dashed line, and says the wormholes are wanted while this map
+    /// is drawn. Thera itself has no place on this map, so this is where it
+    /// shows. Cheap when nothing changed: the markers are worked out again only
+    /// when the wormholes were replaced or after a while (they expire).
+    fn refresh_wormholes(&mut self) {
+        let Some(wormholes) = &self.wormholes else {
+            return;
+        };
+        if !wormholes.is_enabled() || !self.has_points {
+            self.wormhole_layer.clear(&mut self.map);
+            return;
+        }
+        wormholes.touch();
+        let version = wormholes.version();
+        let now = Instant::now();
+        if !self.wormhole_layer.is_due(version, now) {
+            return;
+        }
+        let names = |id: usize| self.headers.get(id).map(|header| header.name.clone());
+        let markers = self.wormhole_layer.markers(
+            &wormholes.layer(),
+            chrono::Utc::now(),
+            &self.positions,
+            &names,
+            NodeSize {
+                width: UNIVERSE_NODE_SIZE,
+                height: UNIVERSE_NODE_SIZE,
+            },
+            // The lines carry no text: nothing to measure.
+            LabelSpace {
+                measure: &|_| [0.0, 0.0],
+            },
+        );
+        self.wormhole_layer
+            .show(&mut self.map, markers, version, now);
+        // The nodes of the markers answer for the system they stand for.
+        self.headers.set_aliases(self.wormhole_layer.aliases());
+    }
+}
+
 impl TabPane for UniversePane {
     #[tracing::instrument(skip(self))]
     fn reload_data(&mut self, path: &Path) {
         self.path = path.to_path_buf();
         self.has_points = false;
+        self.wormhole_layer.clear(&mut self.map);
         self.generate_data();
         if self.has_points {
             for (player_id, (system_id, _)) in &self.characters {
@@ -662,9 +777,14 @@ impl TabPane for UniversePane {
         self.heat.set_enabled(&mut self.map, on);
     }
 
+    fn set_wormholes(&mut self, wormholes: Arc<WormholeShared>) {
+        self.wormholes = Some(wormholes);
+    }
+
     #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
+        self.refresh_wormholes();
         let response = ui.add(&mut self.map);
         self.heat.refresh(ui, self.zkillboard.as_ref());
         show_node_tooltip(
@@ -673,7 +793,7 @@ impl TabPane for UniversePane {
             &self.characters,
             &mut self.alerts,
             self.zkillboard.as_ref(),
-            Some(&self.headers),
+            HeaderScope::Everywhere(&self.headers),
         );
         UiResponse::None
     }
@@ -778,6 +898,16 @@ pub struct RegionPane {
     /// The security status of every system, shared with the [`Template`] that
     /// writes it beside the name of each node.
     headers: Rc<RefCell<SystemHeaders>>,
+    /// Where every system of the region is, for the wormholes drawn next to
+    /// them.
+    positions: HashMap<usize, [f32; 2]>,
+    /// The size of the boxes of the nodes, which decides where the wormholes
+    /// fit.
+    node_style: NodeStyle,
+    /// The wormholes of Thera and Turnur, once the app gives them.
+    wormholes: Option<Arc<WormholeShared>>,
+    /// What of them is drawn on the map.
+    wormhole_layer: WormholeLayer,
 }
 
 impl RegionPane {
@@ -806,10 +936,17 @@ impl RegionPane {
             zkillboard: None,
             heat,
             headers: Rc::new(RefCell::new(SystemHeaders::default())),
+            positions: HashMap::new(),
+            node_style,
+            wormholes: None,
+            wormhole_layer: WormholeLayer::new(WormholeMarkerStyle::default()),
         };
         object.generate_data();
         object.map.settings = MapSettings::default();
         object.map.settings.node_text_visibility = VisibilitySetting::Hover;
+        // The text of the wormhole lines follows the zoom like the names in
+        // the nodes do, so it takes the same room in map units at any zoom.
+        object.map.settings.segment_label_scaling = TextScaling::Zoom;
         // A region is a much smaller area than the whole universe, so the
         // intel alert pulse spreads over a shorter radius here (default is
         // 40.0) -- otherwise it covers the neighbouring systems on the
@@ -840,10 +977,21 @@ impl RegionPane {
 
         *self.headers.borrow_mut() = SystemHeaders::load(&self.path);
         match t_sde.get_abstract_systems(vec![self.region_id as u32]) {
-            Ok(points) => {
-                self.map.add_hashmap_points(sde_points_to_map(points));
+            Ok(mut points) => {
+                // The systems with no place on the abstract map (Thera, alone
+                // in its region) go at the origin.
+                if let Ok(unplaced) = t_sde.get_unplaced_systems(vec![self.region_id as u32]) {
+                    points.extend(unplaced);
+                }
+                let points = sde_points_to_map(points);
+                self.positions = points
+                    .iter()
+                    .map(|(id, point)| (*id, point.coords))
+                    .collect();
+                self.map.add_hashmap_points(points);
                 self.has_points = true;
                 if let Ok(lines) = t_sde.get_abstract_connections(vec![self.region_id as u32]) {
+                    self.wormhole_layer.set_gates(lines.keys().copied());
                     self.map.add_hashmap_lines(sde_segments_to_map(lines));
                 }
             }
@@ -862,7 +1010,7 @@ impl RegionPane {
         if let Ok(region) = t_sde.get_region(vec![self.region_id as u32], None)
             && let Some(region) = region.values().next()
         {
-            self.tab_name.clone_from(&region.name);
+            self.tab_name = Hub::region_title(self.region_id, &region.name);
         }
     }
 }
@@ -893,14 +1041,22 @@ impl TabPane for RegionPane {
     }
 
     fn set_node_style(&mut self, style: NodeStyle) {
+        self.node_style = style;
         self.map
             .set_node_template(Rc::new(Template::new(style, Rc::clone(&self.headers))));
+        // The wormholes go where the new boxes fit.
+        self.wormhole_layer.clear(&mut self.map);
+    }
+
+    fn set_wormholes(&mut self, wormholes: Arc<WormholeShared>) {
+        self.wormholes = Some(wormholes);
     }
 
     #[tracing::instrument(skip(self))]
     fn reload_data(&mut self, path: &Path) {
         self.path = path.to_path_buf();
         self.has_points = false;
+        self.wormhole_layer.clear(&mut self.map);
         self.generate_data();
         if self.has_points {
             for (player_id, (system_id, _)) in &self.characters {
@@ -944,15 +1100,21 @@ impl TabPane for RegionPane {
     #[tracing::instrument(skip(self, ui))]
     fn ui(&mut self, ui: &mut Ui) -> UiResponse {
         self.event_manager();
+        self.refresh_wormholes(ui.ctx());
         let response = ui.add(&mut self.map);
+        self.show_attribution(ui, response.rect);
         self.heat.refresh(ui, self.zkillboard.as_ref());
+        let headers = self.headers.borrow();
         show_node_tooltip(
             response,
             &self.map,
             &self.characters,
             &mut self.alerts,
             self.zkillboard.as_ref(),
-            None,
+            HeaderScope::Markers {
+                headers: &headers,
+                first_id: WormholeMarkerStyle::default().id_base,
+            },
         );
         UiResponse::None
     }
@@ -965,6 +1127,96 @@ impl TabPane for RegionPane {
             }
             Target::Region => {}
         }
+    }
+}
+
+/// Where the wormholes of Thera come from, written on its map.
+const EVE_SCOUT_CREDIT: &str = "powered by Eve-scout.com";
+
+impl RegionPane {
+    /// Writes the credit of EvE-Scout in the lower left corner of `map_rect`,
+    /// the area of the map, on the map of Thera while its wormholes are shown:
+    /// they are what that map is made of. A faint text, neither a link nor selectable.
+    fn show_attribution(&self, ui: &mut Ui, map_rect: Rect) {
+        let shown = self
+            .wormholes
+            .as_ref()
+            .is_some_and(|wormholes| wormholes.is_enabled());
+        if self.region_id != Hub::THERA_REGION || !shown {
+            return;
+        }
+        let corner = map_rect.left_bottom();
+        let area = Rect::from_min_max(
+            Pos2::new(corner.x + 10.0, corner.y - 28.0),
+            Pos2::new(corner.x + 260.0, corner.y - 6.0),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(area)
+                .layout(egui::Layout::left_to_right(egui::Align::BOTTOM)),
+            |ui| {
+                let faint = ui.visuals().weak_text_color().gamma_multiply(0.75);
+                ui.add(
+                    egui::Label::new(RichText::new(EVE_SCOUT_CREDIT).size(11.0).color(faint))
+                        .selectable(false),
+                );
+            },
+        );
+    }
+
+    /// Draws the wormholes of Thera and Turnur next to the systems of the
+    /// region they leave from, and says they are wanted while this map is
+    /// drawn. Cheap when nothing changed: it works the markers out again only
+    /// when the wormholes were replaced or after a while (they expire).
+    fn refresh_wormholes(&mut self, ctx: &egui::Context) {
+        let Some(wormholes) = &self.wormholes else {
+            return;
+        };
+        if !wormholes.is_enabled() || !self.has_points {
+            self.wormhole_layer.clear(&mut self.map);
+            return;
+        }
+        wormholes.touch();
+        let version = wormholes.version();
+        let now = Instant::now();
+        if !self.wormhole_layer.is_due(version, now) {
+            return;
+        }
+        let text_size = self.map.settings.node_text_size;
+        // The size of a text as the map draws it (the same font and size).
+        // Laying it out here is cheap: the fonts remember what they laid out.
+        let measure = |text: &str| -> [f32; 2] {
+            let size = ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(
+                        text.to_owned(),
+                        FontId::proportional(text_size),
+                        Color32::WHITE,
+                    )
+                    .size()
+            });
+            [size.x, size.y]
+        };
+        let headers = self.headers.borrow();
+        let names = |id: usize| headers.get(id).map(|header| header.name.clone());
+        let markers = self.wormhole_layer.markers(
+            &wormholes.layer(),
+            chrono::Utc::now(),
+            &self.positions,
+            &names,
+            NodeSize {
+                width: f64::from(self.node_style.width + 2.0 * self.node_style.border),
+                height: f64::from(self.node_style.height + 2.0 * self.node_style.border),
+            },
+            LabelSpace { measure: &measure },
+        );
+        drop(headers);
+        self.wormhole_layer
+            .show(&mut self.map, markers, version, now);
+        // The nodes of the markers write the security of the system they stand for.
+        self.headers
+            .borrow_mut()
+            .set_aliases(self.wormhole_layer.aliases());
     }
 }
 
@@ -1406,7 +1658,7 @@ struct CachedLabel {
     galley: Arc<Galley>,
     /// The security status `security_galley` was laid out for (compared as
     /// the raw number, so a lookup allocates nothing), and that galley.
-    security: Option<f64>,
+    security: Option<(f64, Option<u32>)>,
     security_galley: Option<Arc<Galley>>,
 }
 
@@ -1465,11 +1717,25 @@ impl NodeTemplate for Template {
         // showed between them. `ctx.background_color` is the surrounding
         // UI's own faint background (`extreme_bg_color`), so the chip suits
         // both light and dark themes.
+        // The node of a wormhole (not a system of the SDE) has the border of
+        // its own color, so it stands out from the systems.
+        // The nodes look alike (the line of a wormhole is what tells it apart);
+        // only the systems of wormhole space have the color of their class.
+        // One lookup per node per frame feeds both the border and the label.
+        let (class_color, security) = {
+            let headers = self.headers.borrow();
+            let header = headers.get(ctx.point.id);
+            (
+                header.and_then(SystemHeader::class_color),
+                header.map(|header| (header.security, header.wormhole_class)),
+            )
+        };
+        let border_color = class_color.unwrap_or(ctx.theme.node);
         shapes.push(Shape::Rect(RectShape::new(
             rect,
             corner_radius,
             ctx.background_color,
-            Stroke::new(self.node_style.border * ctx.zoom, ctx.theme.node),
+            Stroke::new(self.node_style.border * ctx.zoom, border_color),
             egui::StrokeKind::Outside,
         )));
         ui.painter().extend(std::mem::take(&mut shapes));
@@ -1539,11 +1805,6 @@ impl NodeTemplate for Template {
         // warns "pixels_per_point ... have changed between text layout and
         // tessellation" for each, and draws them at the old resolution).
         let pixels_per_point = ui.ctx().pixels_per_point();
-        let security = self
-            .headers
-            .borrow()
-            .get(ctx.point.id)
-            .map(|header| header.security);
         let mut label_cache = self.label_cache.borrow_mut();
         let (galley, security_galley) = match label_cache.get(&ctx.point.id) {
             Some(cached)
@@ -1560,13 +1821,13 @@ impl NodeTemplate for Template {
             }
             _ => {
                 let name = ctx.point.name.clone();
-                // The security status beside the name, to one decimal and in
+                // The security status (the class of a wormhole system) beside the name, in
                 // the color the game gives it (see `SystemHeader`).
                 let security_text = self
                     .headers
                     .borrow()
                     .get(ctx.point.id)
-                    .map(|header| (header.security_text(), header.security_color()));
+                    .map(|header| (header.status_text(), header.status_color()));
                 let security_size =
                     ((font_size * self.node_style.security_scale) * 2.0).round() / 2.0;
                 let (galley, security_galley) = ui.ctx().fonts_mut(|fonts| {

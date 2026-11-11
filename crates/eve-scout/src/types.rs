@@ -13,45 +13,40 @@
 //! Fields the document does not mark as required are optional.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// An integer the API documents as one and sends as either a number or a
-/// string.
-fn id_from_number_or_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Id {
-        Number(i64),
-        Text(String),
-    }
-    match Id::deserialize(deserializer)? {
-        Id::Number(number) => Ok(number),
-        Id::Text(text) => text
-            .trim()
-            .parse()
-            .map_err(|_| D::Error::custom(format!("`{text}` is not an integer id"))),
-    }
+/// string. The fields that hold one are plain `i64`s and read it with
+/// [`Self::required`] or [`Self::optional`] (`deserialize_with`).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IntegerId {
+    Number(i64),
+    Text(String),
 }
 
-/// [`id_from_number_or_text`] for a value that may be missing or `null`.
-fn optional_id_from_number_or_text<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<i64>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Id {
-        Number(i64),
-        Text(String),
+impl IntegerId {
+    /// The integer, whichever way it was sent.
+    fn value<E: serde::de::Error>(self) -> Result<i64, E> {
+        match self {
+            IntegerId::Number(number) => Ok(number),
+            IntegerId::Text(text) => text
+                .trim()
+                .parse()
+                .map_err(|_| E::custom(format!("`{text}` is not an integer id"))),
+        }
     }
-    match Option::<Id>::deserialize(deserializer)? {
-        None => Ok(None),
-        Some(Id::Number(number)) => Ok(Some(number)),
-        Some(Id::Text(text)) => text
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(|_| D::Error::custom(format!("`{text}` is not an integer id"))),
+
+    /// For a value that is always there.
+    fn required<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+        Self::deserialize(deserializer)?.value()
+    }
+
+    /// For a value that may be missing or `null`.
+    fn optional<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
+        Option::<Self>::deserialize(deserializer)?
+            .map(Self::value)
+            .transpose()
     }
 }
 
@@ -219,6 +214,14 @@ impl SystemClass {
             .into_iter()
             .find(|class| class.wormhole_class_id() == Some(id))
     }
+
+    /// The name the API gives the class, which is how it serializes.
+    pub(crate) fn query_name(self) -> Option<String> {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(name)) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 /// How a route is calculated. Wormholes are always used.
@@ -233,6 +236,16 @@ pub enum RoutePreference {
     /// The shortest route, preferring gates.
     #[serde(rename = "shortest-gates")]
     ShortestGates,
+}
+
+impl RoutePreference {
+    pub(crate) fn query_name(self) -> &'static str {
+        match self {
+            RoutePreference::Safer => "safer",
+            RoutePreference::Shortest => "shortest",
+            RoutePreference::ShortestGates => "shortest-gates",
+        }
+    }
 }
 
 /// A system, as routes and the system search describe it.
@@ -259,7 +272,7 @@ pub struct Route {
     pub jumps: u32,
     /// The signature the route goes through: only in the routes to
     /// signatures.
-    #[serde(default, deserialize_with = "optional_id_from_number_or_text")]
+    #[serde(default, deserialize_with = "IntegerId::optional")]
     pub signature_id: Option<i64>,
     /// The systems on the way, the first and the last included.
     pub route: Vec<PublicSystem>,
@@ -315,7 +328,7 @@ pub enum SignatureType {
 /// that has not expired.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Signature {
-    #[serde(deserialize_with = "id_from_number_or_text")]
+    #[serde(deserialize_with = "IntegerId::required")]
     pub id: i64,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
@@ -388,11 +401,13 @@ pub enum ObservationType {
 }
 
 /// What group an observation belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObservationCategory {
     Storm,
     SpaceOddity,
+    /// What the API doesn't send, or sends and this crate doesn't know yet.
+    #[default]
     #[serde(other)]
     Unknown,
 }
@@ -401,14 +416,14 @@ pub enum ObservationCategory {
 /// seen. The API always has the latest record of each object.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Observation {
-    #[serde(deserialize_with = "id_from_number_or_text")]
+    #[serde(deserialize_with = "IntegerId::required")]
     pub id: i64,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub created_by_name: Option<String>,
     pub observation_type: ObservationType,
-    #[serde(default = "unknown_category")]
+    #[serde(default)]
     pub observation_category: ObservationCategory,
     /// A name to show to people (`Tom's Shuttle`).
     #[serde(default)]
@@ -424,10 +439,6 @@ pub struct Observation {
     pub region_id: Option<i64>,
     #[serde(default)]
     pub region_name: Option<String>,
-}
-
-fn unknown_category() -> ObservationCategory {
-    ObservationCategory::Unknown
 }
 
 /// A kind of wormhole.
@@ -524,7 +535,7 @@ pub struct ScanStatistic {
 /// One donation to EvE-Scout.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Donation {
-    #[serde(deserialize_with = "id_from_number_or_text")]
+    #[serde(deserialize_with = "IntegerId::required")]
     pub id: i64,
     /// The ISK donated, as the decimal text the API sends.
     pub amount: String,

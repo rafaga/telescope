@@ -8,9 +8,10 @@
 //! the SDE updater replaces the file while Telescope runs), so hovering reads
 //! no file.
 
+use super::wormhole_links::Hub;
 use egui::{Color32, RichText, Ui};
 use sde::SdeManager;
-use sde::objects::Universe;
+use sde::objects::SystemSummary;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -23,9 +24,59 @@ pub(crate) struct SystemHeader {
     pub region: String,
     /// The true security status the SDE gives (-1.0 to 1.0).
     pub security: f64,
+    /// The wormhole class of the system (see `SolarSystem::wormhole_class`).
+    pub wormhole_class: Option<u32>,
+    /// Whether the status written beside the name is the security even though
+    /// the system has a class: Thera, and only Thera (it keeps the color of
+    /// its class).
+    pub security_shown: bool,
 }
 
 impl SystemHeader {
+    /// The green of the wormholes: their lines, and the systems of wormhole space
+    /// that have no class of 1 to 6.
+    pub(crate) const WORMHOLE_COLOR: Color32 = Color32::from_rgb(0x4d, 0xb6, 0xac);
+
+    /// The class of a wormhole system as it is written, `C3`: classes 1 to 6,
+    /// 12 (Thera) and 13 to 18. The 7, 8 and 9 of a region of k-space are
+    /// not wormhole classes.
+    pub(crate) fn class_text(&self) -> Option<String> {
+        self.wormhole_class
+            .filter(|class| matches!(class, 1..=6 | 12..=18))
+            .map(|class| format!("C{class}"))
+    }
+
+    /// The color of a wormhole system: blue for C1 and C2, orange for C3 and
+    /// C4, red for C5 and C6 (the harder the class, the warmer), and the green
+    /// of the wormholes for the others (Thera, shattered, drifters). `None`
+    /// for a system that is not of wormhole space.
+    pub(crate) fn class_color(&self) -> Option<Color32> {
+        self.class_text()?;
+        Some(match self.wormhole_class? {
+            1 | 2 => Color32::from_rgb(0x4a, 0x9e, 0xff),
+            3 | 4 => Color32::from_rgb(0xf2, 0x9b, 0x2e),
+            5 | 6 => Color32::from_rgb(0xe5, 0x48, 0x48),
+            _ => Self::WORMHOLE_COLOR,
+        })
+    }
+
+    /// What is written beside the name: the class of a wormhole system, the
+    /// security status of any other, and of Thera.
+    pub(crate) fn status_text(&self) -> String {
+        if self.security_shown {
+            return self.security_text();
+        }
+        self.class_text().unwrap_or_else(|| self.security_text())
+    }
+
+    /// The color of [`Self::status_text`].
+    pub(crate) fn status_color(&self) -> Color32 {
+        if self.security_shown {
+            return self.security_color();
+        }
+        self.class_color().unwrap_or_else(|| self.security_color())
+    }
+
     /// The security status as the game rounds it for display: one decimal,
     /// and never "-0.0".
     fn shown_security(&self) -> f64 {
@@ -64,8 +115,8 @@ impl SystemHeader {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.label(RichText::new(&self.name).strong());
             ui.label(
-                RichText::new(self.security_text())
-                    .color(self.security_color())
+                RichText::new(self.status_text())
+                    .color(self.status_color())
                     .strong(),
             );
             ui.label(RichText::new(&self.region).weak());
@@ -77,6 +128,9 @@ impl SystemHeader {
 #[derive(Default)]
 pub(crate) struct SystemHeaders {
     systems: HashMap<usize, SystemHeader>,
+    /// Nodes that are drawn for a system but have an id of their own (the
+    /// nodes of the wormholes), by the id of the system they stand for.
+    aliases: HashMap<usize, usize>,
 }
 
 impl SystemHeaders {
@@ -84,56 +138,70 @@ impl SystemHeaders {
     /// Empty if the database can't be read (first run, or while the updater
     /// rebuilds it).
     pub(crate) fn load(path: &Path) -> Self {
-        let Ok(mut manager) = SdeManager::new(path, 1.0) else {
+        let Ok(manager) = SdeManager::new(path, 1.0) else {
             return Self::default();
         };
-        if manager.get_universe().is_err() {
-            return Self::default();
+        match manager.get_system_summaries() {
+            Ok(summaries) => Self::from_summaries(summaries),
+            Err(_) => Self::default(),
         }
-        Self::from_universe(&manager.universe)
     }
 
-    /// The headers of the systems of `universe`; the region of a system the
-    /// universe has no region for is left empty.
-    fn from_universe(universe: &Universe) -> Self {
-        let systems = universe
-            .solar_systems
-            .iter()
-            .filter_map(|(id, system)| {
-                let region = universe
-                    .regions
-                    .get(&system.region)
-                    .map(|region| region.name.clone())
-                    .unwrap_or_default();
+    /// The headers of `summaries`, the systems that the SDE has with their region.
+    fn from_summaries(summaries: HashMap<u32, SystemSummary>) -> Self {
+        let systems = summaries
+            .into_iter()
+            .filter_map(|(id, summary)| {
+                let id = usize::try_from(id).ok()?;
                 Some((
-                    usize::try_from(*id).ok()?,
+                    id,
                     SystemHeader {
-                        name: system.name.clone(),
-                        region,
-                        security: system.security,
+                        name: summary.name,
+                        region: summary.region_name,
+                        security: summary.security,
+                        wormhole_class: summary.wormhole_class,
+                        security_shown: id == Hub::THERA_SYSTEM,
                     },
                 ))
             })
             .collect();
-        Self { systems }
+        Self {
+            systems,
+            aliases: HashMap::new(),
+        }
     }
 
-    /// The header of `system_id`, if the SDE knows it.
+    /// The header of `system_id`, if the SDE knows it. The id of a node that
+    /// stands for a system (see [`Self::set_aliases`]) gets the header of
+    /// that system.
     pub(crate) fn get(&self, system_id: usize) -> Option<&SystemHeader> {
+        let system_id = self.aliases.get(&system_id).copied().unwrap_or(system_id);
         self.systems.get(&system_id)
+    }
+
+    /// The system that the node `id` stands for: itself unless it is the node
+    /// of a wormhole (see [`Self::set_aliases`]).
+    pub(crate) fn system_of(&self, id: usize) -> usize {
+        self.aliases.get(&id).copied().unwrap_or(id)
+    }
+
+    /// Replaces the nodes that stand for a system: `(node id, system id)`.
+    pub(crate) fn set_aliases(&mut self, aliases: impl IntoIterator<Item = (usize, usize)>) {
+        self.aliases = aliases.into_iter().collect();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sde::objects::{Region, SolarSystem};
 
     fn header(security: f64) -> SystemHeader {
         SystemHeader {
             name: String::from("Tama"),
             region: String::from("The Citadel"),
             security,
+            wormhole_class: None,
+            security_shown: false,
         }
     }
 
@@ -171,34 +239,113 @@ mod tests {
     }
 
     #[test]
+    fn a_wormhole_system_writes_its_class_instead_of_the_security() {
+        let mut wormhole = header(-0.99);
+        assert_eq!(wormhole.status_text(), "-1.0");
+        wormhole.wormhole_class = Some(3);
+        assert_eq!(wormhole.status_text(), "C3");
+        assert_eq!(wormhole.status_color(), Color32::from_rgb(0xf2, 0x9b, 0x2e));
+        wormhole.wormhole_class = Some(12);
+        assert_eq!(wormhole.status_text(), "C12");
+        assert_eq!(wormhole.status_color(), SystemHeader::WORMHOLE_COLOR);
+        // The classes of k-space are not shown.
+        wormhole.wormhole_class = Some(9);
+        assert_eq!(wormhole.status_text(), "-1.0");
+        assert_eq!(wormhole.status_color(), wormhole.security_color());
+    }
+
+    #[test]
+    fn thera_writes_its_security_and_keeps_the_color_of_its_class() {
+        let summary = |wormhole_class| SystemSummary {
+            name: String::from("Thera"),
+            region_id: 11_000_031,
+            region_name: String::from("G-R00031"),
+            security: -0.99,
+            wormhole_class,
+        };
+        let headers = SystemHeaders::from_summaries(HashMap::from([
+            (31_000_005, summary(Some(12))),
+            (31_000_006, summary(Some(12))),
+        ]));
+        let thera = headers.get(31_000_005).unwrap();
+        assert_eq!(thera.status_text(), "-1.0");
+        assert_eq!(thera.status_color(), thera.security_color());
+        assert_eq!(thera.class_color(), Some(SystemHeader::WORMHOLE_COLOR));
+        // Any other system of wormhole space writes its class.
+        assert_eq!(headers.get(31_000_006).unwrap().status_text(), "C12");
+    }
+
+    #[test]
+    fn the_classes_are_blue_orange_and_red_by_pairs() {
+        let color = |class| {
+            let mut wormhole = header(-0.99);
+            wormhole.wormhole_class = Some(class);
+            wormhole.class_color()
+        };
+        assert_eq!(color(1), color(2));
+        assert_eq!(color(3), color(4));
+        assert_eq!(color(5), color(6));
+        assert_ne!(color(2), color(3));
+        assert_ne!(color(4), color(5));
+        assert_eq!(color(1), Some(Color32::from_rgb(0x4a, 0x9e, 0xff)));
+        assert_eq!(color(6), Some(Color32::from_rgb(0xe5, 0x48, 0x48)));
+        assert_eq!(color(13), Some(SystemHeader::WORMHOLE_COLOR));
+        assert_eq!(color(9), None);
+    }
+
+    #[test]
+    fn a_node_that_stands_for_a_system_has_its_header() {
+        let mut headers = SystemHeaders::default();
+        assert_eq!(headers.system_of(900_000_001), 900_000_001);
+        headers.systems.insert(30_000_142, header(0.9));
+        assert!(headers.get(900_000_001).is_none());
+        headers.set_aliases([(900_000_001, 30_000_142)]);
+        assert_eq!(headers.get(900_000_001).unwrap().name, "Tama");
+        assert_eq!(headers.system_of(900_000_001), 30_000_142);
+        headers.set_aliases([]);
+        assert!(headers.get(900_000_001).is_none());
+    }
+
+    #[test]
     fn a_database_that_cannot_be_read_gives_no_headers() {
         let headers = SystemHeaders::load(Path::new("/no/such/sde.db"));
         assert!(headers.get(30000142).is_none());
     }
 
     #[test]
-    fn the_headers_come_from_the_systems_and_regions_of_the_universe() {
-        let mut universe = Universe::new(1.0);
-        universe.regions.insert(
-            10000033,
-            Region {
-                id: 10000033,
-                name: String::from("The Citadel"),
-                ..Region::new()
-            },
-        );
-        universe.solar_systems.insert(
-            30002813,
-            SolarSystem {
-                id: 30002813,
-                name: String::from("Tama"),
-                region: 10000033,
-                security: 0.4,
-                ..SolarSystem::new(1.0)
-            },
-        );
-        let headers = SystemHeaders::from_universe(&universe);
-        assert_eq!(headers.get(30002813), Some(&header(0.4)));
+    fn the_headers_come_from_the_summaries_of_the_systems() {
+        let summary = |name: &str, region: &str, security, wormhole_class| SystemSummary {
+            name: String::from(name),
+            region_id: 1,
+            region_name: String::from(region),
+            security,
+            wormhole_class,
+        };
+        let headers = SystemHeaders::from_summaries(HashMap::from([
+            (30002813, summary("Tama", "The Citadel", 0.4, Some(7))),
+            (31000100, summary("J214534", "A-R00001", -0.99, Some(1))),
+        ]));
+        let tama = headers.get(30002813).unwrap();
+        assert_eq!(tama.name, "Tama");
+        assert_eq!(tama.region, "The Citadel");
+        assert_eq!(tama.security, 0.4);
+        // The class of a region of k-space is not the one of a wormhole.
+        assert_eq!(tama.class_text(), None);
+        let wormhole = headers.get(31000100).unwrap();
+        assert_eq!(wormhole.region, "A-R00001");
+        assert_eq!(wormhole.class_text().as_deref(), Some("C1"));
         assert!(headers.get(1).is_none());
+    }
+
+    #[test]
+    fn the_headers_of_the_real_sde_have_what_the_tooltips_say() {
+        let Some(path) = std::env::var_os("SDE_TEST_DB") else {
+            return;
+        };
+        let headers = SystemHeaders::load(Path::new(&path));
+        let thera = headers.get(31_000_005).unwrap();
+        assert_eq!(thera.region, "G-R00031");
+        assert_eq!(thera.class_text().as_deref(), Some("C12"));
+        assert_eq!(headers.get(30_000_142).unwrap().name, "Jita");
     }
 }

@@ -151,36 +151,18 @@ pub struct Cached<T> {
     pub last_hub_interaction: Option<DateTime<Utc>>,
 }
 
-/// The `max-age` of a `Cache-Control` header.
-fn max_age(headers: &HeaderMap) -> Option<Duration> {
-    let value = headers.get(CACHE_CONTROL)?.to_str().ok()?;
-    value.split(',').find_map(|directive| {
-        // The names of the directives do not depend on the case, and a value
-        // may be quoted.
-        let (name, seconds) = directive.split_once('=')?;
-        if !name.trim().eq_ignore_ascii_case("max-age") {
-            return None;
-        }
-        seconds
-            .trim()
-            .trim_matches('"')
-            .parse()
-            .ok()
-            .map(Duration::from_secs)
-    })
-}
-
-/// The header with the last scout interaction. The API sends the start of
-/// the epoch when there was none.
-fn last_hub_interaction(headers: &HeaderMap) -> Option<DateTime<Utc>> {
-    let value = headers
-        .get("x-last-signaleer-hub-interaction")?
-        .to_str()
-        .ok()?;
-    let at = DateTime::parse_from_rfc3339(value.trim())
-        .ok()?
-        .with_timezone(&Utc);
-    (at.timestamp() > 0).then_some(at)
+impl<T: DeserializeOwned> Cached<T> {
+    /// An answer held by the guard, read as the type it was asked as.
+    fn from_held(held: Fresh) -> Result<Self, Error> {
+        let data =
+            serde_json::from_slice(&held.body).map_err(|error| Error::Decode(error.to_string()))?;
+        Ok(Self {
+            data,
+            max_age: Some(held.remaining),
+            from_cache: true,
+            last_hub_interaction: held.last_hub_interaction,
+        })
+    }
 }
 
 /// How the API words an error.
@@ -193,31 +175,6 @@ struct ErrorBody {
 struct ErrorDetail {
     name: Option<String>,
     message: Option<String>,
-}
-
-/// The wait a `Retry-After` header asks for, when it is a number of seconds
-/// (the form with a date is not followed).
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    let seconds = headers
-        .get(RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    Some(Duration::from_secs(seconds))
-}
-
-/// An answer held by the guard, read as the type it was asked as.
-fn from_held<T: DeserializeOwned>(held: Fresh) -> Result<Cached<T>, Error> {
-    let data =
-        serde_json::from_slice(&held.body).map_err(|error| Error::Decode(error.to_string()))?;
-    Ok(Cached {
-        data,
-        max_age: Some(held.remaining),
-        from_cache: true,
-        last_hub_interaction: held.last_hub_interaction,
-    })
 }
 
 /// The client. Cheap to clone: the connections and the guard are shared, so
@@ -247,6 +204,61 @@ impl Client {
             base_url: config.base_url.trim_end_matches('/').to_string(),
             guard: Arc::new(Guard::new(config.guard)),
         })
+    }
+
+    /// The `max-age` of a `Cache-Control` header.
+    fn max_age(headers: &HeaderMap) -> Option<Duration> {
+        let value = headers.get(CACHE_CONTROL)?.to_str().ok()?;
+        value.split(',').find_map(|directive| {
+            // The names of the directives do not depend on the case, and a
+            // value may be quoted.
+            let (name, seconds) = directive.split_once('=')?;
+            if !name.trim().eq_ignore_ascii_case("max-age") {
+                return None;
+            }
+            seconds
+                .trim()
+                .trim_matches('"')
+                .parse()
+                .ok()
+                .map(Duration::from_secs)
+        })
+    }
+
+    /// The header with the last scout interaction. The API sends the start of
+    /// the epoch when there was none.
+    fn last_hub_interaction(headers: &HeaderMap) -> Option<DateTime<Utc>> {
+        let value = headers
+            .get("x-last-signaleer-hub-interaction")?
+            .to_str()
+            .ok()?;
+        let at = DateTime::parse_from_rfc3339(value.trim())
+            .ok()?
+            .with_timezone(&Utc);
+        (at.timestamp() > 0).then_some(at)
+    }
+
+    /// The wait a `Retry-After` header asks for, when it is a number of
+    /// seconds (the form with a date is not followed).
+    fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+        let seconds = headers
+            .get(RETRY_AFTER)?
+            .to_str()
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        Some(Duration::from_secs(seconds))
+    }
+
+    /// Adds the route preference to the query, when there is one.
+    fn push_preference(
+        query: &mut Vec<(&'static str, String)>,
+        preference: Option<RoutePreference>,
+    ) {
+        if let Some(preference) = preference {
+            query.push(("preference", preference.query_name().to_string()));
+        }
     }
 
     /// Forgets the answers the client holds, so the next request goes to the
@@ -286,7 +298,7 @@ impl Client {
         request: reqwest::RequestBuilder,
     ) -> Result<Cached<T>, Error> {
         if let Some(held) = self.guard.fresh(&key, Instant::now()) {
-            return from_held(held);
+            return Cached::from_held(held);
         }
         // One at a time for the same request: whoever comes second waits for
         // the first and takes what it got.
@@ -305,7 +317,7 @@ impl Client {
         request: reqwest::RequestBuilder,
     ) -> Result<Cached<T>, Error> {
         if let Some(held) = self.guard.fresh(key, Instant::now()) {
-            return from_held(held);
+            return Cached::from_held(held);
         }
         if let Some(retry_in) = self.guard.pause(path, Instant::now()) {
             return Err(Error::Backoff { retry_in });
@@ -318,9 +330,9 @@ impl Client {
             }
         };
         let status = response.status();
-        let max_age = max_age(response.headers());
-        let last_hub_interaction = last_hub_interaction(response.headers());
-        let retry = retry_after(response.headers());
+        let max_age = Self::max_age(response.headers());
+        let last_hub_interaction = Self::last_hub_interaction(response.headers());
+        let retry = Self::retry_after(response.headers());
         let body = match response.bytes().await {
             Ok(body) => body,
             Err(error) => {
@@ -383,7 +395,7 @@ impl Client {
         preference: Option<RoutePreference>,
     ) -> Result<Cached<Vec<Route>>, Error> {
         let mut query = vec![("from", from.to_string()), ("to", to.to_string())];
-        push_preference(&mut query, preference);
+        Self::push_preference(&mut query, preference);
         self.get("/routes", &query).await
     }
 
@@ -431,7 +443,7 @@ impl Client {
         preference: Option<RoutePreference>,
     ) -> Result<Cached<Vec<Route>>, Error> {
         let mut query = vec![("from", from.to_string())];
-        push_preference(&mut query, preference);
+        Self::push_preference(&mut query, preference);
         self.get("/routes/joveobservatories", &query).await
     }
 
@@ -447,7 +459,7 @@ impl Client {
             ("from", from.to_string()),
             ("system_name", hub.query_name().to_string()),
         ];
-        push_preference(&mut query, preference);
+        Self::push_preference(&mut query, preference);
         self.get("/routes/signatures", &query).await
     }
 
@@ -528,31 +540,13 @@ impl Client {
             ("edge", filter.edge),
         ] {
             if let Some(class) = class {
-                query.push((name, class_name(class)?));
+                let class_name = class
+                    .query_name()
+                    .ok_or_else(|| Error::Invalid(String::from("a system class without a name")))?;
+                query.push((name, class_name));
             }
         }
         self.get("/wormholetypes", &query).await
-    }
-}
-
-fn push_preference(query: &mut Vec<(&'static str, String)>, preference: Option<RoutePreference>) {
-    if let Some(preference) = preference {
-        let name = match preference {
-            RoutePreference::Safer => "safer",
-            RoutePreference::Shortest => "shortest",
-            RoutePreference::ShortestGates => "shortest-gates",
-        };
-        query.push(("preference", name.to_string()));
-    }
-}
-
-/// The name the API gives a system class, which is how it serializes.
-fn class_name(class: crate::types::SystemClass) -> Result<String, Error> {
-    match serde_json::to_value(class) {
-        Ok(serde_json::Value::String(name)) => Ok(name),
-        _ => Err(Error::Invalid(String::from(
-            "a system class without a name",
-        ))),
     }
 }
 
@@ -576,10 +570,10 @@ mod tests {
     fn the_max_age_is_read_from_the_cache_control_header() {
         let mut headers = HeaderMap::new();
         headers.insert(CACHE_CONTROL, "public, max-age=300".parse().unwrap());
-        assert_eq!(max_age(&headers), Some(Duration::from_secs(300)));
+        assert_eq!(Client::max_age(&headers), Some(Duration::from_secs(300)));
         headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
-        assert_eq!(max_age(&headers), None);
-        assert_eq!(max_age(&HeaderMap::new()), None);
+        assert_eq!(Client::max_age(&headers), None);
+        assert_eq!(Client::max_age(&HeaderMap::new()), None);
     }
 
     #[test]
@@ -597,7 +591,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(CACHE_CONTROL, value.parse().unwrap());
             assert_eq!(
-                max_age(&headers),
+                Client::max_age(&headers),
                 expected.map(Duration::from_secs),
                 "{value}"
             );
@@ -863,13 +857,13 @@ mod tests {
             "x-last-signaleer-hub-interaction",
             "1970-01-01T00:00:00.000Z".parse().unwrap(),
         );
-        assert_eq!(last_hub_interaction(&headers), None);
+        assert_eq!(Client::last_hub_interaction(&headers), None);
         headers.insert(
             "x-last-signaleer-hub-interaction",
             "2026-11-05T16:38:29.016Z".parse().unwrap(),
         );
         assert_eq!(
-            last_hub_interaction(&headers).unwrap().to_rfc3339(),
+            Client::last_hub_interaction(&headers).unwrap().to_rfc3339(),
             "2026-11-05T16:38:29.016+00:00"
         );
     }

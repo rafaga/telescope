@@ -38,7 +38,7 @@ egui = { version = "0.37", default-features = false }
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
 # `crates/telescope/src/app/database_updater.rs`.
-sde = { version = "0.7", features = ["builder"] }
+sde = { version = "0.8", features = ["builder"] }
 # Only needed here to name the `rusqlite::Connection` handed to
 # `sde::builder::schema::create_schema`/`Parser::build_database` --
 # `database_updater.rs` owns opening/creating the `sde.db` file itself
@@ -46,10 +46,9 @@ sde = { version = "0.7", features = ["builder"] }
 # on its own; see that module's docs). Cargo unifies this with the same
 # `rusqlite` version `sde`/`webb` already pull in, so this doesn't
 # duplicate the SQLite build.
-rusqlite = { version = "0.41" }
+rusqlite = { version = "0.42" }
 kdtree = { version = "0.8" }
-# egui-map = { path = "../../../egui-map/" }
-egui-map = { version = "0.17" }
+egui-map = { version = "0.18" }
 open = "5.4"
 # `crypted-db` explicitly: with `default-features = false` alone the player
 # database was encrypted or not depending on whether the build also selected
@@ -58,6 +57,9 @@ open = "5.4"
 webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
 zkill = { path = "../zkill/" }
+# The wormholes of Thera and Turnur: `app/wormhole_links.rs` turns them into
+# links of the layer `sde` keeps next to the universe.
+eve-scout = { path = "../eve-scout/" }
 chrono = "0.4"
 tokio = { version = "1.54", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.37", features = ["all_loaders"] }

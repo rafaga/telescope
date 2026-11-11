@@ -92,13 +92,15 @@ impl std::fmt::Debug for Guard {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 impl Guard {
+    /// The contents of `mutex`, also when another thread panicked holding it:
+    /// what the guard keeps is valid after any single update.
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub(crate) fn new(config: GuardConfig) -> Self {
         Self {
             config,
@@ -109,7 +111,7 @@ impl Guard {
 
     /// The held answer to `key`, if it is still valid at `now`.
     pub(crate) fn fresh(&self, key: &str, now: Instant) -> Option<Fresh> {
-        let state = lock(&self.state);
+        let state = Self::lock(&self.state);
         let held = state.held.get(key)?;
         let age = now.saturating_duration_since(held.fetched);
         let remaining = held
@@ -136,7 +138,7 @@ impl Guard {
         if max_age.is_zero() {
             return;
         }
-        let mut state = lock(&self.state);
+        let mut state = Self::lock(&self.state);
         state
             .held
             .retain(|_, held| now.saturating_duration_since(held.fetched) < held.max_age);
@@ -164,7 +166,7 @@ impl Guard {
 
     /// How long the endpoint `path` is to be left alone, if it is.
     pub(crate) fn pause(&self, path: &str, now: Instant) -> Option<Duration> {
-        let state = lock(&self.state);
+        let state = Self::lock(&self.state);
         let pause = state.pauses.get(path)?;
         pause
             .until
@@ -175,7 +177,7 @@ impl Guard {
     /// The endpoint `path` gave a bad answer: `retry_after` is what it asked
     /// to wait, if it said.
     pub(crate) fn failed(&self, path: &str, retry_after: Option<Duration>, now: Instant) {
-        let mut state = lock(&self.state);
+        let mut state = Self::lock(&self.state);
         let pause = state.pauses.entry(path.to_string()).or_insert(Pause {
             until: now,
             failures: 0,
@@ -193,18 +195,18 @@ impl Guard {
 
     /// The endpoint `path` answered well: it is not held back anymore.
     pub(crate) fn succeeded(&self, path: &str) {
-        lock(&self.state).pauses.remove(path);
+        Self::lock(&self.state).pauses.remove(path);
     }
 
     /// The turn of `key`: whoever holds it is the one asking for it.
     pub(crate) fn lane(&self, key: &str) -> Lane {
-        let mut lanes = lock(&self.lanes);
+        let mut lanes = Self::lock(&self.lanes);
         Arc::clone(lanes.entry(key.to_string()).or_default())
     }
 
     /// Forgets the turn of `key` when nobody else is waiting for it.
     pub(crate) fn release_lane(&self, key: &str, lane: Lane) {
-        let mut lanes = lock(&self.lanes);
+        let mut lanes = Self::lock(&self.lanes);
         // The map holds one reference and the caller the other.
         if Arc::strong_count(&lane) <= 2 {
             lanes.remove(key);
@@ -213,7 +215,7 @@ impl Guard {
 
     /// Forgets the answers that are held. The pauses stay.
     pub(crate) fn forget(&self) {
-        lock(&self.state).held.clear();
+        Self::lock(&self.state).held.clear();
     }
 }
 
@@ -378,8 +380,8 @@ mod tests {
 
         // Two hold it: it stays while one of them lets go.
         guard.release_lane("a", first);
-        assert_eq!(lock(&guard.lanes).len(), 1);
+        assert_eq!(Guard::lock(&guard.lanes).len(), 1);
         guard.release_lane("a", second);
-        assert!(lock(&guard.lanes).is_empty());
+        assert!(Guard::lock(&guard.lanes).is_empty());
     }
 }

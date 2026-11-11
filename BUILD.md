@@ -210,11 +210,14 @@ the first run is a full build.
 ## Logging
 
 Telescope's diagnostics go through [`tracing`](https://docs.rs/tracing) rather
-than `println!`/`eprintln!`. By default they're printed to stderr and
-controlled with the `RUST_LOG` environment variable:
+than `println!`/`eprintln!`. They are printed to stderr, controlled with the
+`RUST_LOG` environment variable, and also written to a file: `logs/telescope.<date>.log`
+in the working directory, one file a day with the last seven kept. The file
+follows `RUST_LOG` too; when it is not set it keeps the warnings of everything
+and the information of `telescope` and `webb`.
 
 ```sh
-# only errors (the default when RUST_LOG isn't set)
+# only errors on the console (the default when RUST_LOG isn't set)
 cargo run
 
 # everything at debug level and above

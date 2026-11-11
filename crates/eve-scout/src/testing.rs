@@ -89,7 +89,7 @@ impl Mock {
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let shared = Arc::clone(&shared);
-                thread::spawn(move || serve(stream, &shared));
+                thread::spawn(move || Self::serve(stream, &shared));
             }
         });
         Self { port, state }
@@ -124,75 +124,76 @@ impl Mock {
     pub(crate) fn requests(&self) -> Vec<Recorded> {
         self.state.lock().unwrap().requests.clone()
     }
-}
 
-fn serve(mut stream: TcpStream, state: &Mutex<State>) {
-    let mut received = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    let (head_end, content_length) = loop {
-        let Ok(read) = stream.read(&mut buffer) else {
-            return;
+    /// Answers the one request that comes in `stream`, as `state` says.
+    fn serve(mut stream: TcpStream, state: &Mutex<State>) {
+        let mut received = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let (head_end, content_length) = loop {
+            let Ok(read) = stream.read(&mut buffer) else {
+                return;
+            };
+            if read == 0 {
+                return;
+            }
+            received.extend_from_slice(&buffer[..read]);
+            if let Some(position) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&received[..position]).to_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                break (position + 4, length);
+            }
         };
-        if read == 0 {
-            return;
+        while received.len() < head_end + content_length {
+            let Ok(read) = stream.read(&mut buffer) else {
+                return;
+            };
+            if read == 0 {
+                break;
+            }
+            received.extend_from_slice(&buffer[..read]);
         }
-        received.extend_from_slice(&buffer[..read]);
-        if let Some(position) = received.windows(4).position(|window| window == b"\r\n\r\n") {
-            let head = String::from_utf8_lossy(&received[..position]).to_lowercase();
-            let length = head
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length:"))
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .unwrap_or(0);
-            break (position + 4, length);
-        }
-    };
-    while received.len() < head_end + content_length {
-        let Ok(read) = stream.read(&mut buffer) else {
-            return;
-        };
-        if read == 0 {
-            break;
-        }
-        received.extend_from_slice(&buffer[..read]);
-    }
-    let head = String::from_utf8_lossy(&received[..head_end]).to_string();
-    let body = String::from_utf8_lossy(&received[head_end..]).to_string();
-    let mut lines = head.lines();
-    let mut first = lines.next().unwrap_or_default().split_whitespace();
-    let method = first.next().unwrap_or_default().to_string();
-    let target = first.next().unwrap_or_default().to_string();
-    let headers = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
-        .collect();
-    let path = target.split('?').next().unwrap_or_default().to_string();
+        let head = String::from_utf8_lossy(&received[..head_end]).to_string();
+        let body = String::from_utf8_lossy(&received[head_end..]).to_string();
+        let mut lines = head.lines();
+        let mut first = lines.next().unwrap_or_default().split_whitespace();
+        let method = first.next().unwrap_or_default().to_string();
+        let target = first.next().unwrap_or_default().to_string();
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+            .collect();
+        let path = target.split('?').next().unwrap_or_default().to_string();
 
-    let reply = {
-        let mut state = state.lock().unwrap();
-        state.requests.push(Recorded {
-            method,
-            target,
-            headers,
-            body,
-        });
-        let served = state.served.entry(path.clone()).or_insert(0);
-        let index = *served;
-        *served += 1;
-        state
-            .routes
-            .get(&path)
-            .map(|replies| replies[index.min(replies.len() - 1)].clone())
-            .unwrap_or_else(|| Reply::json(404, ""))
-    };
-    let mut response = format!("HTTP/1.1 {} Status\r\n", reply.status);
-    for (name, value) in &reply.headers {
-        response.push_str(&format!("{name}: {value}\r\n"));
+        let reply = {
+            let mut state = state.lock().unwrap();
+            state.requests.push(Recorded {
+                method,
+                target,
+                headers,
+                body,
+            });
+            let served = state.served.entry(path.clone()).or_insert(0);
+            let index = *served;
+            *served += 1;
+            state
+                .routes
+                .get(&path)
+                .map(|replies| replies[index.min(replies.len() - 1)].clone())
+                .unwrap_or_else(|| Reply::json(404, ""))
+        };
+        let mut response = format!("HTTP/1.1 {} Status\r\n", reply.status);
+        for (name, value) in &reply.headers {
+            response.push_str(&format!("{name}: {value}\r\n"));
+        }
+        response.push_str(&format!(
+            "Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            reply.body.len(),
+            reply.body
+        ));
+        let _ = stream.write_all(response.as_bytes());
     }
-    response.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-        reply.body.len(),
-        reply.body
-    ));
-    let _ = stream.write_all(response.as_bytes());
 }

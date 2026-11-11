@@ -283,6 +283,22 @@ impl ZKillboardOptions {
     pub(crate) const MAX_MIN_ISK: u64 = 10_000_000_000;
 }
 
+/// What Telescope takes from EvE-Scout (see `wormhole_links`): the wormholes
+/// of Thera and Turnur, to show them on the maps and plan routes through them.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EveScoutOptions {
+    /// Ask EvE-Scout for the wormholes, while a map that shows them is open.
+    /// Off never asks. `serde(default)`: on.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for EveScoutOptions {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Layout and language of the main window, remembered between runs. The
 /// layout is saved on its own, as soon as it changes (see
 /// [`Settings::save_ui_state`]): the log panel isn't edited in the Settings
@@ -447,6 +463,9 @@ pub(crate) struct Settings {
     // `default`: `telescope.toml` files from before this section existed.
     #[serde(default)]
     zkillboard: ZKillboardOptions,
+    // `default`: `telescope.toml` files from before this section existed.
+    #[serde(default)]
+    eve_scout: EveScoutOptions,
     #[serde(skip)]
     internal: InternalDefaults,
     #[serde(skip)]
@@ -504,6 +523,7 @@ impl Default for Settings {
             ui: UiState::default(),
             log: LogOptions::default(),
             zkillboard: ZKillboardOptions::default(),
+            eve_scout: EveScoutOptions::default(),
             internal: InternalDefaults::default(),
             channels: Channels {
                 available: HashMap::new(),
@@ -861,6 +881,20 @@ impl Settings {
         };
         if self.zkillboard != options {
             self.zkillboard = options;
+            self.saved = false;
+        }
+    }
+
+    pub(crate) fn get_eve_scout(&self) -> &EveScoutOptions {
+        &self.eve_scout
+    }
+
+    // Nothing in the Settings window sets it yet: the file is the only way
+    // to turn it off until the page that shows the wormholes has its switch.
+    #[allow(dead_code)]
+    pub(crate) fn set_eve_scout(&mut self, options: EveScoutOptions) {
+        if self.eve_scout != options {
+            self.eve_scout = options;
             self.saved = false;
         }
     }
@@ -1537,6 +1571,34 @@ mod tests {
             .to_string();
         let loaded: Settings = toml::from_str(&text).unwrap();
         assert_eq!(*loaded.get_zkillboard(), ZKillboardOptions::default());
+    }
+
+    #[test]
+    fn eve_scout_defaults_on_and_a_change_dirties_the_settings() {
+        let mut settings = saved_settings();
+        assert_eq!(*settings.get_eve_scout(), EveScoutOptions::default());
+        assert!(settings.get_eve_scout().enabled);
+
+        // The same options are no change.
+        settings.set_eve_scout(EveScoutOptions::default());
+        assert!(settings.its_saved());
+
+        settings.set_eve_scout(EveScoutOptions { enabled: false });
+        assert!(!settings.its_saved());
+        assert!(!settings.get_eve_scout().enabled);
+    }
+
+    #[test]
+    fn a_file_without_the_eve_scout_section_loads_it_on() {
+        let text = toml::to_string(&Settings::default()).unwrap();
+        assert!(text.contains("[eve_scout]"));
+        let text: String = text
+            .split("\n[eve_scout]")
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let loaded: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(*loaded.get_eve_scout(), EveScoutOptions::default());
     }
 
     /// Settings that count as already saved, to see which calls dirty them.

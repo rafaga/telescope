@@ -5,6 +5,8 @@ workspace: "telescope workspace" {
   webb: "webb\n(intel rule graph, ESI client,\nOAuth callback, encrypted\nplayer database)"
   native_tools: "native_tools\n(native dialogs,\nmachine identification)"
   egui-panels: "egui-panels\n(settings screen components,\nno dependency on the rest)"
+  eve-scout: "eve-scout\n(EvE-Scout API client:\nThera and Turnur wormholes)"
+  zkill: "zkill\n(zKillboard feed and query API\nunder their rate limits)"
 }
 
 siblings: "External crates\n(crates.io)" {
@@ -15,6 +17,8 @@ siblings: "External crates\n(crates.io)" {
 workspace.telescope -> workspace.webb
 workspace.telescope -> workspace.native_tools
 workspace.telescope -> workspace.egui-panels
+workspace.telescope -> workspace.eve-scout
+workspace.telescope -> workspace.zkill
 workspace.webb -> workspace.native_tools: "crypted-db:\nkey from the machine id"
 workspace.telescope -> siblings.sde
 workspace.telescope -> siblings.egui-map

@@ -17,6 +17,8 @@ each other. For how to build and run it see [BUILD.md](BUILD.md).
 | `webb` | `crates/webb` | EVE back end with no UI: the local OAuth callback server, the ESI client, the local player database, the intel rules (`graph`, `rules`, `intel`) and the map-tooltip `map_alerts`. |
 | `native_tools` | `crates/native_tools` | OS-specific code: native file / folder dialogs and per-machine identification. |
 | `egui-panels` | `crates/egui-panels` | Building blocks for settings screens in egui (pages, sections, forms, switches, sliders, tiles, side navigation, action bar, `Draft`), with no dependency on the rest of the workspace so other projects can use it. |
+| `eve-scout` | `crates/eve-scout` | Client of the public EvE-Scout API: the scanned wormholes of Thera and Turnur, with a guard that does not ask again for an answer that is still valid and leaves an endpoint alone after a bad one. It does nothing on its own: when to ask and what to do with the answers is for `telescope`. |
+| `zkill` | `crates/zkill` | Everything asked of zKillboard: the R2Z2 feed client and its walk through the published files, the guard that keeps away after a "enough", and the lanes and queues that keep each endpoint (the feed and the query API) under its own rate. |
 
 ![Crate dependencies: telescope depends on webb and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
 
@@ -67,6 +69,7 @@ crates/telescope
     ├── lib.rs               exports TelescopeApp; loads the translations
     ├── app_dirs.rs          where the files live: next to the program or in the per-user data folder
     ├── gpu_diagnostics.rs   records why the GPU stopped and relaunches after a lost device
+    ├── app_log.rs           the log file: logs/telescope.<date>.log, a new one every day, the last seven kept
     ├── i18n.rs              interface language: available languages, "auto", switching
     ├── log_bridge.rs        copies WARN / ERROR of dependencies into the status log
     ├── repaint.rs           wakes the UI from other threads (request_repaint)
@@ -80,6 +83,8 @@ crates/telescope
         ├── database.rs      SDE build cache directory, reload after an SDE update, region list
         ├── database_updater.rs  progress window + background SDE check / build
         ├── file.rs          notify event handler for the chat log directory
+        ├── heat_layer.rs    the heat map layer of the maps: kills of the last hour per system
+        ├── housekeeping.rs  periodic background chores (last login of the characters...) on one thread
         ├── intel/           the intel pipeline (see "Chat log -> alert")
         │   ├── mod.rs       TelescopeApp methods: apply_intel_settings(), scan_intel_files(),
         │   │                apply_graph(), sync_alarm_shared() / sync_alarm_jumps(),
@@ -88,18 +93,29 @@ crates/telescope
         │   │                IntelOffsets (where each monitored log was last read)
         │   ├── reader.rs    the reader thread: changed log -> appended lines
         │   ├── zkillboard.rs the zKillboard source thread: R2Z2 feed -> killmails (ZKillboardDecoder)
+        │   ├── kill_context.rs  the killmails of the last hour by system, for the node tooltips
+        │   ├── kill_day.rs  the killmails of the last day, from zKillboard's query API
+        │   ├── cache_store.rs   cache.db: what the sources learned, kept between runs
+        │   ├── nearby.rs    events near the linked characters, for the overlay
+        │   ├── zkill_guard.rs  where the zkill guard keeps what it remembers (player database)
         │   ├── detection.rs the detection thread (graph Executor behind an RwLock)
         │   ├── dispatch.rs  the dispatch thread: map messages, sound, status log
         │   └── resolve.rs   UniverseResolver / SharedResolver (system ids) and jump distance
         ├── messages.rs      Message, MapSync, CharacterSync, spawners and send helpers
         ├── notifications.rs the on-screen status log
+        ├── overlay.rs       the overlay: a transparent window over EVE listing the events near the characters
         ├── persistence.rs   save_settings()
         ├── settings.rs      Settings: paths, map options, channels; persisted to a TOML file
+        ├── system_header.rs name, security (or wormhole class) and region of every system, for the tooltips
         ├── tiles.rs         egui_tiles panes: UniversePane, RegionPane, TreeBehavior
+        ├── update_checker.rs checks GitHub for a newer release
         ├── watchdog.rs      background location polling of the linked characters
+        ├── wormhole_links.rs the EvE-Scout wormholes as the links of the layer `sde` keeps, and the markers
+        │   └── (wormhole_links/layout.rs: where the marker of a wormhole goes next to its system)
         ├── windows.rs       secondary windows
         └── windows/
             ├── about.rs     About window
+            ├── update_modal.rs the "new version available" dialog
             ├── debug.rs     debug window (debug builds only)
             ├── licenses.rs  third-party licenses window (Help menu)
             ├── settings.rs  Settings screen (egui-panels): navigation, pages, Cancel / Apply / Accept,
@@ -108,7 +124,8 @@ crates/telescope
                 ├── sources.rs      chat log folder and watched channels, with their activity
                 ├── patterns.rs     Rules: input cards + node editor, live graph validity
                 ├── alerts.rs       alert distance, map alert, sound, "Test the full alert"
-                ├── maps.rs         start-up regions, character glow intensity
+                ├── zkillboard.rs   the killmail feed: switch, progress, filters
+                ├── maps.rs         character glow, heat map, start-up regions
                 ├── characters.rs   linked characters
                 └── application.rs  interface language, SDE and private database paths
 ```
@@ -133,6 +150,8 @@ from, or the per-user data folder when it is installed (see
 | `telescope.toml` | User settings (`Settings`). |
 | `rules.toml` | Optional export/import of the whole rule configuration (*Settings -> Rules*). |
 | `sde.db` | The SDE database. Built automatically when it does not exist. |
+| `cache.db` | Next to `sde.db`, not encrypted: the killmails of the last hour, the counts of the last day and where the zKillboard feed walk got to, so that after a restart the tooltips do not ask zKillboard or ESI again for what is still good. A cache from an older version is rebuilt. |
+| `logs/` | The log file, `telescope.<date>.log`: one a day, the last seven kept. It follows `RUST_LOG` and, when that is not set, keeps the warnings of everything and the information of `telescope` and `webb`. |
 | `sde-build-cache/` | Next to `sde.db`: the downloaded SDE zip, the build number that avoids downloading it again, and the extracted tree. The new database is built as `sde.db.building` and replaces `sde.db` only when complete. |
 | `telescope.default.toml` | The settings template shipped with the installer; copied as `telescope.toml` the first time an installed Telescope runs. Only read. |
 | player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Application*), plus the intel rules (the `node`/`edge` graph tables). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. |

@@ -25,8 +25,27 @@ key differences.
   outputs (map alert, sound, log, tooltip, suppress). Stored in the local
   database; the whole graph can be exported to or imported from
   `rules.toml`.
-* **Interactive maps** — universe and per-region maps with system alerts
-  raised directly from intel matches.
+* **Interactive maps** — the universe map and one map per region, each region a
+  tab you choose in *Settings -> Maps*. Nodes write the security status of the
+  system (or its class, `C1` to `C6`, in wormhole space), and their tooltips
+  carry the region and the killmails of the last hour and day. Alerts pulse on
+  the nodes, linked characters glow, and an optional heat map marks the
+  systems with the most kills.
+* **zKillboard** — the live R2Z2 feed is an intel source of its own. The
+  default rules turn each killmail into a tooltip line, a log entry, a map
+  alert and a sound when it happens within the alert radius, and
+  *Settings -> zKillboard* pauses the feed and filters it by value and
+  NPC-only kills. What it learns is kept in a local cache, so a restart does
+  not ask zKillboard or ESI again for what is still good.
+* **Thera and Turnur wormholes** — with EvE-Scout on (the default; `[eve_scout]
+  enabled` in `telescope.toml`), region maps draw the wormholes of Thera and
+  Turnur next to the systems they leave from, with their signatures. Thera has
+  a map of its own (*Thera (G-R00031)*), and on the universe map every system
+  with a wormhole to Thera gets a small circle joined by a dashed line. The
+  data comes from [eve-scout.com](https://www.eve-scout.com).
+* **Overlay** — an optional semi-transparent panel over the EVE window that
+  lists the events near your characters, newest or closest first, colored by
+  distance (*Settings -> Alerts -> Overlay*).
 * **Alerts you can hear** — a rule's *sound* output plays an alarm clip you
   choose, and map nodes list the ships and pilot counts of each report in
   their tooltip. The work runs on its own threads, so an alarm is not delayed
@@ -42,6 +61,8 @@ key differences.
   keeps itself up to date. A progress window shows what it is doing.
 * **Settings with a draft** — every change stays a draft until *Apply* /
   *Accept*; *Cancel* puts everything back, the interface language included.
+* **Log file** — what Telescope reports is also written to
+  `logs/telescope.<date>.log`, one file a day, the last seven kept.
 * **Languages** — the interface is available in English and Spanish, and
   follows your operating system's language by default.
 
@@ -57,12 +78,14 @@ CI builds and tests every change on Linux, Windows and macOS.
 
 | | |
 |---|---|
-| ![The universe map, with a tab for each region that opens at start-up](docs/screenshots/universe.png) | ![A region map: the nodes that an intel line reports pulse in red](docs/screenshots/region-alerts.png) |
-| **Universe map.** Every region you choose opens as a tab; alerts show here too. | **Region map.** The nodes an intel line reports pulse, and the line lands in the status log. |
-| ![Settings, Sources: the chat log folder and the channels it watches](docs/screenshots/settings-sources.png) | ![Settings, Rules: the node graph editor with a detection selected](docs/screenshots/settings-rules-editor.png) |
-| **Sources.** The chat log folder, its channels and when each last spoke. | **Rules.** The graph of detections, logic and outputs, with the selected node's fields. |
-| ![Settings, Alerts: distance, duration and sound](docs/screenshots/settings-alerts.png) | ![The window that shows the SDE database being built](docs/screenshots/sde-update.png) |
-| **Alerts.** How close, for how long and with which sound. | **SDE database.** Built automatically the first time Telescope runs. |
+| ![The universe map, with a tab for each region that opens at start-up, region names, the heat map and the minimap](docs/screenshots/universe.png) | ![The map of Thera: the wormholes that leave from it as nodes around it, each line with its signature](docs/screenshots/thera-map.png) |
+| **Universe map.** Every region you choose opens as a tab; kills glow as a heat map. | **Thera.** Its own map, with the wormholes EvE-Scout reports and its credit in the corner. |
+| ![A region map: the nodes that an intel line reports pulse in red](docs/screenshots/region-alerts.png) | ![Settings, Channel logs: the chat log folder and the channels it watches](docs/screenshots/settings-sources.png) |
+| **Region map.** The nodes an intel line reports pulse, and the line lands in the status log. | **Channel logs.** The chat log folder, its channels and when each last spoke. |
+| ![Settings, zKillboard: the live feed, its history and its filters](docs/screenshots/settings-zkillboard.png) | ![Settings, Maps: glow intensity, heat map and the regions that open at start-up](docs/screenshots/settings-maps.png) |
+| **zKillboard.** The live feed, how much of the last hour it has read, and its filters. | **Maps.** Character glow, heat map and the regions that open at start-up. |
+| ![Settings, Rules: the node graph editor with a detection selected](docs/screenshots/settings-rules-editor.png) | ![The window that shows the SDE database being built](docs/screenshots/sde-update.png) |
+| **Rules.** The graph of detections, logic and outputs, with the selected node's fields. | **SDE database.** Built automatically the first time Telescope runs. |
 
 Telescope running on macOS (Apple Silicon):
 
@@ -100,9 +123,17 @@ profiling instructions.
   [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * The crates of the workspace: [`webb`](crates/webb/README.md) (intel rule
   engine and EVE back end), [`egui-panels`](crates/egui-panels/README.md)
-  (settings screen components) and
+  (settings screen components),
   [`native_tools`](crates/native_tools/README.md) (native dialogs and machine
-  identification).
+  identification), `eve-scout` (client of the EvE-Scout API) and `zkill`
+  (requests to zKillboard under its rate limits).
+
+## Credits
+
+Wormhole data of Thera and Turnur comes from
+[EvE-Scout](https://www.eve-scout.com), and killmails from
+[zKillboard](https://zkillboard.com). EVE Online and its static data belong to
+CCP Games.
 
 ## License
 

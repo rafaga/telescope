@@ -8,6 +8,7 @@ use crate::app::messages::Message;
 use crate::app::messages::Type;
 use crate::app::settings::Settings;
 use crate::app::tiles::TileData;
+use crate::app::wormhole_links::Hub;
 use egui_tiles::Tile;
 use sde::SdeManager;
 use sde::objects::Universe;
@@ -15,14 +16,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The regions that get a map: k-space only, wormhole and abyssal regions
-/// (ids from 11,000,000) have none.
+/// The regions that get a map: k-space and Thera's. The other wormhole and
+/// abyssal regions (ids from 11,000,000) have none.
 fn kspace_regions(universe: &Universe) -> HashMap<usize, String> {
     universe
         .regions
         .values()
-        .filter(|region| region.id < 11_000_000)
-        .map(|region| (region.id as usize, region.name.clone()))
+        .filter(|region| Hub::has_map(region.id as usize))
+        .map(|region| {
+            (
+                region.id as usize,
+                Hub::region_title(region.id as usize, &region.name),
+            )
+        })
         .collect()
 }
 
@@ -218,15 +224,17 @@ mod region_tests {
     }
 
     #[test]
-    fn only_kspace_regions_get_a_map() {
+    fn only_kspace_and_thera_regions_get_a_map() {
         let universe = universe(&[
             (10000002, "The Forge"),
             (11000001, "A-R00001"),
+            (11000031, "G-R00031"),
             (12000001, "Abyss"),
         ]);
         let regions = kspace_regions(&universe);
-        assert_eq!(regions.len(), 1);
+        assert_eq!(regions.len(), 2);
         assert_eq!(regions[&10000002], "The Forge");
+        assert_eq!(regions[&11000031], "Thera (G-R00031)");
     }
 
     #[test]

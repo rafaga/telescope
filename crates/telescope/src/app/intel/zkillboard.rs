@@ -85,6 +85,20 @@ const MAX_LISTED_ATTACKERS: usize = 8;
 /// Author of the lines made from killmails.
 const AUTHOR: &str = "zKillboard";
 
+/// How long the killmails of a tooltip are reused before they are read from
+/// the buffer again. The tooltip asks on every frame, and the age it shows
+/// changes by seconds, not by frames.
+const TOOLTIP_CACHE: Duration = Duration::from_millis(500);
+
+/// The killmails of the system a tooltip showed last, and when they were read
+/// (see [`Shared::buffer_context`]).
+struct TooltipCache {
+    system_id: usize,
+    from_feed: bool,
+    read: Instant,
+    context: KillContext,
+}
+
 pub(crate) use zkill::feed::{
     Backfill, Backoff, FeedConfig, FeedCursor, FeedSlots, R2z2Client, Step,
 };
@@ -532,6 +546,9 @@ struct Shared {
     status: Mutex<FeedStatus>,
     /// The killmails of the last hour, for the node tooltips.
     buffer: Mutex<KillBuffer>,
+    /// What the buffer said to the last tooltip, so that the frames that
+    /// follow do not read it again.
+    tooltip: Mutex<Option<TooltipCache>>,
     /// The killmails of the last day per system, asked of the query API.
     days: Mutex<DayCache>,
     /// The requests to the query API waiting for their turn: the only thing
@@ -696,6 +713,7 @@ impl Shared {
     /// count is not at hand its request goes to the API lane (delayed: see
     /// [`Prefetch::tooltip`]); the tooltip asks again on every frame, which
     /// keeps the request from lapsing while it stays.
+    #[tracing::instrument(skip_all)]
     fn look_day(&self, system_id: usize) -> DayLine {
         let (line, ask) = self
             .days
@@ -812,6 +830,38 @@ impl Shared {
         totals
     }
 
+    /// The killmails of `system_id` from the buffer of the feed (`from_feed`)
+    /// or from the one of the API. The tooltip asks on every frame while the
+    /// pointer rests on a node, and reading them filters the whole hour and
+    /// copies the names, so the answer for the same system is reused for
+    /// [`TOOLTIP_CACHE`].
+    #[tracing::instrument(skip_all)]
+    fn buffer_context(&self, system_id: usize, from_feed: bool, now: DateTime<Utc>) -> KillContext {
+        let mut cache = self
+            .tooltip
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(cached) = cache.as_ref()
+            && cached.system_id == system_id
+            && cached.from_feed == from_feed
+            && cached.read.elapsed() < TOOLTIP_CACHE
+        {
+            return cached.context.clone();
+        }
+        let context = if from_feed {
+            self.buffer().context(system_id, now)
+        } else {
+            self.api_buffer().context(system_id, now)
+        };
+        *cache = Some(TooltipCache {
+            system_id,
+            from_feed,
+            read: Instant::now(),
+            context: context.clone(),
+        });
+        context
+    }
+
     /// The killmails kept for the node tooltips.
     fn buffer(&self) -> std::sync::MutexGuard<'_, KillBuffer> {
         self.buffer
@@ -836,6 +886,7 @@ impl ZKillboardHandle {
             ignore_npc_only: AtomicBool::new(false),
             status: Mutex::new(FeedStatus::default()),
             buffer: Mutex::new(KillBuffer::default()),
+            tooltip: Mutex::new(None),
             days: Mutex::new(DayCache::default()),
             api_lane: LaneQueue::new(LaneConfig::api()),
             r2z2_lane: Arc::new(LaneQueue::new(LaneConfig::r2z2())),
@@ -932,6 +983,7 @@ impl ZKillboardHandle {
     /// while: see [`Shared::compensating`]) the API makes up for it:
     /// what they read goes into the feed's buffer and the day line comes
     /// from the API, as without the feed.
+    #[tracing::instrument(skip_all)]
     pub(crate) fn context(&self, system_id: usize) -> Option<KillContext> {
         if !self.0.fetching() {
             return None;
@@ -945,16 +997,12 @@ impl ZKillboardHandle {
             // first time its tooltip is shown. (The killmails themselves
             // are not: the feed gives them.)
             let line = self.0.look_day(system_id);
-            let mut context = self.0.buffer().context(system_id, now);
+            let mut context = self.0.buffer_context(system_id, true, now);
             context.day = Some(line);
             return Some(context);
         }
         let line = self.0.look_day(system_id);
-        let mut context = if from_feed {
-            self.0.buffer().context(system_id, now)
-        } else {
-            self.0.api_buffer().context(system_id, now)
-        };
+        let mut context = self.0.buffer_context(system_id, from_feed, now);
         let feed_failing = self.status().state == FeedState::Failing;
         context.source = if from_feed && !feed_failing {
             Source::Feed
@@ -1683,6 +1731,28 @@ mod tests {
             now,
         );
         assert_eq!(kills(&handle, 30000999), 1);
+    }
+
+    #[test]
+    fn a_tooltip_reuses_the_killmails_it_read_for_the_same_system() {
+        let handle = ZKillboardHandle::new(Path::new("sde.db"));
+        let now = Utc::now();
+        let system = 30000142;
+        let kills = |from_feed| handle.0.buffer_context(system, from_feed, now).hour;
+        assert_eq!(kills(false), 0);
+        // A killmail that arrives right after is not seen yet: the answer
+        // for that system was read a moment ago.
+        handle.0.api_buffer().insert(
+            Sample::killmail(1, system, now - TimeDelta::minutes(5)),
+            now,
+        );
+        assert_eq!(kills(false), 0);
+        // Another system is read again, and it replaces the one kept: the
+        // first system is read again too, and now sees the killmail.
+        assert_eq!(handle.0.buffer_context(system + 1, false, now).hour, 0);
+        assert_eq!(kills(false), 1);
+        // Another buffer is read again as well.
+        assert_eq!(kills(true), 0);
     }
 
     #[test]
