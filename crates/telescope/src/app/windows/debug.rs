@@ -190,42 +190,48 @@ impl DebugForm<'_> {
 }
 
 impl TelescopeApp {
-    /// The floating Debug window: a tab for each group of controls.
+    /// The Debug window, a window of its own over the app's (like Settings):
+    /// a tab for each group of controls. It lives as long as this is called
+    /// every frame; its close button closes the menu (`open[1]`).
     #[tracing::instrument(skip(self, ctx))]
     pub(crate) fn open_debug_menu(&mut self, ctx: &egui::Context) {
-        // Copied out and written back (like the Settings window) so the
-        // closure can borrow `self` as a whole.
-        let mut open = self.open[1];
-        egui::Window::new("Debug Menu")
-            .default_width(780.0)
-            .default_height(520.0)
-            .resizable(true)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                let selected = self.debug_selected_system();
-                let mut behavior = DebugBehavior::default();
-                self.debug.tree.ui(&mut behavior, ui);
-                // The page of the tab on show, inside the room of its pane.
-                if let Some((tab, rect)) = behavior.shown {
-                    let mut page = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                    page.set_clip_rect(rect);
-                    egui::ScrollArea::vertical().auto_shrink(false).show(
-                        &mut page,
-                        |ui| match tab {
-                            DebugTab::Search => self.debug_search_ui(ui, selected.as_ref()),
-                            DebugTab::Intel => self.debug_intel_ui(ui, selected.as_ref()),
-                            DebugTab::Alerts => self.debug_alerts_ui(ui),
-                            DebugTab::Animations => self.debug_animations_ui(ui, selected.as_ref()),
-                            DebugTab::Characters => {
-                                self.debug_move_character_ui(ui, selected.as_ref());
-                            }
-                            DebugTab::ZKillboard => self.debug_zkillboard_ui(ui),
-                            DebugTab::State => self.debug_state_ui(ui),
-                        },
-                    );
-                }
-            });
-        self.open[1] = open;
+        let id = egui::ViewportId::from_hash_of("telescope.debug");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Debug Menu")
+            .with_inner_size([780.0, 520.0])
+            .with_min_inner_size([520.0, 320.0]);
+        let closing = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            egui::CentralPanel::default().show(ui, |ui| self.show_debug_screen(ui));
+            ui.input(|input| input.viewport().close_requested())
+        });
+        if closing {
+            self.open[1] = false;
+        }
+    }
+
+    /// The tabs of the Debug window and the page of the one on show.
+    fn show_debug_screen(&mut self, ui: &mut egui::Ui) {
+        let selected = self.debug_selected_system();
+        let mut behavior = DebugBehavior::default();
+        self.debug.tree.ui(&mut behavior, ui);
+        // The page of the tab on show, inside the room of its pane.
+        if let Some((tab, rect)) = behavior.shown {
+            let mut page = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            page.set_clip_rect(rect);
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(&mut page, |ui| match tab {
+                    DebugTab::Search => self.debug_search_ui(ui, selected.as_ref()),
+                    DebugTab::Intel => self.debug_intel_ui(ui, selected.as_ref()),
+                    DebugTab::Alerts => self.debug_alerts_ui(ui),
+                    DebugTab::Animations => self.debug_animations_ui(ui, selected.as_ref()),
+                    DebugTab::Characters => {
+                        self.debug_move_character_ui(ui, selected.as_ref());
+                    }
+                    DebugTab::ZKillboard => self.debug_zkillboard_ui(ui),
+                    DebugTab::State => self.debug_state_ui(ui),
+                });
+        }
     }
 
     /// System picked in the search results, as `(id, name)`.
@@ -772,7 +778,7 @@ impl TelescopeApp {
             .last_error
             .clone()
             .unwrap_or_else(|| String::from("-"));
-        let feed = crate::app::intel::zkillboard::FEED_URL;
+        let feed = zkill::feed::FeedConfig::default().url;
         ui.label(RichText::new("How the source walks the R2Z2 feed: where it is, how far behind and what it skipped.").weak());
         egui::CollapsingHeader::new("Source")
             .default_open(true)

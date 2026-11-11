@@ -3,9 +3,9 @@
 
 use super::time_ago;
 use crate::app::TelescopeApp;
-use crate::app::intel::zkillboard::{FEED_URL, FeedState};
+use crate::app::intel::zkillboard::FeedState;
 use crate::app::messages::SettingsPage;
-use eframe::egui::{self, RichText};
+use eframe::egui;
 use egui_panels::{Section, StatusKind};
 use std::time::Duration;
 
@@ -163,15 +163,6 @@ impl TelescopeApp {
                             Self::show_source_state(ui, color, &text);
                         },
                     );
-                    // For reference only: the addresses are not editable.
-                    form.row(t!("settings.zkillboard.endpoint_pointer"), |ui| {
-                        ui.label(RichText::new(format!("{FEED_URL}/sequence.json")).monospace());
-                    });
-                    form.row(t!("settings.zkillboard.endpoint_killmail"), |ui| {
-                        ui.label(
-                            RichText::new(format!("{FEED_URL}/{{sequence}}.json")).monospace(),
-                        );
-                    });
                 });
             });
         self.settings.set_zkillboard(options);

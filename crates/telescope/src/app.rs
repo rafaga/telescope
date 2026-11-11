@@ -49,10 +49,12 @@ mod notifications;
 mod overlay;
 mod persistence;
 mod settings;
+mod system_header;
 mod tiles;
 mod update_checker;
 mod watchdog;
 mod windows;
+mod wormhole_links;
 
 /// Key of Noto Sans CJK in egui's font definitions (see
 /// `TelescopeApp::font_definitions`).
@@ -165,6 +167,10 @@ pub struct TelescopeApp {
     /// What the dispatch thread reads (alarm settings, character locations,
     /// stargate graph); refreshed by `sync_alarm_shared`.
     alarm_shared: Arc<intel::dispatch::AlarmShared>,
+    /// The wormholes of Thera and Turnur that EvE-Scout reports, shared with
+    /// the housekeeping thread that asks for them; refreshed by
+    /// `sync_wormholes`.
+    wormholes: Arc<wormhole_links::WormholeShared>,
     /// In-memory state of the Settings -> Rules page (rules being edited).
     patterns_editor: PatternsEditor,
     /// View state of the other Settings pages (filters, dialogs).
@@ -309,6 +315,7 @@ impl TelescopeApp {
                 Arc::clone(&arc_msg_sender),
                 true,
                 settings.get_data_source_urls().clone(),
+                settings.get_factor(),
             );
         }
         let arc_map_sender = Arc::new(mtx);
@@ -536,6 +543,7 @@ impl TelescopeApp {
             intel_zkillboard,
             intel_offsets,
             alarm_shared,
+            wormholes: Arc::new(wormhole_links::WormholeShared::default()),
             patterns_editor: PatternsEditor::default(),
             settings_ui: windows::settings::SettingsUi::default(),
             licenses: None,
@@ -636,6 +644,7 @@ impl eframe::App for TelescopeApp {
             intel_zkillboard: _,
             intel_offsets: _,
             alarm_shared: _,
+            wormholes: _,
             patterns_editor: _,
             settings_ui: _,
             licenses: _,
@@ -973,6 +982,7 @@ impl TelescopeApp {
         // own, without this loop).
         self.sync_alarm_shared();
         self.sync_sde_path();
+        self.sync_wormholes();
     }
 
     /// End of a frame: a message queued on the UI thread during it gets the
@@ -1076,6 +1086,7 @@ impl TelescopeApp {
             self.settings.get_node_style(),
         );
         pane.set_zkillboard(self.intel_zkillboard.clone());
+        pane.set_wormholes(Arc::clone(&self.wormholes));
         pane.set_heatmap(self.settings.get_heatmap());
         self.seed_player_markers(pane.as_mut());
         let tile_id = self.tree.as_mut().unwrap().tiles.insert_pane(pane);
@@ -1239,6 +1250,7 @@ impl TelescopeApp {
             self.settings.get_node_style(),
         );
         pane.set_zkillboard(self.intel_zkillboard.clone());
+        pane.set_wormholes(Arc::clone(&self.wormholes));
         pane.set_heatmap(self.settings.get_heatmap());
         self.seed_player_markers(pane.as_mut());
         let id = tiles.insert_pane(pane);
@@ -1392,7 +1404,7 @@ mod font_tests {
         add_system_fonts(&ctx);
         let missing = glyph_uv(&ctx, "\u{10FFFD}");
         for text in [
-            tiles::CHARACTER_ICON,
+            tiles::LOCATION_ICON,
             webb::map_alerts::ALERT_ICON,
             webb::map_alerts::CLEAR_ICON,
         ] {

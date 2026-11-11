@@ -6,13 +6,14 @@ members = [
     "crates/native_tools",
     "crates/egui-panels",
     "crates/zkill",
+    "crates/eve-scout",
 ]
 
 [workspace.package]
 edition = "2024"
 license = "MIT"
 rust-version = "1.89"
-version = "1.0.6"
+version = "1.1.0"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
@@ -23,7 +24,9 @@ missing_crate_level_docs = "warn"
 broken_intra_doc_links = "warn"
 
 [profile.release]
-opt-level = 2 # fast and small wasm
+opt-level = 3
+lto = "thin"
+codegen-units = 1
 panic = "abort"
 
 [profile.dev]
@@ -41,8 +44,13 @@ opt-level = 0
 # `egui_map::map::layer` (layers, `NodeContext::layers`) is not on crates.io
 # yet: use the sibling checkout until egui-map publishes it, then drop this
 # line.
+# The runtime nodes and lines, the label and dashes of a segment and the view
+# limits of `egui-map` (unreleased) are used by the wormholes on the maps.
 # egui-map = { path = "../egui-map" }
 # `get_system_kills_snapshot` (0.2.2) is not on crates.io yet: same as above.
 # esi-openapi = { path = "../esi-openapi" }
+# `sde::projection_patch` (feature `projection-patch`, unreleased) is not on
+# crates.io yet: the sibling checkout until it is published, then drop this
+# line.
 # sde = { path = "../sde" }
 # sde = { git = "https://github.com/rafaga/sde", branch = "test" }

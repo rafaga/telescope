@@ -1,6 +1,7 @@
 //! Resolvers shared by the intel output stages: turning reported text into
 //! solar-system ids and measuring stargate distance.
 
+use sde::SdeManager;
 use sde::objects::Universe;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -286,9 +287,6 @@ struct ShipIndex {
 impl SdeShips {
     /// The ship category of the SDE.
     const SHIP_CATEGORY: u32 = 6;
-    const SHIPS_SQL: &'static str = "SELECT t.typeId, t.typeName FROM invTypes t \
-         JOIN invGroups g ON g.groupId = t.groupId \
-         WHERE g.categoryId = ?1 AND t.published = 1";
 
     /// Points the index at the database at `path`, reading its ships again
     /// when it is another file or the file changed. Cheap otherwise (one
@@ -327,22 +325,14 @@ impl SdeShips {
     }
 
     /// The lowercase name -> type id of every published ship in the database
-    /// at `path`, opened read-only. `None` if it can't be read or has no
-    /// such tables.
+    /// at `path`, asked of the `sde` crate. `None` if it can't be read or has
+    /// no such tables.
     fn load(path: &Path) -> Option<HashMap<String, u32>> {
-        let connection = rusqlite::Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .ok()?;
-        let mut statement = connection.prepare(Self::SHIPS_SQL).ok()?;
-        let rows = statement
-            .query_map([Self::SHIP_CATEGORY], |row| {
-                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
-            })
-            .ok()?;
+        let manager = SdeManager::new(path, 1.0).ok()?;
+        let ships = manager.get_category_types(Self::SHIP_CATEGORY, true).ok()?;
         Some(
-            rows.flatten()
+            ships
+                .into_iter()
                 .map(|(id, name)| (name.to_lowercase(), id))
                 .collect(),
         )

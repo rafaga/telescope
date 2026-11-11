@@ -21,6 +21,7 @@
 //! A guard without a store works the same, only forgetting at the end of the
 //! run.
 
+use crate::stats::{LaneStats, StatsConfig};
 use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,6 +53,8 @@ pub struct GuardConfig {
     pub min_interval: TimeDelta,
     /// Added to the wait zKillboard asks for in `Retry-After`.
     pub retry_margin: TimeDelta,
+    /// How the history of the requests is kept.
+    pub stats: StatsConfig,
 }
 
 impl Default for GuardConfig {
@@ -62,6 +65,7 @@ impl Default for GuardConfig {
             save_every: TimeDelta::seconds(5),
             min_interval: TimeDelta::milliseconds(125),
             retry_margin: TimeDelta::seconds(30),
+            stats: StatsConfig::default(),
         }
     }
 }
@@ -95,6 +99,8 @@ pub struct RequestGuard {
     memory: Mutex<Memory>,
     /// Requests let through in this run (for the log of a refusal).
     sent: AtomicU64,
+    /// The requests second by second, for the graphs and the plots.
+    stats: LaneStats,
 }
 
 /// What a saved text holds: until when zKillboard asked us to keep away, and
@@ -114,7 +120,19 @@ impl RequestGuard {
             store: Mutex::new(None),
             memory: Mutex::new(Memory::default()),
             sent: AtomicU64::new(0),
+            stats: LaneStats::new(config.stats),
         }
+    }
+
+    /// How the requests of this endpoint went in the last minutes.
+    pub fn stats(&self) -> &LaneStats {
+        &self.stats
+    }
+
+    /// A request failed without zKillboard refusing it (no answer, an
+    /// unexpected status).
+    pub fn failed(&self, now: DateTime<Utc>) {
+        self.stats.failed(now);
     }
 
     /// How many requests this run has let through so far.
@@ -125,6 +143,7 @@ impl RequestGuard {
     /// A request was answered well (a file that does not exist counts: the
     /// server answered).
     pub fn succeeded(&self, now: DateTime<Utc>) {
+        self.stats.answered(now);
         self.lock_memory().last_ok = Some(now);
     }
 
@@ -219,6 +238,7 @@ impl RequestGuard {
     /// A request is about to be made.
     pub fn requested(&self, now: DateTime<Utc>) {
         self.sent.fetch_add(1, Ordering::Relaxed);
+        self.stats.sent(now);
         let mut memory = self.lock_memory();
         memory.last_request = Some(now);
         let due = memory
@@ -233,6 +253,7 @@ impl RequestGuard {
     /// (`retry_after`, plus the margin; never more than four blocks) or, when
     /// it did not say, for the whole block.
     pub fn throttled_for(&self, now: DateTime<Utc>, retry_after: Option<Duration>) {
+        self.stats.refused(now);
         let asked = retry_after
             .and_then(|wait| TimeDelta::from_std(wait).ok())
             .map(|wait| (wait + self.config.retry_margin).min(self.config.block * 4));
@@ -568,5 +589,22 @@ mod tests {
         assert_eq!(guard.last_success(at(10)), None);
         guard.succeeded(at(4));
         assert_eq!(guard.last_success(at(10)), Some(Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn the_guard_counts_how_each_request_ended() {
+        let guard = RequestGuard::new(GuardConfig::default());
+        let now = Utc::now();
+        guard.requested(now);
+        guard.succeeded(now);
+        guard.requested(now);
+        guard.throttled_for(now, None);
+        guard.requested(now);
+        guard.failed(now);
+        let tally = guard.stats().total();
+        assert_eq!(
+            (tally.sent, tally.ok, tally.refused, tally.failed),
+            (3, 1, 1, 1)
+        );
     }
 }

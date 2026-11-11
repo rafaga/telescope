@@ -25,6 +25,12 @@
 //!   killmails come in (see `ZKillboardHandle::hour_kills`). Nothing is
 //!   asked while no map shows the heat, nor while the feed covers the whole
 //!   hour by itself; see [`SystemKillsPolicy`].
+//! * **Wormholes**: the signatures of Thera and Turnur from EvE-Scout, kept
+//!   as a layer of links (see `wormhole_links`). They are asked for only
+//!   while the setting is on and a map that shows them is open, and again
+//!   when the answer the API said it holds runs out (the client keeps the
+//!   pace: it does not ask while an answer is valid, and it leaves an
+//!   endpoint alone for a while after a bad one); see [`WormholesPolicy`].
 //! * **Update check**: looks for a newer Telescope release at startup and then
 //!   every few hours. The update dialog opens only when a release that was
 //!   not announced before is found (see `UpdateChecker::announce`).
@@ -40,6 +46,7 @@ use super::intel::dispatch::AlarmShared;
 use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::{CharacterSync, Message, Type, send_app_message};
 use super::update_checker::UpdateChecker;
+use super::wormhole_links::WormholeShared;
 use chrono::{DateTime, TimeDelta, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,6 +72,53 @@ enum Job {
     UpdateCheck,
     DayCounts,
     SystemKills,
+    Wormholes,
+}
+
+/// When the wormholes of EvE-Scout are asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WormholesPolicy {
+    /// How often to look whether a map shows the wormholes, while none does.
+    idle: Duration,
+    /// The least time between two requests, whatever the API says it holds
+    /// the answer for.
+    least: Duration,
+    /// The most time between two requests, whatever the API says.
+    most: Duration,
+    /// Delay before asking again after a failure that is not a pause the
+    /// client announced.
+    retry: Duration,
+    /// Delay when the client could not be made at all.
+    unavailable: Duration,
+}
+
+impl Default for WormholesPolicy {
+    fn default() -> Self {
+        Self {
+            idle: Duration::from_secs(15),
+            least: Duration::from_secs(30),
+            most: Duration::from_secs(60 * 60),
+            retry: Duration::from_secs(2 * 60),
+            unavailable: Duration::from_secs(60 * 60),
+        }
+    }
+}
+
+impl WormholesPolicy {
+    /// When to ask again after an answer that the API holds for `max_age`
+    /// (5 minutes in practice); a missing one is taken as the least.
+    fn after_answer(&self, max_age: Option<Duration>) -> Duration {
+        max_age.unwrap_or(self.least).clamp(self.least, self.most)
+    }
+
+    /// When to ask again after `error`: when the client says it is leaving
+    /// the endpoint alone until then, or after the usual retry.
+    fn after_error(&self, error: &eve_scout::Error) -> Duration {
+        match error {
+            eve_scout::Error::Backoff { retry_in } => (*retry_in).max(self.least),
+            _ => self.retry,
+        }
+    }
 }
 
 /// When the hourly answer of ESI's `system_kills` is asked for.
@@ -140,6 +194,7 @@ impl Schedule {
             (Job::UpdateCheck, now),
             (Job::DayCounts, now),
             (Job::SystemKills, now),
+            (Job::Wormholes, now),
         ];
         jobs.extend(ids.iter().map(|id| (Job::LastLogon(*id), now)));
         Self { jobs }
@@ -202,6 +257,14 @@ struct Housekeeping {
     kills_failing: bool,
     /// The characters' locations and the stargates, for the plan.
     alarm: Arc<AlarmShared>,
+    /// The client of EvE-Scout, `None` if it could not be made.
+    eve_scout: Option<eve_scout::Client>,
+    /// Where the wormholes are kept and whether they are wanted.
+    wormholes: Arc<WormholeShared>,
+    /// When the wormholes are asked for.
+    wormholes_policy: WormholesPolicy,
+    /// The last read of the wormholes failed (so a streak warns once).
+    wormholes_failing: bool,
 }
 
 impl Housekeeping {
@@ -215,6 +278,7 @@ impl Housekeeping {
                     Job::UpdateCheck => self.check_update().await,
                     Job::DayCounts => self.plan_day_counts(),
                     Job::SystemKills => self.check_system_kills().await,
+                    Job::Wormholes => self.check_wormholes().await,
                 };
                 self.schedule.reschedule(job, Instant::now() + delay);
             }
@@ -342,6 +406,40 @@ impl Housekeeping {
         }
     }
 
+    /// Reads the wormhole signatures of Thera and Turnur from EvE-Scout and
+    /// replaces the layer of links with them. Nothing is asked while the
+    /// setting is off or no map shows the wormholes. Returns when to look
+    /// again.
+    async fn check_wormholes(&mut self) -> Duration {
+        if !self.wormholes.is_wanted() {
+            return self.wormholes_policy.idle;
+        }
+        let Some(client) = self.eve_scout.clone() else {
+            return self.wormholes_policy.unavailable;
+        };
+        match client.signatures(None).await {
+            Ok(answer) => {
+                self.wormholes.replace(&answer.data);
+                // The maps draw them when the UI runs next.
+                crate::repaint::request();
+                self.wormholes_failing = false;
+                tracing::debug!(
+                    signatures = answer.data.len(),
+                    from_cache = answer.from_cache,
+                    "wormholes read from EvE-Scout"
+                );
+                self.wormholes_policy.after_answer(answer.max_age)
+            }
+            Err(error) => {
+                if !self.wormholes_failing {
+                    tracing::warn!(%error, "could not read the wormholes from EvE-Scout");
+                }
+                self.wormholes_failing = true;
+                self.wormholes_policy.after_error(&error)
+            }
+        }
+    }
+
     /// Looks for a new Telescope release. Returns when to check again.
     async fn check_update(&mut self) -> Duration {
         let outcome = match UpdateChecker::for_telescope() {
@@ -400,6 +498,16 @@ impl TelescopeApp {
             kills_stale: 0,
             kills_failing: false,
             alarm: Arc::clone(&self.alarm_shared),
+            eve_scout: match eve_scout::Client::new(eve_scout::ClientConfig::default()) {
+                Ok(client) => Some(client),
+                Err(error) => {
+                    tracing::error!(%error, "failed to make the EvE-Scout client");
+                    None
+                }
+            },
+            wormholes: Arc::clone(&self.wormholes),
+            wormholes_policy: WormholesPolicy::default(),
+            wormholes_failing: false,
         };
         let spawned = thread::Builder::new()
             .name(String::from("housekeeping"))
@@ -480,6 +588,7 @@ mod tests {
                 Job::UpdateCheck,
                 Job::DayCounts,
                 Job::SystemKills,
+                Job::Wormholes,
                 Job::LastLogon(1),
                 Job::LastLogon(2)
             ]
@@ -493,7 +602,12 @@ mod tests {
         schedule.reschedule(Job::LastLogon(1), now + LAST_LOGON_INTERVAL);
         assert_eq!(
             jobs(&schedule, now),
-            vec![Job::UpdateCheck, Job::DayCounts, Job::SystemKills]
+            vec![
+                Job::UpdateCheck,
+                Job::DayCounts,
+                Job::SystemKills,
+                Job::Wormholes
+            ]
         );
         assert_eq!(
             jobs(&schedule, now + LAST_LOGON_INTERVAL),
@@ -501,6 +615,7 @@ mod tests {
                 Job::UpdateCheck,
                 Job::DayCounts,
                 Job::SystemKills,
+                Job::Wormholes,
                 Job::LastLogon(1)
             ]
         );
@@ -513,6 +628,7 @@ mod tests {
         schedule.reschedule(Job::UpdateCheck, now + UPDATE_INTERVAL);
         schedule.reschedule(Job::DayCounts, now + UPDATE_INTERVAL);
         schedule.reschedule(Job::SystemKills, now + UPDATE_INTERVAL);
+        schedule.reschedule(Job::Wormholes, now + UPDATE_INTERVAL);
         schedule.reschedule(Job::LastLogon(1), now + TOKEN_RETRY);
         assert_eq!(schedule.next_due(), Some(now + TOKEN_RETRY));
     }
@@ -540,9 +656,45 @@ mod tests {
                 Job::UpdateCheck,
                 Job::DayCounts,
                 Job::SystemKills,
+                Job::Wormholes,
                 Job::LastLogon(2)
             ]
         );
+    }
+
+    #[test]
+    fn the_wormholes_are_asked_for_again_when_the_api_says_the_answer_runs_out() {
+        let policy = WormholesPolicy::default();
+        assert_eq!(
+            policy.after_answer(Some(Duration::from_secs(300))),
+            Duration::from_secs(300)
+        );
+        // Not faster than the least, nor slower than the most.
+        assert_eq!(
+            policy.after_answer(Some(Duration::from_secs(1))),
+            policy.least
+        );
+        assert_eq!(
+            policy.after_answer(Some(Duration::from_secs(48 * 60 * 60))),
+            policy.most
+        );
+        // An answer that says nothing about it is asked again soon.
+        assert_eq!(policy.after_answer(None), policy.least);
+    }
+
+    #[test]
+    fn a_failure_waits_for_the_pause_the_client_announced_or_the_usual_retry() {
+        let policy = WormholesPolicy::default();
+        let paused = eve_scout::Error::Backoff {
+            retry_in: Duration::from_secs(240),
+        };
+        assert_eq!(policy.after_error(&paused), Duration::from_secs(240));
+        let soon = eve_scout::Error::Backoff {
+            retry_in: Duration::from_secs(1),
+        };
+        assert_eq!(policy.after_error(&soon), policy.least);
+        let failed = eve_scout::Error::Decode(String::from("not json"));
+        assert_eq!(policy.after_error(&failed), policy.retry);
     }
 
     #[test]

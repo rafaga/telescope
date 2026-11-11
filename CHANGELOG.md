@@ -8,16 +8,28 @@ The entries up to *1.0.0-rc01* were reconstructed from the git history, grouped
 by topic and dated by the period they happened in. The entries of the later
 versions were written for the tag that shipped them.
 
-## [Unreleased]
+## [1.1.0] - 2026-11-11
 
 ### Added
 
+* The universe map shows the wormholes of Thera. Thera has no place on that map, so each system
+  with a wormhole to it gets a small green circle , joined by a short dashed line with no text,
+  and the tooltip of the circle is the one of Thera (class, region and killmails). They
+  appear when EvE-Scout is on and follow the same refresh as on the region maps.
+* Thera has its map, under its real region (G-R00031) and the name *Thera
+  (G-R00031)*, in the list of regions and in the settings. The system is at
+  the center and the wormholes that leave from it are nodes around it. The
+  systems of wormhole space (Thera and the J-systems) write their class
+  (`C1` to `C6`, `C12`...) where the others write the security status, in the
+  map and in the tooltip, and have the border of the same color: blue for C1
+  and C2, orange for C3 and C4, red for C5 and C6, and the green of the
+  wormholes for Thera and the rest.
 * Telescope writes a log file in the `logs` folder of its working directory
   (`telescope.<date>.log`, one file a day, the last seven kept). It follows
   `RUST_LOG` and, when that is not set, keeps the warnings of everything and
   the information of `telescope` and `webb`.
 * zKillboard keeps what it learns in an SQLite file next to the SDE
-  (`zkillboard_cache.sqlite`, not encrypted): the killmails of the last hour,
+  (`cache.db`, not encrypted): the killmails of the last hour,
   the counts of the last day and where the feed walk got to. After a restart
   the tooltips do not ask zKillboard or ESI again for what is still good, and
   the feed reads only the files published meanwhile.
@@ -48,6 +60,28 @@ versions were written for the tag that shipped them.
 
 ### Changed
 
+* The node tooltip reads the killmails of its system from the buffer at most twice a second
+  (it filtered the whole hour and copied the names on every frame while the pointer rested on a
+  node). The tooltip, the kill context and the day count have their own spans in the Tracy
+  capture, so their cost can be told apart from the rest of the frame.
+* The map of Thera carries the credit "powered by Eve-scout.com" in its lower left corner, as a faint
+  text that cannot be selected, while their wormholes are shown. It is drawn by Telescope over the map, so
+  `egui-map` is not changed.
+* Settings -> Maps: the glow and heat map sections come first, above the list of regions, and
+  the regions that have a linked character show the 📍 of the tooltips instead of a 👤.
+* Settings -> Intel rules -> zKillboard no longer lists the two addresses of the feed (the
+  position and the killmail), which could not be changed.
+* Thera, and only Thera, writes its security status (-1.0) beside its name, on the map and in
+  its tooltip, instead of its class; it keeps the green of its class. The other systems of wormhole
+  space still write their class.
+* Drawing a node looks the system header up once per frame (it was twice: border colour and
+  label), a small saving on every visible node.
+* The names, security and region of the tooltips are read with a single query
+  (`SdeManager::get_system_summaries`, about 6 ms) instead of the whole universe
+  with its planets and moons (about 150 ms): every map that opens or reloads
+  paid that time.
+* The release build is optimized for speed (`opt-level = 3`, thin LTO, one
+  codegen unit) instead of for size.
 * Every request to zKillboard now goes through the `zkill` crate, which
   keeps the two endpoints apart: the R2Z2 feed and the query API each have
   their own queue, rate (8 requests a second at most) and ban guard. The
@@ -69,6 +103,51 @@ versions were written for the tag that shipped them.
 * The settings tree and the button that adds maps no longer use emojis: the
   rows are plain text, and the button is a "+" of the interface font (the
   emoji sat high in the button).
+
+### Fixed
+
+* The tooltip of the node of a wormhole on a region map has the header of the
+  universe map: the name of the system it leads to, its security (or its class
+  in wormhole space) and its region, so that systems of different regions with
+  alike names or places are told apart, and under it what the killmails of
+  zKillboard know of that system.
+* The nodes of the wormholes on the region maps look like the other nodes
+  (the border of the theme, and the name with the security of the system
+  they stand for). Before, all of them had the green of the wormholes. The
+  line to them keeps its own color.
+* The wormhole markers of the region maps (the ones that leave from Thera,
+  Turnur...) are kept further apart: 24 map units of free space around each
+  one instead of 6, so the markers of a crowded hub no longer almost touch.
+* A wormhole marker stays where it is, with the same id, for as long as its
+  wormhole lasts. Before, one that appeared or collapsed could move the
+  markers after it, and the whole set was drawn again.
+* The wormhole markers leave room for the text of their line (the signature,
+  "OUT -> IN"): a marker is placed where neither its node nor its text touches
+  another marker, node or text, and the lines cross as little as possible. The
+  room is the one of the widest text a signature can make, worked out for a
+  fixed zoom (0.7) whatever the zoom of the map, so neither zooming nor a
+  signature with wider letters moves the markers; only a text longer than that
+  one does, and the room then stays. The text sits at 70% of the line, away
+  from the hub where the lines meet. It needs egui-map with
+  `MapSegment::with_label_at`.
+* The text and the node of a wormhole marker are also kept off the lines
+  between systems that are already on the map (the stargates), and its line
+  crosses them as little as possible: before, the signature could end up on a
+  line of the map. It is a cost, not a rule, so in a dense region a marker
+  still goes where it can.
+* The wormhole markers of a crowded hub no longer line up on the same direction
+  (several markers of Tama and Fanatiko in Turnur had their texts and lines on
+  top of each other): the more markers a system has, the more directions are
+  tried around it, and a line through another node or text weighs more. Next to
+  the nodes of the map the places are looked for in the arcs around the system
+  that no node takes, which also finds the narrow gaps between two nodes. The
+  way the places are looked for is `WormholeMarkerStyle::method`.
+* The text of the wormhole lines follows the zoom like the names inside the nodes
+  do (same size rule, `12 * zoom`) instead of keeping a fixed size on screen,
+  so it no longer swallows the map when zoomed out nor looks small when zoomed
+  in, and the room reserved for it in map units is exact at every zoom (it was
+  worked out for zoom 0.7). It needs egui-map with
+  `MapSettings::segment_label_scaling`.
 
 ## [1.0.6] - 2026-10-23
 

@@ -3,7 +3,7 @@
 
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
-use crate::app::tiles::CHARACTER_ICON;
+use crate::app::tiles::LOCATION_ICON;
 use eframe::egui::{self, CornerRadius, Stroke, StrokeKind};
 use egui_panels::{Section, Slider};
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ impl TelescopeApp {
                 &SettingsPage::Maps.title(),
                 Some(&t!("settings.maps.description")),
             );
-            self.show_startup_regions_section(ui);
             self.show_marker_section(ui);
             self.show_heatmap_section(ui);
+            self.show_startup_regions_section(ui);
         });
     }
 
@@ -80,7 +80,7 @@ impl TelescopeApp {
                         // The icon after the name, so the names stay aligned. It is
                         // a color emoji: it keeps its own colors.
                         let label: egui::WidgetText = match count {
-                            Some(_) => format!("{name} {CHARACTER_ICON}").into(),
+                            Some(_) => format!("{name} {LOCATION_ICON}").into(),
                             None => name.as_str().into(),
                         };
                         let response = ui.checkbox(&mut data.show_on_startup, label);
