@@ -129,7 +129,7 @@ Gatekeeper: the first time, open it with right click -> *Open*.
 
 CI (GitHub Actions, `.github/workflows/`):
 
-* `ci.yml`, on pull requests to `master` and `dev` and on pushes to `master`
+* `ci.yml`, on pull requests to `master` and on pushes to `master`
   (documentation-only changes are skipped; a new push to a pull request
   cancels the run in progress). `fmt` checks the formatting once. On Linux,
   Windows and macOS one job runs, in this order, `cargo clippy --workspace

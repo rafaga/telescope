@@ -3,12 +3,13 @@ name: CI
 # One workflow for the three operating systems. Per system a single job runs
 # clippy, the all-features check and the tests one after the other, so the
 # expensive part of the build (OpenSSL/SQLCipher, Tracy, egui) is compiled once
-# and shared. Pull requests only read the build cache; it is written by pushes
+# and shared. It runs on pull requests to master and on pushes to master (what
+# is merged). Pull requests only read the build cache; it is written by pushes
 # to master, so three systems' worth of `target/` do not crowd out the
 # repository's cache quota.
 on:
   pull_request:
-    branches: [master, dev]
+    branches: [master]
     paths-ignore:
       - "**.md"
       - "docs/**"
