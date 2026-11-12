@@ -3,6 +3,7 @@
 
 use crate::app::TelescopeApp;
 use crate::app::messages::SettingsPage;
+use crate::app::settings::{EveScoutOptions, HubDisplay};
 use crate::app::tiles::LOCATION_ICON;
 use eframe::egui::{self, CornerRadius, Stroke, StrokeKind};
 use egui_panels::{Section, Slider};
@@ -18,6 +19,7 @@ impl TelescopeApp {
             );
             self.show_marker_section(ui);
             self.show_heatmap_section(ui);
+            self.show_wormholes_section(ui);
             self.show_startup_regions_section(ui);
         });
     }
@@ -132,6 +134,66 @@ impl TelescopeApp {
                 );
             });
         });
+    }
+
+    /// The wormholes of Thera and Turnur (EvE-Scout): whether they are shown,
+    /// and how the region maps draw a hub with many of them.
+    fn show_wormholes_section(&mut self, ui: &mut egui::Ui) {
+        let mut options = self.settings.get_eve_scout().clone();
+        Section::new(&t!("settings.maps.wormholes_title"))
+            .description(&t!("settings.maps.wormholes_description"))
+            .show(ui, |ui| {
+                egui_panels::form(ui, |form| {
+                    form.row(t!("settings.maps.wormholes_enabled"), |ui| {
+                        egui_panels::switch(ui, &mut options.enabled);
+                        ui.weak(t!("settings.maps.wormholes_enabled_hint"));
+                    });
+                    form.row(t!("settings.maps.hub_display"), |ui| {
+                        let label = |display: HubDisplay| match display {
+                            HubDisplay::Automatic => t!("settings.maps.hub_display_automatic"),
+                            HubDisplay::Full => t!("settings.maps.hub_display_full"),
+                            HubDisplay::Collapsed => t!("settings.maps.hub_display_collapsed"),
+                        };
+                        let combo = egui::ComboBox::from_id_salt("hub_display")
+                            .selected_text(label(options.hub_display))
+                            .show_ui(ui, |ui| {
+                                for display in [
+                                    HubDisplay::Automatic,
+                                    HubDisplay::Full,
+                                    HubDisplay::Collapsed,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut options.hub_display,
+                                        display,
+                                        label(display),
+                                    );
+                                }
+                            });
+                        egui_panels::label_with_row(ui, &combo.response);
+                    });
+                    if options.hub_display == HubDisplay::Automatic {
+                        form.row(t!("settings.maps.collapse_over"), |ui| {
+                            let range = EveScoutOptions::COLLAPSE_OVER_RANGE;
+                            let mut over = u32::try_from(options.collapse_over).unwrap_or(u32::MAX);
+                            let (least, most) = (*range.start() as u32, *range.end() as u32);
+                            if Slider::new(&mut over, least..=most)
+                                .width(220.0)
+                                .show(ui)
+                                .changed()
+                            {
+                                options.collapse_over = over as usize;
+                            }
+                            ui.label(t!("settings.maps.collapse_over_value", count = over));
+                        });
+                    }
+                    form.note(|ui| {
+                        ui.weak(t!("settings.maps.hub_display_hint"));
+                    });
+                });
+            });
+        if options != *self.settings.get_eve_scout() {
+            self.settings.set_eve_scout(options);
+        }
     }
 
     /// How many linked characters are in each region (by region id).

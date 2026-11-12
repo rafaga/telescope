@@ -95,6 +95,14 @@ pub(crate) struct Mapping {
     /// load with it off.
     #[serde(default)]
     pub center_on_alert: bool,
+    /// Solar systems whose reports never sound the alarm, however close they
+    /// are (a trade hub, say). The maps and the overlay still show them. Kept
+    /// sorted and without repeats, so that the dispatch can search it.
+    /// Jita is silenced by default, also in settings files written before
+    /// this option existed. An empty list is saved as such, so emptying it
+    /// sticks.
+    #[serde(default = "Mapping::default_silenced_systems")]
+    pub silenced_systems: Vec<u32>,
     /// How long the visual alert of an intel report stays on the maps, in
     /// seconds (it fades out over that time). `serde(default)`: settings
     /// files written before this option existed get the default.
@@ -202,6 +210,7 @@ impl Default for Mapping {
             startup_regions: vec![],
             warning_area: 4,
             center_on_alert: false,
+            silenced_systems: Self::default_silenced_systems(),
             alert_duration_secs: Mapping::DEFAULT_ALERT_DURATION_SECS,
             glow_intensity: Mapping::DEFAULT_GLOW_INTENSITY,
             heatmap: false,
@@ -218,6 +227,11 @@ impl Default for Mapping {
 }
 
 impl Mapping {
+    /// The systems silenced until the user changes the list: Jita.
+    fn default_silenced_systems() -> Vec<u32> {
+        vec![30_000_142]
+    }
+
     /// Default of [`Mapping::alert_duration_secs`]: four minutes.
     pub(crate) const DEFAULT_ALERT_DURATION_SECS: u32 = 240;
     /// Shortest visual alert the Settings slider allows, in seconds.
@@ -283,19 +297,55 @@ impl ZKillboardOptions {
     pub(crate) const MAX_MIN_ISK: u64 = 10_000_000_000;
 }
 
+/// How the wormholes of a hub (Thera, Turnur) are drawn on the map of a region
+/// that has the hub itself. Turnur has dozens, and on a busy region such as
+/// Metropolis they would bury the map.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HubDisplay {
+    /// One node for all the wormholes of the hub when there are more than
+    /// [`EveScoutOptions::collapse_over`]; one each below that. The map of
+    /// the region that is the hub's own, and the detail one, always show them
+    /// all.
+    #[default]
+    Automatic,
+    /// One node for each wormhole, however many there are.
+    Full,
+    /// Always one node for all the wormholes of the hub.
+    Collapsed,
+}
+
 /// What Telescope takes from EvE-Scout (see `wormhole_links`): the wormholes
 /// of Thera and Turnur, to show them on the maps and plan routes through them.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
 pub(crate) struct EveScoutOptions {
     /// Ask EvE-Scout for the wormholes, while a map that shows them is open.
-    /// Off never asks. `serde(default)`: on.
-    #[serde(default = "default_true")]
+    /// Off never asks. Default: on.
     pub enabled: bool,
+    /// How the wormholes of a hub are drawn on the regions. Default:
+    /// [`HubDisplay::Automatic`].
+    pub hub_display: HubDisplay,
+    /// With [`HubDisplay::Automatic`], the number of wormholes of a hub above
+    /// which they are drawn as one node. Default: [`Self::DEFAULT_COLLAPSE_OVER`].
+    pub collapse_over: usize,
+}
+
+impl EveScoutOptions {
+    /// Wormholes of a hub a region shows one by one before they become a
+    /// single node: about what a region map takes without losing its systems.
+    pub(crate) const DEFAULT_COLLAPSE_OVER: usize = 6;
+    /// The least and the most `collapse_over` can be set to.
+    pub(crate) const COLLAPSE_OVER_RANGE: std::ops::RangeInclusive<usize> = 1..=40;
 }
 
 impl Default for EveScoutOptions {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            hub_display: HubDisplay::default(),
+            collapse_over: Self::DEFAULT_COLLAPSE_OVER,
+        }
     }
 }
 
@@ -829,6 +879,45 @@ impl Settings {
         self.saved = false;
     }
 
+    /// The systems whose reports never sound the alarm, sorted.
+    pub(crate) fn get_silenced_systems(&self) -> &[u32] {
+        &self.mapping.silenced_systems
+    }
+
+    /// Stops the alarm from sounding for reports in `system_id`. Returns
+    /// whether it was added: a system that is already silenced changes
+    /// nothing.
+    pub(crate) fn silence_system(&mut self, system_id: u32) -> bool {
+        let Err(at) = self.mapping.silenced_systems.binary_search(&system_id) else {
+            return false;
+        };
+        self.mapping.silenced_systems.insert(at, system_id);
+        self.saved = false;
+        true
+    }
+
+    /// Lets the alarm sound again in every system. Returns whether there was
+    /// any silenced.
+    pub(crate) fn clear_silenced_systems(&mut self) -> bool {
+        if self.mapping.silenced_systems.is_empty() {
+            return false;
+        }
+        self.mapping.silenced_systems.clear();
+        self.saved = false;
+        true
+    }
+
+    /// Lets the alarm sound again for reports in `system_id`. Returns whether
+    /// it was silenced.
+    pub(crate) fn unsilence_system(&mut self, system_id: u32) -> bool {
+        let Ok(at) = self.mapping.silenced_systems.binary_search(&system_id) else {
+            return false;
+        };
+        self.mapping.silenced_systems.remove(at);
+        self.saved = false;
+        true
+    }
+
     /// How long the visual alert of an intel report lasts on the maps.
     pub(crate) fn get_alert_duration(&self) -> std::time::Duration {
         std::time::Duration::from_secs(u64::from(self.get_alert_duration_secs()))
@@ -1339,6 +1428,76 @@ mod tests {
     }
 
     #[test]
+    fn jita_is_silenced_by_default_and_old_files_load_that_way() {
+        assert_eq!(Settings::default().get_silenced_systems(), [30_000_142]);
+        let old: Mapping = toml::from_str("startup_regions = []\nwarning_area = 4\n").unwrap();
+        assert_eq!(old.silenced_systems, [30_000_142]);
+    }
+
+    #[test]
+    fn an_emptied_list_stays_empty_after_saving_and_loading() {
+        let mut settings = Settings::default();
+        assert!(settings.clear_silenced_systems());
+        let text = toml::to_string(&settings).unwrap();
+        let back: Settings = toml::from_str(&text).unwrap();
+        assert!(back.get_silenced_systems().is_empty());
+    }
+
+    #[test]
+    fn silenced_systems_stay_sorted_without_repeats_and_dirty_the_settings() {
+        let mut settings = Settings {
+            saved: true,
+            ..Settings::default()
+        };
+        // Jita is already there by default.
+        assert!(!settings.silence_system(30_000_142));
+        assert!(settings.silence_system(30_002_187));
+        assert!(settings.silence_system(30_000_001));
+        assert_eq!(
+            settings.get_silenced_systems(),
+            [30_000_001, 30_000_142, 30_002_187]
+        );
+        assert!(!settings.its_saved());
+        settings.saved = true;
+        assert!(!settings.silence_system(30_000_142), "already there");
+        assert!(settings.its_saved(), "nothing changed");
+    }
+
+    #[test]
+    fn an_unsilenced_system_leaves_the_list_and_an_unknown_one_changes_nothing() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.get_silenced_systems(), [30_000_142]);
+        settings.saved = true;
+        assert!(!settings.unsilence_system(99));
+        assert!(settings.its_saved());
+        assert!(settings.unsilence_system(30_000_142));
+        assert!(settings.get_silenced_systems().is_empty());
+        assert!(!settings.its_saved());
+    }
+
+    #[test]
+    fn clearing_the_silenced_systems_empties_the_list_once() {
+        let mut settings = Settings::default();
+        settings.silence_system(30_002_187);
+        settings.saved = true;
+        assert!(settings.clear_silenced_systems());
+        assert!(settings.get_silenced_systems().is_empty());
+        assert!(!settings.its_saved());
+        assert!(!settings.clear_silenced_systems(), "nothing left to clear");
+    }
+
+    #[test]
+    fn the_silenced_systems_survive_a_save_and_reload_round_trip() {
+        let mapping = Mapping {
+            silenced_systems: vec![30_000_142, 30_002_187],
+            ..Mapping::default()
+        };
+        let text = toml::to_string(&mapping).unwrap();
+        let back: Mapping = toml::from_str(&text).unwrap();
+        assert_eq!(back.silenced_systems, vec![30_000_142, 30_002_187]);
+    }
+
+    #[test]
     fn alert_sound_default_is_1_campana_info_wav() {
         let settings = Settings::default();
         assert_eq!(settings.get_alert_sound(), Path::new("1_campana_info.wav"));
@@ -1583,9 +1742,46 @@ mod tests {
         settings.set_eve_scout(EveScoutOptions::default());
         assert!(settings.its_saved());
 
-        settings.set_eve_scout(EveScoutOptions { enabled: false });
+        settings.set_eve_scout(EveScoutOptions {
+            enabled: false,
+            ..EveScoutOptions::default()
+        });
         assert!(!settings.its_saved());
         assert!(!settings.get_eve_scout().enabled);
+    }
+
+    #[test]
+    fn the_hubs_are_collapsed_automatically_after_six_wormholes_by_default() {
+        let options = EveScoutOptions::default();
+        assert_eq!(options.hub_display, HubDisplay::Automatic);
+        assert_eq!(options.collapse_over, 6);
+        assert!(EveScoutOptions::COLLAPSE_OVER_RANGE.contains(&options.collapse_over));
+    }
+
+    #[test]
+    fn an_old_eve_scout_section_keeps_its_switch_and_gets_the_new_options() {
+        let loaded: EveScoutOptions = toml::from_str("enabled = false").unwrap();
+        assert!(!loaded.enabled);
+        assert_eq!(loaded.hub_display, HubDisplay::Automatic);
+        assert_eq!(loaded.collapse_over, 6);
+        let empty: EveScoutOptions = toml::from_str("").unwrap();
+        assert_eq!(empty, EveScoutOptions::default());
+    }
+
+    #[test]
+    fn the_hub_display_is_saved_by_name_and_read_back() {
+        let mut settings = saved_settings();
+        settings.set_eve_scout(EveScoutOptions {
+            hub_display: HubDisplay::Collapsed,
+            collapse_over: 10,
+            ..EveScoutOptions::default()
+        });
+        assert!(!settings.its_saved());
+        let text = toml::to_string(&settings).unwrap();
+        assert!(text.contains("hub_display = \"collapsed\""), "{text}");
+        let loaded: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(loaded.get_eve_scout().hub_display, HubDisplay::Collapsed);
+        assert_eq!(loaded.get_eve_scout().collapse_over, 10);
     }
 
     #[test]

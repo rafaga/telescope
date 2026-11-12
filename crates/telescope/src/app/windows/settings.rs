@@ -32,6 +32,7 @@ mod application;
 mod characters;
 mod maps;
 pub(crate) mod patterns;
+mod silenced_systems;
 mod sources;
 mod zkillboard;
 
@@ -42,6 +43,10 @@ pub(crate) struct SettingsUi {
     region_filter: String,
     /// Outcome of the last "Test the full alert" (Alerts).
     test_result: Option<(StatusKind, String)>,
+    /// Text typed to add a silenced system (Alerts, Sound).
+    silenced_search: String,
+    /// The names of the systems, which the suggestions of that field search.
+    system_index: silenced_systems::SystemIndex,
     /// The graph last validated for the Rules page and its errors, so the
     /// graph is validated again only when it changes.
     validation: Option<(RuleGraph, Vec<String>)>,

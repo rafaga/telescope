@@ -32,6 +32,9 @@ pub(crate) struct AlarmConfig {
     pub center_on_alert: bool,
     /// How long a pulse / tooltip entry stays on the map.
     pub alert_duration: Duration,
+    /// Systems whose reports never sound the alarm (sorted: see
+    /// `Mapping::silenced_systems`).
+    pub silenced_systems: Vec<u32>,
 }
 
 impl AlarmConfig {
@@ -42,7 +45,13 @@ impl AlarmConfig {
             sound_path: settings.get_alert_sound_path(),
             center_on_alert: settings.get_center_on_alert(),
             alert_duration: settings.get_alert_duration(),
+            silenced_systems: settings.get_silenced_systems().to_vec(),
         }
+    }
+
+    /// Whether the alarm never sounds for a report in `system_id`.
+    pub(crate) fn is_silenced(&self, system_id: usize) -> bool {
+        u32::try_from(system_id).is_ok_and(|id| self.silenced_systems.binary_search(&id).is_ok())
     }
 }
 
@@ -53,6 +62,7 @@ impl Default for AlarmConfig {
             sound_path: PathBuf::new(),
             center_on_alert: false,
             alert_duration: Duration::ZERO,
+            silenced_systems: Vec::new(),
         }
     }
 }
@@ -416,12 +426,15 @@ impl Dispatcher {
 
     /// Sounds the alarm when any reported system is within the warning radius
     /// of a linked character, and centers the maps on the closest one when
-    /// `center_on_alert` is on. A report repeated within the alarm's cooldown
-    /// (see `AudioHandle::play_alert`) neither sounds nor moves the maps
-    /// again.
+    /// `center_on_alert` is on. A silenced system (see
+    /// `AlarmConfig::silenced_systems`) is left out: it neither sounds nor
+    /// moves the maps, while the other systems of the same report still do.
+    /// A report repeated within the alarm's cooldown (see
+    /// `AudioHandle::play_alert`) neither sounds nor moves the maps again.
     fn sound(&self, config: &AlarmConfig, systems: &[usize]) {
         let Some(character_system) = systems
             .iter()
+            .filter(|system_id| !config.is_silenced(**system_id))
             .find_map(|system_id| self.nearest_character_in_range(config, *system_id))
         else {
             tracing::debug!("no linked character in range; no sound");
@@ -504,6 +517,7 @@ mod tests {
             sound_path: PathBuf::from("alarm.wav"),
             center_on_alert: true,
             alert_duration: Duration::from_secs(5),
+            silenced_systems: Vec::new(),
         };
         *shared.locations.write().unwrap() = locations;
         *shared.jumps.write().unwrap() = (1u32..=5)
@@ -736,6 +750,78 @@ mod tests {
             drain_map(&mut rig).as_slice(),
             [MapSync::CenterOn((1, Target::System))]
         ));
+    }
+
+    #[test]
+    fn a_silenced_system_neither_sounds_nor_centers_the_maps() {
+        let mut rig = rig(vec![1]);
+        rig.dispatcher
+            .shared
+            .config
+            .write()
+            .unwrap()
+            .silenced_systems = vec![3];
+        rig.dispatcher
+            .process(detected(vec![activation(OutputKind::Sound, &[3])]));
+        assert!(rig.sounds.try_recv().is_err());
+        assert!(drain_map(&mut rig).is_empty());
+    }
+
+    #[test]
+    fn a_report_with_a_silenced_and_a_nearby_system_still_sounds() {
+        let mut rig = rig(vec![1]);
+        rig.dispatcher
+            .shared
+            .config
+            .write()
+            .unwrap()
+            .silenced_systems = vec![2];
+        rig.dispatcher
+            .process(detected(vec![activation(OutputKind::Sound, &[2, 3])]));
+        assert_eq!(rig.sounds.try_recv().unwrap(), PathBuf::from("alarm.wav"));
+        assert!(matches!(
+            drain_map(&mut rig).as_slice(),
+            [MapSync::CenterOn((1, Target::System))]
+        ));
+    }
+
+    #[test]
+    fn a_silenced_system_still_pulses_the_map_and_reaches_the_overlay() {
+        let mut rig = rig(vec![1]);
+        rig.dispatcher
+            .shared
+            .config
+            .write()
+            .unwrap()
+            .silenced_systems = vec![3];
+        rig.dispatcher.process(detected(vec![
+            activation(OutputKind::Visual, &[3]),
+            activation(OutputKind::Sound, &[3]),
+        ]));
+        assert!(rig.sounds.try_recv().is_err());
+        assert!(
+            drain_map(&mut rig)
+                .iter()
+                .any(|sync| matches!(sync, MapSync::SystemAlert(_)))
+        );
+        let kept = rig
+            .dispatcher
+            .shared
+            .nearby
+            .recent(0, Instant::now(), Duration::from_secs(60));
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn only_the_silenced_systems_are_silenced() {
+        let config = AlarmConfig {
+            silenced_systems: vec![30_000_142, 30_002_187],
+            ..AlarmConfig::default()
+        };
+        assert!(config.is_silenced(30_000_142));
+        assert!(config.is_silenced(30_002_187));
+        assert!(!config.is_silenced(30_000_143));
+        assert!(!config.is_silenced(usize::MAX), "an id that does not fit");
     }
 
     #[test]

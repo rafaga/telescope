@@ -205,6 +205,9 @@ pub enum Message {
         (Type, String, String, String),
     ),
     NewRegionalPane(usize),
+    /// Brings the map of a region to the front, opening it first if it was
+    /// never open (a click on the node of a hub's wormholes).
+    OpenRegionalMap(usize),
     MapHidden(usize),
     MapShown(usize),
     PlayerNewLocation((i64, i64)),
@@ -260,6 +263,7 @@ impl Message {
             Message::GenericNotification(_) => "GenericNotification",
             Message::TimedNotification(..) => "TimedNotification",
             Message::NewRegionalPane(_) => "NewRegionalPane",
+            Message::OpenRegionalMap(_) => "OpenRegionalMap",
             Message::MapHidden(_) => "MapHidden",
             Message::MapShown(_) => "MapShown",
             Message::PlayerNewLocation(_) => "PlayerNewLocation",
@@ -683,7 +687,7 @@ mod enum_tests {
 
     #[test]
     fn messages_are_tagged_with_their_variant_name() {
-        let cases: [(Message, &str); 9] = [
+        let cases: [(Message, &str); 10] = [
             (
                 Message::GenericNotification((
                     Type::Info,
@@ -694,6 +698,7 @@ mod enum_tests {
                 "GenericNotification",
             ),
             (Message::NewRegionalPane(1), "NewRegionalPane"),
+            (Message::OpenRegionalMap(1), "OpenRegionalMap"),
             (Message::MapHidden(1), "MapHidden"),
             (Message::MapShown(1), "MapShown"),
             (Message::PlayerNewLocation((1, 2)), "PlayerNewLocation"),

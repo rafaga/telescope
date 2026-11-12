@@ -49,7 +49,7 @@ use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::MessageSpawner;
 use super::system_header::{SystemHeader, SystemHeaders};
 use super::wormhole_links::{
-    Hub, LabelSpace, NodeSize, WormholeLayer, WormholeMarkerStyle, WormholeShared,
+    Folded, Hub, LabelSpace, MapRole, NodeSize, WormholeLayer, WormholeMarkerStyle, WormholeShared,
 };
 
 /// Bridges a single `sde` map point (native type, as of the `objects`
@@ -367,13 +367,17 @@ impl KillContext {
 /// Which nodes of a map have the header in their tooltip.
 enum HeaderScope<'a> {
     /// All of them (the universe map, which does not write the names of its
-    /// nodes), the nodes of the wormholes of Thera among them.
-    Everywhere(&'a SystemHeaders),
+    /// nodes), the nodes of the wormholes of the hubs among them.
+    Everywhere {
+        headers: &'a SystemHeaders,
+        wormholes: &'a WormholeLayer,
+    },
     /// Only the nodes of the wormholes, whose ids start at `first_id`: the
     /// systems of a region map write their names, but a wormhole leads to a
     /// system that may be far from it, so its tooltip says which.
     Markers {
         headers: &'a SystemHeaders,
+        wormholes: &'a WormholeLayer,
         first_id: usize,
     },
 }
@@ -382,8 +386,10 @@ impl<'a> HeaderScope<'a> {
     /// The header of the node `id`, if the scope covers it.
     fn header(&self, id: usize) -> Option<&'a SystemHeader> {
         match *self {
-            Self::Everywhere(headers) => headers.get(id),
-            Self::Markers { headers, first_id } => {
+            Self::Everywhere { headers, .. } => headers.get(id),
+            Self::Markers {
+                headers, first_id, ..
+            } => {
                 if id >= first_id {
                     headers.get(id)
                 } else {
@@ -397,13 +403,32 @@ impl<'a> HeaderScope<'a> {
     /// for the node of a wormhole, and the node itself for the others.
     fn system_of(&self, id: usize) -> usize {
         match *self {
-            Self::Everywhere(headers) => headers.system_of(id),
-            Self::Markers { headers, first_id } => {
+            Self::Everywhere { headers, .. } => headers.system_of(id),
+            Self::Markers {
+                headers, first_id, ..
+            } => {
                 if id >= first_id {
                     headers.system_of(id)
                 } else {
                     id
                 }
+            }
+        }
+    }
+
+    /// The headers, to name the systems a folded node leads to.
+    fn headers(&self) -> &'a SystemHeaders {
+        match *self {
+            Self::Everywhere { headers, .. } | Self::Markers { headers, .. } => headers,
+        }
+    }
+
+    /// The wormholes the node `id` gathers, when it is the folded node of a
+    /// hub.
+    fn folded(&self, id: usize) -> Option<&'a [Folded]> {
+        match *self {
+            Self::Everywhere { wormholes, .. } | Self::Markers { wormholes, .. } => {
+                wormholes.folded(id)
             }
         }
     }
@@ -441,16 +466,25 @@ fn show_node_tooltip(
     // killmails are being read: it says what they know, even that there are
     // none.
     let standalone = names.is_empty() && active.is_empty();
-    let header = headers.header(system_id);
-    if header.is_none() && standalone && kills.is_none() {
+    let folded = headers.folded(system_id);
+    // The virtual node of a hub has no header of a system: it is not one. It
+    // is titled by the wormholes it gathers.
+    let header = headers.header(system_id).filter(|_| folded.is_none());
+    let title = folded
+        .and(headers.headers().get(system_id))
+        .map(|hub| format!("WH {}", hub.name));
+    if header.is_none() && folded.is_none() && standalone && kills.is_none() {
         return;
     }
     names.sort_unstable();
     // Every system that has a tooltip says what the killmails know, with a
     // character in it, an alert or neither.
     // The node of a wormhole says what the killmails know of the system it leads to.
-    let context = kills.and_then(|handle| handle.context(headers.system_of(system_id)));
-    if header.is_none() && standalone && context.is_none() {
+    // The virtual node of a hub is no system: the killmails know nothing of it.
+    let context = kills
+        .filter(|_| folded.is_none())
+        .and_then(|handle| handle.context(headers.system_of(system_id)));
+    if header.is_none() && folded.is_none() && standalone && context.is_none() {
         return;
     }
     let style = NodeTooltipStyle::default();
@@ -458,6 +492,10 @@ fn show_node_tooltip(
         let _span = tracing::info_span!("node tooltip ui").entered();
         if let Some(header) = header {
             header.show(ui);
+        }
+        if let (Some(wormholes), Some(title)) = (folded, &title) {
+            ui.label(RichText::new(title).strong());
+            show_folded_wormholes(ui, headers.headers(), wormholes);
         }
         for name in names.iter().take(style.characters) {
             ui.scope(|ui| {
@@ -478,7 +516,7 @@ fn show_node_tooltip(
             ));
         }
         if !active.is_empty() {
-            if header.is_some() || !names.is_empty() {
+            if header.is_some() || folded.is_some() || !names.is_empty() {
                 ui.add_space(style.group_gap);
             }
             for alert in active.iter().take(MAX_TOOLTIP_ALERTS) {
@@ -492,7 +530,7 @@ fn show_node_tooltip(
             }
         }
         if let Some(context) = &context {
-            if header.is_some() || !standalone {
+            if header.is_some() || folded.is_some() || !standalone {
                 ui.add_space(style.group_gap);
             }
             style.footer(ui, |ui| context.show(ui));
@@ -502,6 +540,48 @@ fn show_node_tooltip(
         ui.ctx().request_repaint_after(Duration::from_secs(1));
     });
 }
+
+/// The wormholes a folded node gathers, in the tooltip of the node: how many,
+/// how many of each kind of system (`C3 ×5  C4 ×3  HS ×2`) and, line by line,
+/// the system each leads to with its signatures.
+fn show_folded_wormholes(ui: &mut Ui, headers: &SystemHeaders, wormholes: &[Folded]) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(RichText::new(format!("{}:", wormholes.len())).strong());
+        for (kind, color, count) in headers.kinds_of(wormholes) {
+            ui.label(
+                RichText::new(format!("{kind} ×{count}"))
+                    .color(color)
+                    .strong(),
+            );
+        }
+    });
+    for wormhole in wormholes.iter().take(MAX_TOOLTIP_WORMHOLES) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            match headers.get(wormhole.system) {
+                Some(header) => {
+                    ui.label(RichText::new(&header.name));
+                    let (_, kind) = header.kind();
+                    ui.label(RichText::new(kind).color(header.kind_color()));
+                }
+                None => {
+                    ui.label(wormhole.system.to_string());
+                }
+            }
+            ui.weak(&wormhole.label);
+        });
+    }
+    if wormholes.len() > MAX_TOOLTIP_WORMHOLES {
+        ui.weak(t!(
+            "map.wormholes_more",
+            count = wormholes.len() - MAX_TOOLTIP_WORMHOLES
+        ));
+    }
+}
+
+/// How many of the wormholes of a folded node its tooltip lists one by one.
+const MAX_TOOLTIP_WORMHOLES: usize = 12;
 
 /// One intel alert in a node tooltip: icon, age and summary. Each section of
 /// the summary is prefixed with its own emoji (ships, pilot count) unless the
@@ -592,9 +672,13 @@ pub struct UniversePane {
     headers: SystemHeaders,
     /// Where every system of the map is, for the wormholes drawn next to them.
     positions: HashMap<usize, [f32; 2]>,
+    /// The color each system has on the map (its star), which the node of a
+    /// hub takes.
+    star_colors: HashMap<usize, Color32>,
     /// The wormholes of Thera and Turnur, once the app gives them.
     wormholes: Option<Arc<WormholeShared>>,
-    /// What of them is drawn on the map: the ones of Thera.
+    /// What of them is drawn on the map: a node for each hub and one next to
+    /// every system that leads to it.
     wormhole_layer: WormholeLayer,
     //generic_sender: Arc<Sender<Message>>,
     path: PathBuf,
@@ -626,6 +710,7 @@ impl UniversePane {
             heat,
             headers: SystemHeaders::default(),
             positions: HashMap::new(),
+            star_colors: HashMap::new(),
             wormholes: None,
             wormhole_layer: WormholeLayer::new(WormholeMarkerStyle::universe()),
         };
@@ -655,6 +740,10 @@ impl UniversePane {
                 self.positions = points
                     .iter()
                     .map(|(id, point)| (*id, point.coords))
+                    .collect();
+                self.star_colors = points
+                    .iter()
+                    .filter_map(|(id, point)| Some((*id, point.color?)))
                     .collect();
                 self.map.add_hashmap_points(points);
                 self.has_points = true;
@@ -701,11 +790,13 @@ impl UniversePane {
 const UNIVERSE_NODE_SIZE: f64 = 8.0;
 
 impl UniversePane {
-    /// Draws a node next to every system that has a wormhole to Thera, joined
-    /// to it by a dashed line, and says the wormholes are wanted while this map
-    /// is drawn. Thera itself has no place on this map, so this is where it
-    /// shows. Cheap when nothing changed: the markers are worked out again only
-    /// when the wormholes were replaced or after a while (they expire).
+    /// Draws a node next to every system that has a wormhole to a hub (Thera,
+    /// Turnur), joined to it by a dashed line, and says the wormholes are
+    /// wanted while this map is drawn. Thera itself has no place on this map,
+    /// so this is where it shows; Turnur gets one more node, joined to it, that
+    /// stands for all of its wormholes. The nodes take the color of the hub.
+    /// Cheap when nothing changed: the markers are worked out again only when
+    /// the wormholes were replaced or after a while (they expire).
     fn refresh_wormholes(&mut self) {
         let Some(wormholes) = &self.wormholes else {
             return;
@@ -717,10 +808,25 @@ impl UniversePane {
         wormholes.touch();
         let version = wormholes.version();
         let now = Instant::now();
+        self.wormhole_layer.set_role(MapRole::Universe);
+        let (display, collapse_over) = wormholes.display();
+        self.wormhole_layer.set_display(display, collapse_over);
         if !self.wormhole_layer.is_due(version, now) {
+            // The headers can be read again (a new SDE) while the markers
+            // stay: their nodes must keep answering for their systems.
+            self.headers.set_aliases(self.wormhole_layer.aliases());
+            self.headers.set_folded(self.wormhole_layer.folded_counts());
             return;
         }
         let names = |id: usize| self.headers.get(id).map(|header| header.name.clone());
+        // The color of a hub is the one the map gives it: that of its class
+        // (Thera is a wormhole system) or of its star.
+        let color_of = |system: usize| {
+            self.headers
+                .get(system)
+                .and_then(SystemHeader::class_color)
+                .or_else(|| self.star_colors.get(&system).copied())
+        };
         let markers = self.wormhole_layer.markers(
             &wormholes.layer(),
             chrono::Utc::now(),
@@ -735,10 +841,32 @@ impl UniversePane {
                 measure: &|_| [0.0, 0.0],
             },
         );
+        let markers = markers
+            .into_iter()
+            .map(|marker| {
+                let color = color_of(marker.other);
+                marker.with_node_color(color)
+            })
+            .collect();
         self.wormhole_layer
             .show(&mut self.map, markers, version, now);
         // The nodes of the markers answer for the system they stand for.
         self.headers.set_aliases(self.wormhole_layer.aliases());
+        self.headers.set_folded(self.wormhole_layer.folded_counts());
+    }
+
+    /// A click on the node that stands for the wormholes of a hub opens the
+    /// map to look at them: Turnur's in Yasna Zakh, Thera's own.
+    fn open_hub_on_click(&self, response: &Response) {
+        if let Some(region_id) = response
+            .clicked()
+            .then(|| self.map.hovered_node())
+            .flatten()
+            .and_then(|id| self.wormhole_layer.folded_hub(id))
+            .and_then(Hub::detail_region)
+        {
+            self.task_msg.spawn(Message::OpenRegionalMap(region_id));
+        }
     }
 }
 
@@ -787,13 +915,17 @@ impl TabPane for UniversePane {
         self.refresh_wormholes();
         let response = ui.add(&mut self.map);
         self.heat.refresh(ui, self.zkillboard.as_ref());
+        self.open_hub_on_click(&response);
         show_node_tooltip(
             response,
             &self.map,
             &self.characters,
             &mut self.alerts,
             self.zkillboard.as_ref(),
-            HeaderScope::Everywhere(&self.headers),
+            HeaderScope::Everywhere {
+                headers: &self.headers,
+                wormholes: &self.wormhole_layer,
+            },
         );
         UiResponse::None
     }
@@ -1104,6 +1236,7 @@ impl TabPane for RegionPane {
         let response = ui.add(&mut self.map);
         self.show_attribution(ui, response.rect);
         self.heat.refresh(ui, self.zkillboard.as_ref());
+        self.open_hub_on_click(&response);
         let headers = self.headers.borrow();
         show_node_tooltip(
             response,
@@ -1113,6 +1246,7 @@ impl TabPane for RegionPane {
             self.zkillboard.as_ref(),
             HeaderScope::Markers {
                 headers: &headers,
+                wormholes: &self.wormhole_layer,
                 first_id: WormholeMarkerStyle::default().id_base,
             },
         );
@@ -1179,7 +1313,15 @@ impl RegionPane {
         wormholes.touch();
         let version = wormholes.version();
         let now = Instant::now();
+        self.wormhole_layer.set_role(Hub::role_of(self.region_id));
+        let (display, collapse_over) = wormholes.display();
+        self.wormhole_layer.set_display(display, collapse_over);
         if !self.wormhole_layer.is_due(version, now) {
+            // The headers can be read again (a new SDE) while the markers
+            // stay: their nodes must keep answering for their systems.
+            let mut headers = self.headers.borrow_mut();
+            headers.set_aliases(self.wormhole_layer.aliases());
+            headers.set_folded(self.wormhole_layer.folded_counts());
             return;
         }
         let text_size = self.map.settings.node_text_size;
@@ -1214,9 +1356,23 @@ impl RegionPane {
         self.wormhole_layer
             .show(&mut self.map, markers, version, now);
         // The nodes of the markers write the security of the system they stand for.
-        self.headers
-            .borrow_mut()
-            .set_aliases(self.wormhole_layer.aliases());
+        let mut headers = self.headers.borrow_mut();
+        headers.set_aliases(self.wormhole_layer.aliases());
+        headers.set_folded(self.wormhole_layer.folded_counts());
+    }
+
+    /// A click on the node that stands for the wormholes of a hub opens the
+    /// map to look at them: Turnur's in Yasna Zakh, Thera's own.
+    fn open_hub_on_click(&self, response: &Response) {
+        if let Some(region_id) = response
+            .clicked()
+            .then(|| self.map.hovered_node())
+            .flatten()
+            .and_then(|id| self.wormhole_layer.folded_hub(id))
+            .and_then(Hub::detail_region)
+        {
+            self.task_msg.spawn(Message::OpenRegionalMap(region_id));
+        }
     }
 }
 
@@ -1658,7 +1814,7 @@ struct CachedLabel {
     galley: Arc<Galley>,
     /// The security status `security_galley` was laid out for (compared as
     /// the raw number, so a lookup allocates nothing), and that galley.
-    security: Option<(f64, Option<u32>)>,
+    security: Option<(f64, Option<u32>, Option<usize>)>,
     security_galley: Option<Arc<Galley>>,
 }
 
@@ -1725,9 +1881,10 @@ impl NodeTemplate for Template {
         let (class_color, security) = {
             let headers = self.headers.borrow();
             let header = headers.get(ctx.point.id);
+            let folded = headers.folded_count(ctx.point.id);
             (
                 header.and_then(SystemHeader::class_color),
-                header.map(|header| (header.security, header.wormhole_class)),
+                header.map(|header| (header.security, header.wormhole_class, folded)),
             )
         };
         let border_color = class_color.unwrap_or(ctx.theme.node);
@@ -1823,11 +1980,7 @@ impl NodeTemplate for Template {
                 let name = ctx.point.name.clone();
                 // The security status (the class of a wormhole system) beside the name, in
                 // the color the game gives it (see `SystemHeader`).
-                let security_text = self
-                    .headers
-                    .borrow()
-                    .get(ctx.point.id)
-                    .map(|header| (header.status_text(), header.status_color()));
+                let security_text = self.headers.borrow().status_of(ctx.point.id);
                 let security_size =
                     ((font_size * self.node_style.security_scale) * 2.0).round() / 2.0;
                 let (galley, security_galley) = ui.ctx().fonts_mut(|fonts| {

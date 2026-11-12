@@ -171,6 +171,7 @@ mod tests {
                 sound_path: PathBuf::from("alarm.wav"),
                 center_on_alert: false,
                 alert_duration: Duration::from_secs(5),
+                silenced_systems: Vec::new(),
             };
             // A character sitting in the reported system.
             *shared.locations.write().unwrap() = vec![1];

@@ -8,6 +8,33 @@ The entries up to *1.0.0-rc01* were reconstructed from the git history, grouped
 by topic and dated by the period they happened in. The entries of the later
 versions were written for the tag that shipped them.
 
+## [Unreleased]
+
+## [1.1.1] - 2026-11-12
+
+### Added
+
+* Silenced systems: a list in Settings -> Alerts -> Sound of the systems whose
+  reports never play the alarm sound, however close they are (a trade hub like
+  Jita, say). A text field with suggestions adds a system by its name; the
+  silenced systems show as tags (name and region) with a button that takes
+  each one off, a counter and a button that clears the list. Only the sound is silenced:
+  the maps, the tooltips and the overlay go on showing what is reported there,
+  and a report that names a silenced system and a nearby one still sounds for
+  the nearby one. The list is kept in `telescope.toml` (`silenced_systems`,
+  the ids of the systems). Jita is silenced by default, also in settings files
+  from before; emptying the list sticks.
+* Turnur, the second hub of wormholes, no longer buries Metropolis: when it has more than
+  six wormholes (adjustable), a region map draws them as one node, *WH Turnur*, joined to it, with the
+  number of wormholes written beside the name. Its tooltip counts them by kind of system
+  (`C3 ×5  C4 ×3  HS ×2`) and lists each one with its signatures, and a click on it opens the
+  map of Yasna Zakh, where all of them are drawn one by one. The map of the universe draws
+  Turnur like Thera: that node, and a *Turnur* node next to every system that leads to it.
+  The nodes of a hub keep the color of the hub (Thera's green, the star of Turnur) while the
+  line keeps the one of the wormhole, orange when it is about to collapse. Settings -> Maps has a
+  *Wormholes* section with the EvE-Scout switch and how a hub is drawn: automatic, always
+  one by one or always one node.
+
 ## [1.1.0] - 2026-11-11
 
 ### Added
@@ -731,7 +758,9 @@ back end was split into the `webb` crate in March 2023, the multi-tab map
 layout (`egui_tiles`) and the regional maps arrived in early 2024, and the
 native dialog code (including macOS) in mid-2026.
 
-[Unreleased]: https://github.com/rafaga/telescope/compare/1.0.6...HEAD
+[Unreleased]: https://github.com/rafaga/telescope/compare/1.1.1...HEAD
+[1.1.1]: https://github.com/rafaga/telescope/compare/1.1.0...1.1.1
+[1.1.0]: https://github.com/rafaga/telescope/compare/1.0.6...1.1.0
 [1.0.6]: https://github.com/rafaga/telescope/compare/1.0.5...1.0.6
 [1.0.5]: https://github.com/rafaga/telescope/compare/1.0.4...1.0.5
 [1.0.4]: https://github.com/rafaga/telescope/compare/1.0.3...1.0.4
