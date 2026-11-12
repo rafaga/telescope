@@ -41,7 +41,10 @@ key differences.
   enabled` in `telescope.toml`), region maps draw the wormholes of Thera and
   Turnur next to the systems they leave from, with their signatures. Thera has
   a map of its own (*Thera (G-R00031)*), and on the universe map every system
-  with a wormhole to Thera gets a small circle joined by a dashed line. The
+  with a wormhole to Thera or Turnur gets a small circle joined by a dashed line.
+  A hub with many wormholes (Turnur) is folded into one node, *WH Turnur*, on
+  busy regions such as Metropolis (Settings -> Maps -> Wormholes); its tooltip
+  counts them by kind of system and a click opens the map of Yasna Zakh. The
   data comes from [eve-scout.com](https://www.eve-scout.com).
 * **Overlay** — an optional semi-transparent panel over the EVE window that
   lists the events near your characters, newest or closest first, colored by

@@ -84,6 +84,7 @@ impl TelescopeApp {
                 Some(&t!("settings.alerts.sound_description")),
             );
             self.show_sound_section(ui);
+            self.show_silenced_section(ui);
         });
     }
 

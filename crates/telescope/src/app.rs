@@ -911,6 +911,7 @@ impl TelescopeApp {
                 Message::MapHidden(region_id) => self.hide_abstract_map(region_id),
                 Message::NewRegionalPane(region_id) => self.create_new_regional_pane(region_id),
                 Message::MapShown(region_id) => self.show_abstract_map(region_id),
+                Message::OpenRegionalMap(region_id) => self.open_regional_map(region_id),
                 Message::PlayerNewLocation((player_id, solar_system_id)) => {
                     self.update_player_location(player_id, solar_system_id)
                 }
@@ -1100,6 +1101,29 @@ impl TelescopeApp {
             data.set_visible(true);
             data.set_tile_id(Some(tile_id));
         });
+    }
+
+    /// Brings the map of a region to the front: it is made first if it was
+    /// never open, shown if it was hidden, and its tab is the active one.
+    /// A region without a map (not in the list) is left alone.
+    #[tracing::instrument(skip(self))]
+    fn open_regional_map(&mut self, region_id: usize) {
+        let Some(data) = self.behavior.tile_data.get(&region_id) else {
+            return;
+        };
+        if data.get_tile_id().is_none() {
+            self.create_new_regional_pane(region_id);
+        } else {
+            self.show_abstract_map(region_id);
+        }
+        let tile_id = self
+            .behavior
+            .tile_data
+            .get(&region_id)
+            .and_then(|data| data.get_tile_id());
+        if let (Some(tile_id), Some(tree)) = (tile_id, self.tree.as_mut()) {
+            tree.make_active(|id, _| id == tile_id);
+        }
     }
 
     #[tracing::instrument(skip(self))]

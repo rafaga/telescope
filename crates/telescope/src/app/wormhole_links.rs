@@ -8,6 +8,7 @@
 //! the universe itself is not changed.
 
 use super::TelescopeApp;
+use super::settings::HubDisplay;
 use super::system_header::SystemHeader;
 use chrono::{DateTime, TimeDelta, Utc};
 use egui::Color32;
@@ -39,6 +40,42 @@ impl Hub {
     /// lead to.
     pub(crate) const THERA_SYSTEM: usize = 31_000_005;
 
+    /// The system of Turnur, in Metropolis. Many wormholes lead to it, so its
+    /// region would be buried if they were all drawn.
+    pub(crate) const TURNUR_SYSTEM: usize = 30_002_086;
+
+    /// Yasna Zakh, the region of Zarzakh and the systems around it, Turnur
+    /// among them: its map is the clean view of Turnur and its wormholes, so
+    /// they are never folded there.
+    pub(crate) const TURNUR_DETAIL_REGION: usize = 10_001_000;
+
+    /// The systems whose wormholes are drawn.
+    pub(crate) const SYSTEMS: &'static [usize] = &[Self::THERA_SYSTEM, Self::TURNUR_SYSTEM];
+
+    /// Whether the system is one of the hubs.
+    pub(crate) fn is_hub(system_id: usize) -> bool {
+        Self::SYSTEMS.contains(&system_id)
+    }
+
+    /// The region whose map is the one to look at the wormholes of a hub: the
+    /// one that is the hub's own for Thera, the detail one for Turnur.
+    pub(crate) fn detail_region(system_id: usize) -> Option<usize> {
+        match system_id {
+            Self::THERA_SYSTEM => Some(Self::THERA_REGION),
+            Self::TURNUR_SYSTEM => Some(Self::TURNUR_DETAIL_REGION),
+            _ => None,
+        }
+    }
+
+    /// What the map of a region is to the wormholes of the hubs.
+    pub(crate) fn role_of(region_id: usize) -> MapRole {
+        match region_id {
+            Self::THERA_REGION => MapRole::Own,
+            Self::TURNUR_DETAIL_REGION => MapRole::Detail,
+            _ => MapRole::Ordinary,
+        }
+    }
+
     /// Whether the region gets a map: those of k-space and the one of Thera.
     /// The other regions of wormhole space and the abyssal ones have none.
     pub(crate) fn has_map(region_id: usize) -> bool {
@@ -54,6 +91,23 @@ impl Hub {
             name.to_owned()
         }
     }
+}
+
+/// What a map is to the wormholes of a hub, which decides whether they are
+/// folded into one node (see [`HubDisplay`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum MapRole {
+    /// A region such as Metropolis, which a hub with many wormholes buries.
+    #[default]
+    Ordinary,
+    /// The map made to look at a hub and its wormholes (Turnur's, in Yasna
+    /// Zakh): they are shown one by one unless the setting says always fold.
+    Detail,
+    /// The map of the hub itself (Thera's): nothing is folded there.
+    Own,
+    /// The map of the universe, where the systems are too close for a node
+    /// for each wormhole: a hub is always one node.
+    Universe,
 }
 
 /// The wormholes of the hubs (Thera and Turnur) that the scouts have found,
@@ -112,6 +166,9 @@ pub(crate) struct WormholeShared {
     /// Counts the times the wormholes were replaced: a map draws them again
     /// when it changes.
     version: AtomicU64,
+    /// The settings of how a hub with many wormholes is drawn (`[eve_scout]
+    /// hub_display` and `collapse_over`).
+    display: RwLock<(HubDisplay, usize)>,
     started: Instant,
     /// How long after a map was last drawn the wormholes are still wanted.
     /// The UI draws only when something moves, so a map that is open but
@@ -127,6 +184,10 @@ impl Default for WormholeShared {
             enabled: AtomicBool::new(true),
             last_seen: AtomicU64::new(Self::NEVER),
             version: AtomicU64::new(0),
+            display: RwLock::new((
+                HubDisplay::default(),
+                super::settings::EveScoutOptions::DEFAULT_COLLAPSE_OVER,
+            )),
             started: Instant::now(),
             grace: Duration::from_secs(2 * 60),
         }
@@ -144,6 +205,22 @@ impl WormholeShared {
     /// Follows the setting.
     pub(crate) fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
+    }
+
+    /// Follows the settings of how a hub with many wormholes is drawn.
+    pub(crate) fn set_display(&self, display: HubDisplay, collapse_over: usize) {
+        *self
+            .display
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = (display, collapse_over);
+    }
+
+    /// How a hub with many wormholes is drawn, and from how many wormholes.
+    pub(crate) fn display(&self) -> (HubDisplay, usize) {
+        *self
+            .display
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Whether the setting lets the wormholes be asked for and shown.
@@ -241,9 +318,9 @@ pub(crate) struct WormholeMarkerStyle {
     /// The least time between two refreshes of the markers when nothing was
     /// replaced (a wormhole expires, or gets close to it).
     pub(crate) refresh_every: Duration,
-    /// Only the wormholes that have this system at one end get a marker; all
-    /// of them when `None`.
-    pub(crate) hub: Option<usize>,
+    /// Only the wormholes that have one of these systems at one end get a
+    /// marker; all of them when `None`.
+    pub(crate) hubs: Option<&'static [usize]>,
     /// The least distance from a system to its marker, in map units; `0` puts
     /// the marker as close as the nodes around let it.
     pub(crate) min_distance: f64,
@@ -267,7 +344,7 @@ impl Default for WormholeMarkerStyle {
             method: Method::default(),
             label_at: 0.7,
             refresh_every: Duration::from_secs(30),
-            hub: None,
+            hubs: None,
             min_distance: 0.0,
             labels: true,
         }
@@ -275,7 +352,7 @@ impl Default for WormholeMarkerStyle {
 }
 
 impl WormholeMarkerStyle {
-    /// The wormholes of Thera on the map of the universe: a marker is a node
+    /// The wormholes of the hubs on the map of the universe: a marker is a node
     /// the size of a system, close to it, joined by a short dashed line with
     /// no text. The systems of that map are a few dozen units apart, so the
     /// gap is small and nothing is reserved for text.
@@ -285,7 +362,7 @@ impl WormholeMarkerStyle {
             label_padding: [0.5, 0.5],
             label_reference: "",
             label_step: 1.0,
-            hub: Some(Hub::THERA_SYSTEM),
+            hubs: Some(Hub::SYSTEMS),
             // Three times the distance the markers got with no minimum on the
             // real universe (25.5 units: the node, the gap and the lines of the
             // gates decide it), so each one reads as a node of its own.
@@ -332,14 +409,38 @@ pub(crate) struct WormholeMarker {
     pub(crate) label: String,
     /// Whether it is close to collapsing.
     pub(crate) expiring: bool,
+    /// The colour of the node, which is the one the system it stands for
+    /// has on the map; the line keeps the one of the wormhole. `None`: the
+    /// one of the wormhole for both.
+    pub(crate) node_color: Option<Color32>,
+    /// The wormholes a node that stands for all those of a hub gathers, in
+    /// the order of the systems on their other side. Empty for the marker of
+    /// one wormhole. Then [`Self::other`] is the hub, and the node is drawn
+    /// on it.
+    pub(crate) folded: Vec<Folded>,
+}
+
+/// One of the wormholes a folded node stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Folded {
+    /// The system on the other side.
+    pub(crate) system: usize,
+    /// The signatures, as on the line of a marker.
+    pub(crate) label: String,
 }
 
 impl WormholeMarker {
+    /// The same marker with the node painted in `color`.
+    pub(crate) fn with_node_color(mut self, color: Option<Color32>) -> Self {
+        self.node_color = color;
+        self
+    }
+
     /// The node.
     fn point(&self, style: &WormholeMarkerStyle) -> MapPoint {
         let mut point = MapPoint::new(self.id, self.position);
         point.set_name(self.name.clone());
-        point.color = Some(self.color(style));
+        point.color = Some(self.node_color.unwrap_or_else(|| self.color(style)));
         point.connections = vec![(self.system, self.id)];
         point
     }
@@ -388,6 +489,22 @@ pub(crate) struct WormholeLayer {
     /// one seen, which only grows (until the map or the nodes change), so the
     /// markers are not moved when a shorter text comes.
     reserved: [f64; 2],
+    /// What the map is to the wormholes of a hub.
+    role: MapRole,
+    /// How a hub with many wormholes is drawn, and from how many.
+    display: HubDisplay,
+    collapse_over: usize,
+}
+
+/// A place for a marker, before it has one: one wormhole, or all those of a
+/// hub folded.
+struct Spot {
+    key: MarkerKey,
+    system: usize,
+    other: usize,
+    label: String,
+    expiring: bool,
+    folded: Vec<Folded>,
 }
 
 /// Which wormhole a marker stands for: the system of the map it leaves from,
@@ -467,6 +584,9 @@ impl WormholeLayer {
         Self {
             next_id: style.id_base,
             reserved: [0.0, 0.0],
+            role: MapRole::default(),
+            display: HubDisplay::default(),
+            collapse_over: super::settings::EveScoutOptions::DEFAULT_COLLAPSE_OVER,
             style,
             shown: Vec::new(),
             gates: Vec::new(),
@@ -474,6 +594,64 @@ impl WormholeLayer {
             remembered: HashMap::new(),
             surroundings: None,
         }
+    }
+
+    /// What the map is to the wormholes of a hub. Worked out again at the next
+    /// refresh, when it changes.
+    pub(crate) fn set_role(&mut self, role: MapRole) {
+        if self.role != role {
+            self.role = role;
+            self.drawn = None;
+        }
+    }
+
+    /// How the wormholes of a hub are drawn, and from how many (`over`) they
+    /// are one node with [`HubDisplay::Automatic`]. Worked out again at the
+    /// next refresh, when it changes.
+    pub(crate) fn set_display(&mut self, display: HubDisplay, over: usize) {
+        if self.display != display || self.collapse_over != over {
+            self.display = display;
+            self.collapse_over = over;
+            self.drawn = None;
+        }
+    }
+
+    /// Whether the `count` wormholes of a hub are drawn as one node.
+    fn folds(&self, count: usize) -> bool {
+        match self.role {
+            MapRole::Universe => true,
+            MapRole::Own => false,
+            role => match self.display {
+                HubDisplay::Full => false,
+                HubDisplay::Collapsed => true,
+                HubDisplay::Automatic => role == MapRole::Ordinary && count > self.collapse_over,
+            },
+        }
+    }
+
+    /// The hub the node `id` stands for, when it is a folded one.
+    pub(crate) fn folded_hub(&self, id: usize) -> Option<usize> {
+        self.shown
+            .iter()
+            .find(|marker| marker.id == id && !marker.folded.is_empty())
+            .map(|marker| marker.other)
+    }
+
+    /// The folded nodes on the map and how many wormholes each gathers:
+    /// `(node id, count)`.
+    pub(crate) fn folded_counts(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.shown
+            .iter()
+            .filter(|marker| !marker.folded.is_empty())
+            .map(|marker| (marker.id, marker.folded.len()))
+    }
+
+    /// The wormholes the node `id` gathers, when it is a folded one.
+    pub(crate) fn folded(&self, id: usize) -> Option<&[Folded]> {
+        self.shown
+            .iter()
+            .find(|marker| marker.id == id && !marker.folded.is_empty())
+            .map(|marker| marker.folded.as_slice())
     }
 
     /// The text on the line of a wormhole: the signature at each end, or the
@@ -549,8 +727,8 @@ impl WormholeLayer {
             let (origin, destination) = (link.origin as usize, link.destination as usize);
             if self
                 .style
-                .hub
-                .is_some_and(|hub| origin != hub && destination != hub)
+                .hubs
+                .is_some_and(|hubs| !hubs.contains(&origin) && !hubs.contains(&destination))
             {
                 continue;
             }
@@ -564,25 +742,65 @@ impl WormholeLayer {
         ends.sort_by(|a, b| (a.0, a.1, &a.2.out_signature).cmp(&(b.0, b.1, &b.2.out_signature)));
         // The same wormhole twice would share one place: keep the first.
         ends.dedup_by(|a, b| (a.0, a.1, &a.2.out_signature) == (b.0, b.1, &b.2.out_signature));
-        let keys: Vec<MarkerKey> = ends
-            .iter()
-            .map(|(system, other, wormhole)| MarkerKey {
+
+        // The ends at a hub that the map folds become one spot, the node that
+        // stands for the hub; the others are a spot each.
+        let mut at_hub: HashMap<usize, usize> = HashMap::new();
+        for (system, _, _) in &ends {
+            if Hub::is_hub(*system) {
+                *at_hub.entry(*system).or_default() += 1;
+            }
+        }
+        let mut spots: Vec<Spot> = Vec::new();
+        let mut folded_at: HashMap<usize, usize> = HashMap::new();
+        for (system, other, wormhole) in &ends {
+            let expiring = wormhole
+                .expires_at
+                .is_some_and(|at| at - now < self.style.expiring_within);
+            if Hub::is_hub(*system) && self.folds(at_hub[system]) {
+                let index = *folded_at.entry(*system).or_insert_with(|| {
+                    spots.push(Spot {
+                        key: MarkerKey {
+                            system: *system,
+                            other: *system,
+                            out_signature: String::new(),
+                        },
+                        system: *system,
+                        other: *system,
+                        label: String::new(),
+                        // Until one that is not close to collapsing comes.
+                        expiring: true,
+                        folded: Vec::new(),
+                    });
+                    spots.len() - 1
+                });
+                let spot = &mut spots[index];
+                spot.expiring &= expiring;
+                spot.folded.push(Folded {
+                    system: *other,
+                    label: Self::label_of(wormhole),
+                });
+                continue;
+            }
+            spots.push(Spot {
+                key: MarkerKey {
+                    system: *system,
+                    other: *other,
+                    out_signature: wormhole.out_signature.clone(),
+                },
                 system: *system,
                 other: *other,
-                out_signature: wormhole.out_signature.clone(),
-            })
-            .collect();
-
-        let texts: Vec<String> = ends
-            .iter()
-            .map(|(_, _, wormhole)| {
-                if self.style.labels {
+                label: if self.style.labels {
                     Self::label_of(wormhole)
                 } else {
                     String::new()
-                }
-            })
-            .collect();
+                },
+                expiring,
+                folded: Vec::new(),
+            });
+        }
+        let keys: Vec<MarkerKey> = spots.iter().map(|spot| spot.key.clone()).collect();
+        let texts: Vec<&str> = spots.iter().map(|spot| spot.label.as_str()).collect();
 
         // The room the texts need, in map units: their size in points over
         // the zoom they are given room for ([`WormholeMarkerStyle::label_zoom`],
@@ -594,7 +812,7 @@ impl WormholeLayer {
         let mut needed = [0.0_f64; 2];
         for text in texts
             .iter()
-            .map(String::as_str)
+            .copied()
             .chain(std::iter::once(self.style.label_reference))
         {
             let size = (labels.measure)(text);
@@ -648,7 +866,7 @@ impl WormholeLayer {
             let kept: Vec<Placed> = (0..keys.len())
                 .filter_map(|index| {
                     let remembered = self.remembered.get(&keys[index])?;
-                    let at = systems[&ends[index].0];
+                    let at = systems[&spots[index].system];
                     Some(Placed {
                         anchor: [f64::from(at[0]), f64::from(at[1])],
                         spot: remembered.position,
@@ -658,7 +876,7 @@ impl WormholeLayer {
             let anchors: Vec<[f64; 2]> = fresh
                 .iter()
                 .map(|index| {
-                    let at = systems[&ends[*index].0];
+                    let at = systems[&spots[*index].system];
                     [f64::from(at[0]), f64::from(at[1])]
                 })
                 .collect();
@@ -677,22 +895,26 @@ impl WormholeLayer {
             }
         }
 
-        ends.iter()
-            .zip(&keys)
-            .zip(texts)
-            .filter_map(|(((system, other, wormhole), key), label)| {
-                let kept = self.remembered.get(key)?;
+        spots
+            .into_iter()
+            .filter_map(|spot| {
+                let kept = self.remembered.get(&spot.key)?;
+                let name = names(spot.other).unwrap_or_else(|| spot.other.to_string());
                 Some(WormholeMarker {
                     id: kept.id,
-                    system: *system,
-                    other: *other,
-                    name: names(*other).unwrap_or_else(|| other.to_string()),
+                    system: spot.system,
+                    other: spot.other,
+                    name: if spot.folded.is_empty() {
+                        name
+                    } else {
+                        format!("WH {name}")
+                    },
                     position: [kept.position[0] as f32, kept.position[1] as f32],
-                    anchor: systems[system],
-                    label,
-                    expiring: wormhole
-                        .expires_at
-                        .is_some_and(|at| at - now < self.style.expiring_within),
+                    anchor: systems[&spot.system],
+                    label: spot.label,
+                    expiring: spot.expiring,
+                    node_color: None,
+                    folded: spot.folded,
                 })
             })
             .collect()
@@ -743,8 +965,10 @@ impl TelescopeApp {
     /// Hands the housekeeping thread the setting of EvE-Scout. Cheap and
     /// idempotent, like [`Self::sync_alarm_shared`], which it runs next to.
     pub(crate) fn sync_wormholes(&self) {
+        let options = self.settings.get_eve_scout();
+        self.wormholes.set_enabled(options.enabled);
         self.wormholes
-            .set_enabled(self.settings.get_eve_scout().enabled);
+            .set_display(options.hub_display, options.collapse_over);
     }
 }
 
@@ -1630,5 +1854,352 @@ mod tests {
         let active = |now| links.layer().active(now).count();
         assert_eq!(active(expires_at() - TimeDelta::hours(1)), 1);
         assert_eq!(active(expires_at()), 0);
+    }
+
+    /// The wormholes of Turnur on a map that has it, and the markers they get.
+    struct Turnur;
+
+    impl Turnur {
+        const SYSTEM: usize = 30_002_086;
+
+        /// `count` wormholes from Turnur to systems that are not on the map.
+        fn signatures(count: i64) -> Vec<Signature> {
+            (0..count)
+                .map(|index| {
+                    signature(json!({
+                        "out_system_id": 30_002_086,
+                        "out_system_name": "Turnur",
+                        "out_signature": format!("TUR-{index:03}"),
+                        "in_system_id": 31_000_100 + index,
+                        "in_signature": format!("ABC-{index:03}"),
+                    }))
+                })
+                .collect()
+        }
+
+        /// A map with Turnur and, far from it and from each other, the systems
+        /// `others`.
+        fn map(others: &[usize]) -> HashMap<usize, [f32; 2]> {
+            let mut map = HashMap::from([(Self::SYSTEM, [0.0, 0.0])]);
+            for (index, other) in others.iter().enumerate() {
+                map.insert(*other, [300.0 * (index as f32 + 1.0), 0.0]);
+            }
+            map
+        }
+
+        fn name(id: usize) -> Option<String> {
+            (id == Self::SYSTEM).then(|| String::from("Turnur"))
+        }
+
+        /// The markers of `count` wormholes of Turnur on a map of `role`,
+        /// shown as `display`.
+        fn markers(count: i64, role: MapRole, display: HubDisplay) -> Vec<WormholeMarker> {
+            let mut layer = layer();
+            layer.set_role(role);
+            layer.set_display(display, 6);
+            layer.markers(
+                &links(&Self::signatures(count)),
+                now(),
+                &Self::map(&[]),
+                &Self::name,
+                node(),
+                Crowd::labels(),
+            )
+        }
+    }
+
+    #[test]
+    fn the_wormholes_of_a_hub_over_the_limit_are_one_node_on_an_ordinary_map() {
+        let markers = Turnur::markers(17, MapRole::Ordinary, HubDisplay::Automatic);
+        assert_eq!(markers.len(), 1);
+        let node = &markers[0];
+        assert_eq!(node.system, Turnur::SYSTEM);
+        assert_eq!(node.other, Turnur::SYSTEM);
+        assert_eq!(node.name, "WH Turnur");
+        assert!(node.label.is_empty());
+        assert_eq!(node.folded.len(), 17);
+        assert_eq!(node.folded[0].system, 31_000_100);
+        assert_eq!(node.folded[0].label, "TUR-000 → ABC-000");
+        assert!(node.id >= WormholeMarkerStyle::default().id_base);
+    }
+
+    #[test]
+    fn up_to_the_limit_the_wormholes_of_a_hub_keep_a_node_each() {
+        let markers = Turnur::markers(6, MapRole::Ordinary, HubDisplay::Automatic);
+        assert_eq!(markers.len(), 6);
+        assert!(markers.iter().all(|marker| marker.folded.is_empty()));
+        assert!(markers.iter().all(|marker| marker.other != Turnur::SYSTEM));
+    }
+
+    #[test]
+    fn the_limit_is_the_one_that_was_set() {
+        let mut layer = layer();
+        layer.set_display(HubDisplay::Automatic, 2);
+        let markers = layer.markers(
+            &links(&Turnur::signatures(3)),
+            now(),
+            &Turnur::map(&[]),
+            &Turnur::name,
+            node(),
+            Crowd::labels(),
+        );
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].folded.len(), 3);
+    }
+
+    #[test]
+    fn full_never_folds_and_collapsed_folds_even_a_single_wormhole() {
+        let full = Turnur::markers(17, MapRole::Ordinary, HubDisplay::Full);
+        assert_eq!(full.len(), 17);
+        let collapsed = Turnur::markers(1, MapRole::Ordinary, HubDisplay::Collapsed);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].folded.len(), 1);
+    }
+
+    #[test]
+    fn the_detail_map_shows_every_wormhole_unless_collapsed_is_asked_for() {
+        assert_eq!(
+            Turnur::markers(17, MapRole::Detail, HubDisplay::Automatic).len(),
+            17
+        );
+        assert_eq!(
+            Turnur::markers(17, MapRole::Detail, HubDisplay::Full).len(),
+            17
+        );
+        assert_eq!(
+            Turnur::markers(17, MapRole::Detail, HubDisplay::Collapsed).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_own_map_of_a_hub_never_folds() {
+        for display in [
+            HubDisplay::Automatic,
+            HubDisplay::Full,
+            HubDisplay::Collapsed,
+        ] {
+            assert_eq!(Turnur::markers(17, MapRole::Own, display).len(), 17);
+        }
+    }
+
+    #[test]
+    fn the_universe_always_folds_a_hub() {
+        for display in [
+            HubDisplay::Automatic,
+            HubDisplay::Full,
+            HubDisplay::Collapsed,
+        ] {
+            let markers = Turnur::markers(2, MapRole::Universe, display);
+            assert_eq!(markers.len(), 1);
+            assert_eq!(markers[0].folded.len(), 2);
+        }
+    }
+
+    #[test]
+    fn the_detail_region_of_a_hub_is_the_one_to_look_at_its_wormholes() {
+        assert_eq!(
+            Hub::detail_region(Hub::THERA_SYSTEM),
+            Some(Hub::THERA_REGION)
+        );
+        assert_eq!(
+            Hub::detail_region(Hub::TURNUR_SYSTEM),
+            Some(Hub::TURNUR_DETAIL_REGION)
+        );
+        assert_eq!(Hub::detail_region(30_000_142), None);
+    }
+
+    #[test]
+    fn the_display_follows_the_setting() {
+        let shared = WormholeShared::default();
+        assert_eq!(shared.display(), (HubDisplay::Automatic, 6));
+        shared.set_display(HubDisplay::Collapsed, 9);
+        assert_eq!(shared.display(), (HubDisplay::Collapsed, 9));
+    }
+
+    #[test]
+    fn the_folded_nodes_are_counted_and_know_their_hub() {
+        let mut layer = layer();
+        layer.set_display(HubDisplay::Collapsed, 6);
+        let mut map = Map::new();
+        let markers = layer.markers(
+            &links(&Turnur::signatures(5)),
+            now(),
+            &Turnur::map(&[]),
+            &Turnur::name,
+            node(),
+            Crowd::labels(),
+        );
+        let id = markers[0].id;
+        layer.show(&mut map, markers, 1, Instant::now());
+        assert_eq!(layer.folded_counts().collect::<Vec<_>>(), vec![(id, 5)]);
+        assert_eq!(layer.folded_hub(id), Some(Turnur::SYSTEM));
+        assert_eq!(layer.folded_hub(id + 1), None);
+    }
+
+    #[test]
+    fn the_roles_of_the_regions() {
+        assert_eq!(Hub::role_of(Hub::THERA_REGION), MapRole::Own);
+        assert_eq!(Hub::role_of(Hub::TURNUR_DETAIL_REGION), MapRole::Detail);
+        assert_eq!(Hub::role_of(10_000_042), MapRole::Ordinary);
+    }
+
+    #[test]
+    fn a_system_that_leads_to_a_folded_hub_gets_a_node_named_after_it() {
+        let mut layer = WormholeLayer::new(WormholeMarkerStyle::universe());
+        layer.set_role(MapRole::Universe);
+        let signatures = Turnur::signatures(2);
+        let signatures: Vec<Signature> = signatures
+            .into_iter()
+            .zip([30_000_142, 30_000_144])
+            .map(|(_, other)| {
+                signature(json!({
+                    "out_system_id": 30_002_086,
+                    "in_system_id": other,
+                    "out_signature": format!("TUR-{other}"),
+                }))
+            })
+            .collect();
+        let mut systems = region();
+        systems.insert(Turnur::SYSTEM, [150.0, 200.0]);
+        let markers = layer.markers(
+            &links(&signatures),
+            now(),
+            &systems,
+            &Turnur::name,
+            NodeSize {
+                width: 8.0,
+                height: 8.0,
+            },
+            LabelSpace {
+                measure: &|_| [0.0, 0.0],
+            },
+        );
+        // The node of the hub and one named "Turnur" next to each system.
+        assert_eq!(markers.len(), 3);
+        let folded: Vec<_> = markers.iter().filter(|m| !m.folded.is_empty()).collect();
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].system, Turnur::SYSTEM);
+        assert_eq!(folded[0].anchor, [150.0, 200.0]);
+        let aliases: Vec<_> = markers.iter().filter(|m| m.folded.is_empty()).collect();
+        assert_eq!(aliases.len(), 2);
+        for alias in aliases {
+            assert_eq!(alias.name, "Turnur");
+            assert_eq!(alias.other, Turnur::SYSTEM);
+            assert!([30_000_142, 30_000_144].contains(&alias.system));
+        }
+    }
+
+    #[test]
+    fn the_folded_node_keeps_its_id_while_wormholes_come_and_go() {
+        let mut layer = layer();
+        layer.set_display(HubDisplay::Collapsed, 6);
+        let mut show = |count| {
+            layer.markers(
+                &links(&Turnur::signatures(count)),
+                now(),
+                &Turnur::map(&[]),
+                &Turnur::name,
+                node(),
+                Crowd::labels(),
+            )
+        };
+        let first = show(8);
+        let second = show(9);
+        let third = show(3);
+        assert_eq!(first[0].id, second[0].id);
+        assert_eq!(first[0].id, third[0].id);
+        assert_eq!(first[0].position, third[0].position);
+        assert_eq!(second[0].folded.len(), 9);
+        assert_eq!(third[0].folded.len(), 3);
+    }
+
+    #[test]
+    fn the_folded_node_is_close_to_collapsing_only_when_all_its_wormholes_are() {
+        let mut layer = layer();
+        layer.set_display(HubDisplay::Collapsed, 6);
+        let soon = signature(json!({
+            "out_system_id": 30_002_086,
+            "in_system_id": 31_000_100,
+            "out_signature": "TUR-000",
+            "expires_at": "2026-11-05T13:00:00.000Z",
+        }));
+        let later = signature(json!({
+            "out_system_id": 30_002_086,
+            "in_system_id": 31_000_101,
+            "out_signature": "TUR-001",
+        }));
+        let now = expires_at() - TimeDelta::hours(1) - TimeDelta::hours(9);
+        let mut mark = |signatures: &[Signature]| {
+            layer.markers(
+                &links(signatures),
+                now,
+                &Turnur::map(&[]),
+                &Turnur::name,
+                node(),
+                Crowd::labels(),
+            )
+        };
+        assert!(mark(std::slice::from_ref(&soon))[0].expiring);
+        assert!(!mark(&[soon, later])[0].expiring);
+    }
+
+    #[test]
+    fn the_folded_node_is_listed_by_its_id_and_goes_with_the_markers() {
+        let mut layer = layer();
+        layer.set_display(HubDisplay::Collapsed, 6);
+        let mut map = Map::new();
+        let markers = layer.markers(
+            &links(&Turnur::signatures(4)),
+            now(),
+            &Turnur::map(&[]),
+            &Turnur::name,
+            node(),
+            Crowd::labels(),
+        );
+        let id = markers[0].id;
+        layer.show(&mut map, markers, 1, Instant::now());
+        assert_eq!(layer.folded(id).map(<[Folded]>::len), Some(4));
+        assert_eq!(
+            layer.aliases().collect::<Vec<_>>(),
+            vec![(id, Turnur::SYSTEM)]
+        );
+        assert!(layer.folded(id + 1).is_none());
+    }
+
+    #[test]
+    fn changing_the_role_or_the_display_makes_the_markers_due_again() {
+        let mut layer = layer();
+        let mut map = Map::new();
+        layer.show(&mut map, Vec::new(), 1, Instant::now());
+        assert!(!layer.is_due(1, Instant::now()));
+        layer.set_role(MapRole::Ordinary);
+        layer.set_display(HubDisplay::Automatic, 6);
+        assert!(!layer.is_due(1, Instant::now()));
+        layer.set_role(MapRole::Detail);
+        assert!(layer.is_due(1, Instant::now()));
+        layer.show(&mut map, Vec::new(), 1, Instant::now());
+        layer.set_display(HubDisplay::Automatic, 7);
+        assert!(layer.is_due(1, Instant::now()));
+    }
+
+    #[test]
+    fn the_node_takes_the_colour_of_its_system_and_the_line_keeps_the_one_of_the_wormhole() {
+        let mut layer = layer();
+        let green = Color32::from_rgb(0x4c, 0xaf, 0x50);
+        let marker = layer.markers(
+            &links(&[signature(json!({ "in_system_id": 30_000_142 }))]),
+            now(),
+            &region(),
+            &names,
+            node(),
+            Crowd::labels(),
+        );
+        let marker = marker[0].clone();
+        let style = layer.style;
+        assert_eq!(marker.point(&style).color, Some(style.accent));
+        let painted = marker.with_node_color(Some(green));
+        assert_eq!(painted.point(&style).color, Some(green));
+        assert_eq!(painted.segment(&style).color, Some(style.accent));
     }
 }
