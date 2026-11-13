@@ -220,6 +220,9 @@ pub(crate) struct Overlays {
     /// Places the user left windows at, not yet handed to the settings (see
     /// [`Self::take_positions`]).
     positions: Vec<(i64, OverlayPosition)>,
+    /// Size of the font atlas the last time the overlays were drawn (see
+    /// [`Self::keep_font_atlas_in_sync`]); `[0, 0]` before the first frame.
+    font_atlas_size: [usize; 2],
 }
 
 impl Overlays {
@@ -303,9 +306,29 @@ impl Overlays {
                 self.positions.push((*key, position));
             }
         }
+        self.keep_font_atlas_in_sync(ctx);
         if self.windows.iter().any(|(_, window)| !window.is_open()) {
             self.open = false;
             self.drop_windows(|_| true);
+        }
+    }
+
+    /// The overlays are drawn inside the main window's pass and share its
+    /// font atlas. While the main window is covered (by the game, say) the
+    /// system reports it as occluded and eframe runs its pass without painting
+    /// it, so the atlas updates of that pass wait unapplied. The overlay's own
+    /// window is painted all the same: if the atlas grew meanwhile, it would
+    /// sample coordinates of the new atlas from the old texture and its text
+    /// would come out squashed. When the atlas size changed and the main
+    /// window is hidden, one hidden paint applies the pending updates.
+    fn keep_font_atlas_in_sync(&mut self, ctx: &egui::Context) {
+        let size = ctx.fonts(|fonts| fonts.font_image_size());
+        let grew = self.font_atlas_size != [0, 0] && self.font_atlas_size != size;
+        self.font_atlas_size = size;
+        let hidden = ctx.input(|input| input.viewport().visible() == Some(false));
+        if grew && hidden {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+            ctx.request_repaint();
         }
     }
 
@@ -385,6 +408,11 @@ pub(crate) struct OverlayState {
     /// The user moved or resized the window since its place was last handed
     /// over (see [`Self::take_position`]).
     moved: bool,
+    /// Where the window said it was the last time it changed (diagnostics of
+    /// the overlay jumping around, see `draw`).
+    /// When the code last told the window to go somewhere: until it has
+    /// arrived, where the window reports itself is not a drag by the user.
+    moved_by_code: Option<Instant>,
     /// The right edge is being dragged.
     resizing: bool,
     /// The width (points) the user gave the window while there was no game
@@ -620,6 +648,7 @@ impl OverlayState {
             last_poll: None,
             last_game_rect: None,
             last_target: None,
+            moved_by_code: None,
             native_applied: false,
             native_attempts: 0,
             overlay_focused: false,
@@ -650,6 +679,9 @@ impl OverlayState {
             ghosts: Vec::new(),
         }
     }
+
+    /// How long the window gets to arrive where the code sent it.
+    const MOVE_SETTLE: Duration = Duration::from_millis(500);
 
     fn placement_from(position: OverlayPosition) -> OverlayPlacement {
         let anchor = match position.anchor {
@@ -879,6 +911,7 @@ impl OverlayState {
         self.last_game_rect = Some(game.rect);
         let target = self.placement.rect_in(&game.rect);
         self.last_target = Some(target);
+        self.moved_by_code = Some(Instant::now());
         let id = self.viewport_id();
         ctx.send_viewport_cmd_to(
             id,
@@ -982,6 +1015,15 @@ impl OverlayState {
         let Some(game) = self.game else {
             return;
         };
+        // The window takes a frame or two to get where it was sent. Reading
+        // its old place meanwhile as a drag makes the code send it back, and
+        // the two places then take turns every frame (the window flickers).
+        if self
+            .moved_by_code
+            .is_some_and(|at| at.elapsed() < Self::MOVE_SETTLE)
+        {
+            return;
+        }
         let x = Self::to_pixels(outer.min.x, pixels_per_point);
         let y = Self::to_pixels(outer.min.y, pixels_per_point);
         let Some(last) = self.last_target else {
