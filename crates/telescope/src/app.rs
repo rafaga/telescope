@@ -563,11 +563,14 @@ impl TelescopeApp {
 }
 
 impl eframe::App for TelescopeApp {
-    /// The color every window is cleared with before egui paints. By default
-    /// it is the opaque window color, which makes the overlay's transparent
-    /// window look solid; the main window is covered by its panels anyway.
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        egui::Rgba::TRANSPARENT.to_array()
+    /// The color the main window and the deferred windows are cleared with
+    /// before egui paints: the opaque panel color. A transparent clear here
+    /// makes the main window flicker on macOS while it repaints often (e.g.
+    /// while a character's glow animates). The overlay is an immediate
+    /// viewport, which eframe always clears transparent, so it needs nothing
+    /// from here.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
     }
 
     /// Called by the frame work to save state before shutdown.
