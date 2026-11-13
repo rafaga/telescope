@@ -1954,7 +1954,7 @@ dependencies = [
 
 [[package]]
 name = "eve-scout"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "reqwest",
@@ -3615,7 +3615,7 @@ dependencies = [
 
 [[package]]
 name = "native_tools"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "ashpd",
  "block2 0.6.2",
@@ -6268,7 +6268,7 @@ checksum = "c1bbb9f3c5c463a01705937a24fdabc5047929ac764b2d5b9cf681c1f5041ed5"
 
 [[package]]
 name = "telescope"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -7293,7 +7293,7 @@ dependencies = [
 
 [[package]]
 name = "webb"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "aho-corasick",
  "base64 0.23.1",
@@ -8363,7 +8363,7 @@ dependencies = [
 
 [[package]]
 name = "zkill"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "chrono",
  "reqwest",
