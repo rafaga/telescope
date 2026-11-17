@@ -736,6 +736,9 @@ impl eframe::App for TelescopeApp {
         // web: its settings come from a file.)
         #[cfg(not(target_arch = "wasm32"))]
         self.show_settings_window(ui.ctx());
+        // ... and so does the node editor of the rules, a modal over it.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.show_editor_window(ui.ctx());
 
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.

@@ -23,3 +23,6 @@ egui_kittest = "0.37"
 
 [[example]]
 name = "settings_demo"
+
+[lints]
+workspace = true

@@ -10,6 +10,25 @@ versions were written for the tag that shipped them.
 
 ## [Unreleased]
 
+### Changed
+
+* The node editor of the rules (Settings -> Rules -> Open editor) is now a window
+  of its own, a modal one, instead of replacing the page inside Settings: the
+  Settings window waits, disabled, until the editor is closed with *Done* or its
+  close button, and a click on it brings the editor back to the front. Closing
+  it writes the nodes back to the rules, as before, and an id that cannot be
+  used keeps it open with the error. Applying or accepting Settings still
+  applies the rule that is open.
+* The node editor of the rules is laid out like the tool windows of an IDE,
+  with the existing look: a toolbox at the left lists the nodes to add (the
+  detections, the logic and the outputs, grouped; the outputs the rule already
+  has are disabled) and a click adds one and selects it; the panel at the right
+  is now a property grid, with the fields of the selected node as `name | value`
+  rows under *General*, *Parameters* and *Connections*. The toolbox folds away
+  with a button in the toolbar, and in a narrow window the *+ Node* menu takes
+  its place. Both side panels can be resized by dragging their edge, and a
+  node dragged from the toolbox onto the canvas is added like a click on it.
+
 ## [1.1.1] - 2026-11-12
 
 ### Added

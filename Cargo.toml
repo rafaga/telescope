@@ -5,6 +5,8 @@ members = [
     "crates/webb",
     "crates/native_tools",
     "crates/egui-panels",
+    "crates/egui-ide",
+    "crates/telescope-derive",
     "crates/zkill",
     "crates/eve-scout",
 ]
@@ -35,6 +37,12 @@ opt-level = 0 # fast and small wasm
 # Optimize all dependencies even in debug builds:
 [profile.dev.package."*"]
 opt-level = 0
+
+# TEMPORARY: the local checkout (branch `telescope`) has `screen_to_graph`,
+# which is not pushed yet. Remove this section once it is, and run
+# `cargo update -p egui-snarl`.
+[patch."https://github.com/rafaga/egui-snarl"]
+egui-snarl = { path = "../egui-snarl" }
 
 [patch.crates-io]
 # If you want to use the bleeding edge version of egui and eframe:

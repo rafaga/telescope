@@ -804,9 +804,9 @@ checksum = "5c0e531d93d39c34eef561e929e8a7f86d77a5af08aac4f6d6e39976c51858e9"
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "bytemuck"
@@ -874,9 +874,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1561,6 +1561,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-ide"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_kittest",
+ "native_tools",
+]
+
+[[package]]
 name = "egui-map"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,7 +1605,6 @@ dependencies = [
 [[package]]
 name = "egui-snarl"
 version = "0.13.0"
-source = "git+https://github.com/rafaga/egui-snarl?branch=telescope#ace3c159ab1a3df07cc8ff776fcccb3fe5404d85"
 dependencies = [
  "ahash",
  "egui",
@@ -3484,9 +3493,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.4"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "log",
@@ -3633,7 +3642,7 @@ dependencies = [
  "tracing",
  "windows",
  "x11rb 0.14.0",
- "zbus 6.2.1",
+ "zbus 6.3.0",
 ]
 
 [[package]]
@@ -6275,6 +6284,7 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
+ "egui-ide",
  "egui-map",
  "egui-panels",
  "egui-snarl",
@@ -7306,7 +7316,6 @@ dependencies = [
  "hyper-util",
  "mockall",
  "native_tools",
- "open",
  "regex",
  "rusqlite",
  "serde",
@@ -8125,9 +8134,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "6.2.1"
+version = "6.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ddb2961d9587ef9f24ad14cde1c3bc4c5edc9f1525932a8cffdd5bd98886eb9"
+checksum = "6b4aae740b23927ceabed962431abab2cdefb9f7f885e5bbab062da09bf580e4"
 dependencies = [
  "async-trait",
  "bitflags 2.13.2",
@@ -8145,7 +8154,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "winnow 1.0.5",
- "zbus_macros 6.2.1",
+ "zbus_macros 6.3.0",
  "zbus_utils",
  "zcheapstr",
  "zruntime",
@@ -8192,9 +8201,9 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "6.2.1"
+version = "6.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "083b38add47c340fc12ec560124fb1d9c23acb584f7021099f85ec6587a03c54"
+checksum = "37c9dd4beaf145c16fcb2902862f50da86e54aed13dd368ddf64a1d17e6b8529"
 dependencies = [
  "proc-macro2",
  "quote",

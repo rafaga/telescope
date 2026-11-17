@@ -22,7 +22,6 @@ serde = { version = "1.0", features = ["serde_derive"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 hyper = { version = "1.12", features = ["server", "client", "http1"]}
 hyper-tls = { version = "0.6"}
-open = { version = "5.4"}
 esi-openapi = { version = "0.3", default-features = false, features = ["random_state", "validate_jwt"]}
 serde_json = { version = "1.0"}
 base64 = { version = "0.23"}
@@ -47,3 +46,6 @@ rusqlite = { version = "0.42", features = ["bundled-sqlcipher-vendored-openssl",
 mockall = "0.15"
 # `graph` tests serialize a rule graph; the `esi` feature also pulls this in.
 serde_json = "1.0"
+
+[lints]
+workspace = true

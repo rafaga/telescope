@@ -252,6 +252,15 @@ impl TelescopeApp {
             ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
         }
         let closing = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+            // The node editor of the rules is a modal window over this one:
+            // while it is open the screen waits (nothing in it can be used),
+            // and a click on it brings the editor back to the front.
+            if self.patterns_editor.is_open() {
+                ui.disable();
+                if ui.input(|input| input.pointer.any_pressed()) {
+                    self.patterns_editor.bring_to_front();
+                }
+            }
             self.show_settings_screen(ui);
             ui.input(|input| input.viewport().close_requested())
         });
@@ -279,29 +288,25 @@ impl TelescopeApp {
             .saved_message(&saved);
 
         let mut page = self.selected_settings_page;
-        // The node editor fills the page itself.
-        let scroll = !(page == SettingsPage::Rules && self.patterns_editor.is_open());
         let mut nav_tree = std::mem::take(&mut self.settings_ui.nav_tree);
-        let action = SettingsLayout::new("settings")
-            .scroll(scroll)
-            .show_with_nav(
-                ui,
-                |ui, page| Self::show_settings_nav(ui, &mut nav_tree, page, &dirty),
-                bar,
-                &mut page,
-                |ui, page| match page {
-                    SettingsPage::Sources => self.show_sources_page(ui),
-                    SettingsPage::Zkillboard => self.show_zkillboard_page(ui),
-                    SettingsPage::Rules => self.show_patterns_page(ui),
-                    SettingsPage::Alerts => self.show_alerts_page(ui),
-                    SettingsPage::AlertsVisual => self.show_alerts_visual_page(ui),
-                    SettingsPage::AlertsSound => self.show_alerts_sound_page(ui),
-                    SettingsPage::AlertsOverlay => self.show_alerts_overlay_page(ui),
-                    SettingsPage::Maps => self.show_maps_page(ui),
-                    SettingsPage::Characters => self.show_characters_page(ui),
-                    SettingsPage::Application => self.show_application_page(ui),
-                },
-            );
+        let action = SettingsLayout::new("settings").show_with_nav(
+            ui,
+            |ui, page| Self::show_settings_nav(ui, &mut nav_tree, page, &dirty),
+            bar,
+            &mut page,
+            |ui, page| match page {
+                SettingsPage::Sources => self.show_sources_page(ui),
+                SettingsPage::Zkillboard => self.show_zkillboard_page(ui),
+                SettingsPage::Rules => self.show_patterns_page(ui),
+                SettingsPage::Alerts => self.show_alerts_page(ui),
+                SettingsPage::AlertsVisual => self.show_alerts_visual_page(ui),
+                SettingsPage::AlertsSound => self.show_alerts_sound_page(ui),
+                SettingsPage::AlertsOverlay => self.show_alerts_overlay_page(ui),
+                SettingsPage::Maps => self.show_maps_page(ui),
+                SettingsPage::Characters => self.show_characters_page(ui),
+                SettingsPage::Application => self.show_application_page(ui),
+            },
+        );
         self.settings_ui.nav_tree = nav_tree;
         self.selected_settings_page = page;
         match action {

@@ -1,0 +1,30 @@
+[package]
+name = "egui-ide"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Editor panels for egui in the look of egui itself: a property grid, a toolbox whose entries click or drag onto a canvas, and a toolbar."
+readme = "README.md"
+keywords = ["egui", "gui", "widgets", "editor"]
+categories = ["gui"]
+
+[features]
+default = ["native-dialogs"]
+# The button of the `File` and `Folder` properties that opens the native
+# dialog. Without it they are a plain text field.
+native-dialogs = ["dep:native_tools"]
+
+[dependencies]
+egui = { version = "0.37", default-features = false }
+# The native file and folder dialogs of the `File` and `Folder` properties.
+native_tools = { path = "../native_tools", optional = true }
+
+[dev-dependencies]
+egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
+egui_kittest = "0.37"
+# Only for the examples, which open a window.
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
+
+[lints]
+workspace = true

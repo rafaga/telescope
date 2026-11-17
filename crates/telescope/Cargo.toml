@@ -56,6 +56,7 @@ open = "5.4"
 # root vs `cargo build -p telescope`.
 webb = { path = "../webb/", default-features = false, features = ["crypted-db"]}
 egui-panels = { path = "../egui-panels/" }
+egui-ide = { path = "../egui-ide/" }
 zkill = { path = "../zkill/" }
 # The wormholes of Thera and Turnur: `app/wormhole_links.rs` turns them into
 # links of the layer `sde` keeps next to the universe.
@@ -101,6 +102,7 @@ regex = "1.13"
 # budget. See the "Dictionary rules" section of patterns.rs's module docs.
 aho-corasick = "1.1"
 native_tools = { path = "../native_tools/"}
+telescope-derive = { path = "../telescope-derive/" }
 tracing = "0.1"
 # Bridges `log`-based diagnostics from dependencies (hyper, notify, wgpu,
 # esi-openapi, ...) into `tracing`, so nothing that used to go through `log` is
@@ -160,3 +162,6 @@ egui_kittest = { version = "0.37", features = ["snapshot", "wgpu"] }
 # The same provider eframe registers in the app, for the tests that draw
 # emojis (a test context has none).
 egui_system_font_provider = "0.37"
+
+[lints]
+workspace = true
