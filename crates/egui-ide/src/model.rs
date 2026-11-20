@@ -54,8 +54,6 @@ pub enum PropertyValue {
     KeyValue(Vec<(String, String)>),
     /// A color as red, green and blue.
     Color([u8; 3]),
-    /// Which of the flags of a [`PropertyKind::Flags`] are on, in its order.
-    Flags(Vec<bool>),
 }
 
 impl PropertyValue {
@@ -71,7 +69,6 @@ impl PropertyValue {
             Self::TextList(_) => "text list",
             Self::KeyValue(_) => "key/value list",
             Self::Color(_) => "color",
-            Self::Flags(_) => "flags",
         }
     }
 
@@ -129,15 +126,6 @@ impl PropertyValue {
         }
     }
 
-    /// The flags, if this is [`Flags`](Self::Flags).
-    #[must_use]
-    pub fn as_flags(&self) -> Option<&[bool]> {
-        match self {
-            Self::Flags(flags) => Some(flags),
-            _ => None,
-        }
-    }
-
     /// The pairs, if this is [`KeyValue`](Self::KeyValue).
     #[must_use]
     pub fn as_pairs(&self) -> Option<&[(String, String)]> {
@@ -162,15 +150,6 @@ impl fmt::Display for PropertyValue {
                 f.write_str(&pairs.join(", "))
             }
             Self::Color([r, g, b]) => write!(f, "#{r:02X}{g:02X}{b:02X}"),
-            Self::Flags(flags) => {
-                let on: Vec<String> = flags
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, on)| **on)
-                    .map(|(position, _)| position.to_string())
-                    .collect();
-                f.write_str(&on.join(", "))
-            }
         }
     }
 }
@@ -209,9 +188,6 @@ pub enum PropertyKind {
     Date,
     /// Several lines of text, holding [`PropertyValue::Text`].
     Multiline,
-    /// A flag per name, each with its own checkbox, holding
-    /// [`PropertyValue::Flags`].
-    Flags(Vec<String>),
     /// A button with this text. It holds no value: a press is reported by
     /// [`PropertyModel::take_activated`].
     Action(String),
@@ -238,7 +214,6 @@ impl PropertyKind {
             | Self::Action(_)
             | Self::Link(_)
             | Self::Reference => PropertyValue::Text(String::new()),
-            Self::Flags(names) => PropertyValue::Flags(vec![false; names.len()]),
             Self::Int => PropertyValue::Int(0),
             Self::Float => PropertyValue::Float(0.0),
             Self::Bool => PropertyValue::Bool(false),
@@ -268,14 +243,13 @@ impl PropertyKind {
             (Self::ReadOnly | Self::Action(_) | Self::Link(_), _)
                 | (
                     Self::Text
-                    | Self::File
-                    | Self::Folder
-                    | Self::Date
-                    | Self::Multiline
-                    | Self::Reference,
+                        | Self::File
+                        | Self::Folder
+                        | Self::Date
+                        | Self::Multiline
+                        | Self::Reference,
                     PropertyValue::Text(_),
                 )
-                | (Self::Flags(_), PropertyValue::Flags(_))
                 | (Self::Int, PropertyValue::Int(_))
                 | (Self::Float, PropertyValue::Float(_))
                 | (Self::Bool, PropertyValue::Bool(_))
@@ -591,10 +565,6 @@ pub struct PropertyLabels {
     pub yes: String,
     /// The `false` option of a flag.
     pub no: String,
-    /// The names of the twelve months, shown over the calendar of a date.
-    pub months: Vec<String>,
-    /// The short names of the days of the week, from Monday.
-    pub weekdays: Vec<String>,
     /// The hint of an empty date.
     pub date_hint: String,
 }
@@ -613,25 +583,6 @@ impl Default for PropertyLabels {
             reset: "Restore the default value".to_owned(),
             yes: "True".to_owned(),
             no: "False".to_owned(),
-            months: [
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
-            weekdays: ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
-                .map(str::to_owned)
-                .to_vec(),
             date_hint: "YYYY-MM-DD".to_owned(),
         }
     }

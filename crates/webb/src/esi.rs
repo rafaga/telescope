@@ -48,7 +48,7 @@ pub struct SystemHourKills {
 pub struct HourKills {
     /// When ESI computed the answer (`Last-Modified`): the hour ends then.
     /// `None` when ESI did not say, or the date could not be read.
-    pub modified: Option<chrono::DateTime<chrono::Utc>>,
+    pub modified: Option<jiff::Timestamp>,
     pub systems: Vec<SystemHourKills>,
 }
 
@@ -57,9 +57,11 @@ impl HourKills {
     /// HTTP date, such as `Wed, 21 Oct 2026 07:28:00 GMT`) and the systems.
     pub fn new(modified: Option<&str>, systems: Vec<SystemHourKills>) -> Self {
         Self {
-            modified: modified
-                .and_then(|text| chrono::DateTime::parse_from_rfc2822(text).ok())
-                .map(|time| time.with_timezone(&chrono::Utc)),
+            modified: modified.and_then(|text| {
+                jiff::fmt::rfc2822::DateTimeParser::new()
+                    .parse_timestamp(text)
+                    .ok()
+            }),
             systems,
         }
     }
@@ -115,7 +117,7 @@ pub trait EsiApi: Send {
     async fn get_last_login(
         &mut self,
         character_id: i64,
-    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String>;
+    ) -> Result<Option<jiff::Timestamp>, String>;
     /// Fetches the kills per system of the last hour from ESI, with the
     /// moment ESI computed them. Public: no token is needed.
     async fn get_system_kills(&mut self) -> Result<HourKills, String>;
@@ -201,7 +203,7 @@ impl EsiApi for LiveEsiApi {
         self.esi.refresh_token = Some(tokens.refresh_token.clone());
         self.esi.access_expiration = tokens
             .expiration
-            .map(|expiration| expiration.timestamp_millis());
+            .map(|expiration| expiration.as_millisecond());
     }
 
     #[tracing::instrument(skip(self))]
@@ -209,7 +211,7 @@ impl EsiApi for LiveEsiApi {
         Some(TokenSet {
             token: self.esi.access_token.clone()?,
             refresh_token: self.esi.refresh_token.clone()?,
-            expiration: chrono::DateTime::from_timestamp_millis(self.esi.access_expiration?),
+            expiration: jiff::Timestamp::from_millisecond(self.esi.access_expiration?).ok(),
         })
     }
 
@@ -322,7 +324,7 @@ impl EsiApi for LiveEsiApi {
     async fn get_last_login(
         &mut self,
         character_id: i64,
-    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+    ) -> Result<Option<jiff::Timestamp>, String> {
         self.esi
             .group_location()
             .get_online(character_id)
@@ -330,7 +332,7 @@ impl EsiApi for LiveEsiApi {
             .map(|status| {
                 status
                     .last_login
-                    .and_then(|value| value.parse::<chrono::DateTime<chrono::Utc>>().ok())
+                    .and_then(|value| value.parse::<jiff::Timestamp>().ok())
             })
             .map_err(|t_error| t_error.to_string())
     }
@@ -758,7 +760,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
     pub async fn get_last_login(
         &mut self,
         player_id: i64,
-    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+    ) -> Result<Option<jiff::Timestamp>, String> {
         if !self.valid_token(player_id).await {
             return Err(String::from("Invalid Token"));
         }
@@ -789,7 +791,7 @@ impl<T: EsiApi> EsiManagerCore<T> {
             return false;
         }
         auth.expiration
-            .is_some_and(|expire| (expire - chrono::Utc::now()).num_seconds() >= 20)
+            .is_some_and(|expire| expire.duration_since(jiff::Timestamp::now()).as_secs() >= 20)
     }
 
     /// Gets a new access token for the character with its refresh token,
@@ -1002,7 +1004,7 @@ mod tests {
         character.photo = Some(String::from(
             "https://images.evetech.net/characters/90000001/portrait",
         ));
-        character.last_logon = chrono::DateTime::from_timestamp(1750000000, 0).unwrap();
+        character.last_logon = jiff::Timestamp::from_second(1750000000).unwrap();
         character.location = 30000001;
         character
     }
@@ -1290,7 +1292,7 @@ mod tests {
                 token: String::from("access-token"),
                 refresh_token: String::from("refresh-token"),
                 expiration: Some(
-                    chrono::Utc::now() + chrono::Duration::try_seconds(seconds_valid).unwrap(),
+                    jiff::Timestamp::now() + jiff::SignedDuration::from_secs(seconds_valid),
                 ),
             },
         );
@@ -1300,7 +1302,7 @@ mod tests {
         TokenSet {
             token: String::from("new-access-token"),
             refresh_token: String::from("new-refresh-token"),
-            expiration: Some(chrono::Utc::now() + chrono::Duration::try_seconds(3600).unwrap()),
+            expiration: Some(jiff::Timestamp::now() + jiff::SignedDuration::from_secs(3600)),
         }
     }
 
@@ -1324,7 +1326,7 @@ mod tests {
         let hour = HourKills::new(Some("Wed, 21 Oct 2026 07:28:00 GMT"), Vec::new());
         assert_eq!(
             hour.modified,
-            chrono::DateTime::from_timestamp(1_792_567_680, 0)
+            jiff::Timestamp::from_second(1_792_567_680).ok()
         );
         assert_eq!(HourKills::new(None, Vec::new()).modified, None);
         assert_eq!(HourKills::new(Some("yesterday"), Vec::new()).modified, None);
@@ -1413,7 +1415,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_last_login_returns_the_reported_moment() {
-        let moment = chrono::DateTime::from_timestamp(1_750_000_000, 0).unwrap();
+        let moment = jiff::Timestamp::from_second(1_750_000_000).unwrap();
         let mut mock = MockEsiApi::new();
         mock.expect_has_token_state().returning(|| true);
         mock.expect_get_last_login()
@@ -1953,7 +1955,7 @@ mod tests {
     fn tokens_set_on_the_live_api_come_back_unchanged() {
         let (mut manager, path) = test_manager("live-tokens");
         // ESI expirations carry milliseconds, not finer.
-        let expiration = chrono::DateTime::from_timestamp_millis(1_900_000_123_456);
+        let expiration = jiff::Timestamp::from_millisecond(1_900_000_123_456).ok();
         let tokens = TokenSet {
             token: String::from("access"),
             refresh_token: String::from("refresh"),

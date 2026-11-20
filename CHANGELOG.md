@@ -12,6 +12,14 @@ versions were written for the tag that shipped them.
 
 ### Changed
 
+* All the times are now `jiff` instead of `chrono` (the zKillboard, EvE-Scout
+  and ESI clients, the intel rules, the wormhole links and the caches). The
+  player database goes to schema version 7: the times it keeps as text are
+  rewritten as `jiff` writes them (`2026-01-01T00:00:00Z`), and the forms older
+  builds wrote (`+00:00` and `... UTC`) are still read. The cache of zKillboard
+  keeps its seconds since the Unix epoch.
+* The versions and shared options of the dependencies of the library crates are
+  declared once, in `[workspace.dependencies]` of the root `Cargo.toml`.
 * The node editor of the rules (Settings -> Rules -> Open editor) is now a window
   of its own, a modal one, instead of replacing the page inside Settings: the
   Settings window waits, disabled, until the editor is closed with *Done* or its

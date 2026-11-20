@@ -243,7 +243,7 @@ fn a_new_last_logon_updates_and_persists_the_character() {
     kara.corp = Some(webb::objects::Corporation::new());
     app.esi.write_character(&kara).unwrap();
     app.esi.characters.push(kara);
-    let moment = chrono::DateTime::from_timestamp(1_750_000_000, 0).unwrap();
+    let moment = jiff::Timestamp::from_second(1_750_000_000).unwrap();
     send(&app, Message::PlayerLastLogon((5, moment)));
     // An unknown character is ignored.
     send(&app, Message::PlayerLastLogon((99, moment)));

@@ -18,6 +18,9 @@ each other. For how to build and run it see [BUILD.md](BUILD.md).
 | `native_tools` | `crates/native_tools` | OS-specific code: native file / folder dialogs and per-machine identification. |
 | `egui-panels` | `crates/egui-panels` | Building blocks for settings screens in egui (pages, sections, forms, switches, sliders, tiles, side navigation, action bar, `Draft`), with no dependency on the rest of the workspace so other projects can use it. |
 | `eve-scout` | `crates/eve-scout` | Client of the public EvE-Scout API: the scanned wormholes of Thera and Turnur, with a guard that does not ask again for an answer that is still valid and leaves an endpoint alone after a bad one. It does nothing on its own: when to ask and what to do with the answers is for `telescope`. |
+| `egui-ide` | `crates/egui-ide` | Editor panels for egui in the look of egui itself: a property grid, a toolbox whose entries click or drag onto a canvas, and a toolbar. The tool windows of the rule editor are built with it. |
+| `egui-weave` | `crates/egui-weave` | A canvas of nodes joined by edges for egui: pan (with a limit), zoom (with a slider in the canvas), select, move, join ports under rules, minimap, undo and redo, edge properties (color, line style, width) and node controls (check, switch, radio, button). It knows nothing of rules: Telescope maps `RuleGraph` onto it. |
+| `telescope-derive` | `crates/telescope-derive` | Derive macros that turn the fields of a type into the properties of an `egui-ide` property grid. |
 | `zkill` | `crates/zkill` | Everything asked of zKillboard: the R2Z2 feed client and its walk through the published files, the guard that keeps away after a "enough", and the lanes and queues that keep each endpoint (the feed and the query API) under its own rate. |
 
 ![Crate dependencies: telescope depends on webb and native_tools in this workspace, and on the external sde and egui-map crates](docs/architecture/crates.svg)
@@ -29,9 +32,21 @@ Two more crates by the same author, published on crates.io, are used from outsid
 * `egui-map`: the egui widget that draws the maps.
 
 Both are resolved from crates.io. The workspace `Cargo.toml` keeps
-commented-out `[patch.crates-io]` entries that point at sibling checkouts
-(`../sde` and `../egui-map`): uncomment them to develop those crates together
-with Telescope.
+`[patch.crates-io]` entries that point at sibling checkouts (`../sde` and
+`../egui-map`): `sde` is patched now (the checkout keeps the times of the
+wormhole links as `jiff` timestamps, which the published version does not yet),
+and the `egui-map` one is commented out; uncomment it to develop that crate
+together with Telescope. `egui-snarl` is patched the same way while its
+`telescope` branch is not pushed.
+
+All the times in the workspace are `jiff` (`Timestamp` for a moment,
+`SignedDuration` for a length of time); `chrono` is not used.
+
+The shared dependencies of the library crates (`webb`, `zkill`, `eve-scout`,
+`egui-panels`, `egui-weave`, `telescope-derive`) are declared once in
+`[workspace.dependencies]` of the root `Cargo.toml`; each crate says
+`name = { workspace = true }` and adds only its own features. `telescope`,
+`egui-ide` and `native_tools` declare theirs by themselves.
 
 ### `crates/webb`
 
@@ -154,7 +169,7 @@ from, or the per-user data folder when it is installed (see
 | `logs/` | The log file, `telescope.<date>.log`: one a day, the last seven kept. It follows `RUST_LOG` and, when that is not set, keeps the warnings of everything and the information of `telescope` and `webb`. |
 | `sde-build-cache/` | Next to `sde.db`: the downloaded SDE zip, the build number that avoids downloading it again, and the extracted tree. The new database is built as `sde.db.building` and replaces `sde.db` only when complete. |
 | `telescope.default.toml` | The settings template shipped with the installer; copied as `telescope.toml` the first time an installed Telescope runs. Only read. |
-| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Application*), plus the intel rules (the `node`/`edge` graph tables). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. |
+| player database | Linked characters and one OAuth token set per character (`telescope.db` by default; the path is set in *Settings -> Application*), plus the intel rules (the `node`/`edge` graph tables). Its schema version is stored in `metadata`: on startup a database from an older version only gets the pending migration scripts (`MIGRATIONS` in `player_database.rs`), keeping its data, and the user is notified. A new database is created with the base schema (version 0) followed by every migration, so both paths end in the same schema. The times it keeps as text (`char.lastlogon`, `auth.expiration`) are written as `jiff` writes them (`2026-01-01T00:00:00Z`); schema version 7 rewrote the ones older builds left with `+00:00` or `... UTC`, and `PlayerDatabase::parse_time` still reads all those forms. |
 
 ## Languages
 
@@ -412,7 +427,9 @@ the developer's `telescope.toml` or `sde.db`.
   watcher and the character link through it.
 * The SDE updater is tested against a small HTTP server on `127.0.0.1` that plays
   CCP's index (`database_updater.rs`).
-* `egui-panels` is tested on a headless egui context (`crates/egui-panels/tests`).
+* `egui-panels` is tested on a headless egui context (`crates/egui-panels/tests`),
+  and so are `egui-ide` and `egui-weave` (`egui_kittest`: the canvas controls are
+  clicked by their accessible names, `crates/egui-weave/tests`).
 * `native_tools::zbus` is Linux-only, and so are its tests.
 
 Not covered by tests: drawing code (the Settings pages, the maps), the ESI

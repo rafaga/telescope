@@ -519,7 +519,7 @@ impl TelescopeApp {
                             } else {
                                 format!(
                                     "[ {} ] {} > {}",
-                                    chrono::Utc::now().format("%Y.%m.%d %H:%M:%S"),
+                                    jiff::Timestamp::now().strftime("%Y.%m.%d %H:%M:%S"),
                                     self.debug.intel_author.trim(),
                                     self.debug.intel_text.trim()
                                 )
@@ -538,7 +538,7 @@ impl TelescopeApp {
                             } else {
                                 match webb::rules::IntelLine::parse_or_assume(
                                     &line,
-                                    chrono::Utc::now(),
+                                    jiff::Timestamp::now(),
                                 ) {
                                     Some(parsed) => self
                                         .intel_input
@@ -997,7 +997,7 @@ impl TelescopeApp {
                                 Some(auth) if !auth.refresh_token.is_empty() => auth
                                     .expiration
                                     .map_or(String::from("unknown"), |expiration| {
-                                        expiration.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                                        expiration.strftime("%Y-%m-%d %H:%M:%S UTC").to_string()
                                     }),
                                 _ => String::from("no token (link it again)"),
                             };

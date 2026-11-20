@@ -7,7 +7,7 @@ use crate::objects::{
     Alliance, AuthData, BasicCatalog, Character, CharacterOverlay, Corporation, OverlayAnchor,
     OverlayPosition,
 };
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use rusqlite::types::Type;
 use rusqlite::{Connection, ToSql, params};
 use std::collections::HashMap;
@@ -39,7 +39,10 @@ pub(crate) struct PlayerDatabase {}
 /// - 6: the default rules gained the zKillboard input and its detections
 ///   (see [`RuleGraph::with_zkillboard_rules`]): they are added to the rules
 ///   stored by version 5, which are otherwise left as they are.
-pub const SCHEMA_VERSION: i32 = 6;
+/// - 7: the times stored as text (`char.lastlogon`, `auth.expiration`) are
+///   all in the canonical form of `jiff::Timestamp` (`2026-01-01T00:00:00Z`);
+///   older builds (chrono) wrote `+00:00` offsets or `... UTC`.
+pub const SCHEMA_VERSION: i32 = 7;
 
 /// A migration script: changes only what its version step needs.
 type Migration = fn(&Connection) -> Result<(), Error>;
@@ -52,6 +55,7 @@ const MIGRATIONS: &[Migration] = &[
     PlayerDatabase::migrate_3_to_4,
     PlayerDatabase::migrate_4_to_5,
     PlayerDatabase::migrate_5_to_6,
+    PlayerDatabase::migrate_6_to_7,
 ];
 
 // One migration per version step, always.
@@ -190,8 +194,8 @@ impl PlayerDatabase {
             let mut auth = AuthData::new();
             auth.token = token;
             auth.refresh_token = refresh_token;
-            if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&expiration) {
-                auth.expiration = Some(utc_dt.to_utc());
+            if let Some(utc_dt) = PlayerDatabase::parse_time(&expiration) {
+                auth.expiration = Some(utc_dt);
             }
             PlayerDatabase::insert_auth(conn, character_id, &auth)?;
         }
@@ -288,6 +292,52 @@ impl PlayerDatabase {
         Ok(())
     }
 
+    /// 6 -> 7: rewrites the times stored as text in the form `jiff` writes.
+    /// What cannot be read as a time is left as it is.
+    #[tracing::instrument]
+    fn migrate_6_to_7(conn: &Connection) -> Result<(), Error> {
+        for (table, column) in [("char", "lastlogon"), ("auth", "expiration")] {
+            let mut statement = conn.prepare(&format!("SELECT id, {column} FROM {table}"))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<usize, i64>(0)?,
+                        row.get::<usize, Option<String>>(1)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            for (id, text) in rows {
+                let Some(text) = text else { continue };
+                let Some(time) = PlayerDatabase::parse_time(&text) else {
+                    continue;
+                };
+                let canonical = time.to_string();
+                if canonical != text {
+                    conn.execute(
+                        &format!("UPDATE {table} SET {column} = ?1 WHERE id = ?2"),
+                        params![canonical, id],
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A time stored as text, in any form a build has written: RFC 3339
+    /// (`Z` or an offset) or the one `chrono` printed (`2026-01-01 00:00:00 UTC`,
+    /// with or without fraction).
+    pub(crate) fn parse_time(text: &str) -> Option<Timestamp> {
+        let text = text.trim();
+        if let Ok(time) = text.parse::<Timestamp>() {
+            return Some(time);
+        }
+        ["%Y-%m-%d %H:%M:%S%.f UTC", "%Y-%m-%d %H:%M:%S UTC"]
+            .iter()
+            .find_map(|format| jiff::civil::DateTime::strptime(format, text).ok())
+            .and_then(|time| time.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok())
+            .map(|zoned| zoned.timestamp())
+    }
+
     /// Creates the database from scratch at [`SCHEMA_VERSION`]: the base
     /// schema, then every migration script in order.
     #[tracing::instrument]
@@ -358,7 +408,7 @@ impl PlayerDatabase {
         let mut statement = conn.prepare(&query)?;
         let mut rows = statement.query(rusqlite::params_from_iter(ids))?;
         while let Some(row) = rows.next()? {
-            let dt = row.get::<usize, String>(5)?.parse::<DateTime<Utc>>();
+            let dt = PlayerDatabase::parse_time(&row.get::<usize, String>(5)?);
             let mut char = Character::new();
             char.id = row.get(0)?;
             char.name = row.get(1)?;
@@ -373,9 +423,8 @@ impl PlayerDatabase {
             } else {
                 None
             };
-            if let Ok(time) = dt {
-                let utc_dt = DateTime::from_naive_utc_and_offset(time.naive_utc(), Utc);
-                char.last_logon = utc_dt;
+            if let Some(time) = dt {
+                char.last_logon = time;
             }
             char.location = row.get::<usize, i64>(6)?;
             char.overlay = CharacterOverlay {
@@ -450,7 +499,7 @@ impl PlayerDatabase {
         query += "lastlogon = :last_logon, location = :location WHERE id = :id;";
         let mut statement = conn.prepare(query.as_str()).unwrap();
 
-        let fecha = character.last_logon.to_rfc3339();
+        let fecha = character.last_logon.to_string();
         let mut params: Vec<(&str, &dyn ToSql)> = vec![
             (":name", &character.name),
             (":corp", &character.corp.as_ref().unwrap().id),
@@ -479,9 +528,7 @@ impl PlayerDatabase {
             auth.token = row.get(1)?;
             auth.refresh_token = row.get(2)?;
             let expiration: String = row.get(3)?;
-            if let Ok(utc_dt) = DateTime::parse_from_rfc3339(&expiration) {
-                auth.expiration = Some(utc_dt.to_utc());
-            }
+            auth.expiration = PlayerDatabase::parse_time(&expiration);
             result.insert(row.get(0)?, auth);
         }
         Ok(result)
@@ -545,7 +592,7 @@ impl PlayerDatabase {
     fn expiration_text(auth_data: &AuthData) -> String {
         auth_data
             .expiration
-            .map(|expiration| expiration.to_rfc3339())
+            .map(|expiration| expiration.to_string())
             .unwrap_or_default()
     }
 
@@ -554,7 +601,7 @@ impl PlayerDatabase {
         /*let mut query = String::from("INSERT INTO char (id,");
         query += "name,corporation,alliance,portrait,lastLogon,location) VALUES (?,?,?,?,?,?,?)";
         let mut statement = conn.prepare(query.as_str())?;
-        let dt = player.last_logon.to_rfc3339();
+        let dt = player.last_logon.to_string();
         statement.raw_bind_parameter(1, player.id)?;
         statement.raw_bind_parameter(2, &player.name)?;
         if player.corp.is_some() {
@@ -570,7 +617,7 @@ impl PlayerDatabase {
         statement.raw_bind_parameter(7, player.location)?;
         let rows = statement.raw_execute()?;*/
 
-        let fecha = player.last_logon.to_rfc3339();
+        let fecha = player.last_logon.to_string();
         let mut query = [
             String::from("INSERT INTO char (id,name,lastLogon,location"),
             String::from(" VALUES (:id,:name,:last_logon,:location"),
@@ -894,7 +941,7 @@ mod tests {
         character.photo = Some(String::from(
             "https://images.evetech.net/characters/90000001/portrait",
         ));
-        character.last_logon = DateTime::from_timestamp(1750000000, 0).unwrap();
+        character.last_logon = Timestamp::from_second(1750000000).unwrap();
         character.location = 30000001;
         character
     }
@@ -1083,6 +1130,50 @@ mod tests {
             PlayerDatabase::ensure_schema(&conn).unwrap(),
             SchemaStatus::UpToDate
         );
+    }
+
+    #[test]
+    fn migration_6_to_7_rewrites_the_stored_times_as_jiff_writes_them() {
+        let conn = memory_connection();
+        create_version_0_schema(&conn, &fake_jwt(2));
+        PlayerDatabase::ensure_schema(&conn).unwrap();
+        // As the older builds left them.
+        conn.execute_batch(
+            "UPDATE char SET lastLogon = '2026-01-01 10:20:30 UTC' WHERE id = 1;
+             UPDATE char SET lastLogon = '2026-01-01T10:20:30+00:00' WHERE id = 2;
+             UPDATE auth SET expiration = '2026-02-03T04:05:06+00:00';",
+        )
+        .unwrap();
+        PlayerDatabase::set_schema_version(&conn, 6).unwrap();
+
+        assert_eq!(
+            PlayerDatabase::ensure_schema(&conn).unwrap(),
+            SchemaStatus::Migrated(6)
+        );
+        let text = |query: &str| -> String { conn.query_row(query, [], |row| row.get(0)).unwrap() };
+        assert_eq!(
+            text("SELECT lastLogon FROM char WHERE id = 1"),
+            "2026-01-01T10:20:30Z"
+        );
+        assert_eq!(
+            text("SELECT lastLogon FROM char WHERE id = 2"),
+            "2026-01-01T10:20:30Z"
+        );
+        assert_eq!(text("SELECT expiration FROM auth"), "2026-02-03T04:05:06Z");
+    }
+
+    #[test]
+    fn parse_time_reads_every_form_a_build_has_written() {
+        let expected = Timestamp::from_second(1_767_262_830).unwrap();
+        for text in [
+            "2026-01-01T10:20:30Z",
+            "2026-01-01T10:20:30+00:00",
+            "2026-01-01 10:20:30 UTC",
+            "2026-01-01 10:20:30.000000000 UTC",
+        ] {
+            assert_eq!(PlayerDatabase::parse_time(text), Some(expected), "{text}");
+        }
+        assert_eq!(PlayerDatabase::parse_time("not a time"), None);
     }
 
     #[test]
@@ -1672,7 +1763,7 @@ mod tests {
         let mut auth = AuthData::new();
         auth.token = format!("{token}-access");
         auth.refresh_token = format!("{token}-refresh");
-        auth.expiration = Some(DateTime::from_timestamp(1760000000, 0).unwrap());
+        auth.expiration = Some(Timestamp::from_second(1760000000).unwrap());
         auth
     }
 

@@ -13,7 +13,7 @@ use crate::types::{
     DonationStatistics, Hub, Observation, Period, PublicSystem, Route, RoutePreference,
     RouteRequest, ScanStatistic, Signature, Space, WormholeType, WormholeTypeFilter,
 };
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use reqwest::header::{CACHE_CONTROL, HeaderMap, RETRY_AFTER};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -148,7 +148,7 @@ pub struct Cached<T> {
     /// The last time one of the scouts used the tool that keeps the
     /// signatures up to date. Only the signatures carry it, and only when a
     /// scout has used the tool since the API started.
-    pub last_hub_interaction: Option<DateTime<Utc>>,
+    pub last_hub_interaction: Option<Timestamp>,
 }
 
 impl<T: DeserializeOwned> Cached<T> {
@@ -227,15 +227,13 @@ impl Client {
 
     /// The header with the last scout interaction. The API sends the start of
     /// the epoch when there was none.
-    fn last_hub_interaction(headers: &HeaderMap) -> Option<DateTime<Utc>> {
+    fn last_hub_interaction(headers: &HeaderMap) -> Option<Timestamp> {
         let value = headers
             .get("x-last-signaleer-hub-interaction")?
             .to_str()
             .ok()?;
-        let at = DateTime::parse_from_rfc3339(value.trim())
-            .ok()?
-            .with_timezone(&Utc);
-        (at.timestamp() > 0).then_some(at)
+        let at: Timestamp = value.trim().parse().ok()?;
+        (at.as_second() > 0).then_some(at)
     }
 
     /// The wait a `Retry-After` header asks for, when it is a number of
@@ -863,8 +861,8 @@ mod tests {
             "2026-11-05T16:38:29.016Z".parse().unwrap(),
         );
         assert_eq!(
-            Client::last_hub_interaction(&headers).unwrap().to_rfc3339(),
-            "2026-11-05T16:38:29.016+00:00"
+            Client::last_hub_interaction(&headers).unwrap().to_string(),
+            "2026-11-05T16:38:29.016Z"
         );
     }
 

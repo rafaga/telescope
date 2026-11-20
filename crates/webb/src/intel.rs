@@ -6,7 +6,7 @@
 //! This is what remained of the old `patterns.toml` engine once the node
 //! graph replaced its loader and evaluator.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -87,7 +87,7 @@ pub const COUNT_GROUP: &str = "count";
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntelLine {
     /// Moment the message was written, in UTC (the log's own timestamp).
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// Name of the character that posted the message.
     pub author: String,
     /// Message payload; the rules are evaluated against this text.
@@ -110,7 +110,7 @@ impl Display for IntelLine {
         write!(
             f,
             "[ {} ] {} > {}",
-            self.timestamp.format(LINE_TIMESTAMP_FORMAT),
+            self.timestamp.strftime(LINE_TIMESTAMP_FORMAT),
             sanitize_display(&self.author),
             sanitize_display(&self.text)
         )

@@ -59,7 +59,10 @@ impl TelescopeApp {
                     Some(when) => t!(
                         "settings.zkillboard.status_live_last",
                         announced = status.announced,
-                        ago = time_ago(when.into()),
+                        ago = time_ago(
+                            std::time::SystemTime::try_from(when)
+                                .unwrap_or_else(|_| std::time::SystemTime::now())
+                        ),
                         filtered = status.filtered
                     ),
                     None => t!(

@@ -6,7 +6,7 @@
 //! Debug window, the log and Tracy read the same numbers: a total since the
 //! start says little, a rate says whether the pace holds.
 
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -14,19 +14,19 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatsConfig {
     /// The time each count covers.
-    pub bucket: TimeDelta,
+    pub bucket: SignedDuration,
     /// How far back the counts are kept.
-    pub keep: TimeDelta,
+    pub keep: SignedDuration,
     /// The time a rate is measured over (see [`LaneStats::recent`]).
-    pub rate_window: TimeDelta,
+    pub rate_window: SignedDuration,
 }
 
 impl Default for StatsConfig {
     fn default() -> Self {
         Self {
-            bucket: TimeDelta::seconds(1),
-            keep: TimeDelta::minutes(10),
-            rate_window: TimeDelta::seconds(5),
+            bucket: SignedDuration::from_secs(1),
+            keep: SignedDuration::from_mins(10),
+            rate_window: SignedDuration::from_secs(5),
         }
     }
 }
@@ -62,7 +62,7 @@ impl Tally {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slice {
     /// Where the bucket begins.
-    pub start: DateTime<Utc>,
+    pub start: Timestamp,
     /// What happened in it.
     pub tally: Tally,
 }
@@ -82,7 +82,7 @@ impl LaneStats {
     }
 
     /// A request was let through.
-    pub fn sent(&self, now: DateTime<Utc>) {
+    pub fn sent(&self, now: Timestamp) {
         self.count(
             now,
             Tally {
@@ -93,7 +93,7 @@ impl LaneStats {
     }
 
     /// A request was answered well.
-    pub fn answered(&self, now: DateTime<Utc>) {
+    pub fn answered(&self, now: Timestamp) {
         self.count(
             now,
             Tally {
@@ -104,7 +104,7 @@ impl LaneStats {
     }
 
     /// A request was refused (403 or 429).
-    pub fn refused(&self, now: DateTime<Utc>) {
+    pub fn refused(&self, now: Timestamp) {
         self.count(
             now,
             Tally {
@@ -115,7 +115,7 @@ impl LaneStats {
     }
 
     /// A request failed some other way.
-    pub fn failed(&self, now: DateTime<Utc>) {
+    pub fn failed(&self, now: Timestamp) {
         self.count(
             now,
             Tally {
@@ -126,7 +126,7 @@ impl LaneStats {
     }
 
     /// What happened in the last [`StatsConfig::rate_window`].
-    pub fn recent(&self, now: DateTime<Utc>) -> Tally {
+    pub fn recent(&self, now: Timestamp) -> Tally {
         let from = now - self.config.rate_window;
         let mut total = Tally::default();
         for slice in self.lock().iter().filter(|slice| slice.start > from) {
@@ -137,8 +137,8 @@ impl LaneStats {
 
     /// Requests let through per second over the last
     /// [`StatsConfig::rate_window`].
-    pub fn rate(&self, now: DateTime<Utc>) -> f64 {
-        let seconds = self.config.rate_window.num_milliseconds().max(1) as f64 / 1000.0;
+    pub fn rate(&self, now: Timestamp) -> f64 {
+        let seconds = self.config.rate_window.as_millis().max(1) as f64 / 1000.0;
         f64::from(self.recent(now).sent) / seconds
     }
 
@@ -153,7 +153,7 @@ impl LaneStats {
 
     /// The last `count` buckets, the one of `now` last, with the empty ones
     /// filled in (what a graph draws).
-    pub fn series(&self, now: DateTime<Utc>, count: usize) -> Vec<Slice> {
+    pub fn series(&self, now: Timestamp, count: usize) -> Vec<Slice> {
         let slices = self.lock();
         let latest = self.start_of(now);
         (0..count)
@@ -171,13 +171,15 @@ impl LaneStats {
     }
 
     /// The beginning of the bucket `time` falls in.
-    fn start_of(&self, time: DateTime<Utc>) -> DateTime<Utc> {
-        let width = self.config.bucket.num_milliseconds().max(1);
-        let millis = time.timestamp_millis();
-        DateTime::from_timestamp_millis(millis - millis.rem_euclid(width)).unwrap_or(time)
+    fn start_of(&self, time: Timestamp) -> Timestamp {
+        let width = i64::try_from(self.config.bucket.as_millis())
+            .unwrap_or(i64::MAX)
+            .max(1);
+        let millis = time.as_millisecond();
+        Timestamp::from_millisecond(millis - millis.rem_euclid(width)).unwrap_or(time)
     }
 
-    fn count(&self, now: DateTime<Utc>, tally: Tally) {
+    fn count(&self, now: Timestamp, tally: Tally) {
         let start = self.start_of(now);
         let mut slices = self.lock();
         let oldest = start - self.config.keep;
@@ -209,8 +211,8 @@ impl Default for LaneStats {
 mod tests {
     use super::*;
 
-    fn at(seconds: i64, millis: u32) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_800_000_000 + seconds, millis * 1_000_000).unwrap()
+    fn at(seconds: i64, millis: u32) -> Timestamp {
+        Timestamp::from_millisecond((1_800_000_000 + seconds) * 1000 + i64::from(millis)).unwrap()
     }
 
     #[test]

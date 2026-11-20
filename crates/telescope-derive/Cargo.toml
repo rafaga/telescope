@@ -10,12 +10,12 @@ description = "Derive macros that turn the fields of a type into the properties 
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1"
-quote = "1"
-syn = { version = "2", features = ["full"] }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
-egui-ide = { path = "../egui-ide", default-features = false }
+egui-ide = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,11 +1,12 @@
 //! The components in a headless egui: what they report when they are used.
 
+use egui::accesskit::Role;
 use egui_ide::{
     PropertyDescriptor, PropertyGrid, PropertyKind, PropertyModel, PropertyValue, Toolbar,
     ToolbarIcon, ToolbarPanel, Toolbox, ToolboxEntry,
 };
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 #[test]
 fn a_click_on_an_entry_gives_its_item_back() {
@@ -107,7 +108,8 @@ fn the_grid_shows_a_model_and_names_its_properties() {
         );
     harness.run();
     harness.get_by_label("Name");
-    harness.get_by_label("Enabled");
+    // the label of the row and the dropdown of the flag share the name
+    harness.get_by_role_and_label(Role::ComboBox, "Enabled");
 }
 
 #[test]
@@ -239,5 +241,6 @@ fn a_flag_shows_true_or_false_in_a_dropdown() {
         model,
     );
     harness.run();
-    harness.get_by_label("True");
+    let dropdown = harness.get_by_role_and_label(Role::ComboBox, "Enabled");
+    assert_eq!(dropdown.accesskit_node().value(), Some("True".to_owned()));
 }

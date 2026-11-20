@@ -13,8 +13,8 @@ leave this workspace at any time.
 | `Toolbar` | Buttons, toggles and separators in a row, or a panel of groups with icon buttons, icon and text buttons, dropdowns, split buttons and separators. |
 | `ToolbarPanel` | Groups of toolbars that the user moves by dragging their grip (a placeholder shows the room it takes; groups that do not fit wrap to another row); the order can be saved with `ToolbarPanel::order` and put back with `set_order`. |
 
-Property kinds: text, multiline, file and folder (a button opens the native dialog, feature `native-dialogs`), date (editable, with a calendar), read-only, integer, decimal, boolean
-(a `True`/`False` dropdown), choice, flags, color (editable hex), list of texts, key/value
+Property kinds: text, multiline, file and folder (a button opens the native dialog), date (editable, with the calendar of `egui_extras`), read-only, integer, decimal, boolean
+(a `True`/`False` dropdown), choice, color (editable hex), list of texts, key/value
 list, reference, link and action (the last three are reported by
 `PropertyModel::take_activated`).
 
@@ -25,6 +25,7 @@ cargo run -p egui-ide --example gallery
 ```
 
 A window with every component: drag a toolbar group by its grip, click or drag
-the entries of the toolbox onto the canvas and edit a property of each kind;
+the entries of the toolbox onto the canvas, move and join its nodes (ctrl+z
+undoes) and edit a property of each kind;
 what the components report goes to the log at the bottom.
 

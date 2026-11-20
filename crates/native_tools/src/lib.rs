@@ -1,5 +1,7 @@
 //! Platform-specific helpers for Telescope.
 //!
+//! * [`date_picker`]: native date picker behind one API (macOS popover, Windows
+//!   month calendar, Linux `kdialog` / `zenity`).
 //! * [`dialog`]: native open file / folder dialogs behind one API.
 //! * [`instance`]: one copy of the program at a time, with a lock the
 //!   operating system releases when the process ends.
@@ -16,6 +18,7 @@
 //!   `SystemIdentification::GetSystemIdForPublisher`; macOS: the platform
 //!   serial number; Linux: the machine id (see `zbus::get_stable_machine_id`).
 
+pub mod date_picker;
 pub mod dialog;
 pub mod instance;
 pub mod overlay;

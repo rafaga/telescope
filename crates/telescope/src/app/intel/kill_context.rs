@@ -11,14 +11,14 @@
 //! (see `Backfill` in the zKillboard source). Anything older is not here.
 
 use super::kill_day::DayLine;
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 
 /// How far back the killmails are kept.
-pub(crate) const WINDOW: TimeDelta = TimeDelta::seconds(60 * 60);
+pub(crate) const WINDOW: SignedDuration = SignedDuration::from_secs(60 * 60);
 
 /// How recent the killmails of the shortest count are.
-pub(crate) const RECENT: TimeDelta = TimeDelta::seconds(15 * 60);
+pub(crate) const RECENT: SignedDuration = SignedDuration::from_secs(15 * 60);
 
 /// The most victim ships listed.
 const MAX_VICTIMS: usize = 3;
@@ -37,7 +37,7 @@ pub(crate) struct KillTags {
 pub(crate) struct KillRecord {
     pub killmail_id: u64,
     /// When the ship died.
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub system_id: usize,
     /// The ship that died, when its name is known.
     pub victim: Option<String>,
@@ -98,7 +98,7 @@ pub(crate) struct KillContext {
     /// Killmails in the last [`WINDOW`].
     pub hour: usize,
     /// How long ago the last one was.
-    pub last_age: Option<TimeDelta>,
+    pub last_age: Option<SignedDuration>,
     /// The ships of the attackers of the last killmail, with how many flew
     /// each.
     pub ships: Vec<(String, usize)>,
@@ -131,8 +131,8 @@ impl KillBuffer {
     /// Adds `record`, unless it is older than the window or already there
     /// (the feed republishes the killmails it reprocesses). `true` when it
     /// was added.
-    pub(crate) fn insert(&mut self, record: KillRecord, now: DateTime<Utc>) -> bool {
-        let Some(oldest) = now.checked_sub_signed(WINDOW) else {
+    pub(crate) fn insert(&mut self, record: KillRecord, now: Timestamp) -> bool {
+        let Some(oldest) = now.checked_sub(WINDOW).ok() else {
             return false;
         };
         if record.time < oldest {
@@ -151,8 +151,8 @@ impl KillBuffer {
     }
 
     /// Drops what is older than the window as of `now`.
-    pub(crate) fn prune(&mut self, now: DateTime<Utc>) {
-        let Some(oldest) = now.checked_sub_signed(WINDOW) else {
+    pub(crate) fn prune(&mut self, now: Timestamp) {
+        let Some(oldest) = now.checked_sub(WINDOW).ok() else {
             return;
         };
         self.by_system.retain(|_, records| {
@@ -187,8 +187,8 @@ impl KillBuffer {
 
     /// How many killmails each system has in the window as of `now`, for the
     /// heat of the maps. Systems with none are left out.
-    pub(crate) fn counts(&self, now: DateTime<Utc>) -> Vec<(usize, usize)> {
-        let oldest = now.checked_sub_signed(WINDOW);
+    pub(crate) fn counts(&self, now: Timestamp) -> Vec<(usize, usize)> {
+        let oldest = now.checked_sub(WINDOW).ok();
         self.by_system
             .iter()
             .filter_map(|(system, records)| {
@@ -204,12 +204,8 @@ impl KillBuffer {
     /// How many killmails each system has that happened after `since` and
     /// are still in the window as of `now`: what the buffer adds to the
     /// answer of ESI computed at `since`.
-    pub(crate) fn counts_since(
-        &self,
-        since: DateTime<Utc>,
-        now: DateTime<Utc>,
-    ) -> Vec<(usize, usize)> {
-        let oldest = now.checked_sub_signed(WINDOW);
+    pub(crate) fn counts_since(&self, since: Timestamp, now: Timestamp) -> Vec<(usize, usize)> {
+        let oldest = now.checked_sub(WINDOW).ok();
         self.by_system
             .iter()
             .filter_map(|(system, records)| {
@@ -225,9 +221,9 @@ impl KillBuffer {
     }
 
     /// The killmails of `system_id` as of `now`.
-    pub(crate) fn context(&self, system_id: usize, now: DateTime<Utc>) -> KillContext {
-        let oldest = now.checked_sub_signed(WINDOW);
-        let recent_from = now.checked_sub_signed(RECENT);
+    pub(crate) fn context(&self, system_id: usize, now: Timestamp) -> KillContext {
+        let oldest = now.checked_sub(WINDOW).ok();
+        let recent_from = now.checked_sub(RECENT).ok();
         let records: Vec<&KillRecord> = self
             .by_system
             .get(&system_id)
@@ -270,7 +266,7 @@ impl KillBuffer {
             hour: records.len(),
             last_age: records
                 .last()
-                .map(|record| (now - record.time).max(TimeDelta::zero())),
+                .map(|record| now.duration_since(record.time).max(SignedDuration::ZERO)),
             ships,
             pilots: shown.map_or(0, |record| record.pilots),
             victims,
@@ -289,11 +285,11 @@ mod tests {
 
     const SYSTEM: usize = 30002813;
 
-    fn at(now: DateTime<Utc>, minutes_ago: u64) -> DateTime<Utc> {
-        now - TimeDelta::minutes(i64::try_from(minutes_ago).unwrap())
+    fn at(now: Timestamp, minutes_ago: u64) -> Timestamp {
+        now - SignedDuration::from_mins(i64::try_from(minutes_ago).unwrap())
     }
 
-    fn kill(id: u64, time: DateTime<Utc>, ships: &[&str], victim: &str) -> KillRecord {
+    fn kill(id: u64, time: Timestamp, ships: &[&str], victim: &str) -> KillRecord {
         KillRecord {
             killmail_id: id,
             time,
@@ -309,7 +305,7 @@ mod tests {
 
     #[test]
     fn counts_give_the_killmails_of_the_hour_per_system() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         assert!(buffer.counts(now).is_empty());
         buffer.insert(kill(1, at(now, 5), &["Sabre"], "Catalyst"), now);
@@ -321,7 +317,7 @@ mod tests {
         counts.sort_unstable();
         assert_eq!(counts, [(SYSTEM, 2), (SYSTEM + 1, 1)]);
         // Seen from later, the oldest one has left the hour.
-        let later = now + TimeDelta::minutes(30);
+        let later = now + SignedDuration::from_mins(30);
         let mut counts = buffer.counts(later);
         counts.sort_unstable();
         assert_eq!(counts, [(SYSTEM, 1), (SYSTEM + 1, 1)]);
@@ -329,22 +325,22 @@ mod tests {
 
     #[test]
     fn counts_since_leave_out_what_an_hourly_answer_already_has() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         buffer.insert(kill(1, at(now, 50), &["Sabre"], "Catalyst"), now);
         buffer.insert(kill(2, at(now, 20), &["Sabre"], "Catalyst"), now);
         buffer.insert(kill(3, at(now, 5), &["Sabre"], "Catalyst"), now);
         // An answer computed 10 minutes ago has the first two.
-        let since = now - TimeDelta::minutes(10);
+        let since = now - SignedDuration::from_mins(10);
         assert_eq!(buffer.counts_since(since, now), [(SYSTEM, 1)]);
         // An answer older than the buffer's hour adds the whole hour.
-        let since = now - TimeDelta::hours(3);
+        let since = now - SignedDuration::from_hours(3);
         assert_eq!(buffer.counts_since(since, now), [(SYSTEM, 3)]);
     }
 
     #[test]
     fn a_system_without_killmails_is_quiet() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let context = KillBuffer::default().context(SYSTEM, now);
         assert_eq!(context.verdict, Verdict::Quiet);
         assert_eq!((context.recent, context.hour), (0, 0));
@@ -354,7 +350,7 @@ mod tests {
 
     #[test]
     fn an_old_killmail_does_not_corroborate_but_still_counts_in_the_hour() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         buffer.insert(kill(1, at(now, 40), &["Sabre"], "Catalyst"), now);
         let context = buffer.context(SYSTEM, now);
@@ -364,19 +360,19 @@ mod tests {
 
     #[test]
     fn what_is_older_than_the_window_is_not_kept() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         assert!(!buffer.insert(kill(1, at(now, 61), &["Sabre"], "Catalyst"), now));
         assert!(buffer.insert(kill(2, at(now, 59), &["Sabre"], "Catalyst"), now));
         assert_eq!(buffer.len(), 1);
         // An hour later it has expired.
-        buffer.prune(now + TimeDelta::seconds(2 * 60));
+        buffer.prune(now + SignedDuration::from_secs(2 * 60));
         assert_eq!(buffer.len(), 0);
     }
 
     #[test]
     fn a_killmail_is_kept_once_and_in_order() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         assert!(buffer.insert(kill(2, at(now, 5), &["Sabre"], "B"), now));
         assert!(!buffer.insert(kill(2, at(now, 5), &["Sabre"], "B"), now));
@@ -386,12 +382,12 @@ mod tests {
         assert_eq!(context.hour, 2);
         // Newest first.
         assert_eq!(context.victims, ["B", "A"]);
-        assert_eq!(context.last_age, Some(TimeDelta::seconds(5 * 60)));
+        assert_eq!(context.last_age, Some(SignedDuration::from_secs(5 * 60)));
     }
 
     #[test]
     fn the_victims_are_listed_without_repeats_and_no_more_than_three() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         for (id, victim) in ["A", "B", "A", "C", "D"].into_iter().enumerate() {
             let id = u64::try_from(id).unwrap() + 1;
@@ -403,7 +399,7 @@ mod tests {
 
     #[test]
     fn the_tags_of_the_killmail_shown_are_passed_on() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         let mut tagged = kill(1, at(now, 5), &["Sabre"], "A");
         tagged.tags = KillTags {
@@ -419,7 +415,7 @@ mod tests {
 
     #[test]
     fn the_fill_is_kept_and_cleared_with_the_buffer() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut buffer = KillBuffer::default();
         buffer.set_fill(Some(Fill {
             done: 62,

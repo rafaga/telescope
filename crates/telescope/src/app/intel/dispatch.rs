@@ -13,7 +13,7 @@ use super::resolve::{JumpGraph, jumps_to_nearest_origin, nearest_origin_within};
 use crate::app::audio::AudioHandle;
 use crate::app::messages::{MapSync, Message, MessageSpawner, Target, Type};
 use crate::app::settings::Settings;
-use chrono::Utc;
+use jiff::Timestamp;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -166,14 +166,8 @@ pub(crate) struct Dispatcher {
 /// Whether a line written at `timestamp` is still within the grace period
 /// (the alert duration) at `now`: only then it is alerted. A timestamp ahead
 /// of `now` (clocks that differ a little) counts as fresh.
-pub(crate) fn is_fresh(
-    timestamp: chrono::DateTime<Utc>,
-    now: chrono::DateTime<Utc>,
-    grace: Duration,
-) -> bool {
-    now.signed_duration_since(timestamp)
-        .to_std()
-        .is_ok_and(|age| age <= grace)
+pub(crate) fn is_fresh(timestamp: jiff::Timestamp, now: jiff::Timestamp, grace: Duration) -> bool {
+    Duration::try_from(now.duration_since(timestamp)).is_ok_and(|age| age <= grace)
         || timestamp > now
 }
 
@@ -244,7 +238,7 @@ impl Dispatcher {
         // processed at once. The ones older than the grace period are only
         // recorded below (tooltip, log): they are not alerted, neither with
         // the map pulse and the overlay nor with the sound.
-        let fresh = is_fresh(line.timestamp, Utc::now(), config.alert_duration);
+        let fresh = is_fresh(line.timestamp, Timestamp::now(), config.alert_duration);
         if !fresh {
             tracing::debug!(
                 timestamp = %line.timestamp,
@@ -568,7 +562,7 @@ mod tests {
         DetectedLine {
             channel: String::from("intel"),
             line: IntelLine {
-                timestamp: Utc::now(),
+                timestamp: Timestamp::now(),
                 author: String::from("Pilot"),
                 text: String::from("reported"),
             },
@@ -583,21 +577,25 @@ mod tests {
     /// A line written `seconds` ago.
     fn detected_ago(seconds: i64, activations: Vec<Activation>) -> DetectedLine {
         let mut line = detected(activations);
-        line.line.timestamp = Utc::now() - chrono::Duration::seconds(seconds);
+        line.line.timestamp = Timestamp::now() - jiff::SignedDuration::from_secs(seconds);
         line
     }
 
     #[test]
     fn a_line_is_fresh_only_within_the_grace_period() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let grace = Duration::from_secs(60);
-        let ago = |seconds: i64| now - chrono::Duration::seconds(seconds);
+        let ago = |seconds: i64| now - jiff::SignedDuration::from_secs(seconds);
         assert!(is_fresh(ago(0), now, grace));
         assert!(is_fresh(ago(60), now, grace));
         assert!(!is_fresh(ago(61), now, grace));
         assert!(!is_fresh(ago(86_400), now, grace));
         // a timestamp a little ahead (clocks that differ) is fresh
-        assert!(is_fresh(now + chrono::Duration::seconds(3), now, grace));
+        assert!(is_fresh(
+            now + jiff::SignedDuration::from_secs(3),
+            now,
+            grace
+        ));
         // with no grace only the present counts
         assert!(is_fresh(now, now, Duration::ZERO));
         assert!(!is_fresh(ago(1), now, Duration::ZERO));
@@ -929,7 +927,10 @@ mod tests {
                 assert_eq!(source, "Intel");
                 assert_eq!(channel, "intel");
                 // The moment of the line (the test's lines are from now).
-                assert!((Utc::now() - stamp).num_seconds().abs() < 5, "{stamp}");
+                assert!(
+                    Timestamp::now().duration_since(stamp).as_secs().abs() < 5,
+                    "{stamp}"
+                );
                 assert!(text.starts_with("Pilot > "), "{text}");
             }
             _ => panic!("expected a stamped Info notification"),

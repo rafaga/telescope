@@ -2,7 +2,7 @@
 
 use super::alliance::Alliance;
 use super::corporation::Corporation;
-use chrono::prelude::*;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// The corner of the game window an overlay keeps its distance from.
@@ -76,7 +76,7 @@ pub struct CharacterPublicInfo {
 pub struct Character {
     pub id: i64,
     pub name: String,
-    pub last_logon: DateTime<Utc>,
+    pub last_logon: Timestamp,
     pub corp: Option<Corporation>,
     pub alliance: Option<Alliance>,
     pub photo: Option<String>,
@@ -90,7 +90,7 @@ impl Character {
         Character {
             id: 0,
             name: String::new(),
-            last_logon: DateTime::default(),
+            last_logon: Timestamp::default(),
             corp: None,
             alliance: None,
             photo: None,
@@ -115,7 +115,7 @@ mod tests {
         let character = Character::new();
         assert_eq!(character.id, 0);
         assert_eq!(character.name, "");
-        assert_eq!(character.last_logon, DateTime::<Utc>::default());
+        assert_eq!(character.last_logon, Timestamp::default());
         assert_eq!(character.corp, None);
         assert_eq!(character.alliance, None);
         assert_eq!(character.photo, None);

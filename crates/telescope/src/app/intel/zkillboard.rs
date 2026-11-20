@@ -63,7 +63,7 @@ use super::resolve::JumpGraph;
 use super::zkill_guard::GuardStore;
 use crate::app::messages::{Message, Type, try_send_app_message};
 use crate::app::settings::ZKillboardOptions;
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use sde::SdeManager;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -177,7 +177,7 @@ impl KillmailExt for Killmail {
         }
         text.push_str(&format!(", {} ISK", Killmail::isk(self.zkb.total_value)));
         Some(IntelLine {
-            timestamp: self.time().unwrap_or_else(Utc::now),
+            timestamp: self.time().unwrap_or_else(Timestamp::now),
             author: String::from(AUTHOR),
             text,
         })
@@ -195,7 +195,7 @@ impl KillmailExt for Killmail {
             .collect();
         KillRecord {
             killmail_id: self.killmail_id,
-            time: self.time().unwrap_or_else(Utc::now),
+            time: self.time().unwrap_or_else(Timestamp::now),
             system_id: self.esi.solar_system_id as usize,
             victim: ship(self.esi.victim.ship_type_id),
             attacker_ships: pilots
@@ -476,7 +476,7 @@ pub(crate) struct FeedStatus {
     /// Why the last read failed, while [`FeedState::Failing`].
     pub last_error: Option<String>,
     /// When the last killmail was passed to the rules.
-    pub last_killmail: Option<DateTime<Utc>>,
+    pub last_killmail: Option<Timestamp>,
     /// Killmails passed to the rules.
     pub announced: u64,
     /// Killmails left out by the filters of the settings.
@@ -488,7 +488,7 @@ pub(crate) struct FeedStatus {
 /// and the query API make it up (see [`ZKillboardHandle::hour_kills`]).
 struct EsiHour {
     /// When ESI computed it: the hour it counts ends then.
-    modified: DateTime<Utc>,
+    modified: Timestamp,
     /// Ships and capsules of players destroyed in each system (NPCs left out).
     kills: HashMap<usize, usize>,
 }
@@ -521,12 +521,12 @@ impl EsiHour {
     /// window, and where they were within the hour is not known, so they are
     /// taken to be spread evenly: the share left falls from all of them to
     /// none over the hour.
-    fn remaining(&self, system: usize, now: DateTime<Utc>) -> usize {
+    fn remaining(&self, system: usize, now: Timestamp) -> usize {
         let Some(&kills) = self.kills.get(&system) else {
             return 0;
         };
-        let aged = (now - self.modified).num_milliseconds() as f64
-            / WINDOW.num_milliseconds().max(1) as f64;
+        let aged =
+            now.duration_since(self.modified).as_millis() as f64 / WINDOW.as_millis().max(1) as f64;
         let left = (1.0 - aged).clamp(0.0, 1.0);
         (kills as f64 * left).round() as usize
     }
@@ -564,7 +564,7 @@ struct Shared {
     /// Whether the hour of ESI the store kept has been read.
     esi_hour_loaded: AtomicBool,
     /// How old the answer of ESI may be and still count for the heat.
-    esi_max_age: TimeDelta,
+    esi_max_age: SignedDuration,
     /// Whether a map shows the heat, so that the answer of ESI is worth
     /// asking for.
     heat_wanted: AtomicBool,
@@ -595,7 +595,7 @@ struct Shared {
 impl Shared {
     /// Puts into `buffer` the killmails of the last hour the store kept.
     fn load_records(&self, buffer: &mut KillBuffer) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         for record in self.store.records(now) {
             buffer.insert(record, now);
         }
@@ -607,8 +607,8 @@ impl Shared {
     fn restore(&self) {
         self.load_records(&mut self.api_buffer());
         let counts = self.store.days(
-            Utc::now(),
-            TimeDelta::from_std(kill_day::TTL).unwrap_or(TimeDelta::hours(1)),
+            Timestamp::now(),
+            SignedDuration::try_from(kill_day::TTL).unwrap_or(SignedDuration::from_hours(1)),
         );
         self.days
             .lock()
@@ -624,7 +624,7 @@ impl Shared {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .snapshot(Instant::now());
-        self.store.save_days(&counts, Utc::now());
+        self.store.save_days(&counts, Timestamp::now());
     }
 
     /// Whether the source should be reading the feed: a rule asks for it and
@@ -650,14 +650,14 @@ impl Shared {
             == FeedState::Failing;
         failing
             || self.starting_short.load(Ordering::Acquire)
-            || Utc::now().timestamp() < self.outage_until.load(Ordering::Acquire)
+            || Timestamp::now().as_second() < self.outage_until.load(Ordering::Acquire)
     }
 
     /// The feed could not be read at `now` (throttled with a 429 or 403,
     /// unreachable, or any other error): from this moment the API makes up
     /// for it, and keeps doing so until the hour that may lack killmails is
     /// gone. A new failure extends it.
-    fn feed_failed(&self, now: DateTime<Utc>) {
+    fn feed_failed(&self, now: Timestamp) {
         // What the feed missed is not in the counts it was keeping up.
         self.days
             .lock()
@@ -668,7 +668,7 @@ impl Shared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .state = FeedState::Failing;
         self.outage_until
-            .store((now + WINDOW).timestamp(), Ordering::Release);
+            .store((now + WINDOW).as_second(), Ordering::Release);
     }
 
     /// Sends the state of the lanes to Tracy's plots: how many requests wait
@@ -685,7 +685,7 @@ impl Shared {
         client.plot(plot_name!("zkill api lane: tooltips"), api[0] as f64);
         client.plot(plot_name!("zkill api lane: background"), background as f64);
         client.plot(plot_name!("zkill r2z2 lane"), self.r2z2_lane.len() as f64);
-        let now = Utc::now();
+        let now = Timestamp::now();
         let api_stats = self.guards.get(Endpoint::Api).stats();
         let r2z2_stats = self.guards.get(Endpoint::R2z2).stats();
         client.plot(
@@ -732,8 +732,8 @@ impl Shared {
     /// [`Self::keep`]).
     #[tracing::instrument(skip_all, fields(kills = kills.len()))]
     fn keep_day_kills(&self, kills: Vec<Killmail>, names: &SdeNames) {
-        let now = Utc::now();
-        let oldest = now.checked_sub_signed(WINDOW);
+        let now = Timestamp::now();
+        let oldest = now.checked_sub(WINDOW).ok();
         for killmail in kills {
             let record = killmail.to_record(names);
             if oldest.is_some_and(|oldest| record.time < oldest) {
@@ -750,7 +750,7 @@ impl Shared {
     /// API and, while the feed runs, in the feed's, which is the one that
     /// shows (a killmail both have is kept once). `true` when it was new to
     /// the buffer of the API.
-    fn keep(&self, record: KillRecord, now: DateTime<Utc>) -> bool {
+    fn keep(&self, record: KillRecord, now: Timestamp) -> bool {
         if self.active() {
             self.buffer().insert(record.clone(), now);
         }
@@ -763,7 +763,7 @@ impl Shared {
     /// How long to stay away after zKillboard refused a request of `endpoint`:
     /// what is left of the pause its guard remembers, or a whole block.
     fn pause_after_throttle(&self, endpoint: Endpoint) -> Duration {
-        let now = Utc::now();
+        let now = Timestamp::now();
         self.guards.refusal_seen(endpoint, now);
         let guard = self.guards.get(endpoint);
         guard.wait(now).unwrap_or_else(|| guard.block())
@@ -809,11 +809,7 @@ impl Shared {
 
     /// The killmails per system the buffers hold as of `now` (the feed's only
     /// while it runs), the most either has; those after `since` when given.
-    fn live_counts(
-        &self,
-        since: Option<DateTime<Utc>>,
-        now: DateTime<Utc>,
-    ) -> HashMap<usize, usize> {
+    fn live_counts(&self, since: Option<Timestamp>, now: Timestamp) -> HashMap<usize, usize> {
         let read = |buffer: &KillBuffer| match since {
             Some(since) => buffer.counts_since(since, now),
             None => buffer.counts(now),
@@ -836,7 +832,7 @@ impl Shared {
     /// copies the names, so the answer for the same system is reused for
     /// [`TOOLTIP_CACHE`].
     #[tracing::instrument(skip_all)]
-    fn buffer_context(&self, system_id: usize, from_feed: bool, now: DateTime<Utc>) -> KillContext {
+    fn buffer_context(&self, system_id: usize, from_feed: bool, now: Timestamp) -> KillContext {
         let mut cache = self
             .tooltip
             .lock()
@@ -893,7 +889,7 @@ impl ZKillboardHandle {
             api_buffer: Mutex::new(KillBuffer::default()),
             esi_hour: Mutex::new(None),
             esi_hour_loaded: AtomicBool::new(false),
-            esi_max_age: TimeDelta::hours(2),
+            esi_max_age: SignedDuration::from_hours(2),
             heat_wanted: AtomicBool::new(false),
             starting_short: AtomicBool::new(false),
             outage_until: AtomicI64::new(0),
@@ -990,7 +986,7 @@ impl ZKillboardHandle {
         }
         let from_feed = self.0.active();
         let compensating = self.0.compensating();
-        let now = Utc::now();
+        let now = Timestamp::now();
         if from_feed && !compensating {
             // The count of the day is what the background fill has found
             // around the characters; any other system is asked for the
@@ -1062,7 +1058,7 @@ impl ZKillboardHandle {
             .0
             .guards
             .get(Endpoint::Api)
-            .wait(Utc::now())
+            .wait(Timestamp::now())
             .unwrap_or_default();
         let lane = &self.0.api_lane;
         kill_day::DayQueue {
@@ -1091,7 +1087,7 @@ impl ZKillboardHandle {
     /// How long zKillboard asks us to keep away from `endpoint`, if it does.
     #[cfg(debug_assertions)]
     pub(crate) fn request_wait(&self, endpoint: Endpoint) -> Option<Duration> {
-        self.0.guards.get(endpoint).wait(Utc::now())
+        self.0.guards.get(endpoint).wait(Timestamp::now())
     }
 
     /// How many requests the guard of `endpoint` has let through.
@@ -1145,7 +1141,7 @@ impl ZKillboardHandle {
         if !self.0.fetching() {
             return Vec::new();
         }
-        let now = Utc::now();
+        let now = Timestamp::now();
         if self.0.active() && !self.0.compensating() {
             return self.0.buffer().counts(now);
         }
@@ -1158,7 +1154,7 @@ impl ZKillboardHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(esi) = esi
             .as_ref()
-            .filter(|esi| now - esi.modified < self.0.esi_max_age)
+            .filter(|esi| now.duration_since(esi.modified) < self.0.esi_max_age)
         {
             let after = self.0.live_counts(Some(esi.modified), now);
             let systems: HashSet<usize> = esi.kills.keys().chain(after.keys()).copied().collect();
@@ -1201,7 +1197,7 @@ impl ZKillboardHandle {
 
     /// When the answer of ESI kept was computed; the next is ready an hour
     /// later.
-    pub(crate) fn hour_modified(&self) -> Option<DateTime<Utc>> {
+    pub(crate) fn hour_modified(&self) -> Option<Timestamp> {
         self.0.load_esi_hour();
         self.0
             .esi_hour
@@ -1270,7 +1266,7 @@ impl ZKillboardHandle {
         api_store: Box<dyn GuardStore>,
     ) {
         // What zKillboard asked of the previous runs counts from the start.
-        let now = Utc::now();
+        let now = Timestamp::now();
         self.0.guards.get(Endpoint::R2z2).attach(r2z2_store, now);
         self.0.guards.get(Endpoint::Api).attach(api_store, now);
         let session = Session {
@@ -1478,7 +1474,7 @@ impl Session {
                     });
                     // What is published from now on may never be read: the API
                     // makes up for it until the hour it left out is gone.
-                    self.shared.feed_failed(Utc::now());
+                    self.shared.feed_failed(Timestamp::now());
                     // Once per outage: the logs are not for a retry loop (the
                     // wake-ups at the start would repeat it at once).
                     if reported {
@@ -1521,7 +1517,7 @@ impl Session {
                     backfill = None;
                 }
             }
-            self.shared.buffer().prune(Utc::now());
+            self.shared.buffer().prune(Timestamp::now());
             // Everything up to here is in the store only once the files
             // before the start are read too.
             if backfilled && backfill.is_none() {
@@ -1552,7 +1548,7 @@ impl Session {
     /// Keeps the killmail for the node tooltips, whatever the filters say.
     fn record(&self, killmail: &Killmail) {
         let record = killmail.to_record(&self.names);
-        let now = Utc::now();
+        let now = Timestamp::now();
         // The count of the last day of its system follows the feed.
         if let Some(time) = killmail.time() {
             self.shared
@@ -1607,7 +1603,7 @@ impl Session {
             Ok(()) => {
                 self.update(|status| {
                     status.announced += 1;
-                    status.last_killmail = Some(Utc::now());
+                    status.last_killmail = Some(Timestamp::now());
                 });
                 true
             }
@@ -1660,7 +1656,7 @@ mod tests {
     struct Sample;
 
     impl Sample {
-        fn esi_hour(modified: DateTime<Utc>) -> HourKills {
+        fn esi_hour(modified: Timestamp) -> HourKills {
             let system = |system_id, ship_kills, pod_kills, npc_kills| SystemHourKills {
                 system_id,
                 ship_kills,
@@ -1674,7 +1670,7 @@ mod tests {
             }
         }
 
-        fn killmail(id: u64, system_id: usize, time: DateTime<Utc>) -> KillRecord {
+        fn killmail(id: u64, system_id: usize, time: Timestamp) -> KillRecord {
             KillRecord {
                 killmail_id: id,
                 time,
@@ -1696,8 +1692,8 @@ mod tests {
         assert_eq!(handle.hour_modified(), None);
         // Without the feed running, ESI is the only one that knows the hour.
         assert!(!handle.covers_the_hour());
-        let now = Utc::now();
-        let modified = now - TimeDelta::minutes(15);
+        let now = Timestamp::now();
+        let modified = now - SignedDuration::from_mins(15);
         assert!(handle.record_hour(&Sample::esi_hour(modified)));
         // ESI repeats its answer until the next hour: it is kept once.
         assert!(!handle.record_hour(&Sample::esi_hour(modified)));
@@ -1715,19 +1711,19 @@ mod tests {
         assert_eq!(kills(&handle, 30000144), 0);
         // A killmail after the answer is added to it.
         handle.0.api_buffer().insert(
-            Sample::killmail(1, 30000142, now - TimeDelta::minutes(5)),
+            Sample::killmail(1, 30000142, now - SignedDuration::from_mins(5)),
             now,
         );
         assert_eq!(kills(&handle, 30000142), 4);
         // One before it is part of the answer already.
         handle.0.api_buffer().insert(
-            Sample::killmail(2, 30000142, now - TimeDelta::minutes(30)),
+            Sample::killmail(2, 30000142, now - SignedDuration::from_mins(30)),
             now,
         );
         assert_eq!(kills(&handle, 30000142), 4);
         // A system ESI does not list shows what the buffer has.
         handle.0.api_buffer().insert(
-            Sample::killmail(3, 30000999, now - TimeDelta::minutes(1)),
+            Sample::killmail(3, 30000999, now - SignedDuration::from_mins(1)),
             now,
         );
         assert_eq!(kills(&handle, 30000999), 1);
@@ -1736,14 +1732,14 @@ mod tests {
     #[test]
     fn a_tooltip_reuses_the_killmails_it_read_for_the_same_system() {
         let handle = ZKillboardHandle::new(Path::new("sde.db"));
-        let now = Utc::now();
+        let now = Timestamp::now();
         let system = 30000142;
         let kills = |from_feed| handle.0.buffer_context(system, from_feed, now).hour;
         assert_eq!(kills(false), 0);
         // A killmail that arrives right after is not seen yet: the answer
         // for that system was read a moment ago.
         handle.0.api_buffer().insert(
-            Sample::killmail(1, system, now - TimeDelta::minutes(5)),
+            Sample::killmail(1, system, now - SignedDuration::from_mins(5)),
             now,
         );
         assert_eq!(kills(false), 0);
@@ -1757,9 +1753,10 @@ mod tests {
 
     #[test]
     fn the_kills_of_esi_leave_the_window_as_the_hour_passes() {
-        let now = Utc::now();
-        let hour =
-            |minutes| EsiHour::new(&Sample::esi_hour(now - TimeDelta::minutes(minutes))).unwrap();
+        let now = Timestamp::now();
+        let hour = |minutes| {
+            EsiHour::new(&Sample::esi_hour(now - SignedDuration::from_mins(minutes))).unwrap()
+        };
         // Just computed: all of them. Half an hour on: half. An hour on or
         // more: none. A system ESI does not list: none.
         assert_eq!(hour(0).remaining(30000142, now), 4);
@@ -1776,15 +1773,17 @@ mod tests {
         let handle = ZKillboardHandle::new(Path::new("sde.db"));
         let undated = HourKills {
             modified: None,
-            systems: Sample::esi_hour(Utc::now()).systems,
+            systems: Sample::esi_hour(Timestamp::now()).systems,
         };
         assert!(!handle.record_hour(&undated));
-        assert!(handle.record_hour(&Sample::esi_hour(Utc::now() - TimeDelta::hours(3))));
+        assert!(handle.record_hour(&Sample::esi_hour(
+            Timestamp::now() - SignedDuration::from_hours(3)
+        )));
         assert!(handle.hour_kills().is_empty());
         // A newer one replaces the old; an older one does not replace it.
-        let newer = Utc::now() - TimeDelta::minutes(5);
+        let newer = Timestamp::now() - SignedDuration::from_mins(5);
         assert!(handle.record_hour(&Sample::esi_hour(newer)));
-        assert!(!handle.record_hour(&Sample::esi_hour(newer - TimeDelta::hours(1))));
+        assert!(!handle.record_hour(&Sample::esi_hour(newer - SignedDuration::from_hours(1))));
         assert_eq!(handle.hour_modified(), Some(newer));
     }
 
@@ -1914,7 +1913,7 @@ mod tests {
             line.text,
             "Jita: Rifter destroyed by 3 pilots (Sabre ×2, Merlin), 12.3M ISK"
         );
-        assert_eq!(line.timestamp.to_rfc3339(), "2026-10-14T05:01:05+00:00");
+        assert_eq!(line.timestamp.to_string(), "2026-10-14T05:01:05Z");
         // What the log shows is a line the chat-log parser understands too.
         assert_eq!(parse_line(&line.to_string()).unwrap().text, line.text);
     }
@@ -2125,14 +2124,14 @@ mod tests {
             .unwrap();
         assert_eq!(event.time_origin, TimeOrigin::Reported);
         assert_eq!(event.at(), event.line.timestamp);
-        assert_eq!(event.at().to_rfc3339(), "2026-10-14T05:01:05+00:00");
+        assert_eq!(event.at().to_string(), "2026-10-14T05:01:05Z");
     }
 
     #[test]
     fn an_event_with_an_unreadable_time_is_still_decoded_and_says_so() {
         let mut killmail = Fixture::sample();
         killmail.esi.killmail_time = String::from("yesterday");
-        let before = Utc::now();
+        let before = Timestamp::now();
         let event = ZKillboardDecoder::new(&Names, &Systems)
             .decode(&killmail)
             .unwrap();
@@ -2144,7 +2143,7 @@ mod tests {
     fn an_unreadable_time_falls_back_to_now() {
         let mut killmail = Fixture::sample();
         killmail.esi.killmail_time = String::from("yesterday");
-        let before = Utc::now();
+        let before = Timestamp::now();
         let line = killmail.to_line(&Names, &Systems).unwrap();
         assert!(line.timestamp >= before);
     }
@@ -2382,10 +2381,7 @@ mod tests {
         assert_eq!(record.pilots as usize, pilots);
         assert!(record.attacker_ships.len() <= pilots);
         // 2026-10-14T05:01:05Z
-        assert_eq!(
-            record.time,
-            DateTime::from_timestamp(1_791_954_065, 0).unwrap()
-        );
+        assert_eq!(record.time, Timestamp::from_second(1_791_954_065).unwrap());
     }
 
     #[test]
@@ -2438,14 +2434,14 @@ mod tests {
         assert!(!handle.api_in_use());
 
         // Back, but what was published meanwhile is not coming back.
-        let until = (Utc::now() + WINDOW).timestamp();
+        let until = (Timestamp::now() + WINDOW).as_second();
         handle.0.outage_until.store(until, Ordering::Release);
         assert!(handle.api_in_use());
         assert_eq!(handle.context(1).unwrap().source, Source::Feed);
         handle
             .0
             .outage_until
-            .store(Utc::now().timestamp() - 1, Ordering::Release);
+            .store(Timestamp::now().as_second() - 1, Ordering::Release);
         assert!(!handle.api_in_use());
 
         // Paused or not wanted, there is nothing to make up for.
@@ -2459,7 +2455,7 @@ mod tests {
         let handle = ZKillboardHandle::new(Path::new("sde.db"));
         handle.set_enabled(true);
         assert!(!handle.api_in_use());
-        let now = Utc::now();
+        let now = Timestamp::now();
         handle.0.feed_failed(now);
         assert!(handle.api_in_use());
         assert_eq!(handle.context(1).unwrap().source, Source::Api);
@@ -2468,20 +2464,20 @@ mod tests {
         assert!(handle.api_in_use());
         assert_eq!(handle.context(1).unwrap().source, Source::Feed);
         // A later failure pushes the end further.
-        handle.0.feed_failed(now + TimeDelta::minutes(10));
+        handle.0.feed_failed(now + SignedDuration::from_mins(10));
         assert_eq!(
             handle.0.outage_until.load(Ordering::Acquire),
-            (now + TimeDelta::minutes(10) + WINDOW).timestamp()
+            (now + SignedDuration::from_mins(10) + WINDOW).as_second()
         );
     }
 
     #[test]
     fn what_esi_gives_goes_to_the_buffer_the_tooltips_show() {
         let handle = ZKillboardHandle::new(Path::new("sde.db"));
-        let now = Utc::now();
+        let now = Timestamp::now();
         let record = |id: u64| KillRecord {
             killmail_id: id,
-            time: now - TimeDelta::minutes(5),
+            time: now - SignedDuration::from_mins(5),
             system_id: 1,
             victim: None,
             attacker_ships: Vec::new(),

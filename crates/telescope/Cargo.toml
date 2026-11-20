@@ -61,7 +61,7 @@ zkill = { path = "../zkill/" }
 # The wormholes of Thera and Turnur: `app/wormhole_links.rs` turns them into
 # links of the layer `sde` keeps next to the universe.
 eve-scout = { path = "../eve-scout/" }
-chrono = "0.4"
+jiff = { version = "1", features = ["serde"] }
 tokio = { version = "1.54", features = ["tokio-macros", "rt", "rt-multi-thread", "macros"] }
 egui_extras = { version = "0.37", features = ["all_loaders"] }
 image = { version = "0.25", features = ["jpeg","png"] }

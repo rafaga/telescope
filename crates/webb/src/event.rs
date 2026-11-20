@@ -12,7 +12,7 @@
 //! pilot count exactly as the feed gave them.
 
 use crate::rules::{InputKind, IntelLine};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
@@ -177,7 +177,7 @@ impl IntelEvent {
     /// When the event happened, in UTC: the date of its line in the log or the
     /// time of its killmail, or the moment it was read when the source gave
     /// none ([`IntelEvent::time_origin`]).
-    pub fn at(&self) -> DateTime<Utc> {
+    pub fn at(&self) -> Timestamp {
         self.line.timestamp
     }
 

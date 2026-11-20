@@ -10,11 +10,11 @@
 use super::TelescopeApp;
 use super::settings::HubDisplay;
 use super::system_header::SystemHeader;
-use chrono::{DateTime, TimeDelta, Utc};
 use egui::Color32;
 use egui_map::map::Map;
 use egui_map::map::objects::{MapPoint, MapSegment};
 use eve_scout::{Signature, SignatureType};
+use jiff::{SignedDuration, Timestamp};
 use sde::links::{Link, LinkLayer, LinkSource, Wormhole};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -282,7 +282,7 @@ pub(crate) struct WormholeMarkerStyle {
     /// The same for a wormhole close to collapsing.
     pub(crate) expiring: Color32,
     /// How much life left makes a wormhole close to collapsing.
-    pub(crate) expiring_within: TimeDelta,
+    pub(crate) expiring_within: SignedDuration,
     /// Space kept free around a marker, in map units: between two markers, and
     /// between a marker and the nodes of the map. About two thirds of the
     /// height of a node, enough to tell the markers of a crowded hub (Turnur
@@ -335,7 +335,7 @@ impl Default for WormholeMarkerStyle {
             id_base: 1 << 40,
             accent: SystemHeader::WORMHOLE_COLOR,
             expiring: Color32::from_rgb(0xe5, 0x73, 0x4f),
-            expiring_within: TimeDelta::hours(4),
+            expiring_within: SignedDuration::from_hours(4),
             gap: 24.0,
             label_padding: [8.0, 2.0],
             label_zoom: 1.0,
@@ -712,7 +712,7 @@ impl WormholeLayer {
     pub(crate) fn markers(
         &mut self,
         links: &LinkLayer,
-        now: DateTime<Utc>,
+        now: Timestamp,
         systems: &HashMap<usize, [f32; 2]>,
         names: &dyn Fn(usize) -> Option<String>,
         node: NodeSize,
@@ -756,7 +756,7 @@ impl WormholeLayer {
         for (system, other, wormhole) in &ends {
             let expiring = wormhole
                 .expires_at
-                .is_some_and(|at| at - now < self.style.expiring_within);
+                .is_some_and(|at| at.duration_since(now) < self.style.expiring_within);
             if Hub::is_hub(*system) && self.folds(at_hub[system]) {
                 let index = *folded_at.entry(*system).or_insert_with(|| {
                     spots.push(Spot {
@@ -976,7 +976,7 @@ impl TelescopeApp {
 mod tests {
     use super::layout::Block;
     use super::*;
-    use chrono::{DateTime, TimeDelta, Utc};
+    use jiff::{SignedDuration, Timestamp};
     use serde_json::{Value, json};
 
     const THERA: u32 = 31_000_005;
@@ -1003,10 +1003,8 @@ mod tests {
         serde_json::from_value(base).unwrap()
     }
 
-    fn expires_at() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-11-05T22:17:26Z")
-            .unwrap()
-            .with_timezone(&Utc)
+    fn expires_at() -> Timestamp {
+        "2026-11-05T22:17:26Z".parse().unwrap()
     }
 
     #[test]
@@ -1132,8 +1130,8 @@ mod tests {
         links.layer().clone()
     }
 
-    fn now() -> DateTime<Utc> {
-        expires_at() - TimeDelta::hours(10)
+    fn now() -> Timestamp {
+        expires_at() - SignedDuration::from_hours(10)
     }
 
     #[test]
@@ -1350,7 +1348,7 @@ mod tests {
         let mut shown = layer();
         shown.markers(
             &links(&Crowd::signatures(2)),
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
             &region(),
             &names,
             node(),
@@ -1730,7 +1728,7 @@ mod tests {
     fn a_wormhole_close_to_collapsing_is_marked_and_a_collapsed_one_is_left_out() {
         let from_thera = signature(json!({ "in_system_id": 30_000_142 }));
         let links = links(&[from_thera]);
-        let near_end = expires_at() - TimeDelta::hours(3);
+        let near_end = expires_at() - SignedDuration::from_hours(3);
         let markers = layer().markers(&links, near_end, &region(), &names, node(), Crowd::labels());
         assert!(markers[0].expiring);
         let after = layer().markers(
@@ -1852,7 +1850,7 @@ mod tests {
         let mut links = WormholeLinks::default();
         links.replace(&[signature(json!({}))]);
         let active = |now| links.layer().active(now).count();
-        assert_eq!(active(expires_at() - TimeDelta::hours(1)), 1);
+        assert_eq!(active(expires_at() - SignedDuration::from_hours(1)), 1);
         assert_eq!(active(expires_at()), 0);
     }
 
@@ -2129,7 +2127,7 @@ mod tests {
             "in_system_id": 31_000_101,
             "out_signature": "TUR-001",
         }));
-        let now = expires_at() - TimeDelta::hours(1) - TimeDelta::hours(9);
+        let now = expires_at() - SignedDuration::from_hours(1) - SignedDuration::from_hours(9);
         let mut mark = |signatures: &[Signature]| {
             layer.markers(
                 &links(signatures),

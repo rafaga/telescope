@@ -106,7 +106,7 @@ fn character_card(
         "settings.characters.last_logon",
         when = character
             .last_logon
-            .format("%Y-%m-%d %H:%M UTC")
+            .strftime("%Y-%m-%d %H:%M UTC")
             .to_string()
     );
     let avatar = match &character.photo {

@@ -82,6 +82,7 @@ impl PropertyGrid {
             selected_info: ctx.data(|d| d.get_temp::<Option<RowInfo>>(info_id).flatten()),
             hovered: None,
             has_descriptions: false,
+            titles: Vec::new(),
             changed: false,
         };
         // Bands and tables touch each other: no gap between them.
@@ -95,14 +96,22 @@ impl PropertyGrid {
         add(&mut properties);
         let Properties { ui, table, .. } = properties;
         ui.spacing_mut().item_spacing.y = gap;
-        if table.has_descriptions {
+        // The box stays while the groups that have descriptions are folded,
+        // or the panel would jump: only other groups take it away.
+        let described_id = self.id.with("described");
+        let described = match ctx.data(|d| d.get_temp::<(Vec<String>, bool)>(described_id)) {
+            Some((titles, was)) if titles == table.titles => was || table.has_descriptions,
+            _ => table.has_descriptions,
+        };
+        ctx.data_mut(|d| d.insert_temp(described_id, (table.titles.clone(), described)));
+        if described {
             ui.add_space(gap);
             let info = table
                 .hovered
                 .clone()
                 .or_else(|| table.selected_info.clone());
-            Frame::new()
-                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+            let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+            let outer = Frame::new()
                 .inner_margin(Margin::symmetric(6, 4))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
@@ -113,7 +122,15 @@ impl PropertyGrid {
                     } else if let Some(hint) = self.empty_hint {
                         ui.weak(hint);
                     }
-                });
+                })
+                .response
+                .rect;
+            // The border is drawn here, not by the frame, with a clip a little
+            // wider than the box: as the last thing of a scroll area its
+            // bottom line sat on the edge of the clip and was cut off.
+            ui.painter()
+                .with_clip_rect(outer.expand(stroke.width))
+                .rect_stroke(outer, 0.0, stroke, StrokeKind::Inside);
         }
         ctx.data_mut(|d| {
             d.insert_temp(width_id, table.name_width);
@@ -140,6 +157,9 @@ struct Table {
     selected_info: Option<RowInfo>,
     hovered: Option<RowInfo>,
     has_descriptions: bool,
+    /// The titles of the groups, in order, to tell a grid that shows other
+    /// groups from the same one with some of them folded.
+    titles: Vec<String>,
     changed: bool,
 }
 
@@ -157,6 +177,7 @@ impl Properties<'_> {
     /// title.
     pub fn group(&mut self, title: &str, rows: impl FnOnce(&mut PropertyRows<'_>)) {
         let id = self.id.with(title);
+        self.table.titles.push(title.to_owned());
         let mut state = CollapsingState::load_with_default_open(self.ui.ctx(), id, true);
         let band = self.ui.visuals().widgets.inactive.weak_bg_fill;
         let toggled = Frame::new()

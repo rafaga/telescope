@@ -105,7 +105,7 @@ impl EventSource for ChatLogDecoder {
     }
 
     fn decode(&self, raw: &str) -> Option<IntelEvent> {
-        let (line, origin) = IntelLine::parse_or_assume(raw, chrono::Utc::now())?;
+        let (line, origin) = IntelLine::parse_or_assume(raw, jiff::Timestamp::now())?;
         Some(IntelEvent::text(line, self.channel.as_str(), self.kind()).with_time_origin(origin))
     }
 }
@@ -519,12 +519,12 @@ mod event_time_tests {
             .decode("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear")
             .unwrap();
         assert_eq!(event.time_origin, TimeOrigin::Reported);
-        assert_eq!(event.at().to_rfc3339(), "2021-09-08T22:56:47+00:00");
+        assert_eq!(event.at().to_string(), "2021-09-08T22:56:47Z");
     }
 
     #[test]
     fn a_chat_line_without_a_date_is_decoded_at_the_moment_it_is_read() {
-        let before = chrono::Utc::now();
+        let before = jiff::Timestamp::now();
         let event = ChatLogDecoder::new("Intel")
             .decode("Some Pilot > 1DQ1-A clear")
             .unwrap();

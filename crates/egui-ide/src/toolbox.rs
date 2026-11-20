@@ -1,6 +1,6 @@
 use egui::{
-    Align2, Area, Color32, CornerRadius, CursorIcon, DragAndDrop, Frame, Id, Order, Rect,
-    Response, RichText, Role, Sense, StrokeKind, TextStyle, Ui, Vec2, WidgetInfo, pos2, vec2,
+    Align2, Area, Color32, CornerRadius, CursorIcon, DragAndDrop, Frame, Id, Order, Rect, Response,
+    RichText, Role, Sense, StrokeKind, TextStyle, Ui, Vec2, WidgetInfo, pos2, vec2,
 };
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -80,6 +80,7 @@ pub struct Toolbox<T> {
     id: Id,
     header: Option<(String, String)>,
     groups: Vec<(String, Vec<ToolboxEntry<T>>)>,
+    ghost: bool,
 }
 
 impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
@@ -89,7 +90,18 @@ impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
             id: Id::unique(id_salt),
             header: None,
             groups: Vec::new(),
+            ghost: true,
         }
+    }
+
+    /// Whether the label of the entry being dragged follows the pointer
+    /// (it does by default). Turn it off while the pointer is over a target
+    /// that shows its own preview, such as the canvas with
+    /// `Canvas::drop_preview` of `egui-weave`.
+    #[must_use]
+    pub fn ghost(mut self, show: bool) -> Self {
+        self.ghost = show;
+        self
     }
 
     /// A title in bold and, under it, a line that tells how to use the
@@ -140,7 +152,8 @@ impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
                 } else {
                     0.0
                 };
-                widest = widest.max(width(&entry.label, TextStyle::Button) + 2.0 * Self::PADDING + mark);
+                widest =
+                    widest.max(width(&entry.label, TextStyle::Button) + 2.0 * Self::PADDING + mark);
             }
         }
         widest.ceil()
@@ -149,7 +162,12 @@ impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
     /// Lays the header and the groups out. Returns the item of the entry that
     /// was clicked.
     pub fn show(self, ui: &mut Ui) -> Option<T> {
-        let Self { id, header, groups } = self;
+        let Self {
+            id,
+            header,
+            groups,
+            ghost,
+        } = self;
         // the id keeps the toolbox apart from another one in the same panel
         ui.push_id(id, |ui| {
             let mut picked = None;
@@ -161,7 +179,7 @@ impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
                 ui.add_space(4.0);
                 ui.label(RichText::new(&title).strong());
                 for entry in entries {
-                    if let Some(item) = Self::entry_ui(ui, entry) {
+                    if let Some(item) = Self::entry_ui(ui, entry, ghost) {
                         picked = Some(item);
                     }
                 }
@@ -190,7 +208,7 @@ impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
 
     /// An entry: a button as wide as the toolbox, with its color mark and
     /// label, that is clicked or dragged.
-    fn entry_ui(ui: &mut Ui, entry: ToolboxEntry<T>) -> Option<T> {
+    fn entry_ui(ui: &mut Ui, entry: ToolboxEntry<T>, ghost: bool) -> Option<T> {
         let ToolboxEntry {
             item,
             label,
@@ -247,7 +265,9 @@ impl<T: Clone + Send + Sync + 'static> Toolbox<T> {
         }
         if response.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-            Self::drag_ghost(ui, response.id, &label);
+            if ghost {
+                Self::drag_ghost(ui, response.id, &label);
+            }
         } else if response.hovered() && enabled {
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
         }

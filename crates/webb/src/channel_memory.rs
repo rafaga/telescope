@@ -7,20 +7,20 @@
 //! be attributed to it for a while (see `Executor::run_remembering`).
 
 use crate::event::SystemFact;
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 
 /// The system a channel reported last, and when.
 #[derive(Debug, Clone, PartialEq)]
 struct Remembered {
     system: SystemFact,
-    at: DateTime<Utc>,
+    at: Timestamp,
 }
 
 /// The last system reported in each channel.
 #[derive(Debug, Clone)]
 pub struct ChannelMemory {
-    window: Duration,
+    window: SignedDuration,
     last: HashMap<String, Remembered>,
 }
 
@@ -30,7 +30,7 @@ impl ChannelMemory {
     pub const DEFAULT_WINDOW_SECS: i64 = 90;
 
     /// A memory whose reports are good for `window`.
-    pub fn new(window: Duration) -> Self {
+    pub fn new(window: SignedDuration) -> Self {
         Self {
             window,
             last: HashMap::new(),
@@ -39,17 +39,17 @@ impl ChannelMemory {
 
     /// A memory with the default window ([`Self::DEFAULT_WINDOW_SECS`]).
     pub fn with_default_window() -> Self {
-        Self::new(Duration::seconds(Self::DEFAULT_WINDOW_SECS))
+        Self::new(SignedDuration::from_secs(Self::DEFAULT_WINDOW_SECS))
     }
 
     /// How long a report is remembered.
-    pub fn window(&self) -> Duration {
+    pub fn window(&self) -> SignedDuration {
         self.window
     }
 
     /// Notes that `channel` reported `system` at `at`, replacing what it
     /// reported before.
-    pub fn remember(&mut self, channel: &str, system: SystemFact, at: DateTime<Utc>) {
+    pub fn remember(&mut self, channel: &str, system: SystemFact, at: Timestamp) {
         self.last
             .insert(channel.to_string(), Remembered { system, at });
     }
@@ -57,10 +57,10 @@ impl ChannelMemory {
     /// The system `channel` reported last, if it did so no earlier than the
     /// window before `at` (and not after it: a line cannot follow a report
     /// that has not been made yet).
-    pub fn recall(&self, channel: &str, at: DateTime<Utc>) -> Option<&SystemFact> {
+    pub fn recall(&self, channel: &str, at: Timestamp) -> Option<&SystemFact> {
         let seen = self.last.get(channel)?;
-        let elapsed = at - seen.at;
-        (elapsed >= Duration::zero() && elapsed <= self.window).then_some(&seen.system)
+        let elapsed = at.duration_since(seen.at);
+        (elapsed >= SignedDuration::ZERO && elapsed <= self.window).then_some(&seen.system)
     }
 
     /// Forgets everything (the rules changed, or the user asked for it).
@@ -87,13 +87,13 @@ mod tests {
         }
     }
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000 + seconds, 0).unwrap()
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_second(1_700_000_000 + seconds).unwrap()
     }
 
     #[test]
     fn a_report_is_recalled_inside_the_window_only() {
-        let mut memory = ChannelMemory::new(Duration::seconds(60));
+        let mut memory = ChannelMemory::new(SignedDuration::from_secs(60));
         memory.remember("intel", system(1, "H-5GUI"), at(0));
         assert_eq!(memory.recall("intel", at(0)).map(|s| s.id), Some(1));
         assert_eq!(memory.recall("intel", at(60)).map(|s| s.id), Some(1));

@@ -12,7 +12,7 @@ use crate::guard::{GuardConfig, RequestGuard};
 use crate::lane::{Job, LaneConfig, Priority};
 use crate::queue::LaneQueue;
 use crate::types::{FeedError, Killmail};
-use chrono::Utc;
+use jiff::Timestamp;
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};
@@ -199,28 +199,28 @@ impl R2z2Client {
         self.slots.wait().await;
         // Never closer to the previous request, whoever made it, than the
         // guard says: the limit is per address, not per source.
-        tokio::time::sleep(self.guard.pace(Utc::now())).await;
+        tokio::time::sleep(self.guard.pace(Timestamp::now())).await;
         // While zKillboard asked to be left alone, nothing is sent.
         if let Some(error) = FeedError::kept_away(&self.guard) {
             return Err(error);
         }
-        self.guard.requested(Utc::now());
+        self.guard.requested(Timestamp::now());
         let response = self
             .client
             .get(format!("{}/{path}", self.base))
             .send()
             .await
             .map_err(|error| {
-                self.guard.failed(Utc::now());
+                self.guard.failed(Timestamp::now());
                 FeedError::Other(error.to_string())
             })?;
         match response.status() {
             StatusCode::NOT_FOUND => {
-                self.guard.succeeded(Utc::now());
+                self.guard.succeeded(Timestamp::now());
                 Ok(None)
             }
             status if status.is_success() => {
-                self.guard.succeeded(Utc::now());
+                self.guard.succeeded(Timestamp::now());
                 Ok(Some(response))
             }
             status @ (StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) => {
@@ -232,12 +232,14 @@ impl R2z2Client {
                     sent = self.guard.sent(),
                     "zKillboard refused a feed request"
                 );
-                self.guard
-                    .throttled_for(Utc::now(), RequestGuard::retry_after(response.headers()));
+                self.guard.throttled_for(
+                    Timestamp::now(),
+                    RequestGuard::retry_after(response.headers()),
+                );
                 Err(FeedError::Throttled(status))
             }
             status => {
-                self.guard.failed(Utc::now());
+                self.guard.failed(Timestamp::now());
                 Err(FeedError::Other(format!("the feed answered {status}")))
             }
         }
@@ -558,7 +560,7 @@ impl Backoff {
 mod tests {
     use super::*;
     use crate::types::{EsiKillmail, Victim, Zkb};
-    use chrono::TimeDelta;
+    use jiff::SignedDuration;
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -994,8 +996,8 @@ mod tests {
                 slots: FeedSlots::default(),
                 // Open: a refusal must not stop the next request of a test.
                 guard: Arc::new(RequestGuard::new(GuardConfig {
-                    block: TimeDelta::zero(),
-                    restart_gap: TimeDelta::zero(),
+                    block: SignedDuration::ZERO,
+                    restart_gap: SignedDuration::ZERO,
                     ..GuardConfig::default()
                 })),
             }
@@ -1076,7 +1078,7 @@ mod tests {
             client.entry(2).await,
             Err(FeedError::Throttled(StatusCode::TOO_MANY_REQUESTS))
         );
-        assert!(client.guard.wait(Utc::now()).is_some());
+        assert!(client.guard.wait(Timestamp::now()).is_some());
     }
 
     #[tokio::test]

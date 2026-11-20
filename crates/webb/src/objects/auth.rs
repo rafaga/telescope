@@ -1,12 +1,12 @@
 //! Authorization data: the stored token, the token set CCP returns, the data
 //! of the authentication flow and the JWT claims.
 
-use chrono::prelude::*;
+use jiff::Timestamp;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct AuthData {
     pub token: String,
-    pub expiration: Option<DateTime<Utc>>,
+    pub expiration: Option<Timestamp>,
     pub refresh_token: String,
 }
 
@@ -16,7 +16,7 @@ pub struct AuthData {
 pub struct TokenSet {
     pub token: String,
     pub refresh_token: String,
-    pub expiration: Option<DateTime<Utc>>,
+    pub expiration: Option<Timestamp>,
 }
 
 /// Data needed to complete the requested authentication flow.
@@ -76,7 +76,7 @@ mod tests {
         let mut auth = AuthData::new();
         auth.token = String::from("token");
         auth.refresh_token = String::from("refresh");
-        auth.expiration = Some(Utc::now());
+        auth.expiration = Some(Timestamp::now());
 
         let cloned = auth.clone();
         assert_eq!(auth, cloned);

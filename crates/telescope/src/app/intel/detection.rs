@@ -214,18 +214,18 @@ mod tests {
         /// Appends a line written now to the log and tells the reader, as
         /// the watcher would.
         fn write_line(&self, text: &str) {
-            self.write_line_at(chrono::Utc::now(), text);
+            self.write_line_at(jiff::Timestamp::now(), text);
         }
 
         /// The same for a line the log says was written at `when`.
-        fn write_line_at(&self, when: chrono::DateTime<chrono::Utc>, text: &str) {
+        fn write_line_at(&self, when: jiff::Timestamp, text: &str) {
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(self.dir.join(LOG))
                 .unwrap();
             file.write_all(&utf16(&format!(
                 "[ {} ] Pilot > {text}\r\n",
-                when.format("%Y.%m.%d %H:%M:%S")
+                when.strftime("%Y.%m.%d %H:%M:%S")
             )))
             .unwrap();
             drop(file);
@@ -277,7 +277,7 @@ mod tests {
     fn a_sighting_older_than_the_grace_period_neither_pulses_nor_sounds() {
         // the pipeline's grace period is 5 seconds
         let mut pipeline = Pipeline::start("backlog");
-        let long_ago = chrono::Utc::now() - chrono::Duration::hours(2);
+        let long_ago = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(2);
         pipeline.write_line_at(long_ago, "H-5GUI*  Floris Saucus  nv");
         while let Some(message) = pipeline.next_map(Duration::from_millis(800)) {
             assert!(

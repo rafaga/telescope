@@ -17,7 +17,9 @@ use crate::intel::{
     MAX_DICTIONARY_WORDS, MAX_LINE_LEN, MAX_PATTERN_LEN, PatternError, UNDATED_LINE_PATTERN,
     is_valid_group_name, truncate_str,
 };
-use chrono::NaiveDateTime;
+use jiff::Timestamp;
+use jiff::civil::DateTime;
+use jiff::tz::TimeZone;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -497,10 +499,10 @@ pub fn parse_line(raw: &str) -> Option<IntelLine> {
     let re = LINE_RE
         .get_or_init(|| Regex::new(LINE_PATTERN).expect("hardcoded line regex must compile"));
     let caps = re.captures(truncate_str(raw, MAX_LINE_LEN))?;
-    let naive_ts =
-        NaiveDateTime::parse_from_str(caps.name("ts")?.as_str(), LINE_TIMESTAMP_FORMAT).ok()?;
+    let naive_ts = DateTime::strptime(LINE_TIMESTAMP_FORMAT, caps.name("ts")?.as_str()).ok()?;
+    let timestamp = naive_ts.to_zoned_datetime(TimeZone::UTC).ok()?.timestamp();
     Some(IntelLine {
-        timestamp: naive_ts.and_utc(),
+        timestamp,
         author: caps.name("author")?.as_str().to_string(),
         text: caps.name("text")?.as_str().to_string(),
     })
@@ -512,10 +514,7 @@ impl IntelLine {
     /// takes `now` as the moment of such a line, and says so with
     /// [`TimeOrigin::Assumed`]; a line with a date is [`TimeOrigin::Reported`].
     /// `None` when the line has no `author > text` either.
-    pub fn parse_or_assume(
-        raw: &str,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Option<(Self, crate::event::TimeOrigin)> {
+    pub fn parse_or_assume(raw: &str, now: Timestamp) -> Option<(Self, crate::event::TimeOrigin)> {
         use crate::event::TimeOrigin;
         if let Some(line) = parse_line(raw) {
             return Some((line, TimeOrigin::Reported));
@@ -570,7 +569,7 @@ mod tests {
         assert_eq!(line.author, "Some Pilot");
         assert_eq!(line.text, "1DQ1-A clear");
         assert_eq!(
-            line.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            line.timestamp.strftime("%Y-%m-%d %H:%M:%S").to_string(),
             "2021-09-08 22:56:47"
         );
     }
@@ -611,20 +610,20 @@ mod tests {
 
     #[test]
     fn a_dated_line_keeps_its_date_and_is_reported() {
-        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
         let (line, origin) =
             IntelLine::parse_or_assume("[ 2021.09.08 22:56:47 ] Some Pilot > 1DQ1-A clear", now)
                 .unwrap();
         assert_eq!(origin, crate::event::TimeOrigin::Reported);
         assert_eq!(
-            line.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            line.timestamp.strftime("%Y-%m-%d %H:%M:%S").to_string(),
             "2021-09-08 22:56:47"
         );
     }
 
     #[test]
     fn a_line_without_a_date_is_read_at_the_moment_given_and_assumed() {
-        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
         for raw in [
             "Some Pilot > 1DQ1-A clear",
             "[ 22:56:47 ] Some Pilot > 1DQ1-A clear",
@@ -640,7 +639,7 @@ mod tests {
 
     #[test]
     fn a_line_without_author_and_text_is_not_a_line_either_way() {
-        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
         for raw in ["", "not a log line", "[ 2021.09.08 22:56:47 ] no separator"] {
             assert!(IntelLine::parse_or_assume(raw, now).is_none(), "{raw:?}");
         }

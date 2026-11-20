@@ -12,26 +12,26 @@ default = ["crypted-db"]
 crypted-db = ["rusqlite/bundled-sqlcipher"]
 
 [dependencies]
-aho-corasick = "1.1"
-chrono = "0.4"
-regex = "1.13"
-toml = "1.1"
-tracing = "0.1"
-serde = { version = "1.0", features = ["serde_derive"] }
+aho-corasick = { workspace = true }
+jiff = { workspace = true, features = ["std"] }
+regex = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["serde_derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-hyper = { version = "1.12", features = ["server", "client", "http1"]}
-hyper-tls = { version = "0.6"}
-esi-openapi = { version = "0.3", default-features = false, features = ["random_state", "validate_jwt"]}
-serde_json = { version = "1.0"}
-base64 = { version = "0.23"}
-tokio = { version = "1.54", features = ["tokio-macros", "rt", "rt-multi-thread", "macros", "time"]}
-bytes = { version = "1.12"}
-http-body-util = { version = "0.1"}
-hyper-util = { version = "0.1", features = ["full"]}
-rusqlite = { version = "0.42", features = ["backup", "blob", "array"]}
-native_tools = { path = "../native_tools/"}
-sha2 = { version = "0.11"}
+hyper = { workspace = true, features = ["server", "client", "http1"] }
+hyper-tls = { workspace = true }
+esi-openapi = { workspace = true, features = ["random_state", "validate_jwt"] }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true, features = ["tokio-macros", "rt", "rt-multi-thread", "macros", "time"] }
+bytes = { workspace = true }
+http-body-util = { workspace = true }
+hyper-util = { workspace = true, features = ["full"] }
+rusqlite = { workspace = true, features = ["backup", "blob", "array"] }
+native_tools = { workspace = true }
+sha2 = { workspace = true }
 
 # `std::time::Instant` panics on `wasm32-unknown-unknown`; `web-time` is the same type and uses the browser clock there. Every other target keeps `std::time::Instant`.
 # WASM specific dependencies:
@@ -40,12 +40,12 @@ web-time = "1.1"
 
 # Windows:
 [target.'cfg(target_os = "windows")'.dependencies]
-rusqlite = { version = "0.42", features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"], optional = true }
+rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl", "backup", "blob", "array"], optional = true }
 
 [dev-dependencies]
-mockall = "0.15"
+mockall = { workspace = true }
 # `graph` tests serialize a rule graph; the `esi` feature also pulls this in.
-serde_json = "1.0"
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

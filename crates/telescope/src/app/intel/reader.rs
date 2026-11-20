@@ -10,12 +10,13 @@
 
 use super::input::{ChatLogSource, InputEvent, IntelLogName, IntelOffsets};
 use crate::app::messages::{Message, Type, try_send_app_message};
+#[cfg(target_os = "windows")]
+use jiff::SignedDuration;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 #[cfg(target_os = "windows")]
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, RwLock};
-#[cfg(target_os = "windows")]
 use std::time::Duration;
 use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;
@@ -124,9 +125,9 @@ impl ReaderShared {
         let Ok(entries) = dir.read_dir() else {
             return;
         };
-        let oldest = chrono::Utc::now()
-            .checked_sub_days(chrono::Days::new(Self::SWEEP_DAYS))
-            .map(|day| day.format("%Y%m%d").to_string())
+        let oldest = jiff::Timestamp::now()
+            .checked_sub(SignedDuration::from_hours(24 * Self::SWEEP_DAYS as i64))
+            .map(|day| day.strftime("%Y%m%d").to_string())
             .unwrap_or_default();
         let oldest_write =
             SystemTime::now().checked_sub(Duration::from_secs(Self::SWEEP_DAYS * 24 * 3600));
@@ -379,10 +380,7 @@ mod tests {
         read_file(&h.shared, NAME);
         let event = h.lines.try_recv().unwrap();
         assert_eq!(event.time_origin, TimeOrigin::Reported);
-        assert_eq!(
-            event.line.timestamp.to_rfc3339(),
-            "2024-01-01T12:00:01+00:00"
-        );
+        assert_eq!(event.line.timestamp.to_string(), "2024-01-01T12:00:01Z");
         assert!(matches!(
             h.app_rx.try_recv(),
             Ok(Message::ChannelActivity(..))
@@ -543,7 +541,7 @@ mod tests {
     fn recent_name(channel: &str) -> String {
         format!(
             "{channel}_{}_120000_1.txt",
-            chrono::Utc::now().format("%Y%m%d")
+            jiff::Timestamp::now().strftime("%Y%m%d")
         )
     }
 

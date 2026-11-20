@@ -9,20 +9,21 @@ readme = "README.md"
 keywords = ["egui", "gui", "widgets", "editor"]
 categories = ["gui"]
 
-[features]
-default = ["native-dialogs"]
-# The button of the `File` and `Folder` properties that opens the native
-# dialog. Without it they are a plain text field.
-native-dialogs = ["dep:native_tools"]
-
 [dependencies]
 egui = { version = "0.37", default-features = false }
-# The native file and folder dialogs of the `File` and `Folder` properties.
-native_tools = { path = "../native_tools", optional = true }
+# The native file and folder dialogs and the date picker of the `File`, `Folder`
+# and `Date` properties.
+native_tools = { path = "../native_tools" }
+# The calendar of the `Date` properties on a system without a native date picker.
+egui_extras = { version = "0.37", default-features = false, features = ["datepicker"] }
+# The date type of that calendar.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui_kittest = "0.37"
+# Only for the gallery example, which shows the canvas next to the panels.
+egui-weave = { path = "../egui-weave" }
 # Only for the examples, which open a window.
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "wgpu"] }
 

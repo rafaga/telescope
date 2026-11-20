@@ -1,8 +1,7 @@
 use crate::toolbar_icon::ToolbarIcon;
 use egui::{
-    Align, Align2, Button, Color32, ComboBox, CornerRadius, CursorIcon, Frame, Layout, Margin,
-    Popup, Rect, Response, Role, Sense, StrokeKind, TextStyle, Ui, Vec2, WidgetInfo, WidgetText,
-    pos2,
+    Align, Color32, ComboBox, CornerRadius, CursorIcon, Frame, Layout, Margin, Popup, Rect,
+    Response, Role, Sense, StrokeKind, TextStyle, Ui, Vec2, WidgetInfo, WidgetText, pos2,
 };
 use std::hash::Hash;
 
@@ -63,17 +62,25 @@ pub struct ToolbarUi<'a> {
 }
 
 impl ToolbarUi<'_> {
-    /// A button.
+    /// The height of every item of a toolbar: buttons, dropdowns, split
+    /// buttons, separators and grips are all as tall as this, so the items of
+    /// a row line up and a group is as tall as one item plus its margin.
+    #[must_use]
+    pub fn item_height(&self) -> f32 {
+        self.ui.spacing().interact_size.y + 4.0
+    }
+
+    /// A button with a text, framed like the icon buttons.
     pub fn button(&mut self, text: impl Into<WidgetText>) -> Response {
-        self.ui.add(Button::new(text).frame_when_inactive(false))
+        let text = text.into().text().to_owned();
+        self.button_widget(None, &text, &text, false, Round::All)
     }
 
     /// A button that stays pressed while `on` is set and flips it when
     /// clicked; the response is marked as changed then.
     pub fn toggle(&mut self, on: &mut bool, text: impl Into<WidgetText>) -> Response {
-        let mut response = self
-            .ui
-            .add(Button::new(text).selected(*on).frame_when_inactive(*on));
+        let text = text.into().text().to_owned();
+        let mut response = self.button_widget(None, &text, &text, *on, Round::All);
         if response.clicked() {
             *on = !*on;
             response.mark_changed();
@@ -141,23 +148,33 @@ impl ToolbarUi<'_> {
         let mut changed = false;
         let enabled = self.ui.is_enabled();
         let shown = options.get(*selected).map_or("", AsRef::as_ref);
-        let shown_combo = ComboBox::from_id_salt(id_salt)
-            .selected_text(shown)
-            .width(width)
-            .show_ui(self.ui, |ui| {
-                for (position, option) in options.iter().enumerate() {
-                    if ui
-                        .selectable_value(&mut *selected, position, option.as_ref())
-                        .changed()
-                    {
-                        changed = true;
-                    }
-                }
-            });
-        shown_combo
-            .response
-            .widget_info(|| WidgetInfo::labeled(Role::ComboBox, enabled, tip));
-        shown_combo.response.on_hover_text(tip);
+        let height = self.item_height();
+        // the dropdown takes its height from the spacing of the ui it is in
+        let response = self
+            .ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size.y = height;
+                ComboBox::from_id_salt(id_salt)
+                    .selected_text(shown)
+                    .width(width)
+                    .icon(|ui, rect, visuals, _open| {
+                        Self::paint_chevron(ui.painter(), rect.center(), visuals.fg_stroke.color);
+                    })
+                    .show_ui(ui, |ui| {
+                        for (position, option) in options.iter().enumerate() {
+                            if ui
+                                .selectable_value(&mut *selected, position, option.as_ref())
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    })
+                    .response
+            })
+            .inner;
+        response.widget_info(|| WidgetInfo::labeled(Role::ComboBox, enabled, tip));
+        response.on_hover_text(tip);
         changed
     }
 
@@ -194,7 +211,7 @@ impl ToolbarUi<'_> {
     /// A vertical line between two sets of items, as tall as a button, to
     /// tell related buttons apart inside a toolbar.
     pub fn separator(&mut self) {
-        let height = self.ui.spacing().interact_size.y + 4.0;
+        let height = self.item_height();
         let (rect, _) = self
             .ui
             .allocate_exact_size(Vec2::new(7.0, height), Sense::hover());
@@ -222,33 +239,45 @@ impl ToolbarUi<'_> {
         title: &str,
         add: impl FnOnce(&mut ToolbarUi<'_>) -> R,
     ) -> GroupShown<R> {
+        let height = self.item_height();
         let visuals = self.ui.visuals().clone();
         let frame = Frame::new()
             .fill(visuals.faint_bg_color)
             .stroke(visuals.widgets.noninteractive.bg_stroke)
             .corner_radius(visuals.widgets.noninteractive.corner_radius)
-            .inner_margin(Margin::symmetric(3, 2));
+            .inner_margin(Margin::symmetric(3, 3));
         let shown = frame.show(self.ui, |ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             // every group is as tall as a button, so the ones of a row line up
-            ui.set_min_height(ui.spacing().interact_size.y + 4.0);
+            ui.set_min_height(height);
             ui.horizontal_centered(|ui| {
-                let grip = Self::grip(ui);
-                let inner = add(&mut ToolbarUi { ui });
-                (inner, grip)
+                Self::grip_space(ui);
+                add(&mut ToolbarUi { ui })
             })
             .inner
         });
-        let (inner, grip) = shown.inner;
+        let inner = shown.inner;
         let rect = shown.response.rect;
+        let grip = Self::grip(self.ui, rect, shown.response.id.with("grip"));
         shown.response.on_hover_text(title);
         GroupShown { inner, grip, rect }
     }
 
-    /// The dotted handle at the start of a group.
-    fn grip(ui: &mut Ui) -> Response {
+    /// The room the handle takes at the start of a group; it is drawn, and
+    /// takes the drag, over the whole height of the frame.
+    fn grip_space(ui: &mut Ui) {
         let height = ui.spacing().interact_size.y + 4.0;
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(8.0, height), Sense::drag());
+        ui.allocate_exact_size(Vec2::new(8.0, height), Sense::hover());
+    }
+
+    /// The dotted handle of a group, from the top edge of its frame to the
+    /// bottom one, over `outer`, the rect of the frame.
+    fn grip(ui: &mut Ui, outer: Rect, id: egui::Id) -> Response {
+        let strip = Rect::from_min_max(
+            pos2(outer.left(), outer.top()),
+            pos2(outer.left() + 14.0, outer.bottom()),
+        );
+        let response = ui.interact(strip, id, Sense::drag());
         let mut color = ui.visuals().weak_text_color();
         if response.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
@@ -257,12 +286,14 @@ impl ToolbarUi<'_> {
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
             color = ui.visuals().text_color();
         }
-        let x = rect.center().x;
-        let mut y = rect.top() + 4.0;
-        while y < rect.bottom() - 3.0 {
+        // the dots fill the height, with the same room at both ends
+        let x = strip.left() + 7.0;
+        let count = ((strip.height() - 8.0) / 3.0).floor().max(1.0);
+        let first = strip.center().y - (count - 1.0) * 1.5;
+        for dot in 0..count as usize {
+            let y = first + dot as f32 * 3.0;
             ui.painter().circle_filled(pos2(x - 1.5, y), 0.8, color);
             ui.painter().circle_filled(pos2(x + 1.5, y), 0.8, color);
-            y += 3.0;
         }
         response
     }
@@ -278,7 +309,7 @@ impl ToolbarUi<'_> {
         selected: bool,
         round: Round,
     ) -> Response {
-        let height = self.ui.spacing().interact_size.y + 4.0;
+        let height = self.item_height();
         let padding = 8.0;
         let icon_side = 16.0;
         let gap = 5.0;
@@ -330,7 +361,7 @@ impl ToolbarUi<'_> {
 
     /// The arrow half of a split button.
     fn arrow_widget(&mut self, name: &str) -> Response {
-        let height = self.ui.spacing().interact_size.y + 4.0;
+        let height = self.item_height();
         let (rect, response) = self
             .ui
             .allocate_exact_size(Vec2::new(18.0, height), Sense::click());
@@ -338,15 +369,24 @@ impl ToolbarUi<'_> {
         response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, name));
         if self.ui.is_rect_visible(rect) {
             let color = self.paint_frame(rect, &response, false, Round::Right);
-            self.ui.painter().text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                "\u{25BE}",
-                egui::FontId::proportional(10.0),
-                color,
-            );
+            Self::paint_chevron(self.ui.painter(), rect.center(), color);
         }
         response
+    }
+
+    /// The small triangle that points down, the same in a split button and in
+    /// a dropdown, centered on `center`.
+    fn paint_chevron(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+        let points = vec![
+            pos2(center.x - 4.0, center.y - 2.0),
+            pos2(center.x + 4.0, center.y - 2.0),
+            pos2(center.x, center.y + 2.5),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            points,
+            color,
+            egui::Stroke::NONE,
+        ));
     }
 
     /// Paints the frame of a button; gives the color of what goes on it.

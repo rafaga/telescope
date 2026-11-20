@@ -497,7 +497,7 @@ impl DatabaseUpdater {
     fn log_line(&mut self, text: String) {
         self.log.push(format!(
             "{}  {text}",
-            chrono::Local::now().format("%H:%M:%S")
+            jiff::ZonedDateTime::now().strftime("%H:%M:%S")
         ));
     }
 

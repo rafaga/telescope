@@ -3,7 +3,7 @@
 //! Telescope does with them.
 
 use crate::guard::RequestGuard;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -82,10 +82,8 @@ pub struct Zkb {
 
 impl Killmail {
     /// When the ship died, if the time can be parsed.
-    pub fn time(&self) -> Option<DateTime<Utc>> {
-        DateTime::parse_from_rfc3339(&self.esi.killmail_time)
-            .ok()
-            .map(|time| time.with_timezone(&Utc))
+    pub fn time(&self) -> Option<Timestamp> {
+        self.esi.killmail_time.parse().ok()
     }
 
     /// `value` as a short amount: `950`, `12K`, `12.3M`, `1.5B`.
@@ -116,7 +114,7 @@ impl FeedError {
     /// Why the guard does not let a request go out now, or `None` when it
     /// does: a refusal it still remembers, or the pause after a restart.
     pub fn kept_away(guard: &RequestGuard) -> Option<Self> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         guard.wait(now)?;
         Some(if guard.refused(now) {
             Self::Throttled(StatusCode::TOO_MANY_REQUESTS)

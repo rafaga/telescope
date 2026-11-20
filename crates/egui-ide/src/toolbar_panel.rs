@@ -92,7 +92,11 @@ impl<'a> ToolbarPanel<'a> {
     }
 
     /// Puts back an order that [`order`](Self::order) gave.
-    pub fn set_order(ctx: &egui::Context, id_salt: impl Hash + std::fmt::Debug, order: Vec<String>) {
+    pub fn set_order(
+        ctx: &egui::Context,
+        id_salt: impl Hash + std::fmt::Debug,
+        order: Vec<String>,
+    ) {
         let id = Id::unique(id_salt);
         ctx.data_mut(|data| {
             let mut state = data.get_temp::<PanelState>(id).unwrap_or_default();

@@ -1,0 +1,20 @@
+[package]
+name = "egui-weave"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "A canvas of nodes joined by edges for egui, in the look of egui itself: pan, zoom, select, move, join ports under rules, minimap, undo and redo."
+readme = "README.md"
+keywords = ["egui", "gui", "node-graph", "editor"]
+categories = ["gui"]
+
+[dependencies]
+egui = { workspace = true }
+
+[dev-dependencies]
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+egui_kittest = { workspace = true }
+
+[lints]
+workspace = true

@@ -70,7 +70,11 @@ fn a_choice_lists_its_variants_with_their_labels() {
 fn the_fields_become_properties_in_their_groups() {
     let mut model = PropertyModel::new();
     Detection::sample().add_to(&mut model);
-    let titles: Vec<&str> = model.groups().iter().map(egui_ide::PropertyGroup::title).collect();
+    let titles: Vec<&str> = model
+        .groups()
+        .iter()
+        .map(egui_ide::PropertyGroup::title)
+        .collect();
     assert_eq!(titles, ["General", "Parameters", "Files"]);
     // the skipped field is not there
     assert!(model.descriptor(&PropertyId::new("internal")).is_none());
@@ -86,7 +90,9 @@ fn the_fields_become_properties_in_their_groups() {
     assert_eq!(pins.limits(), Some((1.0, 10.0)));
     assert_eq!(pins.unit_text(), Some("pins"));
     // the label of a field without one comes from its name
-    let enabled = model.descriptor(&PropertyId::new("enabled")).expect("enabled");
+    let enabled = model
+        .descriptor(&PropertyId::new("enabled"))
+        .expect("enabled");
     assert_eq!(enabled.label_text(), "Enabled");
 }
 
@@ -116,7 +122,11 @@ fn what_is_edited_goes_back_into_the_struct() {
     set(&mut model, "mode", PropertyValue::Choice(0));
     set(&mut model, "pins", PropertyValue::Int(5));
     set(&mut model, "weight", PropertyValue::Float(0.75));
-    set(&mut model, "tags", PropertyValue::TextList(vec!["a".to_owned(), "b".to_owned()]));
+    set(
+        &mut model,
+        "tags",
+        PropertyValue::TextList(vec!["a".to_owned(), "b".to_owned()]),
+    );
     set(&mut model, "color", PropertyValue::Color([9, 8, 7]));
     set(&mut model, "logs", PropertyValue::Text("/other".to_owned()));
     // a read-only property does not change its field

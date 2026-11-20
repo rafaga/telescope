@@ -77,7 +77,7 @@ fn log_entry(time: &str, message: (Type, String, String, String)) -> LayoutJob {
 /// event, or when it was received.
 pub(crate) struct LogLine {
     pub(crate) job: LayoutJob,
-    pub(crate) at: chrono::DateTime<chrono::Utc>,
+    pub(crate) at: jiff::Timestamp,
 }
 
 /// Puts `line` in its place by moment (after the entries of the same
@@ -123,7 +123,7 @@ impl TelescopeApp {
     pub(crate) fn update_status_stamped(
         &mut self,
         message: (Type, String, String, String),
-        stamp: Option<chrono::DateTime<chrono::Utc>>,
+        stamp: Option<jiff::Timestamp>,
     ) {
         let now = std::time::Instant::now();
         if is_duplicate_notification(
@@ -159,18 +159,20 @@ impl TelescopeApp {
                 // with the milliseconds even when they are zeros (the events
                 // have none).
                 job: log_entry(
-                    &at.with_timezone(&chrono::Local)
-                        .format("%H:%M:%S%.3f")
+                    &at.to_zoned_datetime(jiff::tz::TimeZone::system())
+                        .strftime("%H:%M:%S%.3f")
                         .to_string(),
                     message,
                 ),
                 at,
             },
             None => {
-                let full_time = chrono::Local::now().time().to_string();
+                let full_time = jiff::ZonedDateTime::now()
+                    .strftime("%H:%M:%S%.3f")
+                    .to_string();
                 LogLine {
-                    job: log_entry(full_time.split_at(12).0, message),
-                    at: chrono::Utc::now(),
+                    job: log_entry(&full_time, message),
+                    at: jiff::Timestamp::now(),
                 }
             }
         };
@@ -346,11 +348,11 @@ mod log_entry_tests {
     #[test]
     fn the_log_drops_the_oldest_entry_over_the_cap() {
         let mut log = Vec::new();
-        let start = chrono::Utc::now();
+        let start = jiff::Timestamp::now();
         for n in 0..5 {
             let mut job = LayoutJob::default();
             job.append(&n.to_string(), 0.0, TextFormat::default());
-            let at = start + chrono::Duration::seconds(n);
+            let at = start + jiff::SignedDuration::from_secs(n);
             push_capped(&mut log, LogLine { job, at }, 3);
         }
         let texts: Vec<&str> = log.iter().map(|line| line.job.text.as_str()).collect();
@@ -360,11 +362,11 @@ mod log_entry_tests {
     #[test]
     fn an_entry_read_late_takes_its_place_by_moment() {
         let mut log = Vec::new();
-        let start = chrono::Utc::now();
+        let start = jiff::Timestamp::now();
         for (name, seconds) in [("a", 10), ("c", 30), ("b", 20), ("d", 40)] {
             let mut job = LayoutJob::default();
             job.append(name, 0.0, TextFormat::default());
-            let at = start + chrono::Duration::seconds(seconds);
+            let at = start + jiff::SignedDuration::from_secs(seconds);
             push_capped(&mut log, LogLine { job, at }, 10);
         }
         let texts: Vec<&str> = log.iter().map(|line| line.job.text.as_str()).collect();

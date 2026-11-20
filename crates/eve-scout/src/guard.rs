@@ -20,7 +20,7 @@
 //! ends: the API does not document limits or blocks, so there is nothing to
 //! remember across runs.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -55,14 +55,14 @@ pub(crate) struct Fresh {
     pub(crate) body: Arc<Vec<u8>>,
     /// How long it stays valid from now.
     pub(crate) remaining: Duration,
-    pub(crate) last_hub_interaction: Option<DateTime<Utc>>,
+    pub(crate) last_hub_interaction: Option<Timestamp>,
 }
 
 struct Held {
     body: Arc<Vec<u8>>,
     fetched: Instant,
     max_age: Duration,
-    last_hub_interaction: Option<DateTime<Utc>>,
+    last_hub_interaction: Option<Timestamp>,
 }
 
 struct Pause {
@@ -132,7 +132,7 @@ impl Guard {
         key: String,
         body: Vec<u8>,
         max_age: Duration,
-        last_hub_interaction: Option<DateTime<Utc>>,
+        last_hub_interaction: Option<Timestamp>,
         now: Instant,
     ) {
         if max_age.is_zero() {
@@ -259,7 +259,7 @@ mod tests {
     fn the_hub_interaction_is_held_with_the_answer() {
         let guard = guard();
         let start = Instant::now();
-        let at = Utc::now();
+        let at = Timestamp::now();
         guard.store("a".into(), b"[]".to_vec(), secs(60), Some(at), start);
         assert_eq!(
             guard.fresh("a", start).unwrap().last_hub_interaction,

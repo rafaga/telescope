@@ -1,4 +1,4 @@
-use crate::model::{PropertyModel};
+use crate::model::PropertyModel;
 
 /// A type whose fields are properties: it puts them in a [`PropertyModel`]
 /// and reads the edited values back. It is meant to be derived (the derive

@@ -12,7 +12,8 @@
 //! new storm type or system class does not make a whole list unreadable.
 //! Fields the document does not mark as required are optional.
 
-use chrono::{DateTime, NaiveDate, Utc};
+use jiff::Timestamp;
+use jiff::civil::Date;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// An integer the API documents as one and sends as either a number or a
@@ -330,13 +331,13 @@ pub enum SignatureType {
 pub struct Signature {
     #[serde(deserialize_with = "IntegerId::required")]
     pub id: i64,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     #[serde(default)]
     pub created_by_name: Option<String>,
     #[serde(default)]
-    pub updated_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<Timestamp>,
     #[serde(default)]
-    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<Timestamp>,
     /// Whether it has been scanned completely.
     pub completed: bool,
     /// `true` when the wormhole type is on the hub's side and the K162 is on
@@ -349,7 +350,7 @@ pub struct Signature {
     #[serde(default)]
     pub max_ship_size: Option<ShipSize>,
     /// When it expires: under four hours left means close to its end of life.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     #[serde(default)]
     pub remaining_hours: Option<i64>,
     pub signature_type: SignatureType,
@@ -419,7 +420,7 @@ pub struct Observation {
     #[serde(deserialize_with = "IntegerId::required")]
     pub id: i64,
     #[serde(default)]
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<Timestamp>,
     #[serde(default)]
     pub created_by_name: Option<String>,
     pub observation_type: ObservationType,
@@ -526,7 +527,7 @@ impl Period {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ScanStatistic {
     /// The day, or the first day of the week or month.
-    pub date: NaiveDate,
+    pub date: Date,
     /// Every signature, wormholes included.
     pub signatures: i64,
     pub wormholes: i64,
@@ -539,7 +540,7 @@ pub struct Donation {
     pub id: i64,
     /// The ISK donated, as the decimal text the API sends.
     pub amount: String,
-    pub donated_at: DateTime<Utc>,
+    pub donated_at: Timestamp,
     /// Whether it was made on behalf of a corporation.
     #[serde(default)]
     pub corporation_donation: bool,
@@ -565,7 +566,7 @@ impl Donation {
 pub struct DailyGoal {
     /// The day, at midnight UTC (the API documents a date and sends a
     /// timestamp).
-    pub date: DateTime<Utc>,
+    pub date: Timestamp,
     /// ISK donated that day.
     pub donations: f64,
     /// The average of the last 30 days.
@@ -610,10 +611,7 @@ mod tests {
         assert_eq!(signature.in_system_class, Some(SystemClass::C1));
         assert_eq!(signature.in_system_name.as_deref(), Some("J100422"));
         assert!(signature.completed);
-        assert_eq!(
-            signature.expires_at.to_rfc3339(),
-            "2026-11-05T22:17:26+00:00"
-        );
+        assert_eq!(signature.expires_at.to_string(), "2026-11-05T22:17:26Z");
     }
 
     #[test]
@@ -696,10 +694,7 @@ mod tests {
         assert_eq!(donations.donors[0].alliance_id, None);
         let goals = donations.daily_goals.unwrap();
         assert_eq!(goals.timeline[0].percentage, 10.5);
-        assert_eq!(
-            goals.timeline[0].date.to_rfc3339(),
-            "2026-11-05T00:00:00+00:00"
-        );
+        assert_eq!(goals.timeline[0].date.to_string(), "2026-11-05T00:00:00Z");
     }
 
     #[test]

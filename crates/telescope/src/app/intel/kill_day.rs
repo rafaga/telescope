@@ -45,7 +45,7 @@
 use super::resolve::JumpGraph;
 use super::zkill_guard::{GuardConfig, RequestGuard};
 use super::zkillboard::FeedError;
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use reqwest::header::HeaderMap;
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
@@ -281,7 +281,7 @@ pub(crate) struct DayAnswer {
     pub fresh_for: Option<Duration>,
     /// The moment the data is from (`Last-Modified`, or now minus `Age`): a
     /// cached answer can be old.
-    pub data_time: DateTime<Utc>,
+    pub data_time: Timestamp,
 }
 
 /// What a tooltip can say about the last day.
@@ -344,22 +344,22 @@ pub(crate) struct SavedCount {
     pub system: usize,
     pub count: DayCount,
     /// How long ago it was asked.
-    pub age: TimeDelta,
+    pub age: SignedDuration,
     /// How long it stays good from now (nothing when it is stale).
-    pub fresh_for: TimeDelta,
+    pub fresh_for: SignedDuration,
 }
 
 /// The killmails of the last day seen per system, from the API's answers and
 /// the feed.
 #[derive(Debug, Default)]
 struct DayLog {
-    systems: HashMap<usize, BTreeSet<(DateTime<Utc>, u64)>>,
+    systems: HashMap<usize, BTreeSet<(Timestamp, u64)>>,
 }
 
 impl DayLog {
     /// Remembers killmail `id`, which happened at `time`, in `system`.
-    fn observe(&mut self, system: usize, id: u64, time: DateTime<Utc>, now: DateTime<Utc>) {
-        let cut = now - TimeDelta::days(1);
+    fn observe(&mut self, system: usize, id: u64, time: Timestamp, now: Timestamp) {
+        let cut = now - SignedDuration::from_hours(24);
         if time < cut {
             return;
         }
@@ -371,8 +371,8 @@ impl DayLog {
     }
 
     /// How many killmails of `system` happened in the last day as of `now`.
-    fn count(&self, system: usize, now: DateTime<Utc>) -> usize {
-        let cut = now - TimeDelta::days(1);
+    fn count(&self, system: usize, now: Timestamp) -> usize {
+        let cut = now - SignedDuration::from_hours(24);
         self.systems
             .get(&system)
             .map_or(0, |set| set.iter().filter(|(time, _)| *time >= cut).count())
@@ -532,7 +532,7 @@ impl DayCache {
     fn shown(&self, system_id: usize, count: DayCount, live: bool) -> DayCount {
         if live {
             DayCount {
-                kills: self.log.count(system_id, Utc::now()),
+                kills: self.log.count(system_id, Timestamp::now()),
                 more: false,
             }
         } else {
@@ -541,8 +541,8 @@ impl DayCache {
     }
 
     /// The feed saw a killmail: it counts for the last day of its system.
-    pub(crate) fn observe(&mut self, system_id: usize, id: u64, time: DateTime<Utc>) {
-        self.log.observe(system_id, id, time, Utc::now());
+    pub(crate) fn observe(&mut self, system_id: usize, id: u64, time: Timestamp) {
+        self.log.observe(system_id, id, time, Timestamp::now());
     }
 
     /// The feed is watching, with no gap, from `now` on (if it was not
@@ -556,7 +556,7 @@ impl DayCache {
     pub(crate) fn feed_down(&mut self) {
         self.feed_since = None;
         let Self { entries, log, .. } = self;
-        let now = Utc::now();
+        let now = Timestamp::now();
         for (system, entry) in entries.iter_mut() {
             if let Entry::Ready {
                 count, live_until, ..
@@ -575,15 +575,15 @@ impl DayCache {
     /// was made, apart from the end the API leaves out.
     fn covers(
         &self,
-        data_time: DateTime<Utc>,
+        data_time: Timestamp,
         prefetch: &Prefetch,
         now: Instant,
-        now_utc: DateTime<Utc>,
+        now_utc: Timestamp,
     ) -> bool {
         let Some(since) = self.feed_since else {
             return false;
         };
-        let age = (now_utc - data_time).to_std().unwrap_or_default();
+        let age = Duration::try_from(now_utc.duration_since(data_time)).unwrap_or_default();
         now.checked_sub(age)
             .is_some_and(|data| since + prefetch.api_lag <= data)
     }
@@ -678,7 +678,7 @@ impl DayCache {
                 let fresh = answer
                     .fresh_for
                     .map_or(TTL, |fresh| fresh.max(prefetch.min_fresh).min(TTL));
-                let now_utc = Utc::now();
+                let now_utc = Timestamp::now();
                 for killmail in &answer.kills {
                     if let Some(time) = killmail.time() {
                         self.log
@@ -719,9 +719,9 @@ impl DayCache {
                 Entry::Ready {
                     count, at, expires, ..
                 } => {
-                    let age = TimeDelta::from_std(now.saturating_duration_since(*at)).ok()?;
+                    let age = SignedDuration::try_from(now.saturating_duration_since(*at)).ok()?;
                     let fresh_for =
-                        TimeDelta::from_std(expires.saturating_duration_since(now)).ok()?;
+                        SignedDuration::try_from(expires.saturating_duration_since(now)).ok()?;
                     Some(SavedCount {
                         system: *system,
                         count: *count,
@@ -739,10 +739,10 @@ impl DayCache {
     /// (the log is not kept): they are good for as long as they were.
     pub(crate) fn restore(&mut self, counts: impl IntoIterator<Item = SavedCount>, now: Instant) {
         for saved in counts {
-            if let Ok(age) = saved.age.to_std()
+            if let Ok(age) = Duration::try_from(saved.age)
                 && let Some(at) = now.checked_sub(age)
             {
-                let fresh = saved.fresh_for.to_std().unwrap_or_default();
+                let fresh = Duration::try_from(saved.fresh_for).unwrap_or_default();
                 self.entries.entry(saved.system).or_insert(Entry::Ready {
                     count: saved.count,
                     at,
@@ -852,28 +852,30 @@ impl ZKillApi {
         )
     }
 
+    /// The moment an HTTP date header (RFC 2822 form) says.
+    fn http_date(value: &str) -> Option<Timestamp> {
+        jiff::fmt::rfc2822::DateTimeParser::new()
+            .parse_timestamp(value)
+            .ok()
+    }
+
     /// How long the answer stays as it is, as of `now`, according to its
     /// `Expires` header; `None` when it has none. An `Expires` in the past is
     /// no time at all.
-    fn fresh_for(headers: &HeaderMap, now: DateTime<Utc>) -> Option<Duration> {
+    fn fresh_for(headers: &HeaderMap, now: Timestamp) -> Option<Duration> {
         let expires = headers.get(reqwest::header::EXPIRES)?.to_str().ok()?;
-        let expires = DateTime::parse_from_rfc2822(expires).ok()?;
-        Some(
-            (expires.with_timezone(&Utc) - now)
-                .to_std()
-                .unwrap_or_default(),
-        )
+        let expires = Self::http_date(expires)?;
+        Some(Duration::try_from(expires.duration_since(now)).unwrap_or_default())
     }
 
     /// The moment the data of the answer is from: `Last-Modified`, or the
     /// time of the answer minus its `Age` (a CDN serves it for a while), or
     /// `now` when it says neither.
-    fn data_time(headers: &HeaderMap, now: DateTime<Utc>) -> DateTime<Utc> {
+    fn data_time(headers: &HeaderMap, now: Timestamp) -> Timestamp {
         let modified = headers
             .get(reqwest::header::LAST_MODIFIED)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
-            .map(|time| time.with_timezone(&Utc));
+            .and_then(Self::http_date);
         if let Some(modified) = modified {
             return modified.min(now);
         }
@@ -881,7 +883,7 @@ impl ZKillApi {
             .get(reqwest::header::AGE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<i64>().ok())
-            .and_then(TimeDelta::try_seconds)
+            .map(SignedDuration::from_secs)
             .map_or(now, |age| now - age)
     }
 
@@ -924,23 +926,23 @@ impl DayApi for ZKillApi {
     async fn kills(&self, system_id: usize) -> Result<DayAnswer, FeedError> {
         // Never closer to the previous request, whoever made it, than the
         // guard says: the limit is per address, not per source.
-        tokio::time::sleep(self.guard.pace(Utc::now())).await;
+        tokio::time::sleep(self.guard.pace(Timestamp::now())).await;
         // While zKillboard asked to be left alone, nothing is sent.
         if let Some(error) = FeedError::kept_away(&self.guard) {
             return Err(error);
         }
-        self.guard.requested(Utc::now());
+        self.guard.requested(Timestamp::now());
         let response = self
             .client
             .get(self.day_url(system_id))
             .send()
             .await
             .map_err(|error| {
-                self.guard.failed(Utc::now());
+                self.guard.failed(Timestamp::now());
                 FeedError::Other(error.to_string())
             })?;
         match response.status() {
-            status if status.is_success() => self.guard.succeeded(Utc::now()),
+            status if status.is_success() => self.guard.succeeded(Timestamp::now()),
             status @ (StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) => {
                 tracing::warn!(
                     %status,
@@ -949,16 +951,18 @@ impl DayApi for ZKillApi {
                     sent = self.guard.sent(),
                     "zKillboard refused a day-count request"
                 );
-                self.guard
-                    .throttled_for(Utc::now(), RequestGuard::retry_after(response.headers()));
+                self.guard.throttled_for(
+                    Timestamp::now(),
+                    RequestGuard::retry_after(response.headers()),
+                );
                 return Err(FeedError::Throttled(status));
             }
             status => {
-                self.guard.failed(Utc::now());
+                self.guard.failed(Timestamp::now());
                 return Err(FeedError::Other(format!("the API answered {status}")));
             }
         }
-        let now = Utc::now();
+        let now = Timestamp::now();
         let fresh_for = Self::fresh_for(response.headers(), now);
         let data_time = Self::data_time(response.headers(), now);
         let items: Vec<serde_json::Value> = response
@@ -1002,7 +1006,7 @@ mod tests {
                     count,
                     kills: Vec::new(),
                     fresh_for,
-                    data_time: Utc::now(),
+                    data_time: Timestamp::now(),
                 }),
                 asked: AtomicUsize::new(0),
                 order: Mutex::new(Vec::new()),
@@ -1414,7 +1418,7 @@ mod tests {
                 count: COUNT,
                 kills: Vec::new(),
                 fresh_for,
-                data_time: Utc::now(),
+                data_time: Timestamp::now(),
             })
         };
         cache.record(1, &answer(None), &prefetch, now);
@@ -1495,9 +1499,7 @@ mod tests {
 
     #[test]
     fn expires_says_how_long_the_answer_stays_as_it_is() {
-        let now = DateTime::parse_from_rfc2822("Mon, 02 Nov 2026 18:00:00 GMT")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = ZKillApi::http_date("Mon, 02 Nov 2026 18:00:00 GMT").unwrap();
         let mut headers = HeaderMap::new();
         assert_eq!(ZKillApi::fresh_for(&headers, now), None);
         headers.insert(
@@ -1562,8 +1564,8 @@ mod tests {
         let saved = SavedCount {
             system: 1,
             count: COUNT,
-            age: TimeDelta::seconds(600),
-            fresh_for: TimeDelta::seconds(1200),
+            age: SignedDuration::from_secs(600),
+            fresh_for: SignedDuration::from_secs(1200),
         };
         cache.restore([saved], now);
         assert_eq!(
@@ -1584,7 +1586,7 @@ mod tests {
                     kills: 99,
                     more: true,
                 },
-                age: TimeDelta::seconds(1),
+                age: SignedDuration::from_secs(1),
                 ..saved
             }],
             now,
@@ -1595,7 +1597,7 @@ mod tests {
         stale.restore(
             [SavedCount {
                 system: 2,
-                fresh_for: TimeDelta::zero(),
+                fresh_for: SignedDuration::ZERO,
                 ..saved
             }],
             now,
@@ -1608,12 +1610,12 @@ mod tests {
     impl Setup {
         /// A killmail of system 1 that happened `minutes_ago`.
         fn kill(id: u64, minutes_ago: i64) -> Killmail {
-            let time = Utc::now() - TimeDelta::minutes(minutes_ago);
+            let time = Timestamp::now() - SignedDuration::from_mins(minutes_ago);
             Killmail {
                 killmail_id: id,
                 sequence_id: 0,
                 esi: EsiKillmail {
-                    killmail_time: time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    killmail_time: time.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
                     solar_system_id: 1,
                     victim: Victim { ship_type_id: None },
                     attackers: Vec::new(),
@@ -1632,7 +1634,7 @@ mod tests {
                 },
                 kills,
                 fresh_for: Some(Duration::from_secs(600)),
-                data_time: Utc::now() - TimeDelta::minutes(data_minutes_ago),
+                data_time: Timestamp::now() - SignedDuration::from_mins(data_minutes_ago),
             })
         }
     }
@@ -1659,7 +1661,7 @@ mod tests {
         );
         // The feed announces another one; the API is not asked after the
         // hour zKillboard said, nor after several.
-        let seen = Utc::now();
+        let seen = Timestamp::now();
         cache.observe(1, 3, seen);
         cache.observe(1, 3, seen);
         let later = now + Duration::from_secs(3 * 60 * 60);
@@ -1693,7 +1695,7 @@ mod tests {
             &prefetch,
             now,
         );
-        cache.observe(1, 2, Utc::now());
+        cache.observe(1, 2, Timestamp::now());
         cache.feed_down();
         // The two it saw stay on the line, and it is asked again once the
         // time zKillboard said has passed.
@@ -1744,15 +1746,13 @@ mod tests {
 
     #[test]
     fn the_data_time_is_last_modified_or_now_minus_the_age() {
-        let now = DateTime::parse_from_rfc2822("Mon, 02 Nov 2026 18:00:00 GMT")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = ZKillApi::http_date("Mon, 02 Nov 2026 18:00:00 GMT").unwrap();
         let mut headers = HeaderMap::new();
         assert_eq!(ZKillApi::data_time(&headers, now), now);
         headers.insert(reqwest::header::AGE, "120".parse().unwrap());
         assert_eq!(
             ZKillApi::data_time(&headers, now),
-            now - TimeDelta::minutes(2)
+            now - SignedDuration::from_mins(2)
         );
         headers.insert(
             reqwest::header::LAST_MODIFIED,
@@ -1760,7 +1760,7 @@ mod tests {
         );
         assert_eq!(
             ZKillApi::data_time(&headers, now),
-            now - TimeDelta::minutes(30)
+            now - SignedDuration::from_mins(30)
         );
     }
 }

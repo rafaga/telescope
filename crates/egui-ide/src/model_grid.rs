@@ -5,16 +5,15 @@ use crate::model::{
     Severity,
 };
 use crate::property_grid::PropertyGrid;
-#[cfg(feature = "native-dialogs")]
-use native_tools::dialog::{Dialog, DialogResult, DialogType};
-#[cfg(feature = "native-dialogs")]
-use std::path::Path;
-#[cfg(feature = "native-dialogs")]
-use std::sync::{Arc, Mutex};
 use egui::{
-    Align, Align2, Button, ComboBox, DragValue, Frame, Grid, Id, Label, Layout, Margin, Popup, Rect,
-    RichText, Sense, StrokeKind, TextEdit, TextStyle, Ui, Vec2, Window, vec2,
+    Align, Align2, Button, ComboBox, DragValue, Frame, Id, Label, Layout, Margin, Rect, RichText,
+    Role, Sense, StrokeKind, TextEdit, TextStyle, Ui, Vec2, WidgetInfo, Window, vec2,
 };
+use egui_extras::DatePickerButton;
+use native_tools::date_picker::Date;
+use native_tools::dialog::{Dialog, DialogResult, DialogType};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// What is being edited in the window of a list, apart from the value until
 /// the window is accepted.
@@ -130,7 +129,6 @@ impl PropertyDescriptor {
             (PropertyKind::Text, PropertyValue::Text(text)) => ui
                 .add(TextEdit::singleline(text).desired_width(f32::INFINITY))
                 .changed(),
-            #[cfg(feature = "native-dialogs")]
             (kind @ (PropertyKind::File | PropertyKind::Folder), PropertyValue::Text(text)) => {
                 // the dialog answers from its own thread, into a slot that
                 // lives as long as the property's row
@@ -179,65 +177,39 @@ impl PropertyDescriptor {
                 });
                 changed
             }
-            #[cfg(not(feature = "native-dialogs"))]
-            (PropertyKind::File | PropertyKind::Folder, PropertyValue::Text(text)) => ui
-                .add(TextEdit::singleline(text).desired_width(f32::INFINITY))
-                .changed(),
             (PropertyKind::Date, PropertyValue::Text(text)) => {
-                let view_id = ui.scope_id().with(("date_view", self.id().as_str()));
                 let mut changed = false;
+                let current = Date::parse_iso(text);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // the button is placed first, so the text takes the rest
-                    let button = ui.button("\u{1F4C6}");
-                    if button.clicked() {
-                        let (year, month, _) = Calendar::parse(text).unwrap_or_else(Calendar::today);
-                        ui.data_mut(|data| data.insert_temp(view_id, (year, month)));
+                    let mut day = current
+                        .and_then(|date| {
+                            jiff::civil::Date::new(
+                                date.year as i16,
+                                date.month as i8,
+                                date.day as i8,
+                            )
+                            .ok()
+                        })
+                        .unwrap_or_else(|| {
+                            jiff::Timestamp::now()
+                                .to_zoned(jiff::tz::TimeZone::UTC)
+                                .date()
+                        });
+                    // only the icon: the text is the field beside it
+                    let response = ui.add(
+                        DatePickerButton::new(&mut day)
+                            .id_salt(self.id().as_str())
+                            .format(""),
+                    );
+                    if response.changed()
+                        && let Some(date) =
+                            Date::new(i32::from(day.year()), day.month() as u8, day.day() as u8)
+                    {
+                        *text = date.to_iso();
+                        changed = true;
                     }
-                    Popup::menu(&button).show(|ui| {
-                        let (mut year, mut month) = ui
-                            .data(|data| data.get_temp::<(i32, u32)>(view_id))
-                            .unwrap_or_else(|| {
-                                let (year, month, _) = Calendar::today();
-                                (year, month)
-                            });
-                        ui.horizontal(|ui| {
-                            if ui.button("\u{25C0}").clicked() {
-                                (year, month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
-                            }
-                            let name = labels.months.get(month as usize - 1).map_or("", String::as_str);
-                            ui.label(RichText::new(format!("{name} {year}")).strong());
-                            if ui.button("\u{25B6}").clicked() {
-                                (year, month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
-                            }
-                        });
-                        let first = Calendar::weekday(year, month, 1);
-                        let count = Calendar::days_in_month(year, month);
-                        let chosen = Calendar::parse(text);
-                        Grid::new(view_id.with("days")).show(ui, |ui| {
-                            for name in labels.weekdays.iter().take(7) {
-                                ui.label(RichText::new(name).weak());
-                            }
-                            ui.end_row();
-                            for index in 0..(first + count).div_ceil(7) * 7 {
-                                if index >= first && index - first < count {
-                                    let day = index - first + 1;
-                                    let selected = chosen == Some((year, month, day));
-                                    if ui.add(Button::selectable(selected, day.to_string())).clicked() {
-                                        *text = Calendar::format(year, month, day);
-                                        changed = true;
-                                        ui.close();
-                                    }
-                                } else {
-                                    ui.label("");
-                                }
-                                if index % 7 == 6 {
-                                    ui.end_row();
-                                }
-                            }
-                        });
-                        ui.data_mut(|data| data.insert_temp(view_id, (year, month)));
-                    });
-                    let valid = text.is_empty() || Calendar::parse(text).is_some();
+                    let valid = text.is_empty() || Date::parse_iso(text).is_some();
                     let mut edit = TextEdit::singleline(text)
                         .hint_text(labels.date_hint.as_str())
                         .desired_width(f32::INFINITY);
@@ -283,7 +255,9 @@ impl PropertyDescriptor {
             (PropertyKind::Bool, PropertyValue::Bool(flag)) => {
                 let mut changed = false;
                 let shown = if *flag { &labels.yes } else { &labels.no };
-                ComboBox::from_id_salt((self.id().as_str(), "bool"))
+                let enabled = ui.is_enabled();
+                let name = self.label_text();
+                let combo = ComboBox::from_id_salt((self.id().as_str(), "bool"))
                     .selected_text(shown)
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
@@ -296,18 +270,9 @@ impl PropertyDescriptor {
                             }
                         }
                     });
-                changed
-            }
-            (PropertyKind::Flags(names), PropertyValue::Flags(flags)) => {
-                if flags.len() < names.len() {
-                    flags.resize(names.len(), false);
-                }
-                let mut changed = false;
-                ui.horizontal_wrapped(|ui| {
-                    for (name, flag) in names.iter().zip(flags.iter_mut()) {
-                        changed |= ui.checkbox(flag, name).changed();
-                    }
-                });
+                combo
+                    .response
+                    .widget_info(|| WidgetInfo::labeled(Role::ComboBox, enabled, name));
                 changed
             }
             (PropertyKind::Action(text), _) => {
@@ -325,7 +290,9 @@ impl PropertyDescriptor {
             (PropertyKind::Choice(options), PropertyValue::Choice(index)) => {
                 let mut changed = false;
                 let shown = options.get(*index).map_or("", String::as_str);
-                ComboBox::from_id_salt(self.id().as_str())
+                let enabled = ui.is_enabled();
+                let name = self.label_text();
+                let combo = ComboBox::from_id_salt(self.id().as_str())
                     .selected_text(shown)
                     .width(ui.available_width())
                     .show_ui(ui, |ui| {
@@ -335,6 +302,9 @@ impl PropertyDescriptor {
                             }
                         }
                     });
+                combo
+                    .response
+                    .widget_info(|| WidgetInfo::labeled(Role::ComboBox, enabled, name));
                 changed
             }
             (PropertyKind::Color, PropertyValue::Color(rgb)) => {
@@ -537,7 +507,9 @@ impl Draft {
         // was given (the borders of its cells) is taken off the next time,
         // or the window would grow a little every frame.
         let extra_id = id.with("table_extra");
-        let extra = ui.data(|data| data.get_temp::<f32>(extra_id)).unwrap_or(0.0);
+        let extra = ui
+            .data(|data| data.get_temp::<f32>(extra_id))
+            .unwrap_or(0.0);
         let width = (ui.available_width() - extra).max(320.0);
         let value_width = (width - marker_width - key_width).max(100.0);
         let widths = [marker_width, key_width, value_width];
@@ -580,9 +552,8 @@ impl Draft {
                     Frame::new().inner_margin(margin).show(ui, |ui| {
                         ui.set_width((key_width - padding).max(0.0));
                         if *editing == Some(position) {
-                            let response = ui.add(
-                                TextEdit::singleline(key).desired_width(f32::INFINITY),
-                            );
+                            let response =
+                                ui.add(TextEdit::singleline(key).desired_width(f32::INFINITY));
                             if *focus_pending {
                                 response.request_focus();
                                 *focus_pending = false;
@@ -629,82 +600,13 @@ impl Draft {
         for rect in &lines {
             painter.hline(outer.x_range(), rect.bottom(), stroke);
         }
-        for x in [outer.left() + marker_width, outer.left() + marker_width + key_width] {
+        for x in [
+            outer.left() + marker_width,
+            outer.left() + marker_width + key_width,
+        ] {
             painter.vline(x, outer.y_range(), stroke);
         }
         let measured = (outer.width() - width).max(0.0);
         ui.data_mut(|data| data.insert_temp(extra_id, measured));
-    }
-}
-
-/// The dates of the calendar of a date property, by the days since 1970-01-01
-/// of the Gregorian calendar.
-struct Calendar;
-
-impl Calendar {
-    /// The days since 1970-01-01 of a date.
-    fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
-        let year = i64::from(year) - i64::from(month <= 2);
-        let era = year.div_euclid(400);
-        let year_of_era = year - era * 400;
-        let shifted = i64::from(if month > 2 { month - 3 } else { month + 9 });
-        let day_of_year = (153 * shifted + 2) / 5 + i64::from(day) - 1;
-        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-        era * 146_097 + day_of_era - 719_468
-    }
-
-    /// The date of a number of days since 1970-01-01.
-    fn civil_from_days(days: i64) -> (i32, u32, u32) {
-        let days = days + 719_468;
-        let era = days.div_euclid(146_097);
-        let day_of_era = days - era * 146_097;
-        let year_of_era =
-            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-        let shifted = (5 * day_of_year + 2) / 153;
-        let day = (day_of_year - (153 * shifted + 2) / 5 + 1) as u32;
-        let month = if shifted < 10 { shifted + 3 } else { shifted - 9 } as u32;
-        let year = (year_of_era + era * 400 + i64::from(month <= 2)) as i32;
-        (year, month, day)
-    }
-
-    /// Today, by the clock of the system.
-    fn today() -> (i32, u32, u32) {
-        let seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        Self::civil_from_days((seconds / 86_400) as i64)
-    }
-
-    /// The days of a month.
-    fn days_in_month(year: i32, month: u32) -> u32 {
-        match month {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            _ if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
-            _ => 28,
-        }
-    }
-
-    /// The day of the week of a date, counted from Monday as 0.
-    fn weekday(year: i32, month: u32, day: u32) -> u32 {
-        (Self::days_from_civil(year, month, day) + 3).rem_euclid(7) as u32
-    }
-
-    /// The date of a `YYYY-MM-DD` text, if it is one.
-    fn parse(text: &str) -> Option<(i32, u32, u32)> {
-        let mut parts = text.trim().split('-');
-        let year = parts.next()?.parse::<i32>().ok()?;
-        let month = parts.next()?.parse::<u32>().ok()?;
-        let day = parts.next()?.parse::<u32>().ok()?;
-        let valid = parts.next().is_none()
-            && (1..=12).contains(&month)
-            && (1..=Self::days_in_month(year, month)).contains(&day);
-        valid.then_some((year, month, day))
-    }
-
-    /// A date as `YYYY-MM-DD`.
-    fn format(year: i32, month: u32, day: u32) -> String {
-        format!("{year:04}-{month:02}-{day:02}")
     }
 }

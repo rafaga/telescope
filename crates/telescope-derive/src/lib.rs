@@ -330,7 +330,12 @@ impl Kind {
             Self::File | Self::Folder if is_path => {
                 quote!(::egui_ide::PropertyValue::Text(#expr.to_string_lossy().into_owned()))
             }
-            Self::Text | Self::Multiline | Self::File | Self::Folder | Self::Date | Self::ReadOnly => {
+            Self::Text
+            | Self::Multiline
+            | Self::File
+            | Self::Folder
+            | Self::Date
+            | Self::ReadOnly => {
                 quote!(::egui_ide::PropertyValue::Text(::std::string::ToString::to_string(&#expr)))
             }
             Self::Int => quote!(::egui_ide::PropertyValue::Int(#expr as i64)),

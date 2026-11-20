@@ -1633,7 +1633,7 @@ mod tests {
     fn line(text: &str) -> IntelEvent {
         IntelEvent::text(
             IntelLine {
-                timestamp: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+                timestamp: jiff::Timestamp::UNIX_EPOCH,
                 author: String::from("Pilot"),
                 text: text.to_string(),
             },
@@ -1777,8 +1777,7 @@ mod tests {
         fn event(channel: &str, seconds: i64, text: &str) -> IntelEvent {
             let mut event = line(text);
             event.channel = channel.to_string();
-            event.line.timestamp =
-                chrono::DateTime::from_timestamp(1_700_000_000 + seconds, 0).unwrap();
+            event.line.timestamp = jiff::Timestamp::from_second(1_700_000_000 + seconds).unwrap();
             event
         }
 

@@ -19,7 +19,7 @@
 
 use super::kill_context::{KillRecord, KillTags, WINDOW};
 use super::kill_day::{DayCount, SavedCount};
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -32,9 +32,9 @@ pub(crate) struct CacheStoreConfig {
     /// Name of the file, in the folder of the SDE database.
     pub file: String,
     /// How far back the killmails are kept (and used).
-    pub retention: TimeDelta,
+    pub retention: SignedDuration,
     /// How long the counts of the last day are kept.
-    pub day_counts_kept: TimeDelta,
+    pub day_counts_kept: SignedDuration,
     /// The old rows are deleted after this many inserts.
     pub prune_every: u32,
     /// Whether the file is used only when the SDE database it sits next to
@@ -48,7 +48,7 @@ impl Default for CacheStoreConfig {
         Self {
             file: String::from("cache.db"),
             retention: WINDOW,
-            day_counts_kept: TimeDelta::hours(24),
+            day_counts_kept: SignedDuration::from_hours(24),
             prune_every: 500,
             needs_sde: true,
         }
@@ -69,7 +69,7 @@ pub(crate) struct CacheStore {
 
 /// The hour of ESI as it is kept: when it was computed, and the kills per
 /// system.
-pub(crate) type StoredHour = (DateTime<Utc>, Vec<(usize, usize)>);
+pub(crate) type StoredHour = (Timestamp, Vec<(usize, usize)>);
 
 impl CacheStore {
     pub(crate) fn new(sde: Arc<RwLock<PathBuf>>, config: CacheStoreConfig) -> Self {
@@ -83,13 +83,13 @@ impl CacheStore {
     }
 
     /// Seconds since the Unix epoch.
-    fn secs(time: DateTime<Utc>) -> i64 {
-        time.timestamp()
+    fn secs(time: Timestamp) -> i64 {
+        time.as_second()
     }
 
     /// The moment `secs` seconds after the Unix epoch.
-    fn time(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(secs, 0).unwrap_or(DateTime::UNIX_EPOCH)
+    fn time(secs: i64) -> Timestamp {
+        Timestamp::from_second(secs).unwrap_or(Timestamp::UNIX_EPOCH)
     }
 
     /// The version of the layout of the file (`PRAGMA user_version`).
@@ -217,7 +217,7 @@ impl CacheStore {
 
     /// Keeps `record`. A killmail already kept is left as it is.
     #[cfg(test)]
-    pub(crate) fn insert(&self, record: &KillRecord, now: DateTime<Utc>) {
+    pub(crate) fn insert(&self, record: &KillRecord, now: Timestamp) {
         self.insert_with(record, None, now);
     }
 
@@ -244,7 +244,7 @@ impl CacheStore {
     /// when there is one. The hash and the location are columns of their
     /// own; the rest of the killmail is only in `raw`. A killmail already
     /// kept is left as it is.
-    pub(crate) fn insert_with(&self, record: &KillRecord, raw: Option<&str>, now: DateTime<Utc>) {
+    pub(crate) fn insert_with(&self, record: &KillRecord, raw: Option<&str>, now: Timestamp) {
         let raw = raw.and_then(Self::compress);
         let (Ok(id), Ok(system), Ok(ships)) = (
             i64::try_from(record.killmail_id),
@@ -284,12 +284,10 @@ impl CacheStore {
     }
 
     /// Deletes what is older than what is used.
-    pub(crate) fn prune(&self, now: DateTime<Utc>) {
-        let killmails = now
-            .checked_sub_signed(self.config.retention)
-            .map_or(0, Self::secs);
+    pub(crate) fn prune(&self, now: Timestamp) {
+        let killmails = now.checked_sub(self.config.retention).map_or(0, Self::secs);
         let counts = now
-            .checked_sub_signed(self.config.day_counts_kept)
+            .checked_sub(self.config.day_counts_kept)
             .map_or(0, Self::secs);
         self.with(|connection| {
             connection.execute("DELETE FROM killmails WHERE time < ?1", [killmails])?;
@@ -337,10 +335,8 @@ impl CacheStore {
     }
 
     /// The killmails of the last [`WINDOW`], oldest first.
-    pub(crate) fn records(&self, now: DateTime<Utc>) -> Vec<KillRecord> {
-        let oldest = now
-            .checked_sub_signed(self.config.retention)
-            .map_or(0, Self::secs);
+    pub(crate) fn records(&self, now: Timestamp) -> Vec<KillRecord> {
+        let oldest = now.checked_sub(self.config.retention).map_or(0, Self::secs);
         self.with(|connection| {
             let mut statement = connection.prepare(&format!(
                 "SELECT {} FROM killmails WHERE time >= ?1 ORDER BY time",
@@ -373,7 +369,7 @@ impl CacheStore {
 
     /// Keeps the counts of the last day, each with how long ago it was asked
     /// and how long it stays good.
-    pub(crate) fn save_days(&self, counts: &[SavedCount], now: DateTime<Utc>) {
+    pub(crate) fn save_days(&self, counts: &[SavedCount], now: Timestamp) {
         self.with(|connection| {
             let transaction = connection.unchecked_transaction()?;
             for saved in counts {
@@ -383,10 +379,8 @@ impl CacheStore {
                 ) else {
                     continue;
                 };
-                let asked = now.checked_sub_signed(saved.age).map_or(0, Self::secs);
-                let expires = now
-                    .checked_add_signed(saved.fresh_for)
-                    .map_or(0, Self::secs);
+                let asked = now.checked_sub(saved.age).map_or(0, Self::secs);
+                let expires = now.checked_add(saved.fresh_for).map_or(0, Self::secs);
                 transaction.execute(
                     "INSERT OR REPLACE INTO day_counts \
                      (system_id, kills, more, fetched_at, expires_at) \
@@ -401,8 +395,8 @@ impl CacheStore {
     /// The counts kept by [`Self::save_days`] that were asked at most
     /// `max_age` ago, with how long ago and how long they stay good from
     /// `now`.
-    pub(crate) fn days(&self, now: DateTime<Utc>, max_age: TimeDelta) -> Vec<SavedCount> {
-        let oldest = now.checked_sub_signed(max_age).map_or(0, Self::secs);
+    pub(crate) fn days(&self, now: Timestamp, max_age: SignedDuration) -> Vec<SavedCount> {
+        let oldest = now.checked_sub(max_age).map_or(0, Self::secs);
         self.with(|connection| {
             let mut statement = connection.prepare(
                 "SELECT system_id, kills, more, fetched_at, expires_at FROM day_counts \
@@ -417,8 +411,8 @@ impl CacheStore {
                         kills: usize::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
                         more: row.get(2)?,
                     },
-                    age: (now - asked).max(TimeDelta::zero()),
-                    fresh_for: (expires - now).max(TimeDelta::zero()),
+                    age: now.duration_since(asked).max(SignedDuration::ZERO),
+                    fresh_for: expires.duration_since(now).max(SignedDuration::ZERO),
                 })
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -428,7 +422,7 @@ impl CacheStore {
 
     /// Keeps the kills of each system in the hour ESI computed at `modified`,
     /// in place of the hour kept before.
-    pub(crate) fn save_esi_hour(&self, modified: DateTime<Utc>, counts: &[(usize, usize)]) {
+    pub(crate) fn save_esi_hour(&self, modified: Timestamp, counts: &[(usize, usize)]) {
         self.with(|connection| {
             let transaction = connection.unchecked_transaction()?;
             transaction.execute("DELETE FROM esi_hour", [])?;
@@ -537,7 +531,7 @@ mod tests {
         }
     }
 
-    fn record(id: u64, time: DateTime<Utc>) -> KillRecord {
+    fn record(id: u64, time: Timestamp) -> KillRecord {
         KillRecord {
             killmail_id: id,
             time,
@@ -551,14 +545,14 @@ mod tests {
         }
     }
 
-    fn ago(now: DateTime<Utc>, minutes: u64) -> DateTime<Utc> {
-        now - TimeDelta::minutes(i64::try_from(minutes).unwrap())
+    fn ago(now: Timestamp, minutes: u64) -> Timestamp {
+        now - SignedDuration::from_mins(i64::try_from(minutes).unwrap())
     }
 
     #[test]
     fn the_killmails_of_the_last_hour_survive_a_restart() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         {
             let store = folder.store();
             store.insert(&record(1, ago(now, 30)), now);
@@ -580,7 +574,7 @@ mod tests {
     #[test]
     fn the_tags_of_a_killmail_survive_a_restart() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut tagged = record(1, ago(now, 3));
         tagged.tags = KillTags {
             awox: true,
@@ -596,7 +590,7 @@ mod tests {
     #[test]
     fn a_killmail_is_kept_once() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = folder.store();
         store.insert(&record(1, ago(now, 3)), now);
         store.insert(&record(1, ago(now, 3)), now);
@@ -608,7 +602,7 @@ mod tests {
     #[test]
     fn pruning_drops_what_is_older_than_the_window() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = folder.store();
         store.insert(&record(1, ago(now, 90)), now);
         store.insert(&record(2, ago(now, 10)), now);
@@ -620,32 +614,32 @@ mod tests {
     #[test]
     fn the_day_counts_come_back_with_their_age() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = folder.store();
         let count = DayCount {
             kills: 7,
             more: false,
         };
-        let saved = |system, age: TimeDelta| SavedCount {
+        let saved = |system, age: SignedDuration| SavedCount {
             system,
             count,
             age,
-            fresh_for: TimeDelta::minutes(20),
+            fresh_for: SignedDuration::from_mins(20),
         };
         store.save_days(
             &[
-                saved(1, TimeDelta::minutes(10)),
-                saved(2, TimeDelta::hours(3)),
+                saved(1, SignedDuration::from_mins(10)),
+                saved(2, SignedDuration::from_hours(3)),
             ],
             now,
         );
-        let kept = folder.store().days(now, TimeDelta::hours(1));
+        let kept = folder.store().days(now, SignedDuration::from_hours(1));
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].system, 1);
         assert_eq!(kept[0].count, count);
-        assert_eq!(kept[0].age.num_seconds(), 10 * 60);
+        assert_eq!(kept[0].age.as_secs(), 10 * 60);
         // Kept in whole seconds: a second off is the rounding.
-        assert!((kept[0].fresh_for.num_seconds() - 20 * 60).abs() <= 1);
+        assert!((kept[0].fresh_for.as_secs() - 20 * 60).abs() <= 1);
     }
 
     #[test]
@@ -666,7 +660,7 @@ mod tests {
             Arc::new(RwLock::new(folder.0.join("sde.sqlite"))),
             CacheStoreConfig::default(),
         );
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.insert(&record(1, now), now);
         assert!(!folder.0.join(CacheStoreConfig::default().file).exists());
         // With the SDE database there, the file is made.
@@ -686,7 +680,7 @@ mod tests {
                 ..CacheStoreConfig::default()
             },
         );
-        let now = Utc::now();
+        let now = Timestamp::now();
         store.insert(&record(1, now), now);
         assert!(store.records(now).is_empty());
         assert_eq!(store.feed_next(), None);
@@ -695,10 +689,10 @@ mod tests {
     #[test]
     fn the_hash_and_the_location_are_kept_with_the_killmail() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = folder.store();
         // The store keeps the time in whole seconds.
-        let whole = DateTime::from_timestamp(now.timestamp(), 0).expect("a valid time");
+        let whole = Timestamp::from_second(now.as_second()).expect("a valid time");
         let mut kept = record(1, whole);
         kept.hash = String::from("40d156ad1babd4a7760858f3a413aaf016c82341");
         kept.location_id = Some(60003760);
@@ -714,7 +708,7 @@ mod tests {
     #[test]
     fn the_killmail_is_kept_whole_and_compressed() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let store = folder.store();
         let text = format!(
             r#"{{"killmail_id":1,"attackers":[{}]}}"#,
@@ -744,13 +738,13 @@ mod tests {
         let store = folder.store();
         // Nothing kept yet is not the same as a store that can't be read.
         assert_eq!(store.esi_hour(), Some(None));
-        let first = Utc::now() - TimeDelta::hours(1);
+        let first = Timestamp::now() - SignedDuration::from_hours(1);
         store.save_esi_hour(first, &[(1, 4), (2, 1)]);
-        let second = Utc::now();
+        let second = Timestamp::now();
         store.save_esi_hour(second, &[(1, 7)]);
         drop(store);
         let (modified, counts) = folder.store().esi_hour().unwrap().unwrap();
-        assert_eq!(modified.timestamp(), second.timestamp());
+        assert_eq!(modified.as_second(), second.as_second());
         assert_eq!(counts, [(1, 7)]);
     }
 
@@ -771,7 +765,7 @@ mod tests {
     #[test]
     fn a_newer_layout_is_left_alone() {
         let folder = Folder::new();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let path = folder.0.join(CacheStoreConfig::default().file);
         Connection::open(&path)
             .unwrap()

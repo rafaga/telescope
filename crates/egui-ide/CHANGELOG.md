@@ -9,9 +9,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 * Traits `Editable` (a type that puts its fields in a `PropertyModel` and reads them back) and `PropertyChoice` (an option of a dropdown), for a derive macro to implement.
 * `ToolbarPanel`: groups of toolbars that the user moves by dragging their grip; the order can be saved and put back. The groups that do not fit go on to another row, and a placeholder of the size of the dragged group shows where it would land.
 * `ToolbarUi::icon_text_button`, `icon_text_toggle` and `split_button` (now with an icon); the buttons of a panel are framed like the buttons of egui.
-* Property kinds `Multiline`, `Flags`, `Action`, `Link` and `Reference`, and `PropertyModel::take_activated` to know which button or link was used.
-* Property kinds `File` and `Folder` (instead of `Path`): the grid adds a button that opens the native dialog (with `native_tools`) and puts the choice in the property. It is the default feature `native-dialogs`; without it they are a plain text field.
-* Property kind `Date`: an editable `YYYY-MM-DD` field with a button that opens a calendar; `PropertyLabels` gets `months`, `weekdays` and `date_hint`.
+* Property kinds `Multiline`, `Action`, `Link` and `Reference`, and `PropertyModel::take_activated` to know which button or link was used.
+* Property kinds `File` and `Folder` (instead of `Path`): the grid adds a button that opens the native dialog (with `native_tools`) and puts the choice in the property.
+* Property kind `Date`: an editable `YYYY-MM-DD` field with the calendar of `egui_extras` (`DatePickerButton`); `PropertyLabels` gets `date_hint`.
 * The `gallery` example, a window with every component to try them out.
 
 ### Changed

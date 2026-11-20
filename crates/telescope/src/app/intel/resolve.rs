@@ -588,7 +588,7 @@ mod real_line_tests {
         assert!(errors.is_empty(), "{errors:?}");
         let context = IntelEvent::text(
             IntelLine {
-                timestamp: chrono::DateTime::from_timestamp(0, 0).unwrap(),
+                timestamp: jiff::Timestamp::UNIX_EPOCH,
                 author: String::from("Pilot"),
                 text: text.to_string(),
             },

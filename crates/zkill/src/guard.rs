@@ -22,7 +22,7 @@
 //! run.
 
 use crate::stats::{LaneStats, StatsConfig};
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -41,18 +41,18 @@ pub trait GuardStore: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GuardConfig {
     /// How long to keep away after zKillboard refused a request (403 or 429).
-    pub block: TimeDelta,
+    pub block: SignedDuration,
     /// How long after the last request of the previous run the first one of
     /// this run waits.
-    pub restart_gap: TimeDelta,
+    pub restart_gap: SignedDuration,
     /// The time of the last request is saved at most this often (the pause
     /// after a refusal is saved at once).
-    pub save_every: TimeDelta,
+    pub save_every: SignedDuration,
     /// The least time between two requests of any source. 125 ms is 8 a
     /// second, well under the 15 a second that earns a ban.
-    pub min_interval: TimeDelta,
+    pub min_interval: SignedDuration,
     /// Added to the wait zKillboard asks for in `Retry-After`.
-    pub retry_margin: TimeDelta,
+    pub retry_margin: SignedDuration,
     /// How the history of the requests is kept.
     pub stats: StatsConfig,
 }
@@ -60,11 +60,11 @@ pub struct GuardConfig {
 impl Default for GuardConfig {
     fn default() -> Self {
         Self {
-            block: TimeDelta::hours(1),
-            restart_gap: TimeDelta::seconds(30),
-            save_every: TimeDelta::seconds(5),
-            min_interval: TimeDelta::milliseconds(125),
-            retry_margin: TimeDelta::seconds(30),
+            block: SignedDuration::from_hours(1),
+            restart_gap: SignedDuration::from_secs(30),
+            save_every: SignedDuration::from_secs(5),
+            min_interval: SignedDuration::from_millis(125),
+            retry_margin: SignedDuration::from_secs(30),
             stats: StatsConfig::default(),
         }
     }
@@ -74,21 +74,21 @@ impl Default for GuardConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Memory {
     /// zKillboard asked us to keep away until then.
-    blocked_until: Option<DateTime<Utc>>,
+    blocked_until: Option<Timestamp>,
     /// The last request of this run or the previous one.
-    last_request: Option<DateTime<Utc>>,
+    last_request: Option<Timestamp>,
     /// The first request of this run waits until then.
-    ready_at: Option<DateTime<Utc>>,
+    ready_at: Option<Timestamp>,
     /// When the memory was last saved.
-    saved_at: Option<DateTime<Utc>>,
+    saved_at: Option<Timestamp>,
     /// The earliest moment the next request may go out (see
     /// [`RequestGuard::pace`]). Only this run's: it is not saved.
-    next_slot: Option<DateTime<Utc>>,
+    next_slot: Option<Timestamp>,
     /// When a request was last answered well. Only this run's.
-    last_ok: Option<DateTime<Utc>>,
+    last_ok: Option<Timestamp>,
     /// The end of the last refusal that was reported (see
     /// [`RequestGuard::unreported_refusal`]). Only this run's.
-    reported: Option<DateTime<Utc>>,
+    reported: Option<Timestamp>,
 }
 
 /// Decides whether a request to zKillboard may be made, and remembers when
@@ -105,7 +105,7 @@ pub struct RequestGuard {
 
 /// What a saved text holds: until when zKillboard asked us to keep away, and
 /// the last request.
-type Remembered = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+type Remembered = (Option<Timestamp>, Option<Timestamp>);
 
 impl RequestGuard {
     /// What is saved is written as `1:<blocked until>:<last request>`, in
@@ -131,7 +131,7 @@ impl RequestGuard {
 
     /// A request failed without zKillboard refusing it (no answer, an
     /// unexpected status).
-    pub fn failed(&self, now: DateTime<Utc>) {
+    pub fn failed(&self, now: Timestamp) {
         self.stats.failed(now);
     }
 
@@ -142,20 +142,20 @@ impl RequestGuard {
 
     /// A request was answered well (a file that does not exist counts: the
     /// server answered).
-    pub fn succeeded(&self, now: DateTime<Utc>) {
+    pub fn succeeded(&self, now: Timestamp) {
         self.stats.answered(now);
         self.lock_memory().last_ok = Some(now);
     }
 
     /// How long ago a request was last answered well in this run.
-    pub fn last_success(&self, now: DateTime<Utc>) -> Option<Duration> {
+    pub fn last_success(&self, now: Timestamp) -> Option<Duration> {
         let last = self.lock_memory().last_ok?;
-        (now - last).to_std().ok()
+        Duration::try_from(now.duration_since(last)).ok()
     }
 
     /// The end of the refusal in force, once: `None` when there is none or it
     /// was already returned. It lets a refusal be reported a single time.
-    pub fn unreported_refusal(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    pub fn unreported_refusal(&self, now: Timestamp) -> Option<Timestamp> {
         let mut memory = self.lock_memory();
         let until = memory.blocked_until.filter(|until| *until > now)?;
         if memory.reported == Some(until) {
@@ -167,12 +167,12 @@ impl RequestGuard {
 
     /// How long to keep away after a refusal.
     pub fn block(&self) -> Duration {
-        self.config.block.to_std().unwrap_or_default()
+        Duration::try_from(self.config.block).unwrap_or_default()
     }
 
     /// Starts using `store`: what it has saved counts from now on, and what
     /// happens next is saved in it.
-    pub fn attach(&self, store: Box<dyn GuardStore>, now: DateTime<Utc>) {
+    pub fn attach(&self, store: Box<dyn GuardStore>, now: Timestamp) {
         let saved = store.load().and_then(|text| Self::parse(&text));
         {
             let mut memory = self.lock_memory();
@@ -191,15 +191,17 @@ impl RequestGuard {
 
     /// How long to wait before a request may be made, or `None` if it may
     /// be made now.
-    pub fn wait(&self, now: DateTime<Utc>) -> Option<Duration> {
+    pub fn wait(&self, now: Timestamp) -> Option<Duration> {
         let memory = self.lock_memory();
         let until = memory.blocked_until.max(memory.ready_at)?;
-        (until - now).to_std().ok().filter(|wait| !wait.is_zero())
+        Duration::try_from(until.duration_since(now))
+            .ok()
+            .filter(|wait| !wait.is_zero())
     }
 
     /// Whether the wait comes from a refusal of zKillboard (403 or 429) that
     /// is still remembered, and not only from the pause after a restart.
-    pub fn refused(&self, now: DateTime<Utc>) -> bool {
+    pub fn refused(&self, now: Timestamp) -> bool {
         self.lock_memory()
             .blocked_until
             .is_some_and(|until| until > now)
@@ -208,11 +210,11 @@ impl RequestGuard {
     /// Takes the next place in line for a request and says how long to sleep
     /// before sending it, so that two requests are never closer than
     /// [`GuardConfig::min_interval`], whichever source makes them.
-    pub fn pace(&self, now: DateTime<Utc>) -> Duration {
+    pub fn pace(&self, now: Timestamp) -> Duration {
         let mut memory = self.lock_memory();
         let slot = memory.next_slot.map_or(now, |next| next.max(now));
         memory.next_slot = Some(slot + self.config.min_interval);
-        (slot - now).to_std().unwrap_or_default()
+        Duration::try_from(slot.duration_since(now)).unwrap_or_default()
     }
 
     /// The wait zKillboard asked for in `Retry-After`, when it is a number of
@@ -229,21 +231,21 @@ impl RequestGuard {
     }
 
     /// Until when zKillboard asked us to keep away, if it still does.
-    pub fn blocked_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    pub fn blocked_until(&self, now: Timestamp) -> Option<Timestamp> {
         self.lock_memory()
             .blocked_until
             .filter(|until| *until > now)
     }
 
     /// A request is about to be made.
-    pub fn requested(&self, now: DateTime<Utc>) {
+    pub fn requested(&self, now: Timestamp) {
         self.sent.fetch_add(1, Ordering::Relaxed);
         self.stats.sent(now);
         let mut memory = self.lock_memory();
         memory.last_request = Some(now);
         let due = memory
             .saved_at
-            .is_none_or(|saved| now - saved >= self.config.save_every);
+            .is_none_or(|saved| now.duration_since(saved) >= self.config.save_every);
         if due {
             self.save(&mut memory, now);
         }
@@ -252,10 +254,10 @@ impl RequestGuard {
     /// zKillboard answered 403 or 429: keep away for as long as it asked
     /// (`retry_after`, plus the margin; never more than four blocks) or, when
     /// it did not say, for the whole block.
-    pub fn throttled_for(&self, now: DateTime<Utc>, retry_after: Option<Duration>) {
+    pub fn throttled_for(&self, now: Timestamp, retry_after: Option<Duration>) {
         self.stats.refused(now);
         let asked = retry_after
-            .and_then(|wait| TimeDelta::from_std(wait).ok())
+            .and_then(|wait| SignedDuration::try_from(wait).ok())
             .map(|wait| (wait + self.config.retry_margin).min(self.config.block * 4));
         let until = now + asked.unwrap_or(self.config.block);
         let mut memory = self.lock_memory();
@@ -270,9 +272,9 @@ impl RequestGuard {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn save(&self, memory: &mut Memory, now: DateTime<Utc>) {
+    fn save(&self, memory: &mut Memory, now: Timestamp) {
         memory.saved_at = Some(now);
-        let seconds = |time: Option<DateTime<Utc>>| time.map_or(0, |time| time.timestamp());
+        let seconds = |time: Option<Timestamp>| time.map_or(0, |time| time.as_second());
         let text = format!(
             "{}:{}:{}",
             Self::FORMAT,
@@ -295,11 +297,11 @@ impl RequestGuard {
         if parts.next()? != Self::FORMAT {
             return None;
         }
-        let mut time = || -> Option<Option<DateTime<Utc>>> {
+        let mut time = || -> Option<Option<Timestamp>> {
             let seconds: i64 = parts.next()?.parse().ok()?;
             Some(
                 (seconds > 0)
-                    .then(|| DateTime::from_timestamp(seconds, 0))
+                    .then(|| Timestamp::from_second(seconds).ok())
                     .flatten(),
             )
         };
@@ -372,7 +374,7 @@ impl Guards {
     /// logged with how the other endpoint is doing, which is what tells
     /// whether bans are by endpoint or by address; with `cross_ban` the other
     /// is kept away for as long as this one.
-    pub fn refusal_seen(&self, endpoint: Endpoint, now: DateTime<Utc>) {
+    pub fn refusal_seen(&self, endpoint: Endpoint, now: Timestamp) {
         let guard = self.get(endpoint);
         let Some(until) = guard.unreported_refusal(now) else {
             return;
@@ -421,8 +423,8 @@ mod tests {
         }
     }
 
-    fn at(seconds: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap()
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_second(1_800_000_000 + seconds).unwrap()
     }
 
     #[test]
@@ -594,7 +596,7 @@ mod tests {
     #[test]
     fn the_guard_counts_how_each_request_ended() {
         let guard = RequestGuard::new(GuardConfig::default());
-        let now = Utc::now();
+        let now = Timestamp::now();
         guard.requested(now);
         guard.succeeded(now);
         guard.requested(now);

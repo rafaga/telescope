@@ -507,7 +507,7 @@ mod tests {
         let systems = HashMap::from([(30_002_086_usize, [0.0_f32, 0.0])]);
         let markers = layer.markers(
             &links,
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
             &systems,
             &|_| None,
             NodeSize {

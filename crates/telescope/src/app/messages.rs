@@ -200,10 +200,7 @@ pub enum Message {
     /// A [`Message::GenericNotification`] whose entry in the log is stamped
     /// with the given moment (the one of the event) instead of the current
     /// time.
-    TimedNotification(
-        chrono::DateTime<chrono::Utc>,
-        (Type, String, String, String),
-    ),
+    TimedNotification(jiff::Timestamp, (Type, String, String, String)),
     NewRegionalPane(usize),
     /// Brings the map of a region to the front, opening it first if it was
     /// never open (a click on the node of a hub's wormholes).
@@ -213,7 +210,7 @@ pub enum Message {
     PlayerNewLocation((i64, i64)),
     /// Sent by the housekeeping thread when ESI reports a different last EVE
     /// login for a character.
-    PlayerLastLogon((i64, chrono::DateTime<chrono::Utc>)),
+    PlayerLastLogon((i64, jiff::Timestamp)),
     /// Sent by the intel reader thread after it read new lines of a
     /// channel's log: the channel and when, for Settings -> Sources.
     ChannelActivity(String, std::time::SystemTime),
@@ -703,7 +700,7 @@ mod enum_tests {
             (Message::MapShown(1), "MapShown"),
             (Message::PlayerNewLocation((1, 2)), "PlayerNewLocation"),
             (
-                Message::PlayerLastLogon((1, chrono::DateTime::default())),
+                Message::PlayerLastLogon((1, jiff::Timestamp::default())),
                 "PlayerLastLogon",
             ),
             (

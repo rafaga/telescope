@@ -829,7 +829,7 @@ impl UniversePane {
         };
         let markers = self.wormhole_layer.markers(
             &wormholes.layer(),
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
             &self.positions,
             &names,
             NodeSize {
@@ -1343,7 +1343,7 @@ impl RegionPane {
         let names = |id: usize| headers.get(id).map(|header| header.name.clone());
         let markers = self.wormhole_layer.markers(
             &wormholes.layer(),
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
             &self.positions,
             &names,
             NodeSize {

@@ -908,20 +908,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
-dependencies = [
- "iana-time-zone",
- "js-sys",
- "num-traits",
- "serde",
- "wasm-bindgen",
- "windows-link 0.2.1",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,7 +1552,10 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "egui-weave",
+ "egui_extras",
  "egui_kittest",
+ "jiff 0.2.46",
  "native_tools",
 ]
 
@@ -1611,6 +1600,14 @@ dependencies = [
  "egui-scale",
  "slab",
  "smallvec",
+]
+
+[[package]]
+name = "egui-weave"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui_kittest",
 ]
 
 [[package]]
@@ -1666,6 +1663,7 @@ dependencies = [
  "enum-map",
  "image",
  "itertools 0.15.0",
+ "jiff 0.2.46",
  "log",
  "mime_guess2",
  "profiling",
@@ -1965,7 +1963,7 @@ dependencies = [
 name = "eve-scout"
 version = "1.1.2"
 dependencies = [
- "chrono",
+ "jiff 1.0.1",
  "reqwest",
  "rusqlite",
  "serde",
@@ -2782,30 +2780,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iana-time-zone"
-version = "0.1.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
-dependencies = [
- "android_system_properties",
- "core-foundation-sys",
- "iana-time-zone-haiku",
- "js-sys",
- "log",
- "wasm-bindgen",
- "windows-core 0.62.2",
-]
-
-[[package]]
-name = "iana-time-zone-haiku"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3075,6 +3049,96 @@ name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
+
+[[package]]
+name = "jiff"
+version = "0.2.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175dc66334db3b9ab9985bf8b61cfed50dc16d20964bb47f9e479adcae984a7f"
+dependencies = [
+ "jiff-core 0.1.8",
+ "jiff-static 0.2.46",
+ "js-sys",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "wasm-bindgen",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "jiff"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
+dependencies = [
+ "jiff-core 1.0.1",
+ "jiff-static 1.0.1",
+ "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e599b80292e597019b8b3e392de3f4bea2959ddfb8c7dff60e035e9e311a2c1b"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7b1af7547d47354bc438d797e3854601bde8f8d185780c5ba4ab27afa54f1ba"
+dependencies = [
+ "jiff-core 0.1.8",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
+dependencies = [
+ "jiff-core 1.0.1",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc65b284afcfa8f6cf189c7274c805505314a7ab975c60e1f548bff56525420e"
+dependencies = [
+ "jiff-tzdb",
+]
 
 [[package]]
 name = "jni"
@@ -5658,14 +5722,12 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 [[package]]
 name = "sde"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01e99a254a3be1d2faa3c265efb127285c068d99c32c346816a79bbcc29eff07"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
  "flate2",
  "futures",
+ "jiff 1.0.1",
  "kdtree",
  "reqwest",
  "roxmltree 0.21.2",
@@ -6280,7 +6342,6 @@ name = "telescope"
 version = "1.1.2"
 dependencies = [
  "aho-corasick",
- "chrono",
  "directories",
  "eframe",
  "egui",
@@ -6298,6 +6359,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "image",
+ "jiff 1.0.1",
  "kdtree",
  "native_tools",
  "notify",
@@ -6314,6 +6376,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sys-locale",
+ "telescope-derive",
  "tokio",
  "toml 1.2.1+spec-1.1.0",
  "tracing",
@@ -6328,6 +6391,16 @@ dependencies = [
  "windows",
  "winresource",
  "zkill",
+]
+
+[[package]]
+name = "telescope-derive"
+version = "1.1.2"
+dependencies = [
+ "egui-ide",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -7308,12 +7381,12 @@ dependencies = [
  "aho-corasick",
  "base64 0.23.1",
  "bytes",
- "chrono",
  "esi-openapi",
  "http-body-util",
  "hyper",
  "hyper-tls",
  "hyper-util",
+ "jiff 1.0.1",
  "mockall",
  "native_tools",
  "regex",
@@ -8374,7 +8447,7 @@ dependencies = [
 name = "zkill"
 version = "1.1.2"
 dependencies = [
- "chrono",
+ "jiff 1.0.1",
  "reqwest",
  "serde",
  "serde_json",

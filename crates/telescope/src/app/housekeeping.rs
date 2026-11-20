@@ -47,7 +47,7 @@ use super::intel::zkillboard::ZKillboardHandle;
 use super::messages::{CharacterSync, Message, Type, send_app_message};
 use super::update_checker::UpdateChecker;
 use super::wormhole_links::WormholeShared;
-use chrono::{DateTime, TimeDelta, Utc};
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
@@ -125,9 +125,9 @@ impl WormholesPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SystemKillsPolicy {
     /// How often ESI refreshes the answer.
-    every: TimeDelta,
+    every: SignedDuration,
     /// How long after it is due the answer is asked for, so that ESI has it.
-    margin: TimeDelta,
+    margin: SignedDuration,
     /// How often to look whether a map shows the heat, while none does.
     idle: Duration,
     /// Delay before asking again when the answer is still the old one.
@@ -142,8 +142,8 @@ struct SystemKillsPolicy {
 impl Default for SystemKillsPolicy {
     fn default() -> Self {
         Self {
-            every: TimeDelta::hours(1),
-            margin: TimeDelta::seconds(90),
+            every: SignedDuration::from_hours(1),
+            margin: SignedDuration::from_secs(90),
             idle: Duration::from_secs(15),
             retry: Duration::from_secs(60),
             retries: 5,
@@ -155,21 +155,15 @@ impl Default for SystemKillsPolicy {
 impl SystemKillsPolicy {
     /// How long until the answer after the one computed at `modified` is
     /// ready, or `None` when it already is.
-    fn wait(&self, modified: DateTime<Utc>, now: DateTime<Utc>) -> Option<Duration> {
-        (modified + self.every + self.margin - now)
-            .to_std()
+    fn wait(&self, modified: Timestamp, now: Timestamp) -> Option<Duration> {
+        Duration::try_from((modified + self.every + self.margin).duration_since(now))
             .ok()
             .filter(|wait| !wait.is_zero())
     }
 
     /// When to ask again after an answer computed at `modified` (if ESI
     /// said), when it was the old answer `stale` times in a row.
-    fn after_answer(
-        &self,
-        modified: Option<DateTime<Utc>>,
-        now: DateTime<Utc>,
-        stale: u32,
-    ) -> Duration {
+    fn after_answer(&self, modified: Option<Timestamp>, now: Timestamp, stale: u32) -> Duration {
         let Some(modified) = modified else {
             return self.slow_retry;
         };
@@ -242,7 +236,7 @@ struct Housekeeping {
     app_msg: Arc<mpsc::Sender<Message>>,
     schedule: Schedule,
     /// Last login already reported to the UI, per character.
-    reported: HashMap<i64, DateTime<Utc>>,
+    reported: HashMap<i64, Timestamp>,
     /// Tag of the last release announced to the UI.
     announced: Option<String>,
     /// The last update check failed (so a streak of failures warns once).
@@ -368,7 +362,7 @@ impl Housekeeping {
         if !self.zkillboard.heat_wanted() || self.zkillboard.covers_the_hour() {
             return self.kills_policy.idle;
         }
-        let now = Utc::now();
+        let now = Timestamp::now();
         if let Some(wait) = self
             .zkillboard
             .hour_modified()
@@ -393,7 +387,7 @@ impl Housekeeping {
                     "hourly kills read from ESI"
                 );
                 self.kills_policy
-                    .after_answer(hour.modified, Utc::now(), self.kills_stale)
+                    .after_answer(hour.modified, Timestamp::now(), self.kills_stale)
                     .min(self.kills_policy.slow_retry.max(self.kills_policy.retry))
             }
             Err(error) => {
@@ -542,7 +536,7 @@ impl TelescopeApp {
 
     /// Stores the last EVE login ESI reported for a character.
     #[tracing::instrument(skip(self))]
-    pub(crate) fn update_player_last_logon(&mut self, player_id: i64, last_logon: DateTime<Utc>) {
+    pub(crate) fn update_player_last_logon(&mut self, player_id: i64, last_logon: Timestamp) {
         let Some(index) = self
             .esi
             .characters
@@ -700,20 +694,20 @@ mod tests {
     #[test]
     fn the_next_hourly_answer_is_asked_an_hour_and_a_margin_after_the_last() {
         let policy = SystemKillsPolicy::default();
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert_eq!(
-            policy.wait(now - TimeDelta::minutes(10), now),
+            policy.wait(now - SignedDuration::from_mins(10), now),
             Some(Duration::from_secs(50 * 60 + 90))
         );
         // An answer older than that has a successor waiting.
-        assert_eq!(policy.wait(now - TimeDelta::minutes(62), now), None);
+        assert_eq!(policy.wait(now - SignedDuration::from_mins(62), now), None);
     }
 
     #[test]
     fn an_old_answer_is_asked_again_soon_and_then_slowly() {
         let policy = SystemKillsPolicy::default();
-        let now = Utc::now();
-        let old = Some(now - TimeDelta::hours(2));
+        let now = Timestamp::now();
+        let old = Some(now - SignedDuration::from_hours(2));
         assert_eq!(policy.after_answer(old, now, 0), policy.retry);
         assert_eq!(
             policy.after_answer(old, now, policy.retries - 1),

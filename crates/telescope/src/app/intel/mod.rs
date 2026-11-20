@@ -127,7 +127,7 @@ impl TelescopeApp {
         let mut tags = Vec::new();
         for raw in data.lines() {
             let Some((line, origin)) =
-                webb::rules::IntelLine::parse_or_assume(raw, chrono::Utc::now())
+                webb::rules::IntelLine::parse_or_assume(raw, jiff::Timestamp::now())
             else {
                 continue;
             };
