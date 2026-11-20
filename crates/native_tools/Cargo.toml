@@ -53,6 +53,9 @@ objc2-app-kit = { version = "0.3", features = [
     "NSViewController",
     "NSControl",
     "NSCell",
+    "NSMenu",
+    "NSMenuItem",
+    "NSEvent",
     "objc2-quartz-core",
 ] }
 # The window's Core Animation layer: wgpu marks it opaque, and the overlay

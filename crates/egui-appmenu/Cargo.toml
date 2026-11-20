@@ -1,0 +1,22 @@
+[package]
+name = "egui-appmenu"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "The application menu of an egui app: one description, drawn as the native menu bar on macOS and inside the window on Windows and Linux."
+readme = "README.md"
+keywords = ["egui", "gui", "menu", "macos"]
+categories = ["gui"]
+
+[dependencies]
+egui = { workspace = true }
+# The menu description (`MenuBar`) and the macOS menu bar (`NativeMenu`).
+native_tools = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+
+[lints]
+workspace = true

@@ -5,6 +5,8 @@
 //! * [`dialog`]: native open file / folder dialogs behind one API.
 //! * [`instance`]: one copy of the program at a time, with a lock the
 //!   operating system releases when the process ends.
+//! * [`menu`]: the application menu described once ([`menu::MenuBar`]) and built
+//!   as the native macOS menu bar (`NSMenu`); drawn inside the window elsewhere.
 //! * [`overlay`]: native settings of the overlay window drawn over the game,
 //!   and the lookup of the game window's position (Windows, macOS and Linux/X11).
 //! * [`permissions`]: the macOS Accessibility permission (a no-op elsewhere).
@@ -21,6 +23,7 @@
 pub mod date_picker;
 pub mod dialog;
 pub mod instance;
+pub mod menu;
 pub mod overlay;
 pub mod permissions;
 pub mod window;

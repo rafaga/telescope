@@ -17,6 +17,7 @@ use std::sync::mpsc::Receiver;
 #[cfg(target_os = "windows")]
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;

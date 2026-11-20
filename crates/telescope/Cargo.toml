@@ -38,7 +38,7 @@ egui = { version = "0.37", default-features = false }
 # `database_updater` can drive the same check-for-a-new-build/download/
 # parse steps `sde`'s own `sde-builder` CLI does -- see
 # `crates/telescope/src/app/database_updater.rs`.
-sde = { version = "0.8", features = ["builder"] }
+sde = { version = "0.9", features = ["builder"] }
 # Only needed here to name the `rusqlite::Connection` handed to
 # `sde::builder::schema::create_schema`/`Parser::build_database` --
 # `database_updater.rs` owns opening/creating the `sde.db` file itself

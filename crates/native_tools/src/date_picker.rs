@@ -528,7 +528,7 @@ use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 #[cfg(target_os = "macos")]
-use objc2::{MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
     NSApplication, NSDatePicker, NSDatePickerElementFlags, NSDatePickerStyle, NSPopover,
@@ -584,6 +584,7 @@ define_class!(
 
 #[cfg(target_os = "macos")]
 impl DatePickerTarget {
+    #[allow(unsafe_code)]
     fn new(mtm: MainThreadMarker, state: TargetState) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(state);
         unsafe { msg_send![super(this), init] }
@@ -591,6 +592,7 @@ impl DatePickerTarget {
 
     /// The popover closed: answers `Cancelled` when no day was picked, and
     /// lets go of everything that pointed back at this target.
+    #[allow(unsafe_code)]
     fn popover_closed(&self) {
         let state = self.ivars();
         if !state.answered.replace(true) {
@@ -599,7 +601,7 @@ impl DatePickerTarget {
         state.popover.borrow_mut().take();
         if let Some(observer) = state.observer.borrow_mut().take() {
             unsafe {
-                NSNotificationCenter::defaultCenter().removeObserver(&observer);
+                NSNotificationCenter::defaultCenter().removeObserver(AsRef::<AnyObject>::as_ref(&*observer));
             }
         }
     }
@@ -611,6 +613,7 @@ impl DatePicker {
     /// the main thread when the user picks a day or dismisses it. Must be
     /// called from the main thread.
     #[tracing::instrument(skip(self, on_result))]
+    #[allow(unsafe_code)]
     pub fn open_date_picker(&self, on_result: impl Fn(DialogResult<Date>) + Send + Sync + 'static) {
         let Some(mtm) = MainThreadMarker::new() else {
             on_result(DialogResult::Err(
